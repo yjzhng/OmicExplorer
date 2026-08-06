@@ -38,7 +38,7 @@ faceting tabs partition by the other conditions (strain / time / dose).
 
 ## Using it
 
-Open the ready-made **`example.omicexplorer`** (in the repo root) — it wires Load →
+Open the ready-made **`example.omicexplorer`** (in this folder) — it wires Load →
 Standardize → Compare/Contrast → one of **every** plot type (see the table below). Just
 hit **Run**. (The project stores an absolute path to this folder; if you moved the repo,
 the folder chip shows *not found* — click it to re-select.)
