@@ -1,0 +1,124 @@
+{
+  "name": "omicexplorer",
+  "productName": "OmicExplorer",
+  "version": "0.1.0",
+  "description": "Desktop app for omic data analysis: load sample × gene/protein matrices, build analysis pipelines in a flow-based editor, and explore live interactive visualizations and multi-condition comparisons.",
+  "appConfig": {
+    "appIdNamespace": "tech.yjzhng",
+    "devPort": 5673,
+    "defaultPreset": "landscape-16-9",
+    "platforms": {
+      "aspectRatios": {
+        "landscape-16-9": {
+          "label": "Landscape 16:9",
+          "width": 1280,
+          "height": 720
+        },
+        "landscape-4-3": {
+          "label": "Landscape 4:3",
+          "width": 1024,
+          "height": 768
+        },
+        "ultrawide-21-9": {
+          "label": "Ultrawide 21:9",
+          "width": 1680,
+          "height": 720
+        },
+        "portrait-9-16": {
+          "label": "Portrait 9:16",
+          "width": 450,
+          "height": 800
+        },
+        "square-1-1": {
+          "label": "Square 1:1",
+          "width": 800,
+          "height": 800
+        }
+      },
+      "desktop": [
+        "Windows",
+        "macOS",
+        "Linux"
+      ],
+      "mobile": [
+        "Android",
+        "iOS"
+      ],
+      "devices": {
+        "ios": [
+          "iPhone 15"
+        ],
+        "android": []
+      }
+    }
+  },
+  "prettier": {
+    "semi": false,
+    "singleQuote": true,
+    "printWidth": 100,
+    "trailingComma": "none"
+  },
+  "main": "./out/main/index.js",
+  "author": "yjzhng",
+  "license": "MIT",
+  "scripts": {
+    "predev": "node scripts/brand-dev-electron.mjs",
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "preview": "electron-vite preview",
+    "start": "electron-vite preview",
+    "package": "npm run build && electron-builder --config config/electron-builder.cjs",
+    "package:dir": "npm run build && electron-builder --dir --config config/electron-builder.cjs",
+    "make:launcher": "node scripts/make-launcher.mjs",
+    "mobile:setup": "node scripts/mobile-setup.mjs",
+    "cap:sync": "npm run build && cap sync",
+    "cap:ios": "npm run build && cap run ios",
+    "cap:android": "npm run build && cap run android",
+    "ship": "node scripts/ship.mjs",
+    "compat": "node scripts/compat.mjs",
+    "compat:update": "node scripts/compat.mjs --update",
+    "compat:mobile": "node scripts/compat-mobile.mjs",
+    "test": "vitest run --config config/vitest.config.ts",
+    "test:watch": "vitest --config config/vitest.config.ts",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "typecheck:node": "tsc --noEmit -p config/tsconfig.node.json",
+    "typecheck:web": "tsc --noEmit -p config/tsconfig.web.json",
+    "typecheck": "npm run typecheck:node && npm run typecheck:web"
+  },
+  "dependencies": {
+    "@xyflow/react": "^12.3.5",
+    "electron-updater": "^6.3.0",
+    "papaparse": "^5.4.1",
+    "plotly.js-dist-min": "^2.35.2",
+    "react-grid-layout": "^2.2.3",
+    "umap-js": "^1.4.0",
+    "zustand": "^5.0.14"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/papaparse": "^5.3.15",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@vitejs/plugin-react": "^4.3.4",
+    "electron": "^34.0.0",
+    "electron-builder": "^25.1.8",
+    "electron-vite": "^3.0.0",
+    "eslint": "^10.3.0",
+    "eslint-config-prettier": "^9.1.0",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "eslint-plugin-react-refresh": "^0.5.2",
+    "globals": "^17.6.0",
+    "pixelmatch": "^7.2.0",
+    "pngjs": "^7.0.0",
+    "prettier": "^3.4.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "typescript": "^5.7.0",
+    "typescript-eslint": "^8.59.2",
+    "vite": "^6.0.0",
+    "vitest": "^2.1.8"
+  }
+}

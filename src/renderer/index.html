@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- CSP is injected by electron.vite.config.ts (relaxed in dev for HMR, strict in prod). -->
+    <title>%APP_NAME%</title>
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+      html,
+      body,
+      #root {
+        margin: 0;
+        padding: 0;
+      }
+      #root {
+        min-height: 100vh;
+      }
+      /* App font. Set on body so portaled UI (e.g. table filter popovers rendered
+         into document.body) matches; form controls don't inherit family by default. */
+      body {
+        font-family: system-ui, sans-serif;
+      }
+      button,
+      input,
+      select,
+      textarea {
+        font-family: inherit;
+      }
+      /* Theme React Flow's zoom controls (they ship with a light default). */
+      .react-flow__controls {
+        box-shadow: 0 2px 12px rgba(0, 0, 0, 0.25);
+        border-radius: 6px;
+        overflow: hidden;
+      }
+      .react-flow__controls-button {
+        background: var(--panel) !important;
+        border-bottom: 1px solid var(--border) !important;
+        color: var(--text) !important;
+      }
+      .react-flow__controls-button:hover {
+        background: var(--panel-alt) !important;
+      }
+      .react-flow__controls-button svg {
+        fill: var(--text) !important;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="./src/main.tsx"></script>
+  </body>
+</html>

@@ -1,0 +1,27 @@
+node_modules
+dist
+out
+.claude
+.DS_Store
+*.log
+.vite
+*.tsbuildinfo
+build-resources/*.iconset
+build-resources/icon.icns
+
+# Capacitor native projects — generated per app via `npm run cap:add:*`
+/ios
+/android
+.capacitor
+
+# Compat harness output (baselines under compat/baselines/ are committed)
+compat/screenshots
+compat/diffs
+
+# Local real-data projects & their embedded/backup copies — never commit (sensitive data).
+# The shippable synthetic demo is example_project/ + example.omicexplorer (kept).
+demo_project/
+demo.omicexplorer
+*.omicexplorer.bak
+test_project/
+test.omicexplorer

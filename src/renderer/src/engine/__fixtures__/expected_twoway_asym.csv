@@ -1,0 +1,7 @@
+uniqID,cmpd,strain,dose,cmp_cond,comparison,log2FC,pP,pQ,thrsh,signf,effect
+g00,E28,M,0.3,cmpd:strain,E28|DMSO × M|W,0.9598854184900185,3.0039853578645808,2.225834107480937,"linear, log2FC ∉ (-1.0, 1.0) and pP > 1.3",False,none
+g01,E28,M,0.3,cmpd:strain,E28|DMSO × M|W,-0.9563173240313709,2.5148837733583513,2.0377625186386887,"linear, log2FC ∉ (-1.0, 1.0) and pP > 1.3",False,none
+g02,E28,M,0.3,cmpd:strain,E28|DMSO × M|W,0.9601762076921982,2.076572982850235,1.900481723794554,"linear, log2FC ∉ (-1.0, 1.0) and pP > 1.3",False,none
+g03,E28,M,0.3,cmpd:strain,E28|DMSO × M|W,-0.2534295029224598,0.3942184511405545,0.3942184511405545,"linear, log2FC ∉ (-1.0, 1.0) and pP > 1.3",False,none
+g04,E28,M,0.3,cmpd:strain,E28|DMSO × M|W,0.7413953958114323,1.4131032273633046,1.3339219813156797,"linear, log2FC ∉ (-1.0, 1.0) and pP > 1.3",False,none
+g05,E28,M,0.3,cmpd:strain,E28|DMSO × M|W,-1.2810679256932076,2.3294958273583877,2.0284658316944064,"linear, log2FC ∉ (-1.0, 1.0) and pP > 1.3",True,down

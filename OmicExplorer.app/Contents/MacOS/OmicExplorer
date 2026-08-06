@@ -1,0 +1,6 @@
+#!/bin/bash
+# Double-clickable launcher: resolves the repo it lives in, hands off to
+# launch.sh in the background, and exits so only the Electron window remains.
+DIR="$(cd "$(dirname "$0")/../../.." && pwd)" # repo root: <name>.app/Contents/MacOS -> ../../..
+nohup "$DIR/scripts/launch.sh" >"${TMPDIR:-/tmp}/omicexplorer-launch.log" 2>&1 &
+exit 0

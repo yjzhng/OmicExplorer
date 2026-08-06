@@ -1,0 +1,198 @@
+/* Dashboard grid chrome. RGL's own CSS handles item positioning/resize mechanics;
+   these are theme-aware overrides on top. */
+
+.oe-grid-item {
+  height: 100%;
+}
+
+/* The drop-target ghost shown while dragging/resizing. */
+.react-grid-placeholder {
+  background: var(--accent) !important;
+  opacity: 0.14;
+  border-radius: 8px;
+}
+
+/* Header drag affordance only while editing. */
+.oe-grid.editing .panel-drag {
+  cursor: grab;
+}
+.oe-grid.editing .panel-drag:active {
+  cursor: grabbing;
+}
+
+/* Resize handles — mirrors prodesigner's approach. Every selector is prefixed
+   `.oe-grid .react-grid-item > .react-resizable-handle.react-resizable-handle-X`
+   (4 classes) so it OUTRANKS react-grid-layout's / react-resizable's own handle rules
+   — which otherwise rotate the handles 45°, reveal a dark corner marker on any panel
+   hover, and leave stray marks. Handles are transparent hit strips; a full-length
+   accent bar appears only when that specific edge is hovered. */
+.oe-grid .react-grid-item > .react-resizable-handle {
+  background-image: none;
+  transform: none !important;
+  opacity: 1; /* transparent hit area — the ::after is the only visual */
+  width: auto;
+  height: auto;
+  padding: 0;
+  margin: 0;
+}
+
+/* Edge grab strips straddling each border, inset from the corners so corner handles win. */
+.oe-grid .react-grid-item > .react-resizable-handle.react-resizable-handle-n,
+.oe-grid .react-grid-item > .react-resizable-handle.react-resizable-handle-s {
+  left: 10px;
+  right: 10px;
+  width: auto;
+  height: 11px;
+  margin: 0;
+  cursor: ns-resize;
+}
+.oe-grid .react-grid-item > .react-resizable-handle.react-resizable-handle-n {
+  top: -5px;
+  bottom: auto;
+}
+.oe-grid .react-grid-item > .react-resizable-handle.react-resizable-handle-s {
+  bottom: -5px;
+  top: auto;
+}
+.oe-grid .react-grid-item > .react-resizable-handle.react-resizable-handle-e,
+.oe-grid .react-grid-item > .react-resizable-handle.react-resizable-handle-w {
+  top: 10px;
+  bottom: 10px;
+  height: auto;
+  width: 11px;
+  margin: 0;
+  cursor: ew-resize;
+}
+.oe-grid .react-grid-item > .react-resizable-handle.react-resizable-handle-e {
+  right: -5px;
+  left: auto;
+}
+.oe-grid .react-grid-item > .react-resizable-handle.react-resizable-handle-w {
+  left: -5px;
+  right: auto;
+}
+
+/* Corners: draggable hit zones sitting above the edges (so they win the overlap). */
+.oe-grid .react-grid-item > .react-resizable-handle.react-resizable-handle-ne,
+.oe-grid .react-grid-item > .react-resizable-handle.react-resizable-handle-nw,
+.oe-grid .react-grid-item > .react-resizable-handle.react-resizable-handle-se,
+.oe-grid .react-grid-item > .react-resizable-handle.react-resizable-handle-sw {
+  width: 16px;
+  height: 16px;
+  z-index: 3;
+}
+.oe-grid .react-grid-item > .react-resizable-handle.react-resizable-handle-ne {
+  top: -5px;
+  right: -5px;
+  bottom: auto;
+  left: auto;
+  cursor: nesw-resize;
+}
+.oe-grid .react-grid-item > .react-resizable-handle.react-resizable-handle-nw {
+  top: -5px;
+  left: -5px;
+  bottom: auto;
+  right: auto;
+  cursor: nwse-resize;
+}
+.oe-grid .react-grid-item > .react-resizable-handle.react-resizable-handle-se {
+  bottom: -5px;
+  right: -5px;
+  top: auto;
+  left: auto;
+  cursor: nwse-resize;
+}
+.oe-grid .react-grid-item > .react-resizable-handle.react-resizable-handle-sw {
+  bottom: -5px;
+  left: -5px;
+  top: auto;
+  right: auto;
+  cursor: nesw-resize;
+}
+
+/* The hover highlight — a full-length accent bar on the hovered edge (this also
+   resets the library's corner marker). Hidden until that handle is hovered. */
+.oe-grid .react-grid-item > .react-resizable-handle::after {
+  content: '';
+  position: absolute;
+  background: var(--accent);
+  border: 0;
+  border-radius: 3px;
+  top: auto;
+  right: auto;
+  bottom: auto;
+  left: auto;
+  width: auto;
+  height: auto;
+  opacity: 0;
+  transition: opacity 90ms ease;
+}
+.oe-grid .react-grid-item > .react-resizable-handle:hover::after {
+  opacity: 1;
+}
+.oe-grid .react-grid-item > .react-resizable-handle.react-resizable-handle-n::after,
+.oe-grid .react-grid-item > .react-resizable-handle.react-resizable-handle-s::after {
+  left: 0;
+  right: 0;
+  width: auto;
+  height: 4px;
+}
+.oe-grid .react-grid-item > .react-resizable-handle.react-resizable-handle-n::after {
+  top: 3px;
+}
+.oe-grid .react-grid-item > .react-resizable-handle.react-resizable-handle-s::after {
+  bottom: 3px;
+}
+.oe-grid .react-grid-item > .react-resizable-handle.react-resizable-handle-e::after,
+.oe-grid .react-grid-item > .react-resizable-handle.react-resizable-handle-w::after {
+  top: 0;
+  bottom: 0;
+  height: auto;
+  width: 4px;
+}
+.oe-grid .react-grid-item > .react-resizable-handle.react-resizable-handle-e::after {
+  right: 3px;
+}
+.oe-grid .react-grid-item > .react-resizable-handle.react-resizable-handle-w::after {
+  left: 3px;
+}
+/* Corner pieces: an L-bracket hugging the corner, revealed on hover (not a filled
+   square) — marks that the corner resizes both dimensions. */
+.oe-grid .react-grid-item > .react-resizable-handle.react-resizable-handle-ne::after,
+.oe-grid .react-grid-item > .react-resizable-handle.react-resizable-handle-nw::after,
+.oe-grid .react-grid-item > .react-resizable-handle.react-resizable-handle-se::after,
+.oe-grid .react-grid-item > .react-resizable-handle.react-resizable-handle-sw::after {
+  width: 12px;
+  height: 12px;
+  background: none;
+  border: 0 solid var(--accent);
+  border-radius: 0;
+}
+.oe-grid .react-grid-item > .react-resizable-handle.react-resizable-handle-nw::after {
+  top: 3px;
+  left: 3px;
+  border-top-width: 3px;
+  border-left-width: 3px;
+  border-top-left-radius: 5px;
+}
+.oe-grid .react-grid-item > .react-resizable-handle.react-resizable-handle-ne::after {
+  top: 3px;
+  right: 3px;
+  border-top-width: 3px;
+  border-right-width: 3px;
+  border-top-right-radius: 5px;
+}
+.oe-grid .react-grid-item > .react-resizable-handle.react-resizable-handle-sw::after {
+  bottom: 3px;
+  left: 3px;
+  border-bottom-width: 3px;
+  border-left-width: 3px;
+  border-bottom-left-radius: 5px;
+}
+.oe-grid .react-grid-item > .react-resizable-handle.react-resizable-handle-se::after {
+  bottom: 3px;
+  right: 3px;
+  border-bottom-width: 3px;
+  border-right-width: 3px;
+  border-bottom-right-radius: 5px;
+}

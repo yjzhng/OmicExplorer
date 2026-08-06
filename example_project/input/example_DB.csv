@@ -1,0 +1,521 @@
+uniqID,GeneID,locus_tag,UniProtID,type,gene,product
+g0001,3900001,SYN_00001,P10001,CDS,hapu,hypothetical protein
+g0002,3900002,SYN_00002,P10002,CDS,mig,DNA-binding response regulator
+g0003,3900003,SYN_00003,P10003,CDS,dovoD,transcriptional regulator
+g0004,3900004,SYN_00004,P10004,CDS,nur,hypothetical protein
+g0005,3900005,SYN_00005,P10005,CDS,nave,50S ribosomal protein
+g0006,3900006,SYN_00006,P10006,CDS,favA,NADH dehydrogenase subunit
+g0007,3900007,SYN_00007,P10007,CDS,luca,hypothetical protein
+g0008,3900008,SYN_00008,P10008,CDS,not,50S ribosomal protein
+g0009,3900009,SYN_00009,P10009,CDS,regoD,NADH dehydrogenase subunit
+g0010,3900010,SYN_00010,P10010,CDS,lul,50S ribosomal protein
+g0011,3900011,SYN_00011,P10011,CDS,paho,transcriptional regulator
+g0012,3900012,SYN_00012,P10012,CDS,girA,ABC transporter ATP-binding protein
+g0013,3900013,SYN_00013,P10013,CDS,,cell division protein
+g0014,3900014,SYN_00014,P10014,CDS,,cell division protein
+g0015,3900015,SYN_00015,P10015,CDS,besoD,cell division protein
+g0016,3900016,SYN_00016,P10016,CDS,nad,NADH dehydrogenase subunit
+g0017,3900017,SYN_00017,P10017,CDS,kedi,ABC transporter ATP-binding protein
+g0018,3900018,SYN_00018,P10018,CDS,tahA,NADH dehydrogenase subunit
+g0019,3900019,SYN_00019,P10019,CDS,vera,putative oxidoreductase
+g0020,3900020,SYN_00020,P10020,CDS,,ABC transporter ATP-binding protein
+g0021,3900021,SYN_00021,P10021,CDS,kenuD,50S ribosomal protein
+g0022,3900022,SYN_00022,P10022,CDS,,NADH dehydrogenase subunit
+g0023,3900023,SYN_00023,P10023,CDS,,DNA-binding response regulator
+g0024,3900024,SYN_00024,P10024,CDS,,50S ribosomal protein
+g0025,3900025,SYN_00025,P10025,CDS,ruhu,50S ribosomal protein
+g0026,3900026,SYN_00026,P10026,CDS,sen,transcriptional regulator
+g0027,3900027,SYN_00027,P10027,CDS,,ABC transporter ATP-binding protein
+g0028,3900028,SYN_00028,P10028,CDS,guv,cell division protein
+g0029,3900029,SYN_00029,P10029,CDS,bato,cell division protein
+g0030,3900030,SYN_00030,P10030,CDS,nedA,DNA-binding response regulator
+g0031,3900031,SYN_00031,P10031,CDS,haki,putative oxidoreductase
+g0032,3900032,SYN_00032,P10032,CDS,,ribosomal protein
+g0033,3900033,SYN_00033,P10033,CDS,tovaD,hypothetical protein
+g0034,3900034,SYN_00034,P10034,CDS,,transcriptional regulator
+g0035,3900035,SYN_00035,P10035,CDS,neca,cell division protein
+g0036,3900036,SYN_00036,P10036,CDS,,cell division protein
+g0037,3900037,SYN_00037,P10037,CDS,,50S ribosomal protein
+g0038,3900038,SYN_00038,P10038,CDS,huf,putative oxidoreductase
+g0039,3900039,SYN_00039,P10039,CDS,,DNA-binding response regulator
+g0040,3900040,SYN_00040,P10040,CDS,hiv,ABC transporter ATP-binding protein
+g0041,3900041,SYN_00041,P10041,CDS,rege,ABC transporter ATP-binding protein
+g0042,3900042,SYN_00042,P10042,CDS,,50S ribosomal protein
+g0043,3900043,SYN_00043,P10043,CDS,,DNA-binding response regulator
+g0044,3900044,SYN_00044,P10044,CDS,,hypothetical protein
+g0045,3900045,SYN_00045,P10045,CDS,,transcriptional regulator
+g0046,3900046,SYN_00046,P10046,CDS,rom,hypothetical protein
+g0047,3900047,SYN_00047,P10047,CDS,fuki,ribosomal protein
+g0048,3900048,SYN_00048,P10048,CDS,golA,DNA-binding response regulator
+g0049,3900049,SYN_00049,P10049,CDS,helu,ABC transporter ATP-binding protein
+g0050,3900050,SYN_00050,P10050,CDS,,DNA-binding response regulator
+g0051,3900051,SYN_00051,P10051,CDS,dokiD,NADH dehydrogenase subunit
+g0052,3900052,SYN_00052,P10052,CDS,ref,hypothetical protein
+g0053,3900053,SYN_00053,P10053,CDS,,ribosomal protein
+g0054,3900054,SYN_00054,P10054,CDS,bigA,50S ribosomal protein
+g0055,3900055,SYN_00055,P10055,CDS,koto,cell division protein
+g0056,3900056,SYN_00056,P10056,CDS,,transcriptional regulator
+g0057,3900057,SYN_00057,P10057,CDS,,transcriptional regulator
+g0058,3900058,SYN_00058,P10058,CDS,,hypothetical protein
+g0059,3900059,SYN_00059,P10059,CDS,mona,NADH dehydrogenase subunit
+g0060,3900060,SYN_00060,P10060,CDS,gosA,putative oxidoreductase
+g0061,3900061,SYN_00061,P10061,CDS,poci,transcriptional regulator
+g0062,3900062,SYN_00062,P10062,CDS,,NADH dehydrogenase subunit
+g0063,3900063,SYN_00063,P10063,CDS,boreD,transcriptional regulator
+g0064,3900064,SYN_00064,P10064,CDS,,ABC transporter ATP-binding protein
+g0065,3900065,SYN_00065,P10065,CDS,vabe,ABC transporter ATP-binding protein
+g0066,3900066,SYN_00066,P10066,CDS,lepA,hypothetical protein
+g0067,3900067,SYN_00067,P10067,CDS,nafa,DNA-binding response regulator
+g0068,3900068,SYN_00068,P10068,CDS,god,putative oxidoreductase
+g0069,3900069,SYN_00069,P10069,CDS,,putative oxidoreductase
+g0070,3900070,SYN_00070,P10070,CDS,,ribosomal protein
+g0071,3900071,SYN_00071,P10071,CDS,gila,cell division protein
+g0072,3900072,SYN_00072,P10072,CDS,,ribosomal protein
+g0073,3900073,SYN_00073,P10073,CDS,hido,hypothetical protein
+g0074,3900074,SYN_00074,P10074,CDS,giv,cell division protein
+g0075,3900075,SYN_00075,P10075,CDS,,ABC transporter ATP-binding protein
+g0076,3900076,SYN_00076,P10076,CDS,kok,ribosomal protein
+g0077,3900077,SYN_00077,P10077,CDS,gele,50S ribosomal protein
+g0078,3900078,SYN_00078,P10078,CDS,vepA,putative oxidoreductase
+g0079,3900079,SYN_00079,P10079,CDS,pesu,NADH dehydrogenase subunit
+g0080,3900080,SYN_00080,P10080,CDS,sot,transcriptional regulator
+g0081,3900081,SYN_00081,P10081,CDS,velaD,DNA-binding response regulator
+g0082,3900082,SYN_00082,P10082,CDS,hug,putative oxidoreductase
+g0083,3900083,SYN_00083,P10083,CDS,,ABC transporter ATP-binding protein
+g0084,3900084,SYN_00084,P10084,CDS,kosA,cell division protein
+g0085,3900085,SYN_00085,P10085,CDS,dafu,ribosomal protein
+g0086,3900086,SYN_00086,P10086,CDS,vov,ABC transporter ATP-binding protein
+g0087,3900087,SYN_00087,P10087,CDS,docuD,transcriptional regulator
+g0088,3900088,SYN_00088,P10088,CDS,rik,ribosomal protein
+g0089,3900089,SYN_00089,P10089,CDS,voma,ABC transporter ATP-binding protein
+g0090,3900090,SYN_00090,P10090,CDS,,putative oxidoreductase
+g0091,3900091,SYN_00091,P10091,CDS,lehu,DNA-binding response regulator
+g0092,3900092,SYN_00092,P10092,CDS,par,DNA-binding response regulator
+g0093,3900093,SYN_00093,P10093,CDS,sepoD,DNA-binding response regulator
+g0094,3900094,SYN_00094,P10094,CDS,kuf,cell division protein
+g0095,3900095,SYN_00095,P10095,CDS,havu,cell division protein
+g0096,3900096,SYN_00096,P10096,CDS,,ABC transporter ATP-binding protein
+g0097,3900097,SYN_00097,P10097,CDS,tefa,hypothetical protein
+g0098,3900098,SYN_00098,P10098,CDS,,DNA-binding response regulator
+g0099,3900099,SYN_00099,P10099,CDS,,ABC transporter ATP-binding protein
+g0100,3900100,SYN_00100,P10100,CDS,nab,hypothetical protein
+g0101,3900101,SYN_00101,P10101,CDS,tihu,cell division protein
+g0102,3900102,SYN_00102,P10102,CDS,,hypothetical protein
+g0103,3900103,SYN_00103,P10103,CDS,,ribosomal protein
+g0104,3900104,SYN_00104,P10104,CDS,nul,50S ribosomal protein
+g0105,3900105,SYN_00105,P10105,CDS,bahiD,putative oxidoreductase
+g0106,3900106,SYN_00106,P10106,CDS,,DNA-binding response regulator
+g0107,3900107,SYN_00107,P10107,CDS,,ABC transporter ATP-binding protein
+g0108,3900108,SYN_00108,P10108,CDS,,ribosomal protein
+g0109,3900109,SYN_00109,P10109,CDS,,hypothetical protein
+g0110,3900110,SYN_00110,P10110,CDS,tot,cell division protein
+g0111,3900111,SYN_00111,P10111,CDS,,ribosomal protein
+g0112,3900112,SYN_00112,P10112,CDS,fud,cell division protein
+g0113,3900113,SYN_00113,P10113,CDS,,putative oxidoreductase
+g0114,3900114,SYN_00114,P10114,CDS,,hypothetical protein
+g0115,3900115,SYN_00115,P10115,CDS,,ribosomal protein
+g0116,3900116,SYN_00116,P10116,CDS,dus,hypothetical protein
+g0117,3900117,SYN_00117,P10117,CDS,dateD,putative oxidoreductase
+g0118,3900118,SYN_00118,P10118,CDS,bot,ABC transporter ATP-binding protein
+g0119,3900119,SYN_00119,P10119,CDS,,NADH dehydrogenase subunit
+g0120,3900120,SYN_00120,P10120,CDS,,transcriptional regulator
+g0121,3900121,SYN_00121,P10121,CDS,cuda,DNA-binding response regulator
+g0122,3900122,SYN_00122,P10122,CDS,,transcriptional regulator
+g0123,3900123,SYN_00123,P10123,CDS,giceD,hypothetical protein
+g0124,3900124,SYN_00124,P10124,CDS,,cell division protein
+g0125,3900125,SYN_00125,P10125,CDS,cana,cell division protein
+g0126,3900126,SYN_00126,P10126,CDS,fomA,transcriptional regulator
+g0127,3900127,SYN_00127,P10127,CDS,vuru,ribosomal protein
+g0128,3900128,SYN_00128,P10128,CDS,nak,transcriptional regulator
+g0129,3900129,SYN_00129,P10129,CDS,kiheD,cell division protein
+g0130,3900130,SYN_00130,P10130,CDS,,ABC transporter ATP-binding protein
+g0131,3900131,SYN_00131,P10131,CDS,geta,ribosomal protein
+g0132,3900132,SYN_00132,P10132,CDS,katA,putative oxidoreductase
+g0133,3900133,SYN_00133,P10133,CDS,,ribosomal protein
+g0134,3900134,SYN_00134,P10134,CDS,fih,NADH dehydrogenase subunit
+g0135,3900135,SYN_00135,P10135,CDS,miciD,ABC transporter ATP-binding protein
+g0136,3900136,SYN_00136,P10136,CDS,,50S ribosomal protein
+g0137,3900137,SYN_00137,P10137,CDS,buse,DNA-binding response regulator
+g0138,3900138,SYN_00138,P10138,CDS,micA,hypothetical protein
+g0139,3900139,SYN_00139,P10139,CDS,nube,hypothetical protein
+g0140,3900140,SYN_00140,P10140,CDS,tob,hypothetical protein
+g0141,3900141,SYN_00141,P10141,CDS,divaD,cell division protein
+g0142,3900142,SYN_00142,P10142,CDS,fif,putative oxidoreductase
+g0143,3900143,SYN_00143,P10143,CDS,,NADH dehydrogenase subunit
+g0144,3900144,SYN_00144,P10144,CDS,,ABC transporter ATP-binding protein
+g0145,3900145,SYN_00145,P10145,CDS,cele,50S ribosomal protein
+g0146,3900146,SYN_00146,P10146,CDS,,transcriptional regulator
+g0147,3900147,SYN_00147,P10147,CDS,tudaD,DNA-binding response regulator
+g0148,3900148,SYN_00148,P10148,CDS,,ABC transporter ATP-binding protein
+g0149,3900149,SYN_00149,P10149,CDS,luci,ribosomal protein
+g0150,3900150,SYN_00150,P10150,CDS,devA,transcriptional regulator
+g0151,3900151,SYN_00151,P10151,CDS,,NADH dehydrogenase subunit
+g0152,3900152,SYN_00152,P10152,CDS,,hypothetical protein
+g0153,3900153,SYN_00153,P10153,CDS,ticiD,50S ribosomal protein
+g0154,3900154,SYN_00154,P10154,CDS,fob,DNA-binding response regulator
+g0155,3900155,SYN_00155,P10155,CDS,hufi,50S ribosomal protein
+g0156,3900156,SYN_00156,P10156,CDS,,NADH dehydrogenase subunit
+g0157,3900157,SYN_00157,P10157,CDS,famo,hypothetical protein
+g0158,3900158,SYN_00158,P10158,CDS,,50S ribosomal protein
+g0159,3900159,SYN_00159,P10159,CDS,giluD,NADH dehydrogenase subunit
+g0160,3900160,SYN_00160,P10160,CDS,,putative oxidoreductase
+g0161,3900161,SYN_00161,P10161,CDS,duva,transcriptional regulator
+g0162,3900162,SYN_00162,P10162,CDS,,cell division protein
+g0163,3900163,SYN_00163,P10163,CDS,tiba,ribosomal protein
+g0164,3900164,SYN_00164,P10164,CDS,,DNA-binding response regulator
+g0165,3900165,SYN_00165,P10165,CDS,,DNA-binding response regulator
+g0166,3900166,SYN_00166,P10166,CDS,moh,DNA-binding response regulator
+g0167,3900167,SYN_00167,P10167,CDS,kehe,transcriptional regulator
+g0168,3900168,SYN_00168,P10168,CDS,,50S ribosomal protein
+g0169,3900169,SYN_00169,P10169,CDS,ralu,transcriptional regulator
+g0170,3900170,SYN_00170,P10170,CDS,,transcriptional regulator
+g0171,3900171,SYN_00171,P10171,CDS,lopaD,ribosomal protein
+g0172,3900172,SYN_00172,P10172,CDS,,putative oxidoreductase
+g0173,3900173,SYN_00173,P10173,CDS,nivi,ribosomal protein
+g0174,3900174,SYN_00174,P10174,CDS,vagA,DNA-binding response regulator
+g0175,3900175,SYN_00175,P10175,CDS,beno,DNA-binding response regulator
+g0176,3900176,SYN_00176,P10176,CDS,,50S ribosomal protein
+g0177,3900177,SYN_00177,P10177,CDS,cusaD,hypothetical protein
+g0178,3900178,SYN_00178,P10178,CDS,tuh,hypothetical protein
+g0179,3900179,SYN_00179,P10179,CDS,,cell division protein
+g0180,3900180,SYN_00180,P10180,CDS,minA,ABC transporter ATP-binding protein
+g0181,3900181,SYN_00181,P10181,CDS,depa,ABC transporter ATP-binding protein
+g0182,3900182,SYN_00182,P10182,CDS,,transcriptional regulator
+g0183,3900183,SYN_00183,P10183,CDS,nubiD,transcriptional regulator
+g0184,3900184,SYN_00184,P10184,CDS,,transcriptional regulator
+g0185,3900185,SYN_00185,P10185,CDS,,50S ribosomal protein
+g0186,3900186,SYN_00186,P10186,CDS,,cell division protein
+g0187,3900187,SYN_00187,P10187,CDS,kori,DNA-binding response regulator
+g0188,3900188,SYN_00188,P10188,CDS,nem,NADH dehydrogenase subunit
+g0189,3900189,SYN_00189,P10189,CDS,nedaD,ABC transporter ATP-binding protein
+g0190,3900190,SYN_00190,P10190,CDS,pec,ribosomal protein
+g0191,3900191,SYN_00191,P10191,CDS,kufo,hypothetical protein
+g0192,3900192,SYN_00192,P10192,CDS,,ABC transporter ATP-binding protein
+g0193,3900193,SYN_00193,P10193,CDS,,50S ribosomal protein
+g0194,3900194,SYN_00194,P10194,CDS,lac,ABC transporter ATP-binding protein
+g0195,3900195,SYN_00195,P10195,CDS,romeD,putative oxidoreductase
+g0196,3900196,SYN_00196,P10196,CDS,nin,ABC transporter ATP-binding protein
+g0197,3900197,SYN_00197,P10197,CDS,,ribosomal protein
+g0198,3900198,SYN_00198,P10198,CDS,,hypothetical protein
+g0199,3900199,SYN_00199,P10199,CDS,,transcriptional regulator
+g0200,3900200,SYN_00200,P10200,CDS,nar,ABC transporter ATP-binding protein
+g0201,3900201,SYN_00201,P10201,CDS,,hypothetical protein
+g0202,3900202,SYN_00202,P10202,CDS,,cell division protein
+g0203,3900203,SYN_00203,P10203,CDS,,NADH dehydrogenase subunit
+g0204,3900204,SYN_00204,P10204,CDS,,NADH dehydrogenase subunit
+g0205,3900205,SYN_00205,P10205,CDS,,cell division protein
+g0206,3900206,SYN_00206,P10206,CDS,sip,ribosomal protein
+g0207,3900207,SYN_00207,P10207,CDS,culoD,50S ribosomal protein
+g0208,3900208,SYN_00208,P10208,CDS,,transcriptional regulator
+g0209,3900209,SYN_00209,P10209,CDS,hufo,ABC transporter ATP-binding protein
+g0210,3900210,SYN_00210,P10210,CDS,nufA,ABC transporter ATP-binding protein
+g0211,3900211,SYN_00211,P10211,CDS,lami,transcriptional regulator
+g0212,3900212,SYN_00212,P10212,CDS,cet,cell division protein
+g0213,3900213,SYN_00213,P10213,CDS,,transcriptional regulator
+g0214,3900214,SYN_00214,P10214,CDS,,ribosomal protein
+g0215,3900215,SYN_00215,P10215,CDS,,cell division protein
+g0216,3900216,SYN_00216,P10216,CDS,lasA,hypothetical protein
+g0217,3900217,SYN_00217,P10217,CDS,dose,DNA-binding response regulator
+g0218,3900218,SYN_00218,P10218,CDS,,DNA-binding response regulator
+g0219,3900219,SYN_00219,P10219,CDS,roriD,putative oxidoreductase
+g0220,3900220,SYN_00220,P10220,CDS,rom,ribosomal protein
+g0221,3900221,SYN_00221,P10221,CDS,raco,transcriptional regulator
+g0222,3900222,SYN_00222,P10222,CDS,lehA,ribosomal protein
+g0223,3900223,SYN_00223,P10223,CDS,turo,hypothetical protein
+g0224,3900224,SYN_00224,P10224,CDS,mok,50S ribosomal protein
+g0225,3900225,SYN_00225,P10225,CDS,fudiD,ABC transporter ATP-binding protein
+g0226,3900226,SYN_00226,P10226,CDS,kal,ribosomal protein
+g0227,3900227,SYN_00227,P10227,CDS,dari,DNA-binding response regulator
+g0228,3900228,SYN_00228,P10228,CDS,lerA,50S ribosomal protein
+g0229,3900229,SYN_00229,P10229,CDS,pida,transcriptional regulator
+g0230,3900230,SYN_00230,P10230,CDS,rir,50S ribosomal protein
+g0231,3900231,SYN_00231,P10231,CDS,,hypothetical protein
+g0232,3900232,SYN_00232,P10232,CDS,kub,putative oxidoreductase
+g0233,3900233,SYN_00233,P10233,CDS,,NADH dehydrogenase subunit
+g0234,3900234,SYN_00234,P10234,CDS,,putative oxidoreductase
+g0235,3900235,SYN_00235,P10235,CDS,voci,hypothetical protein
+g0236,3900236,SYN_00236,P10236,CDS,huc,transcriptional regulator
+g0237,3900237,SYN_00237,P10237,CDS,comiD,putative oxidoreductase
+g0238,3900238,SYN_00238,P10238,CDS,nir,NADH dehydrogenase subunit
+g0239,3900239,SYN_00239,P10239,CDS,naco,NADH dehydrogenase subunit
+g0240,3900240,SYN_00240,P10240,CDS,,50S ribosomal protein
+g0241,3900241,SYN_00241,P10241,CDS,tufo,cell division protein
+g0242,3900242,SYN_00242,P10242,CDS,mep,ribosomal protein
+g0243,3900243,SYN_00243,P10243,CDS,ciduD,ABC transporter ATP-binding protein
+g0244,3900244,SYN_00244,P10244,CDS,,50S ribosomal protein
+g0245,3900245,SYN_00245,P10245,CDS,,ABC transporter ATP-binding protein
+g0246,3900246,SYN_00246,P10246,CDS,debA,ABC transporter ATP-binding protein
+g0247,3900247,SYN_00247,P10247,CDS,veba,ABC transporter ATP-binding protein
+g0248,3900248,SYN_00248,P10248,CDS,,50S ribosomal protein
+g0249,3900249,SYN_00249,P10249,CDS,,cell division protein
+g0250,3900250,SYN_00250,P10250,CDS,lig,transcriptional regulator
+g0251,3900251,SYN_00251,P10251,CDS,,cell division protein
+g0252,3900252,SYN_00252,P10252,CDS,bavA,ribosomal protein
+g0253,3900253,SYN_00253,P10253,CDS,cipu,hypothetical protein
+g0254,3900254,SYN_00254,P10254,CDS,,DNA-binding response regulator
+g0255,3900255,SYN_00255,P10255,CDS,,DNA-binding response regulator
+g0256,3900256,SYN_00256,P10256,CDS,ven,50S ribosomal protein
+g0257,3900257,SYN_00257,P10257,CDS,rehe,50S ribosomal protein
+g0258,3900258,SYN_00258,P10258,CDS,,transcriptional regulator
+g0259,3900259,SYN_00259,P10259,CDS,kide,hypothetical protein
+g0260,3900260,SYN_00260,P10260,CDS,,ribosomal protein
+g0261,3900261,SYN_00261,P10261,CDS,,hypothetical protein
+g0262,3900262,SYN_00262,P10262,CDS,cil,putative oxidoreductase
+g0263,3900263,SYN_00263,P10263,CDS,fuko,cell division protein
+g0264,3900264,SYN_00264,P10264,CDS,kacA,hypothetical protein
+g0265,3900265,SYN_00265,P10265,CDS,,cell division protein
+g0266,3900266,SYN_00266,P10266,CDS,,NADH dehydrogenase subunit
+g0267,3900267,SYN_00267,P10267,CDS,lasaD,cell division protein
+g0268,3900268,SYN_00268,P10268,CDS,rel,ABC transporter ATP-binding protein
+g0269,3900269,SYN_00269,P10269,CDS,febu,ribosomal protein
+g0270,3900270,SYN_00270,P10270,CDS,hocA,NADH dehydrogenase subunit
+g0271,3900271,SYN_00271,P10271,CDS,,ABC transporter ATP-binding protein
+g0272,3900272,SYN_00272,P10272,CDS,,hypothetical protein
+g0273,3900273,SYN_00273,P10273,CDS,bomoD,DNA-binding response regulator
+g0274,3900274,SYN_00274,P10274,CDS,,transcriptional regulator
+g0275,3900275,SYN_00275,P10275,CDS,,50S ribosomal protein
+g0276,3900276,SYN_00276,P10276,CDS,,NADH dehydrogenase subunit
+g0277,3900277,SYN_00277,P10277,CDS,rocu,50S ribosomal protein
+g0278,3900278,SYN_00278,P10278,CDS,tuc,transcriptional regulator
+g0279,3900279,SYN_00279,P10279,CDS,timeD,50S ribosomal protein
+g0280,3900280,SYN_00280,P10280,CDS,hov,putative oxidoreductase
+g0281,3900281,SYN_00281,P10281,CDS,ruco,cell division protein
+g0282,3900282,SYN_00282,P10282,CDS,,DNA-binding response regulator
+g0283,3900283,SYN_00283,P10283,CDS,,hypothetical protein
+g0284,3900284,SYN_00284,P10284,CDS,fup,DNA-binding response regulator
+g0285,3900285,SYN_00285,P10285,CDS,dobiD,DNA-binding response regulator
+g0286,3900286,SYN_00286,P10286,CDS,nus,50S ribosomal protein
+g0287,3900287,SYN_00287,P10287,CDS,kifu,DNA-binding response regulator
+g0288,3900288,SYN_00288,P10288,CDS,nipA,putative oxidoreductase
+g0289,3900289,SYN_00289,P10289,CDS,domi,transcriptional regulator
+g0290,3900290,SYN_00290,P10290,CDS,biv,putative oxidoreductase
+g0291,3900291,SYN_00291,P10291,CDS,nacaD,NADH dehydrogenase subunit
+g0292,3900292,SYN_00292,P10292,CDS,,ribosomal protein
+g0293,3900293,SYN_00293,P10293,CDS,dani,transcriptional regulator
+g0294,3900294,SYN_00294,P10294,CDS,,ABC transporter ATP-binding protein
+g0295,3900295,SYN_00295,P10295,CDS,,50S ribosomal protein
+g0296,3900296,SYN_00296,P10296,CDS,nav,transcriptional regulator
+g0297,3900297,SYN_00297,P10297,CDS,davuD,hypothetical protein
+g0298,3900298,SYN_00298,P10298,CDS,kip,50S ribosomal protein
+g0299,3900299,SYN_00299,P10299,CDS,firo,transcriptional regulator
+g0300,3900300,SYN_00300,P10300,CDS,,50S ribosomal protein
+g0301,3900301,SYN_00301,P10301,CDS,vulo,NADH dehydrogenase subunit
+g0302,3900302,SYN_00302,P10302,CDS,tud,NADH dehydrogenase subunit
+g0303,3900303,SYN_00303,P10303,CDS,,putative oxidoreductase
+g0304,3900304,SYN_00304,P10304,CDS,gub,50S ribosomal protein
+g0305,3900305,SYN_00305,P10305,CDS,,cell division protein
+g0306,3900306,SYN_00306,P10306,CDS,covA,NADH dehydrogenase subunit
+g0307,3900307,SYN_00307,P10307,CDS,pote,DNA-binding response regulator
+g0308,3900308,SYN_00308,P10308,CDS,,hypothetical protein
+g0309,3900309,SYN_00309,P10309,CDS,,DNA-binding response regulator
+g0310,3900310,SYN_00310,P10310,CDS,pas,ABC transporter ATP-binding protein
+g0311,3900311,SYN_00311,P10311,CDS,rami,cell division protein
+g0312,3900312,SYN_00312,P10312,CDS,fupA,50S ribosomal protein
+g0313,3900313,SYN_00313,P10313,CDS,ceti,putative oxidoreductase
+g0314,3900314,SYN_00314,P10314,CDS,,NADH dehydrogenase subunit
+g0315,3900315,SYN_00315,P10315,CDS,rafoD,putative oxidoreductase
+g0316,3900316,SYN_00316,P10316,CDS,tod,cell division protein
+g0317,3900317,SYN_00317,P10317,CDS,cuba,DNA-binding response regulator
+g0318,3900318,SYN_00318,P10318,CDS,,hypothetical protein
+g0319,3900319,SYN_00319,P10319,CDS,tada,hypothetical protein
+g0320,3900320,SYN_00320,P10320,CDS,hik,ABC transporter ATP-binding protein
+g0321,3900321,SYN_00321,P10321,CDS,cinoD,transcriptional regulator
+g0322,3900322,SYN_00322,P10322,CDS,,putative oxidoreductase
+g0323,3900323,SYN_00323,P10323,CDS,,DNA-binding response regulator
+g0324,3900324,SYN_00324,P10324,CDS,hamA,ABC transporter ATP-binding protein
+g0325,3900325,SYN_00325,P10325,CDS,fonu,ribosomal protein
+g0326,3900326,SYN_00326,P10326,CDS,tov,DNA-binding response regulator
+g0327,3900327,SYN_00327,P10327,CDS,,50S ribosomal protein
+g0328,3900328,SYN_00328,P10328,CDS,,NADH dehydrogenase subunit
+g0329,3900329,SYN_00329,P10329,CDS,,50S ribosomal protein
+g0330,3900330,SYN_00330,P10330,CDS,,ABC transporter ATP-binding protein
+g0331,3900331,SYN_00331,P10331,CDS,vepa,hypothetical protein
+g0332,3900332,SYN_00332,P10332,CDS,koc,NADH dehydrogenase subunit
+g0333,3900333,SYN_00333,P10333,CDS,,transcriptional regulator
+g0334,3900334,SYN_00334,P10334,CDS,,ribosomal protein
+g0335,3900335,SYN_00335,P10335,CDS,tebo,DNA-binding response regulator
+g0336,3900336,SYN_00336,P10336,CDS,pusA,ABC transporter ATP-binding protein
+g0337,3900337,SYN_00337,P10337,CDS,,50S ribosomal protein
+g0338,3900338,SYN_00338,P10338,CDS,,50S ribosomal protein
+g0339,3900339,SYN_00339,P10339,CDS,hipeD,ABC transporter ATP-binding protein
+g0340,3900340,SYN_00340,P10340,CDS,kol,transcriptional regulator
+g0341,3900341,SYN_00341,P10341,CDS,,ABC transporter ATP-binding protein
+g0342,3900342,SYN_00342,P10342,CDS,buhA,hypothetical protein
+g0343,3900343,SYN_00343,P10343,CDS,,cell division protein
+g0344,3900344,SYN_00344,P10344,CDS,,ribosomal protein
+g0345,3900345,SYN_00345,P10345,CDS,vesaD,ribosomal protein
+g0346,3900346,SYN_00346,P10346,CDS,piv,NADH dehydrogenase subunit
+g0347,3900347,SYN_00347,P10347,CDS,casa,50S ribosomal protein
+g0348,3900348,SYN_00348,P10348,CDS,,50S ribosomal protein
+g0349,3900349,SYN_00349,P10349,CDS,pero,50S ribosomal protein
+g0350,3900350,SYN_00350,P10350,CDS,vuf,cell division protein
+g0351,3900351,SYN_00351,P10351,CDS,miduD,hypothetical protein
+g0352,3900352,SYN_00352,P10352,CDS,kiv,hypothetical protein
+g0353,3900353,SYN_00353,P10353,CDS,,NADH dehydrogenase subunit
+g0354,3900354,SYN_00354,P10354,CDS,nurA,ABC transporter ATP-binding protein
+g0355,3900355,SYN_00355,P10355,CDS,,hypothetical protein
+g0356,3900356,SYN_00356,P10356,CDS,,NADH dehydrogenase subunit
+g0357,3900357,SYN_00357,P10357,CDS,saviD,hypothetical protein
+g0358,3900358,SYN_00358,P10358,CDS,doh,NADH dehydrogenase subunit
+g0359,3900359,SYN_00359,P10359,CDS,tisa,ABC transporter ATP-binding protein
+g0360,3900360,SYN_00360,P10360,CDS,,cell division protein
+g0361,3900361,SYN_00361,P10361,CDS,bulo,ABC transporter ATP-binding protein
+g0362,3900362,SYN_00362,P10362,CDS,pen,transcriptional regulator
+g0363,3900363,SYN_00363,P10363,CDS,,transcriptional regulator
+g0364,3900364,SYN_00364,P10364,CDS,non,DNA-binding response regulator
+g0365,3900365,SYN_00365,P10365,CDS,duhu,NADH dehydrogenase subunit
+g0366,3900366,SYN_00366,P10366,CDS,hopA,cell division protein
+g0367,3900367,SYN_00367,P10367,CDS,puka,transcriptional regulator
+g0368,3900368,SYN_00368,P10368,CDS,cak,transcriptional regulator
+g0369,3900369,SYN_00369,P10369,CDS,komeD,putative oxidoreductase
+g0370,3900370,SYN_00370,P10370,CDS,,ABC transporter ATP-binding protein
+g0371,3900371,SYN_00371,P10371,CDS,,ribosomal protein
+g0372,3900372,SYN_00372,P10372,CDS,,DNA-binding response regulator
+g0373,3900373,SYN_00373,P10373,CDS,rebi,50S ribosomal protein
+g0374,3900374,SYN_00374,P10374,CDS,cud,hypothetical protein
+g0375,3900375,SYN_00375,P10375,CDS,,ABC transporter ATP-binding protein
+g0376,3900376,SYN_00376,P10376,CDS,,ribosomal protein
+g0377,3900377,SYN_00377,P10377,CDS,fapi,hypothetical protein
+g0378,3900378,SYN_00378,P10378,CDS,,ABC transporter ATP-binding protein
+g0379,3900379,SYN_00379,P10379,CDS,dogu,50S ribosomal protein
+g0380,3900380,SYN_00380,P10380,CDS,lun,ABC transporter ATP-binding protein
+g0381,3900381,SYN_00381,P10381,CDS,,NADH dehydrogenase subunit
+g0382,3900382,SYN_00382,P10382,CDS,,ABC transporter ATP-binding protein
+g0383,3900383,SYN_00383,P10383,CDS,,transcriptional regulator
+g0384,3900384,SYN_00384,P10384,CDS,,NADH dehydrogenase subunit
+g0385,3900385,SYN_00385,P10385,CDS,,50S ribosomal protein
+g0386,3900386,SYN_00386,P10386,CDS,fud,putative oxidoreductase
+g0387,3900387,SYN_00387,P10387,CDS,,NADH dehydrogenase subunit
+g0388,3900388,SYN_00388,P10388,CDS,hob,ABC transporter ATP-binding protein
+g0389,3900389,SYN_00389,P10389,CDS,gopa,hypothetical protein
+g0390,3900390,SYN_00390,P10390,CDS,semA,putative oxidoreductase
+g0391,3900391,SYN_00391,P10391,CDS,,cell division protein
+g0392,3900392,SYN_00392,P10392,CDS,,DNA-binding response regulator
+g0393,3900393,SYN_00393,P10393,CDS,,putative oxidoreductase
+g0394,3900394,SYN_00394,P10394,CDS,tok,50S ribosomal protein
+g0395,3900395,SYN_00395,P10395,CDS,,ABC transporter ATP-binding protein
+g0396,3900396,SYN_00396,P10396,CDS,kelA,NADH dehydrogenase subunit
+g0397,3900397,SYN_00397,P10397,CDS,hafa,transcriptional regulator
+g0398,3900398,SYN_00398,P10398,CDS,hit,transcriptional regulator
+g0399,3900399,SYN_00399,P10399,CDS,vemoD,hypothetical protein
+g0400,3900400,SYN_00400,P10400,CDS,,NADH dehydrogenase subunit
+g0401,3900401,SYN_00401,P10401,CDS,,transcriptional regulator
+g0402,3900402,SYN_00402,P10402,CDS,vicA,50S ribosomal protein
+g0403,3900403,SYN_00403,P10403,CDS,naru,cell division protein
+g0404,3900404,SYN_00404,P10404,CDS,com,ABC transporter ATP-binding protein
+g0405,3900405,SYN_00405,P10405,CDS,,50S ribosomal protein
+g0406,3900406,SYN_00406,P10406,CDS,,transcriptional regulator
+g0407,3900407,SYN_00407,P10407,CDS,kisi,ribosomal protein
+g0408,3900408,SYN_00408,P10408,CDS,,cell division protein
+g0409,3900409,SYN_00409,P10409,CDS,pufo,ABC transporter ATP-binding protein
+g0410,3900410,SYN_00410,P10410,CDS,tif,transcriptional regulator
+g0411,3900411,SYN_00411,P10411,CDS,loveD,50S ribosomal protein
+g0412,3900412,SYN_00412,P10412,CDS,huk,transcriptional regulator
+g0413,3900413,SYN_00413,P10413,CDS,,putative oxidoreductase
+g0414,3900414,SYN_00414,P10414,CDS,vocA,50S ribosomal protein
+g0415,3900415,SYN_00415,P10415,CDS,,putative oxidoreductase
+g0416,3900416,SYN_00416,P10416,CDS,kor,DNA-binding response regulator
+g0417,3900417,SYN_00417,P10417,CDS,,cell division protein
+g0418,3900418,SYN_00418,P10418,CDS,nib,NADH dehydrogenase subunit
+g0419,3900419,SYN_00419,P10419,CDS,kefi,putative oxidoreductase
+g0420,3900420,SYN_00420,P10420,CDS,,NADH dehydrogenase subunit
+g0421,3900421,SYN_00421,P10421,CDS,givo,NADH dehydrogenase subunit
+g0422,3900422,SYN_00422,P10422,CDS,,DNA-binding response regulator
+g0423,3900423,SYN_00423,P10423,CDS,vahiD,transcriptional regulator
+g0424,3900424,SYN_00424,P10424,CDS,mis,cell division protein
+g0425,3900425,SYN_00425,P10425,CDS,satu,50S ribosomal protein
+g0426,3900426,SYN_00426,P10426,CDS,,ABC transporter ATP-binding protein
+g0427,3900427,SYN_00427,P10427,CDS,,transcriptional regulator
+g0428,3900428,SYN_00428,P10428,CDS,,transcriptional regulator
+g0429,3900429,SYN_00429,P10429,CDS,,cell division protein
+g0430,3900430,SYN_00430,P10430,CDS,,ribosomal protein
+g0431,3900431,SYN_00431,P10431,CDS,,cell division protein
+g0432,3900432,SYN_00432,P10432,CDS,,cell division protein
+g0433,3900433,SYN_00433,P10433,CDS,tope,ABC transporter ATP-binding protein
+g0434,3900434,SYN_00434,P10434,CDS,,ABC transporter ATP-binding protein
+g0435,3900435,SYN_00435,P10435,CDS,runiD,putative oxidoreductase
+g0436,3900436,SYN_00436,P10436,CDS,ruc,50S ribosomal protein
+g0437,3900437,SYN_00437,P10437,CDS,,hypothetical protein
+g0438,3900438,SYN_00438,P10438,CDS,,DNA-binding response regulator
+g0439,3900439,SYN_00439,P10439,CDS,ladu,hypothetical protein
+g0440,3900440,SYN_00440,P10440,CDS,,transcriptional regulator
+g0441,3900441,SYN_00441,P10441,CDS,,putative oxidoreductase
+g0442,3900442,SYN_00442,P10442,CDS,,DNA-binding response regulator
+g0443,3900443,SYN_00443,P10443,CDS,,NADH dehydrogenase subunit
+g0444,3900444,SYN_00444,P10444,CDS,hanA,hypothetical protein
+g0445,3900445,SYN_00445,P10445,CDS,,DNA-binding response regulator
+g0446,3900446,SYN_00446,P10446,CDS,bum,DNA-binding response regulator
+g0447,3900447,SYN_00447,P10447,CDS,boruD,transcriptional regulator
+g0448,3900448,SYN_00448,P10448,CDS,cif,putative oxidoreductase
+g0449,3900449,SYN_00449,P10449,CDS,lomo,DNA-binding response regulator
+g0450,3900450,SYN_00450,P10450,CDS,,transcriptional regulator
+g0451,3900451,SYN_00451,P10451,CDS,lavo,NADH dehydrogenase subunit
+g0452,3900452,SYN_00452,P10452,CDS,den,DNA-binding response regulator
+g0453,3900453,SYN_00453,P10453,CDS,,hypothetical protein
+g0454,3900454,SYN_00454,P10454,CDS,van,ABC transporter ATP-binding protein
+g0455,3900455,SYN_00455,P10455,CDS,,50S ribosomal protein
+g0456,3900456,SYN_00456,P10456,CDS,gasA,cell division protein
+g0457,3900457,SYN_00457,P10457,CDS,,ABC transporter ATP-binding protein
+g0458,3900458,SYN_00458,P10458,CDS,,ribosomal protein
+g0459,3900459,SYN_00459,P10459,CDS,,NADH dehydrogenase subunit
+g0460,3900460,SYN_00460,P10460,CDS,cak,putative oxidoreductase
+g0461,3900461,SYN_00461,P10461,CDS,vogi,NADH dehydrogenase subunit
+g0462,3900462,SYN_00462,P10462,CDS,cavA,hypothetical protein
+g0463,3900463,SYN_00463,P10463,CDS,,DNA-binding response regulator
+g0464,3900464,SYN_00464,P10464,CDS,dop,putative oxidoreductase
+g0465,3900465,SYN_00465,P10465,CDS,lufiD,hypothetical protein
+g0466,3900466,SYN_00466,P10466,CDS,,NADH dehydrogenase subunit
+g0467,3900467,SYN_00467,P10467,CDS,remu,transcriptional regulator
+g0468,3900468,SYN_00468,P10468,CDS,,ribosomal protein
+g0469,3900469,SYN_00469,P10469,CDS,,ribosomal protein
+g0470,3900470,SYN_00470,P10470,CDS,tol,50S ribosomal protein
+g0471,3900471,SYN_00471,P10471,CDS,semaD,cell division protein
+g0472,3900472,SYN_00472,P10472,CDS,,putative oxidoreductase
+g0473,3900473,SYN_00473,P10473,CDS,ripo,ABC transporter ATP-binding protein
+g0474,3900474,SYN_00474,P10474,CDS,vimA,ABC transporter ATP-binding protein
+g0475,3900475,SYN_00475,P10475,CDS,pifu,putative oxidoreductase
+g0476,3900476,SYN_00476,P10476,CDS,,DNA-binding response regulator
+g0477,3900477,SYN_00477,P10477,CDS,geguD,NADH dehydrogenase subunit
+g0478,3900478,SYN_00478,P10478,CDS,,cell division protein
+g0479,3900479,SYN_00479,P10479,CDS,rupa,NADH dehydrogenase subunit
+g0480,3900480,SYN_00480,P10480,CDS,sagA,ribosomal protein
+g0481,3900481,SYN_00481,P10481,CDS,kuda,transcriptional regulator
+g0482,3900482,SYN_00482,P10482,CDS,fid,DNA-binding response regulator
+g0483,3900483,SYN_00483,P10483,CDS,,ABC transporter ATP-binding protein
+g0484,3900484,SYN_00484,P10484,CDS,dib,50S ribosomal protein
+g0485,3900485,SYN_00485,P10485,CDS,,50S ribosomal protein
+g0486,3900486,SYN_00486,P10486,CDS,defA,NADH dehydrogenase subunit
+g0487,3900487,SYN_00487,P10487,CDS,,50S ribosomal protein
+g0488,3900488,SYN_00488,P10488,CDS,ruh,ABC transporter ATP-binding protein
+g0489,3900489,SYN_00489,P10489,CDS,butiD,putative oxidoreductase
+g0490,3900490,SYN_00490,P10490,CDS,neb,hypothetical protein
+g0491,3900491,SYN_00491,P10491,CDS,rusu,NADH dehydrogenase subunit
+g0492,3900492,SYN_00492,P10492,CDS,,hypothetical protein
+g0493,3900493,SYN_00493,P10493,CDS,,ribosomal protein
+g0494,3900494,SYN_00494,P10494,CDS,ces,ABC transporter ATP-binding protein
+g0495,3900495,SYN_00495,P10495,CDS,teneD,transcriptional regulator
+g0496,3900496,SYN_00496,P10496,CDS,gip,NADH dehydrogenase subunit
+g0497,3900497,SYN_00497,P10497,CDS,nefe,putative oxidoreductase
+g0498,3900498,SYN_00498,P10498,CDS,rosA,DNA-binding response regulator
+g0499,3900499,SYN_00499,P10499,CDS,,ribosomal protein
+g0500,3900500,SYN_00500,P10500,CDS,fef,cell division protein
+g0501,3900501,SYN_00501,P10501,CDS,,transcriptional regulator
+g0502,3900502,SYN_00502,P10502,CDS,,cell division protein
+g0503,3900503,SYN_00503,P10503,CDS,coke,50S ribosomal protein
+g0504,3900504,SYN_00504,P10504,CDS,,NADH dehydrogenase subunit
+g0505,3900505,SYN_00505,P10505,CDS,,NADH dehydrogenase subunit
+g0506,3900506,SYN_00506,P10506,CDS,,DNA-binding response regulator
+g0507,3900507,SYN_00507,P10507,CDS,,DNA-binding response regulator
+g0508,3900508,SYN_00508,P10508,CDS,fud,hypothetical protein
+g0509,3900509,SYN_00509,P10509,CDS,,ribosomal protein
+g0510,3900510,SYN_00510,P10510,CDS,fuvA,DNA-binding response regulator
+g0511,3900511,SYN_00511,P10511,CDS,make,DNA-binding response regulator
+g0512,3900512,SYN_00512,P10512,CDS,,transcriptional regulator
+g0513,3900513,SYN_00513,P10513,CDS,,cell division protein
+g0514,3900514,SYN_00514,P10514,CDS,fid,cell division protein
+g0515,3900515,SYN_00515,P10515,CDS,huta,hypothetical protein
+g0516,3900516,SYN_00516,P10516,CDS,milA,cell division protein
+g0517,3900517,SYN_00517,P10517,CDS,,putative oxidoreductase
+g0518,3900518,SYN_00518,P10518,CDS,gim,NADH dehydrogenase subunit
+g0519,3900519,SYN_00519,P10519,CDS,cokuD,ribosomal protein
+g0520,3900520,SYN_00520,P10520,CDS,,ABC transporter ATP-binding protein

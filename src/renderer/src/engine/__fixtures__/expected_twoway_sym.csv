@@ -1,0 +1,7 @@
+uniqID,strain,time,cmp_cond,comparison,log2FC,pP,pQ,thrsh,signf,effect
+g00,M,1,strain:time,M|W × 1|2,1.778098623153678,2.744133451201306,2.4212971536825134,"linear, log2FC ∉ (-1.0, 1.0) and pP > 1.3",True,up
+g01,M,1,strain:time,M|W × 1|2,-0.16219784901361933,0.32852208971182784,0.32852208971182784,"linear, log2FC ∉ (-1.0, 1.0) and pP > 1.3",False,none
+g02,M,1,strain:time,M|W × 1|2,1.3542532721306877,2.1396675941258523,2.0604863480782276,"linear, log2FC ∉ (-1.0, 1.0) and pP > 1.3",True,up
+g03,M,1,strain:time,M|W × 1|2,-0.5737675732590688,2.7223271493464947,2.4212971536825134,"linear, log2FC ∉ (-1.0, 1.0) and pP > 1.3",False,none
+g04,M,1,strain:time,M|W × 1|2,1.9302443454600535,3.0098969036348056,2.4212971536825134,"linear, log2FC ∉ (-1.0, 1.0) and pP > 1.3",True,up
+g05,M,1,strain:time,M|W × 1|2,-0.9494145634513149,2.4076798194384748,2.2315885603827934,"linear, log2FC ∉ (-1.0, 1.0) and pP > 1.3",False,none
