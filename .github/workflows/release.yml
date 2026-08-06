@@ -1,0 +1,75 @@
+# Builds the installers on native runners (no Wine) and attaches them to the
+# GitHub release for the tag:
+#   • macOS  — arm64 + x64 .dmg   (macos-latest)
+#   • Windows — x64 NSIS .exe      (windows-latest)
+# Runs automatically when a v* tag is pushed, or manually (workflow_dispatch)
+# against an existing tag — use the manual run to add Windows to v0.1.0.
+name: Release build
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to build and attach (e.g. v0.1.0)'
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  TAG: ${{ github.event.inputs.tag || github.ref_name }}
+
+jobs:
+  # Make sure a release exists for the tag before the build jobs upload to it,
+  # so the two OS jobs don't race to create it. Existing releases (e.g. the
+  # hand-written v0.1.0 notes) are left untouched.
+  ensure-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+      - name: Ensure the release exists
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" --title "OmicExplorer ${TAG#v}" --generate-notes
+          fi
+
+  build:
+    needs: ensure-release
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            args: --mac dmg --arm64 --x64
+            files: dist/*.dmg
+          - os: windows-latest
+            args: --win nsis --x64
+            files: dist/*.exe
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      # Unsigned on both OSes (no signing certs configured) — matches the local
+      # ad-hoc builds. electron-builder auto-signs only when CSC_*/APPLE_* env is set.
+      - name: Package installer(s)
+        run: npx electron-builder ${{ matrix.args }} --config config/electron-builder.cjs
+      # gh + git-bash (available on the Windows runner too) so one step covers
+      # both OSes; --clobber lets a re-run replace same-named assets.
+      - name: Attach to the release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "$TAG" ${{ matrix.files }} --clobber
