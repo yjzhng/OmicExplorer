@@ -34,8 +34,11 @@ module.exports = {
     notarize // true only when APPLE_* creds are set
   },
   win: { target: 'nsis' }, // signs automatically when CSC_LINK / CSC_KEY_PASSWORD are set
-  // Match the dmg naming (OmicExplorer-<version>-<arch>.exe) instead of the
-  // default "OmicExplorer Setup <version>.exe" (spaces, no arch).
+  // Consistent, arch-tagged filenames across artifacts:
+  //   OmicExplorer-<version>-<arch>.{dmg,exe}
+  // Defaults otherwise drop the arch on x64 dmgs and use "OmicExplorer Setup
+  // <version>.exe" (spaces, no arch) for the installer.
+  dmg: { artifactName: '${productName}-${version}-${arch}.${ext}' },
   nsis: { artifactName: '${productName}-${version}-${arch}.${ext}' },
   linux: { target: 'AppImage' },
   ...(publish ? { publish } : {})
