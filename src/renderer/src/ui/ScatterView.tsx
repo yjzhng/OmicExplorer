@@ -2,8 +2,11 @@ import { useMemo } from 'react'
 
 import type { ScatterData, ScatterPoint } from '../engine'
 import { PlotlyChart } from './PlotlyChart'
-import { axisBase, PALETTES, plotBase } from './theme'
+import { axisBase, EFFECT_COLOR, PALETTES, plotBase } from './theme'
 import { useUiTheme } from './useUiTheme'
+
+type Eff = 'up' | 'down' | 'none'
+const EFF_ORDER: Eff[] = ['none', 'down', 'up']
 
 /**
  * Contrast scatter: FC1 (y) vs FC2 (x). The significance boundary follows the contrast's
@@ -24,9 +27,15 @@ export function ScatterView({
 
   const { data, layout } = useMemo(() => {
     const p = PALETTES[mode]
-    const sig: ScatterPoint[] = []
-    const bg: ScatterPoint[] = []
-    for (const pt of scatter.points) (pt.signf ? sig : bg).push(pt)
+    // Colour the significance groups with the same scheme as volcano/MA: up (red) / down (blue) /
+    // none (grey). For a contrast/compare the `effect` already encodes signf + direction (up/down =
+    // significant & divergent, none = not). The significant points (up+down) are the "divergent" set.
+    const byEffect: Record<Eff, ScatterPoint[]> = { up: [], down: [], none: [] }
+    for (const pt of scatter.points) {
+      const e: Eff = pt.effect === 'up' || pt.effect === 'down' ? pt.effect : 'none'
+      byEffect[e].push(pt)
+    }
+    const sig = [...byEffect.down, ...byEffect.up]
 
     const hover = `%{text}<br>${scatter.xLabel}=%{x:.3f}<br>${scatter.yLabel}=%{y:.3f}<extra></extra>`
     const trace = (pts: ScatterPoint[], name: string, color: string, size: number) => ({
@@ -137,16 +146,12 @@ export function ScatterView({
       annotations: labels,
       shapes: guideShapes
     }
-    // A value scatter has no significance model, so every point lands in `bg` — skip the
-    // empty "divergent" trace rather than showing a legend entry reading "(0)".
-    return {
-      data: [
-        ...guideTraces,
-        trace(bg, sig.length ? 'background' : 'genes', p.textMuted, 6),
-        ...(sig.length ? [trace(sig, 'divergent', p.accent, 8)] : [])
-      ],
-      layout: lay
-    }
+    // One trace per effect group (none/down/up), coloured like volcano/MA. Empty groups are
+    // dropped so the legend doesn't show "(0)" entries (e.g. a value scatter is all `none`).
+    const pointTraces = EFF_ORDER.filter((e) => byEffect[e].length > 0).map((e) =>
+      trace(byEffect[e], e, EFFECT_COLOR[e], e === 'none' ? 6 : 8)
+    )
+    return { data: [...guideTraces, ...pointTraces], layout: lay }
   }, [scatter, title, labelTop, mode])
 
   return <PlotlyChart data={data} layout={layout} />

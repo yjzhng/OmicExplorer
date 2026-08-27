@@ -26,13 +26,20 @@ export function DRView({ dr, title }: { dr: DRData; title?: string }) {
     const active = new Set(pinnedIds)
     if (hoverId) active.add(hoverId)
 
+    // Discrete x: the axis (dose/time) levels are spaced evenly as categories, not by their
+    // numeric value, so a dose series like 1.25…80 reads at equal intervals. Categories are the
+    // distinct axis values, numerically sorted; x is emitted as strings to match.
+    const cats = [...new Set(dr.series.flatMap((s) => s.points.map((pt) => pt.x)))]
+      .sort((a, b) => a - b)
+      .map(String)
+
     // Background: all genes as one faint grey trace, null-separated between genes.
-    const bx: (number | null)[] = []
+    const bx: (string | null)[] = []
     const by: (number | null)[] = []
     const btext: (string | null)[] = []
     for (const s of dr.series) {
       for (const pt of s.points) {
-        bx.push(pt.x)
+        bx.push(String(pt.x))
         by.push(pt.y)
         btext.push(s.label)
       }
@@ -57,7 +64,7 @@ export function DRView({ dr, title }: { dr: DRData; title?: string }) {
       type: 'scatter',
       mode: 'lines',
       name: s.label,
-      x: s.points.map((pt) => pt.x),
+      x: s.points.map((pt) => String(pt.x)),
       y: s.points.map((pt) => pt.y),
       customdata: s.points.map(() => s.uniqID),
       hovertemplate: `${s.label}<br>${dr.axis}=%{x}<br>log2FC=%{y:.3f}<extra></extra>`,
@@ -67,18 +74,24 @@ export function DRView({ dr, title }: { dr: DRData; title?: string }) {
     // Foreground: top-N differential genes, colored, with identity for linked highlight.
     // Clamp the colored count so a huge N can't re-explode the trace count.
     const top = dr.series.slice(0, Math.min(dr.highlight, 100))
-    const topIds = new Set(top.map((s) => s.uniqID))
     const colored = top.map((s, i) => line(s, CATEGORICAL[i % CATEGORICAL.length], 2))
-    // Active (hovered/pinned) genes not already coloured — draw them in the accent colour,
-    // a touch thicker, so the linked selection stands out alongside the top-N curves.
-    const extra = dr.series.filter((s) => active.has(s.uniqID) && !topIds.has(s.uniqID))
-    for (const s of extra) colored.push(line(s, HIGHLIGHT, 3))
+    // Active (hovered/pinned) genes are ALWAYS redrawn on top in the bright accent colour, a touch
+    // thicker — even if they're already a top-N curve — so the linked selection is unmistakable
+    // (a top-N gene would otherwise only differ by the subtle dimming of its neighbours).
+    const extra = dr.series.filter((s) => active.has(s.uniqID))
+    for (const s of extra) colored.push(line(s, HIGHLIGHT, 3.5))
 
     const lay: Record<string, unknown> = {
       ...plotBase(p),
       showlegend: top.length > 0 && colored.length <= 12,
       title: title ? { text: title, font: { size: 13 } } : undefined,
-      xaxis: { ...axisBase(p), title: dr.axis },
+      xaxis: {
+        ...axisBase(p),
+        title: dr.axis,
+        type: 'category',
+        categoryorder: 'array',
+        categoryarray: cats
+      },
       yaxis: { ...axisBase(p), title: 'log₂ fold change', zeroline: true }
     }
     return { data: [background, ...colored], layout: lay }

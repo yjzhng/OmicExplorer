@@ -14,6 +14,8 @@ interface SelectionState {
   setHover: (id: string | null) => void
   clearHover: () => void
   togglePin: (id: string) => void
+  /** Single-select: pin exactly this id (replacing any others); clicking the sole pin clears it. */
+  selectOnly: (id: string) => void
   clearPins: () => void
 }
 
@@ -28,6 +30,11 @@ export const useSelection = create<SelectionState>((set) => ({
       if (next.has(id)) next.delete(id)
       else next.add(id)
       return { pinnedIds: next }
+    }),
+  selectOnly: (id) =>
+    set((s) => {
+      if (s.pinnedIds.size === 1 && s.pinnedIds.has(id)) return { pinnedIds: new Set() }
+      return { pinnedIds: new Set([id]) }
     }),
   clearPins: () => set((s) => (s.pinnedIds.size === 0 ? s : { pinnedIds: new Set() }))
 }))

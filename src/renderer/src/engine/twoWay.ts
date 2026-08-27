@@ -32,6 +32,15 @@ export interface TwoWayFactor {
   pairs: Pair[]
 }
 
+/** All (numerator, denominator) level pairs for one factor from multi-select numerator/denominator
+ *  levels — a two-way run loops these, so e.g. "drugA, drugB vs DMSO" becomes two 2×2 ANOVAs. A
+ *  level paired with itself is dropped (degenerate). */
+export function crossPairs(numLevels: string[], denLevels: string[]): Pair[] {
+  const out: Pair[] = []
+  for (const n of numLevels) for (const d of denLevels) if (n !== d) out.push([n, d])
+  return out
+}
+
 export interface TwoWayInput {
   rows: StandardRow[]
   /** exactly two factors */
@@ -213,4 +222,106 @@ export function runTwoWayAnova(input: TwoWayInput): CompareTableResult {
   }
 
   return { rows: finaliseCompare(raw, threshold), comparisons }
+}
+
+/** A dry-run of the two-way grouping for the config dialog: the interaction is computed once per
+ *  context combination (every non-factor condition, matched like-for-like) that has a complete
+ *  2×2. Returns those context labels + the count, mirroring runTwoWayAnova's grouping. */
+export interface TwoWayPreview {
+  /** "cmpd × dose" */
+  factors: string
+  /** conditions faceting the interaction (matched like-for-like) */
+  context: ConditionKey[]
+  /** table headers: [factor1, factor2, ...context dims] */
+  columns: string[]
+  /** table body, one row per context combo with a full 2×2 (aligned to `columns`) */
+  rows: string[][]
+  groups: number
+  /** true when cmpd is a factor and dose is context → vehicle side matched with dose excluded */
+  doseExcluded: boolean
+  warnings: string[]
+}
+
+export function previewTwoWay(input: TwoWayInput): TwoWayPreview {
+  const { rows, factors, activeConditions } = input
+  const [f1, f2] = factors
+  const cmpdFactor = factors.find((f) => f.condition === 'cmpd')
+  const otherFactor = factors.find((f) => f.condition !== 'cmpd')
+  const warnings: string[] = []
+  const factorsLabel = `${f1.condition} × ${f2.condition}`
+  const ctxVals = (rep: StandardRow, dims: ConditionKey[]): string[] =>
+    dims.map((d) => String(condValue(rep, d) ?? ''))
+
+  let context: ConditionKey[]
+  let doseExcluded = false
+  const tableRows: string[][] = []
+
+  if (cmpdFactor && otherFactor) {
+    const otherCond = otherFactor.condition
+    const trtDims = activeConditions.filter(
+      (c) => c !== 'cmpd' && c !== otherCond && condPresent(rows, c)
+    )
+    const vehDims = trtDims.filter((c) => c !== 'dose')
+    context = trtDims
+    doseExcluded = trtDims.includes('dose')
+    for (const [numC, denC] of cmpdFactor.pairs) {
+      const dfTrt = rows.filter((r) => valEq(condValue(r, 'cmpd'), numC))
+      const dfVeh = rows.filter((r) => valEq(condValue(r, 'cmpd'), denC))
+      for (const [numS, denS] of otherFactor.pairs) {
+        for (const ctxTrt of groupRowsBy(dfTrt, trtDims).values()) {
+          const rep = ctxTrt[0]
+          const c11 = ctxTrt.filter((r) => valEq(condValue(r, otherCond), numS))
+          const c10 = ctxTrt.filter((r) => valEq(condValue(r, otherCond), denS))
+          const vehSlice = dfVeh.filter((r) =>
+            vehDims.every((d) => valEq(condValue(r, d), condValue(rep, d) as string | number))
+          )
+          const c01 = vehSlice.filter((r) => valEq(condValue(r, otherCond), numS))
+          const c00 = vehSlice.filter((r) => valEq(condValue(r, otherCond), denS))
+          if (c11.length && c10.length && c01.length && c00.length) {
+            const cmpdPair = `${numC}|${denC}`
+            const otherPair = `${numS}|${denS}`
+            const p1 = f1.condition === 'cmpd' ? cmpdPair : otherPair
+            const p2 = f2.condition === 'cmpd' ? cmpdPair : otherPair
+            tableRows.push([`${p1} × ${p2}`, p1, p2, ...ctxVals(rep, trtDims)])
+          }
+        }
+      }
+    }
+  } else {
+    const cond1 = f1.condition
+    const cond2 = f2.condition
+    const groupConds = activeConditions.filter(
+      (c) => c !== cond1 && c !== cond2 && condPresent(rows, c)
+    )
+    context = groupConds
+    for (const [num1, den1] of f1.pairs) {
+      for (const [num2, den2] of f2.pairs) {
+        for (const grp of groupRowsBy(rows, groupConds).values()) {
+          const rep = grp[0]
+          const c11 = grp.filter((r) => valEq(condValue(r, cond1), num1) && valEq(condValue(r, cond2), num2))
+          const c10 = grp.filter((r) => valEq(condValue(r, cond1), num1) && valEq(condValue(r, cond2), den2))
+          const c01 = grp.filter((r) => valEq(condValue(r, cond1), den1) && valEq(condValue(r, cond2), num2))
+          const c00 = grp.filter((r) => valEq(condValue(r, cond1), den1) && valEq(condValue(r, cond2), den2))
+          if (c11.length && c10.length && c01.length && c00.length) {
+            const p1 = `${num1}|${den1}`
+            const p2 = `${num2}|${den2}`
+            tableRows.push([`${p1} × ${p2}`, p1, p2, ...ctxVals(rep, groupConds)])
+          }
+        }
+      }
+    }
+  }
+
+  if (tableRows.length === 0)
+    warnings.push('No context has a complete 2×2 — some cell (factor-level combination) has no rows.')
+
+  return {
+    factors: factorsLabel,
+    context,
+    columns: ['comparison', f1.condition, f2.condition, ...context],
+    rows: tableRows,
+    groups: tableRows.length,
+    doseExcluded,
+    warnings
+  }
 }

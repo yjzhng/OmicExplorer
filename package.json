@@ -1,7 +1,7 @@
 {
   "name": "omicexplorer",
   "productName": "OmicExplorer",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Desktop app for omic data analysis: load sample × gene/protein matrices, build analysis pipelines in a flow-based editor, and explore live interactive visualizations and multi-condition comparisons.",
   "appConfig": {
     "appIdNamespace": "tech.yjzhng",

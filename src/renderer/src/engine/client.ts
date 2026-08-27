@@ -7,6 +7,7 @@ import type { CompareTableResult, DirectInput } from './direct'
 import type { TwoWayInput } from './twoWay'
 import type { EngineRequest, EngineResponse } from './worker'
 import type {
+  CompareInput,
   StandardizeInput,
   StandardizeResult,
   VehNormInput,
@@ -50,6 +51,8 @@ export const engine = {
   vehNorm: (input: VehNormInput): Promise<VehNormResult> => call<VehNormResult>('vehNorm', input),
   direct: (input: DirectInput): Promise<CompareTableResult> =>
     call<CompareTableResult>('direct', input),
+  compare: (input: CompareInput): Promise<CompareTableResult> =>
+    call<CompareTableResult>('compare', input),
   twoWayAnova: (input: TwoWayInput): Promise<CompareTableResult> =>
     call<CompareTableResult>('twoWayAnova', input),
   contrast: (input: ContrastInput): Promise<ContrastResult> => call<ContrastResult>('contrast', input),

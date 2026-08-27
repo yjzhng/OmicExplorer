@@ -12,7 +12,14 @@ import {
 import { create } from 'zustand'
 
 import { engine } from '../engine/client'
-import type { CompareTableResult } from '../engine'
+import {
+  buildStandardInputs,
+  guessRolesPreset,
+  parseMatrix,
+  type MatrixPreset
+} from '../engine/interactive'
+import { crossPairs } from '../engine'
+import type { CompareTableResult, ConditionKey, Pair } from '../engine'
 import { EXAMPLE_LOAD_CONFIG } from './example'
 import {
   deserializeProject,
@@ -27,10 +34,13 @@ import { loadRecents, pushRecent, removeRecent, saveRecents, type RecentProject 
 import { canConnect, categoryOf, NODE_SPECS } from './registry'
 import {
   isStep,
+  normalizeCompareConfig,
+  resolveLoadMode,
   type CompareConfig,
   type ContrastConfig,
   type GraphNode,
   type GroupMeta,
+  type InteractiveImport,
   type LoadConfig,
   type NodeConfig,
   type NodeData,
@@ -63,17 +73,6 @@ function rowsToCsv(rows: Array<Record<string, unknown>>): string {
   return `${head}\n${body}\n`
 }
 
-const VEHICLE_NAMES = new Set([
-  'dmso',
-  'h2o',
-  'etoh',
-  'meoh',
-  'vehicle',
-  'veh',
-  'water',
-  'ethanol',
-  'methanol'
-])
 
 interface GraphState {
   nodes: GraphNode[]
@@ -119,6 +118,8 @@ interface GraphState {
   /** Select a subcard within a group tile (opens that child's config). */
   selectChildCard: (groupId: string, childId: string) => void
   updateConfig: (id: string, partial: Record<string, unknown>) => void
+  /** Set (or clear, with '') a tile's user-given name. Label only — never invalidates results. */
+  renameNode: (id: string, name: string) => void
   /** Patch one subcard's config inside a group tile (display-only keys don't invalidate). */
   updateChildConfig: (groupId: string, childId: string, partial: Record<string, unknown>) => void
   /** Fold plot tiles that share one upstream into a single group tile (undoable). */
@@ -186,6 +187,22 @@ interface GraphState {
   saveProject: () => Promise<boolean>
   saveProjectAs: () => Promise<boolean>
   refreshDataFiles: () => Promise<void>
+  /** Interactive mode: read the matrix, list its columns, and seed default column roles for the
+   *  step-1 classifier. Replaces any prior import spec. */
+  detectInteractive: (
+    id: string,
+    preset?: MatrixPreset
+  ) => Promise<{ ok: boolean; error?: string; count?: number }>
+  /** Interactive mode: patch the import spec (roles / conditions) being edited (no undo entry). */
+  setInteractive: (id: string, patch: Partial<InteractiveImport>) => void
+  /** Interactive mode: convert the chosen matrix into the three standard input files (using the
+   *  kept samples + their conditions), write them to input/, and point the Load tile's
+   *  standard fields at them. */
+  convertInteractive: (id: string) => Promise<{
+    ok: boolean
+    error?: string
+    files?: { data: string; samplesheet: string; db: string }
+  }>
 
   /** folders (each a data location with its own workflows) */
   addFolder: () => Promise<void>
@@ -255,12 +272,6 @@ function makeGroupNode(
     position,
     data: { kind: 'plotGroup', config: { children }, status: 'idle' }
   }
-}
-
-function guessPair(compounds: string[]): { num: string; den: string } {
-  const den = compounds.find((c) => VEHICLE_NAMES.has(c.toLowerCase())) ?? ''
-  const num = compounds.find((c) => !VEHICLE_NAMES.has(c.toLowerCase())) ?? ''
-  return { num, den }
 }
 
 // ── seed graph: a ready-to-run default chain the user can extend ────────────────
@@ -637,6 +648,18 @@ export const useGraph = create<GraphState>()((set, get) => ({
     }
   },
 
+  renameNode: (id, name) => {
+    get().commit()
+    const trimmed = name.trim()
+    set((s) => ({
+      nodes: s.nodes.map((n) =>
+        n.id === id && isStep(n)
+          ? { ...n, data: { ...n.data, name: trimmed || undefined } }
+          : n
+      )
+    }))
+  },
+
   updateChildConfig: (groupId, childId, partial) => {
     get().commit()
     // Children are plot subcards (never `hasRun`), so they re-render live — no result to
@@ -901,17 +924,18 @@ export const useGraph = create<GraphState>()((set, get) => ({
         const loadNode = upId ? state.nodes.find((n) => n.id === upId) : undefined
         const dir = state.dataDir
         const load = loadNode && isStep(loadNode) ? (loadNode.data.config as LoadConfig) : undefined
-        if (
-          !loadNode ||
-          !isStep(loadNode) ||
-          loadNode.data.kind !== 'load' ||
-          !dir ||
-          !load?.data ||
-          !load.samplesheet
-        ) {
+        if (!loadNode || !isStep(loadNode) || loadNode.data.kind !== 'load' || !dir) {
+          setStatus('error', 'Connect a Load tile and set the project data folder.')
+          return
+        }
+        // Interactive mode materializes standard files into input/ (see convertInteractive), so
+        // the run always reads the standard three-file inputs — identical to Manual mode.
+        if (!load?.data || !load.samplesheet) {
           setStatus(
             'error',
-            'Connect a Load tile with a data file and samplesheet, and set the project data folder.'
+            load && resolveLoadMode(load) === 'interactive'
+              ? 'Interactive mode: click “Configure samples…” on the Load tile and convert first.'
+              : 'Connect a Load tile with a data file and samplesheet.'
           )
           return
         }
@@ -929,10 +953,11 @@ export const useGraph = create<GraphState>()((set, get) => ({
           )
           return
         }
+        const dataFilename = load.data
         const cfg = node.data.config as StandardizeConfig
         const std = await engine.standardize({
           dataText,
-          dataFilename: load.data,
+          dataFilename,
           samplesheetText,
           dbText: dbText ?? undefined,
           activeConditions: cfg.activeConditions ?? undefined,
@@ -953,57 +978,51 @@ export const useGraph = create<GraphState>()((set, get) => ({
           return
         }
         const std = upResult.std
-        const cfg = node.data.config as CompareConfig
+        // Migrate any legacy veh_norm/direct config to the explicit num/den/match model, and
+        // persist it so the stored workflow is updated on first run.
+        const cfg = normalizeCompareConfig(node.data.config as CompareConfig)
+        if (cfg !== node.data.config)
+          get().updateConfig(id, cfg as unknown as Record<string, unknown>)
 
         let cmp: CompareTableResult
-        if (cfg.analysis === 'veh_norm') {
-          let pairNum = cfg.pairNum
-          let pairDen = cfg.pairDen
-          if (!pairNum || !pairDen) {
-            const g = guessPair(std.compounds)
-            pairNum = pairNum || g.num
-            pairDen = pairDen || g.den
-            get().updateConfig(id, { pairNum, pairDen })
-          }
-          if (!pairNum || !pairDen) {
-            setStatus('error', 'Choose a treatment and a vehicle compound.')
+        if (cfg.analysis === 'compare') {
+          const numPinned = Object.values(cfg.num).some((v) => v && v.length > 0)
+          const denPinned = Object.values(cfg.den).some((v) => v && v.length > 0)
+          if (!numPinned || !denPinned) {
+            setStatus('error', 'Open “Configure comparison” to define numerator and denominator.')
             return
           }
           setStatus('running')
-          cmp = await engine.vehNorm({
+          cmp = await engine.compare({
             rows: std.rows,
-            pairs: [[pairNum, pairDen]],
-            activeConditions: std.activeConditions,
-            method: cfg.method,
-            transform: cfg.transform,
-            threshold: cfg.threshold
-          })
-        } else if (cfg.analysis === 'direct') {
-          if (!cfg.pairNum || !cfg.pairDen) {
-            setStatus('error', 'Choose a numerator and denominator level.')
-            return
-          }
-          setStatus('running')
-          cmp = await engine.direct({
-            rows: std.rows,
-            condition: cfg.condition,
-            pairs: [[cfg.pairNum, cfg.pairDen]],
+            num: cfg.num,
+            den: cfg.den,
+            match: cfg.match,
             activeConditions: std.activeConditions,
             method: cfg.method,
             transform: cfg.transform,
             threshold: cfg.threshold
           })
         } else {
-          if (!cfg.pairNum || !cfg.pairDen || !cfg.pair2Num || !cfg.pair2Den) {
-            setStatus('error', 'Choose a level pair for each of the two factors.')
+          // Build each factor's level pairs from the multi-select numerator/denominator values
+          // (so "drugA, drugB vs DMSO" runs both 2×2 interactions); fall back to the single legacy
+          // pair fields for older configs.
+          const factorPairs = (c: ConditionKey, n1: string, d1: string): Pair[] => {
+            const cross = crossPairs(cfg.num[c] ?? [], cfg.den[c] ?? [])
+            return cross.length > 0 ? cross : n1 && d1 ? [[n1, d1]] : []
+          }
+          const p1 = factorPairs(cfg.condition, cfg.pairNum, cfg.pairDen)
+          const p2 = factorPairs(cfg.condition2, cfg.pair2Num, cfg.pair2Den)
+          if (p1.length === 0 || p2.length === 0) {
+            setStatus('error', 'Choose numerator and denominator level(s) for each of the two factors.')
             return
           }
           setStatus('running')
           cmp = await engine.twoWayAnova({
             rows: std.rows,
             factors: [
-              { condition: cfg.condition, pairs: [[cfg.pairNum, cfg.pairDen]] },
-              { condition: cfg.condition2, pairs: [[cfg.pair2Num, cfg.pair2Den]] }
+              { condition: cfg.condition, pairs: p1 },
+              { condition: cfg.condition2, pairs: p2 }
             ],
             activeConditions: std.activeConditions,
             threshold: cfg.threshold
@@ -1284,6 +1303,87 @@ export const useGraph = create<GraphState>()((set, get) => ({
       return
     }
     set({ inputFiles: await window.api.listDataFiles(dir), dataDirMissing: false })
+  },
+
+  detectInteractive: async (id, preset = 'none') => {
+    const s = get()
+    const dir = s.dataDir
+    if (!dir) return { ok: false, error: 'Set the project data folder first.' }
+    const node = s.nodes.find((n) => n.id === id)
+    if (!node || !isStep(node) || node.data.kind !== 'load')
+      return { ok: false, error: 'Not a Load tile.' }
+    const cfg = node.data.config as LoadConfig
+    if (!cfg.matrix) return { ok: false, error: 'Choose a data matrix file first.' }
+    const matrixText = await window.api.readDataFile(dir, cfg.matrix)
+    if (!matrixText)
+      return { ok: false, error: `Matrix not found in the data folder (${cfg.matrix}).` }
+    let interactive: InteractiveImport
+    try {
+      const info = parseMatrix(matrixText)
+      interactive = { columns: info.columns, roles: guessRolesPreset(info, preset), conditions: {} }
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : 'Failed to read the matrix.' }
+    }
+    get().updateConfig(id, { interactive })
+    const sampleCount = Object.values(interactive.roles).filter((r) => r === 'sample').length
+    return { ok: true, count: sampleCount }
+  },
+
+  setInteractive: (id, patch) => {
+    // Editing the import spec shouldn't spam undo history, so patch config in place (no commit).
+    set((st) => ({
+      nodes: st.nodes.map((n) => {
+        if (n.id !== id || !isStep(n)) return n
+        const cfg = n.data.config as LoadConfig
+        const interactive = { ...(cfg.interactive as InteractiveImport), ...patch }
+        return { ...n, data: { ...n.data, config: { ...cfg, interactive } } }
+      })
+    }))
+  },
+
+  convertInteractive: async (id) => {
+    const s = get()
+    const dir = s.dataDir
+    if (!dir) return { ok: false, error: 'Set the project data folder first.' }
+    const node = s.nodes.find((n) => n.id === id)
+    if (!node || !isStep(node) || node.data.kind !== 'load')
+      return { ok: false, error: 'Not a Load tile.' }
+    const cfg = node.data.config as LoadConfig
+    if (!cfg.matrix) return { ok: false, error: 'Choose a data matrix file first.' }
+    const matrixText = await window.api.readDataFile(dir, cfg.matrix)
+    if (!matrixText)
+      return { ok: false, error: `Matrix not found in the data folder (${cfg.matrix}).` }
+    const interactive = cfg.interactive
+    if (!interactive) return { ok: false, error: 'Set up the columns first (step 1).' }
+    let adapted
+    try {
+      adapted = buildStandardInputs(matrixText, {
+        roles: interactive.roles,
+        conditions: interactive.conditions,
+        filters: interactive.filters
+      })
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : 'Failed to build inputs.' }
+    }
+    // Base the generated names on the matrix; the data file's stem must end with
+    // `_wide` so ingest detects the wide format.
+    const base = cfg.matrix.replace(/^.*[\\/]/, '').replace(/\.[^.]+$/, '')
+    const files = {
+      data: `${base}_wide.csv`,
+      samplesheet: `${base}_samplesheet.csv`,
+      db: `${base}_DB.csv`
+    }
+    await window.api.writeInputFile(dir, files.data, adapted.dataText)
+    await window.api.writeInputFile(dir, files.samplesheet, adapted.samplesheetText)
+    await window.api.writeInputFile(dir, files.db, adapted.dbText)
+    // Point the Load tile's standard fields at the generated files — from here the
+    // pipeline runs the standard path, identical to a manual custom-format project.
+    get().updateConfig(id, { data: files.data, samplesheet: files.samplesheet, db: files.db })
+    // Load is `hasRun: false`, so updateConfig won't stale the pipeline — do it here so a
+    // (re)conversion forces Standardize to re-run against the freshly written files.
+    get().invalidateDownstream(id)
+    await get().refreshDataFiles()
+    return { ok: true, files }
   },
 
   // ── folders ─────────────────────────────────────────────────────────────

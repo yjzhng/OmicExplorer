@@ -106,6 +106,19 @@ export const CATEGORICAL: string[] = [
   '#bab0ac'
 ]
 
+/** A second categorical palette (ColorBrewer Dark2) for a condition track that must read
+ *  distinct from CATEGORICAL — e.g. cmpd colours must not be confused with strain colours. */
+export const CATEGORICAL_ALT: string[] = [
+  '#1b9e77',
+  '#d95f02',
+  '#7570b3',
+  '#e7298a',
+  '#66a61e',
+  '#e6ab02',
+  '#a6761d',
+  '#666666'
+]
+
 /** Base Plotly layout for the active palette (Plotly needs concrete colors). */
 export function plotBase(p: Palette): Record<string, unknown> {
   return {

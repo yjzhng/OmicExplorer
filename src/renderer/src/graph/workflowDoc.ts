@@ -23,7 +23,7 @@ export interface WorkflowDoc {
     id: string
     type?: string
     position: { x: number; y: number }
-    data: { kind: NodeKind; config: NodeConfig }
+    data: { kind: NodeKind; config: NodeConfig; name?: string }
   }>
   edges: Array<{ id: string; source: string; target: string }>
   groupLayouts?: Record<string, PanelLayoutItem[]>
@@ -77,7 +77,11 @@ export function buildWorkflowDoc(s: SerializeInput): WorkflowDoc {
       id: n.id,
       type: 'step',
       position: n.position,
-      data: { kind: n.data.kind, config: n.data.config }
+      data: {
+        kind: n.data.kind,
+        config: n.data.config,
+        ...(n.data.name ? { name: n.data.name } : {})
+      }
     })),
     edges: s.edges
       .filter((e) => stepIds.has(e.source) && stepIds.has(e.target))
@@ -96,7 +100,12 @@ export function parseWorkflowDoc(doc: WorkflowDoc): LoadedWorkflow {
     id: n.id,
     type: 'step',
     position: n.position,
-    data: { kind: n.data.kind, config: n.data.config, status: 'idle' }
+    data: {
+      kind: n.data.kind,
+      config: n.data.config,
+      status: 'idle',
+      ...(n.data.name ? { name: n.data.name } : {})
+    }
   }))
   const edges: Edge[] = doc.edges.map((e) => ({ id: e.id, source: e.source, target: e.target }))
   const maxIdx = nodes.reduce((m, n) => {

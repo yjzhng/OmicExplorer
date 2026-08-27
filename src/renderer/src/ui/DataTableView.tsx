@@ -10,6 +10,9 @@ export interface Column {
   label: string
   align?: 'left' | 'right'
   format?: (v: unknown) => string
+  /** optional per-cell style (e.g. a heat-map background + matching text colour); undefined =
+   *  default cell. A solid background overrides the row's zebra/hover tint for that cell. */
+  cellStyle?: (v: unknown) => CSSProperties | undefined
 }
 
 interface DataTableProps {
@@ -285,13 +288,16 @@ export function DataTableView({ columns, rows, maxRows = 500, idKey = 'uniqID' }
                     else rowEls.current.delete(id)
                   }}
                   onMouseEnter={id ? () => useSelection.getState().setHover(id) : undefined}
-                  onClick={id ? () => useSelection.getState().togglePin(id) : undefined}
+                  onClick={id ? () => useSelection.getState().selectOnly(id) : undefined}
                   // Background is owned by the imperative painter above (which also
                   // draws the zebra stripe), so React must not set it here and fight it.
                   style={{ cursor: id ? 'pointer' : undefined }}
                 >
                   {columns.map((c) => (
-                    <td key={c.key} style={{ ...styles.td, textAlign: c.align ?? 'left' }}>
+                    <td
+                      key={c.key}
+                      style={{ ...styles.td, textAlign: c.align ?? 'left', ...c.cellStyle?.(r[c.key]) }}
+                    >
                       {fmt(c, r[c.key])}
                     </td>
                   ))}
@@ -500,12 +506,15 @@ function ColumnMenu({
   )
 }
 
-/** Format a numeric cell to `digits` decimals; blanks for null/NaN. */
+/** Format a numeric cell to `digits` decimals; a missing value shows as "NaN". A real 0 still
+ *  shows as "0.000" — only null/undefined/'' (and non-numeric text) are treated as missing. The
+ *  null/'' guard must come before Number(), which coerces both to 0 (a finite value). */
 // eslint-disable-next-line react-refresh/only-export-components
 export function fixed(digits: number) {
   return (v: unknown): string => {
+    if (v == null || v === '') return 'NaN'
     const n = typeof v === 'number' ? v : Number(v)
-    return Number.isFinite(n) ? n.toFixed(digits) : ''
+    return Number.isFinite(n) ? n.toFixed(digits) : 'NaN'
   }
 }
 

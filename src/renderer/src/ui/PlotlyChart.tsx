@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useRef, type CSSProperties } from 'react'
+import { useEffect, useRef, useState, type CSSProperties } from 'react'
 import Plotly, { type PlotlyGraphDiv } from 'plotly.js-dist-min'
 
+import { Spinner } from './Spinner'
 import { useSelection } from './useSelection'
 
 interface PlotlyChartProps {
@@ -244,6 +245,11 @@ function applyHighlight(
 /** Thin React wrapper over plotly.js-dist-min (bundled locally — CSP-safe, no CDN). */
 export function PlotlyChart({ data, layout, style }: PlotlyChartProps) {
   const ref = useRef<HTMLDivElement>(null)
+  // Buffering: show a spinner until the FIRST Plotly render resolves, then never again (updates
+  // to an already-drawn chart shouldn't flash a spinner). No delay — the tile's DeferredMount
+  // spinner is torn down the moment this mounts, so showing ours immediately keeps the buffering
+  // continuous through the (sometimes slow) Plotly draw instead of leaving a blank gap.
+  const [ready, setReady] = useState(false)
 
   // Latest data/active read imperatively so event handlers bind once (no stale closures).
   const dataRef = useRef(data)
@@ -253,15 +259,10 @@ export function PlotlyChart({ data, layout, style }: PlotlyChartProps) {
   // Per-trace signature of the highlight last pushed to Plotly (see applyHighlight).
   const appliedRef = useRef<string[]>([])
 
-  const hoverId = useSelection((s) => s.hoverId)
-  const pinnedIds = useSelection((s) => s.pinnedIds)
-  const active = useMemo(() => {
-    const s = new Set(pinnedIds)
-    if (hoverId) s.add(hoverId)
-    return s
-  }, [hoverId, pinnedIds])
-  const activeRef = useRef(active)
-  activeRef.current = active
+  // Selection is read IMPERATIVELY (not via a useSelection hook) so a hover anywhere doesn't
+  // re-render every mounted chart — with many charts on a dashboard that made every hover
+  // laggy. The affected traces are restyled directly instead (mirrors DataTableView's paint).
+  const activeRef = useRef<Set<string>>(new Set())
 
   useEffect(() => {
     const el = ref.current as PlotlyGraphDiv | null
@@ -298,23 +299,37 @@ export function PlotlyChart({ data, layout, style }: PlotlyChartProps) {
         el.on('plotly_doubleclick', () => useSelection.getState().clearPins())
       }
       applyHighlight(el, dataRef.current, activeRef.current, basesRef.current, appliedRef)
+      setReady(true)
     })
     return () => {
       cancelled = true
     }
   }, [data, layout])
 
-  // Re-apply highlight on selection change (restyle only, no re-render). Coalesced
-  // into a frame: a mouse sweep across a dense plot emits a hover per point, and
-  // without this each one would queue its own redraw.
+  // Drive the highlight from the selection store imperatively: subscribe once, restyle the
+  // affected traces on change (rAF-coalesced so a mouse sweep is one redraw), WITHOUT
+  // re-rendering this React component — so N mounted charts don't all re-render per hover.
   useEffect(() => {
     const el = ref.current as PlotlyGraphDiv | null
     if (!el) return
-    const raf = requestAnimationFrame(() =>
-      applyHighlight(el, dataRef.current, active, basesRef.current, appliedRef)
-    )
-    return () => cancelAnimationFrame(raf)
-  }, [active])
+    let raf = 0
+    const apply = (): void => {
+      const { hoverId, pinnedIds } = useSelection.getState()
+      const active = new Set(pinnedIds)
+      if (hoverId) active.add(hoverId)
+      activeRef.current = active
+      cancelAnimationFrame(raf)
+      raf = requestAnimationFrame(() =>
+        applyHighlight(el, dataRef.current, active, basesRef.current, appliedRef)
+      )
+    }
+    apply()
+    const unsub = useSelection.subscribe(apply)
+    return () => {
+      cancelAnimationFrame(raf)
+      unsub()
+    }
+  }, [])
 
   // Plotly's `plotly_unhover` doesn't reliably fire when the cursor leaves the plot
   // (e.g. exits fast), which would leave points stuck dimmed. Clear on native leave.
@@ -369,5 +384,10 @@ export function PlotlyChart({ data, layout, style }: PlotlyChartProps) {
     }
   }, [])
 
-  return <div ref={ref} style={{ width: '100%', height: '100%', ...style }} />
+  return (
+    <div style={{ position: 'relative', width: '100%', height: '100%' }}>
+      <div ref={ref} style={{ width: '100%', height: '100%', ...style }} />
+      {!ready && <Spinner />}
+    </div>
+  )
 }

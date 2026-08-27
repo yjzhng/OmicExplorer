@@ -29,20 +29,26 @@ export function BubbleView({
   orient?: 'landscape' | 'portrait'
 }) {
   const mode = useUiTheme((s) => s.mode)
-  const hoverId = useSelection((s) => s.hoverId)
+  // Only PINNED genes are appended to the axis (they need a permanent column). Deliberately NOT
+  // subscribed to hoverId: re-rendering on hover would re-run Plotly.react and rebuild the axis
+  // every hover — which reset the discrete (category) spacing to quantitative. The hovered point
+  // is highlighted imperatively by the overlay in PlotlyChart instead (no re-plot).
   const pinnedIds = useSelection((s) => s.pinnedIds)
 
   const { data, layout } = useMemo(() => {
     const p = PALETTES[mode]
-    const extra = new Set(pinnedIds)
-    if (hoverId) extra.add(hoverId)
-    const bubble = buildBubble(rows, { axis, topGenes, displayMap, focus, extra: [...extra] })
+    const extra = [...pinnedIds]
+    const bubble = buildBubble(rows, { axis, topGenes, displayMap, focus, extra })
     const maxSig = Math.max(1e-9, ...bubble.points.map((pt) => pt.sig))
-    // Distinct dose/time levels, numerically ascending, for the level (category) axis.
-    const levels = [...new Set(bubble.points.map((pt) => pt.x))].sort((a, b) => a - b).map(String)
+    // Discrete dose/time levels. Placed at evenly-spaced INDEX positions on a LINEAR axis
+    // (ticked with the real values), NOT a category axis: a category axis with numeric-looking
+    // values gets auto-flipped to quantitative when Plotly restyles the hover overlay. A linear
+    // axis with fixed tick positions never re-types, so the discrete spacing is stable.
+    const distinctLevels = [...new Set(bubble.points.map((pt) => pt.x))].sort((a, b) => a - b)
+    const levelIdx = new Map(distinctLevels.map((v, i) => [v, i]))
     const landscape = orient !== 'portrait'
     const geneVals = bubble.points.map((pt) => pt.gene)
-    const levelVals = bubble.points.map((pt) => String(pt.x))
+    const levelVals = bubble.points.map((pt) => levelIdx.get(pt.x) ?? 0)
     const trace = {
       type: 'scatter',
       mode: 'markers',
@@ -53,10 +59,10 @@ export function BubbleView({
       x: landscape ? geneVals : levelVals,
       y: landscape ? levelVals : geneVals,
       customdata: bubble.points.map((pt) => pt.uniqID),
-      text: bubble.points.map((pt) => pt.gene),
+      // Level index is not human-readable, so carry the real value in the hover text.
+      text: bubble.points.map((pt) => `${pt.gene}<br>${bubble.axis}=${pt.x}`),
       hovertemplate:
-        `%{text}<br>${bubble.axis}=${landscape ? '%{y}' : '%{x}'}<br>` +
-        `log2FC=%{marker.color:.3f}<br>−log10 p=%{marker.size:.2f}<extra></extra>`,
+        `%{text}<br>log2FC=%{marker.color:.3f}<br>−log10 p=%{marker.size:.2f}<extra></extra>`,
       marker: {
         size: bubble.points.map((pt) => 6 + (pt.sig / maxSig) * 22),
         color: bubble.points.map((pt) => pt.log2FC),
@@ -93,13 +99,16 @@ export function BubbleView({
     const levelAxis = {
       ...axisBase(p),
       title: bubble.axis,
-      type: 'category',
-      categoryorder: 'array',
-      categoryarray: levels,
+      // Linear axis with fixed, evenly-spaced ticks at each level's index (labelled with the
+      // real value). Range mirrors the category convention ([-0.5, n-0.5]) so the dots keep
+      // half-a-gap of padding at each end.
+      type: 'linear',
+      tickmode: 'array',
+      tickvals: distinctLevels.map((_, i) => i),
+      ticktext: distinctLevels.map(String),
+      range: [-0.5, distinctLevels.length - 0.5],
+      autorange: false,
       showgrid: true,
-      // Plotly's default category range is [-0.5, n-0.5] — half the inter-level gap of
-      // padding at each end, exactly 50% of the gap. (An explicit numeric `range` here
-      // fights the category autorange and can window the dots out entirely.)
       automargin: true
     }
     const lay: Record<string, unknown> = {
@@ -110,7 +119,7 @@ export function BubbleView({
       yaxis: landscape ? levelAxis : geneAxis
     }
     return { data: [trace], layout: lay }
-  }, [rows, axis, topGenes, displayMap, focus, orient, hoverId, pinnedIds, title, mode])
+  }, [rows, axis, topGenes, displayMap, focus, orient, pinnedIds, title, mode])
 
   return <PlotlyChart data={data} layout={layout} />
 }

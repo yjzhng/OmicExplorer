@@ -20,20 +20,28 @@ export function SwitchBar({
     <div style={styles.bars}>
       <div style={styles.bar} role="tablist" aria-label={label}>
         <span style={styles.barLabel}>{label}</span>
-        {options.map((o) => {
-          const on = o === value
-          return (
-            <button
-              key={o}
-              role="tab"
-              aria-selected={on}
-              onClick={() => onChange(o)}
-              style={{ ...styles.tab, ...(on ? styles.tabActive : null) }}
-            >
-              {o}
-            </button>
-          )
-        })}
+        {/* Fused pill, matching the main-nav Workflow/Results switch: a rounded track whose
+            active segment is a rounded chip (accent fill). */}
+        <div style={styles.pill}>
+          {options.map((o) => {
+            const on = o === value
+            return (
+              <button
+                key={o}
+                role="tab"
+                aria-selected={on}
+                onClick={() => onChange(o)}
+                style={{
+                  ...styles.tab,
+                  background: on ? UI.accent : 'transparent',
+                  color: on ? UI.accentText : UI.text
+                }}
+              >
+                {o}
+              </button>
+            )
+          })}
+        </div>
       </div>
     </div>
   )
@@ -50,7 +58,7 @@ const styles: Record<string, CSSProperties> = {
     borderBottom: `1px solid ${UI.border}`,
     flex: '0 0 auto'
   },
-  bar: { display: 'inline-flex', alignItems: 'center', gap: 6, flex: '0 0 auto' },
+  bar: { display: 'inline-flex', alignItems: 'center', gap: 8, flex: '0 0 auto' },
   barLabel: {
     fontSize: 10,
     textTransform: 'uppercase',
@@ -58,17 +66,22 @@ const styles: Record<string, CSSProperties> = {
     color: UI.textMuted,
     flex: '0 0 auto'
   },
-  tab: {
-    background: 'transparent',
-    color: UI.textMuted,
+  pill: {
+    display: 'inline-flex',
+    gap: 4,
     border: `1px solid ${UI.border}`,
-    borderRadius: 12,
-    padding: '2px 12px',
-    fontSize: 11,
-    fontWeight: 600,
-    cursor: 'pointer',
-    whiteSpace: 'nowrap',
+    borderRadius: 999,
+    padding: 3,
+    background: UI.panel,
     flex: '0 0 auto'
   },
-  tabActive: { background: UI.accent, color: UI.accentText, borderColor: UI.accent }
+  tab: {
+    border: 'none',
+    borderRadius: 999,
+    padding: '5px 16px',
+    fontSize: 12,
+    fontWeight: 600,
+    cursor: 'pointer',
+    whiteSpace: 'nowrap'
+  }
 }

@@ -5,8 +5,9 @@
 import { useMemo, useState, type CSSProperties, type ReactNode } from 'react'
 import type { Edge } from '@xyflow/react'
 
-import { facetContextDims, type ContextRow } from '../engine'
+import { facetDims, type ContextRow } from '../engine'
 import { deriveGroups, expandMembers, parsePanelId, type AnalysisGroup } from '../graph/groups'
+import { NODE_SPECS } from '../graph/registry'
 import { useGraph } from '../graph/store'
 import { isStep, type NodeResult, type PlotGroupConfig, type StepNode } from '../graph/types'
 import type { PanelLayoutItem } from '../graph/types'
@@ -17,12 +18,24 @@ import { EMPTY_SEL, resolveFacets, useFacet } from './facet'
 import { autoLayout, geometryChanged, reconcileLayout, type PanelLayout } from './panels'
 import { PanelTile } from './PanelTile'
 
-/** Prefer the concrete comparison label once a root has run; else the derived default. */
-function groupLabel(group: AnalysisGroup, results: Record<string, NodeResult>): string {
+/** The comparison strings a run produced (compare/contrast), else none. */
+function groupComparisons(group: AnalysisGroup, results: Record<string, NodeResult>): string[] {
   const r = results[group.rootId]
-  if (r?.kind === 'compare' && r.cmp.comparisons.length) return r.cmp.comparisons.join(', ')
-  if (r?.kind === 'contrast' && r.ctr.comparisons.length) return r.ctr.comparisons.join(', ')
-  return group.label
+  if (r?.kind === 'compare') return r.cmp.comparisons
+  if (r?.kind === 'contrast') return r.ctr.comparisons
+  return []
+}
+
+/** Tab label = the step tile's user-given name if set, else its type label (kind, e.g.
+ *  "Compare"). What's actually being compared lives in the hover tooltip (groupTitle). */
+function groupLabel(group: AnalysisGroup, name?: string): string {
+  return name || NODE_SPECS[group.kind].label
+}
+
+/** Full comparison list for the tab's hover tooltip (the label itself is trimmed). */
+function groupTitle(group: AnalysisGroup, results: Record<string, NodeResult>): string {
+  const comps = groupComparisons(group, results)
+  return comps.length ? comps.join(', ') : group.label
 }
 
 export function ResultsView(): ReactNode {
@@ -33,9 +46,12 @@ export function ResultsView(): ReactNode {
   const setGroupLayout = useGraph((s) => s.setGroupLayout)
   const editMode = useAppView((s) => s.editMode)
   const toggleEdit = useAppView((s) => s.toggleEdit)
+  // Active tab lives in the app-view store (not local state) so it survives Results unmounting
+  // when you switch to the canvas — returning lands on the same tab, not the first.
+  const activeId = useAppView((s) => s.resultsTab)
+  const setResultsTab = useAppView((s) => s.setResultsTab)
 
   const groups = useMemo(() => deriveGroups(nodes, edges), [nodes, edges])
-  const [activeId, setActiveId] = useState<string | null>(null)
   const active = groups.find((g) => g.id === activeId) ?? groups[0] ?? null
   // Tabs are kept alive once opened: building a tab's plots costs ~1s, and
   // unmounting on every switch made you pay it again each time you came back.
@@ -48,7 +64,7 @@ export function ResultsView(): ReactNode {
     // navigating away from stays mounted (that is the whole point of keeping them).
     const keep = [...visited, active?.id, id].filter((v): v is string => !!v)
     setVisited([...new Set(keep)])
-    setActiveId(id)
+    setResultsTab(id)
   }
 
   const nodeById = useMemo(() => new Map(nodes.filter(isStep).map((n) => [n.id, n])), [nodes])
@@ -66,39 +82,45 @@ export function ResultsView(): ReactNode {
 
   return (
     <div style={styles.view}>
-      <div style={styles.tabBar}>
-        <div style={styles.tabs}>
-          {groups.map((g) => {
-            const isActive = g.id === active?.id
-            return (
-              <button
-                key={g.id}
-                onClick={() => openTab(g.id)}
-                style={{ ...styles.tab, ...(isActive ? styles.tabActive : {}) }}
-                title={groupLabel(g, results)}
-              >
-                {groupLabel(g, results)}
-                <span style={styles.tabCount}>{g.memberIds.length}</span>
-              </button>
-            )
-          })}
+      <div style={styles.header}>
+        <div style={styles.tabRow}>
+          <div style={styles.tabs}>
+            {groups.map((g) => {
+              const isActive = g.id === active?.id
+              return (
+                <button
+                  key={g.id}
+                  onClick={() => openTab(g.id)}
+                  style={{ ...styles.tab, ...(isActive ? styles.tabActive : {}) }}
+                  title={groupTitle(g, results)}
+                >
+                  {groupLabel(g, nodeById.get(g.rootId)?.data.name)}
+                  {/* Real panel count: plot groups unfold into one panel per subcard, so this
+                      matches the tiles actually shown (a folded group is not counted as 1). */}
+                  <span style={styles.tabCount}>{expandMembers(g.memberIds, nodes).length}</span>
+                </button>
+              )
+            })}
+          </div>
+          {/* Right-aligned dashboard layout toggle, on the tab row (not the main nav). */}
+          <button
+            onClick={toggleEdit}
+            title={editMode ? 'Done editing layout' : 'Edit dashboard layout'}
+            style={{
+              ...styles.editBtn,
+              background: editMode ? UI.accent : 'transparent',
+              color: editMode ? UI.accentText : UI.text,
+              borderColor: editMode ? UI.accent : UI.border
+            }}
+          >
+            {editMode ? 'Done' : 'Edit layout'}
+          </button>
         </div>
-        {/* Shared facet-context control for the active group — every plot derived from its
-            comparison reads this one selection instead of showing its own tabs. */}
+        {/* Shared facet-context control for the active group, on its own row below the
+            analysis tabs — every plot derived from the comparison reads this one selection.
+            A dedicated row lets many condition switchers wrap without crowding the tabs.
+            Renders nothing for a non-faceted group. */}
         {active && <FacetContextBar group={active} results={results} />}
-        {/* Right-aligned dashboard layout toggle, on the tab row (not the main nav). */}
-        <button
-          onClick={toggleEdit}
-          title={editMode ? 'Done editing layout' : 'Edit dashboard layout'}
-          style={{
-            ...styles.editBtn,
-            background: editMode ? UI.accent : 'transparent',
-            color: editMode ? UI.accentText : UI.text,
-            borderColor: editMode ? UI.accent : UI.border
-          }}
-        >
-          {editMode ? 'Done' : 'Edit layout'}
-        </button>
       </div>
       <div style={styles.panes}>
         {groups
@@ -150,7 +172,7 @@ function FacetContextBar({
   const setLevel = useFacet((s) => s.setLevel)
   const bars = useMemo(() => {
     if (!rows) return []
-    const dims = facetContextDims(rows)
+    const dims = facetDims(rows)
     return dims.length ? resolveFacets(rows, dims, sel).bars : []
   }, [rows, sel])
   if (!bars.length) return null
@@ -159,20 +181,28 @@ function FacetContextBar({
       {bars.map(({ dim, value, options }) => (
         <div key={dim} style={styles.facetGroup} role="tablist" aria-label={`${dim} level`}>
           <span style={styles.facetLabel}>{dim}</span>
-          {options.map((v) => (
-            <button
-              key={String(v)}
-              role="tab"
-              aria-selected={String(v) === String(value)}
-              onClick={() => setLevel(group.id, dim, String(v))}
-              style={{
-                ...styles.facetTab,
-                ...(String(v) === String(value) ? styles.facetTabActive : null)
-              }}
-            >
-              {String(v)}
-            </button>
-          ))}
+          {/* Fused pill, matching the main-nav Workflow/Results switch and the in-plot
+              SwitchBar: a rounded track whose active level is an accent-filled chip. */}
+          <div style={styles.facetPill}>
+            {options.map((v) => {
+              const on = String(v) === String(value)
+              return (
+                <button
+                  key={String(v)}
+                  role="tab"
+                  aria-selected={on}
+                  onClick={() => setLevel(group.id, dim, String(v))}
+                  style={{
+                    ...styles.facetTab,
+                    background: on ? UI.accent : 'transparent',
+                    color: on ? UI.accentText : UI.text
+                  }}
+                >
+                  {String(v)}
+                </button>
+              )
+            })}
+          </div>
         </div>
       ))}
     </div>
@@ -244,14 +274,20 @@ const styles: Record<string, CSSProperties> = {
   panes: { flex: 1, minHeight: 0, position: 'relative' },
   pane: { position: 'absolute', inset: 0, overflow: 'auto', padding: '8px 10px 40px' },
   paneHidden: { display: 'none' },
+  // The results header: analysis tabs on top, context-condition switchers on their own
+  // row below (so many switchers wrap instead of crowding the tabs).
+  header: {
+    display: 'flex',
+    flexDirection: 'column',
+    flex: '0 0 auto',
+    borderBottom: `1px solid ${UI.border}`
+  },
   // The tab row: tabs scroll on the left, the layout toggle stays pinned right.
-  tabBar: {
+  tabRow: {
     display: 'flex',
     alignItems: 'center',
     gap: 10,
-    padding: '10px 14px',
-    flex: '0 0 auto',
-    borderBottom: `1px solid ${UI.border}`
+    padding: '10px 14px'
   },
   tabs: {
     display: 'flex',
@@ -272,18 +308,19 @@ const styles: Record<string, CSSProperties> = {
     borderRadius: 6,
     cursor: 'pointer'
   },
-  // Shared facet control: one labelled pill group per context dim, sitting left of Edit.
-  // Scrolls internally if the context is wide, so the toolbar stays a single row.
+  // Shared facet control on its own row below the tabs: one labelled pill group per context
+  // dim. Wraps to multiple lines when many switchers don't fit, rather than crowding a
+  // single row. No divider from the tabs above — the two rows read as one header block.
   facetBar: {
-    flex: '0 1 auto',
     display: 'flex',
-    flexWrap: 'nowrap',
+    flexWrap: 'wrap',
     alignItems: 'center',
-    gap: 14,
-    minWidth: 0,
-    overflowX: 'auto'
+    columnGap: 16,
+    rowGap: 8,
+    padding: '2px 14px 8px',
+    minWidth: 0
   },
-  facetGroup: { display: 'inline-flex', alignItems: 'center', gap: 5, flex: '0 0 auto' },
+  facetGroup: { display: 'inline-flex', alignItems: 'center', gap: 7, flex: '0 0 auto' },
   facetLabel: {
     fontSize: 10,
     textTransform: 'uppercase',
@@ -291,19 +328,26 @@ const styles: Record<string, CSSProperties> = {
     color: UI.textMuted,
     flex: '0 0 auto'
   },
-  facetTab: {
-    background: 'transparent',
-    color: UI.textMuted,
+  // Fused pill: a rounded track holding the level chips (active = accent fill).
+  facetPill: {
+    display: 'inline-flex',
+    gap: 4,
     border: `1px solid ${UI.border}`,
-    borderRadius: 12,
-    padding: '2px 10px',
+    borderRadius: 999,
+    padding: 2,
+    background: UI.panel,
+    flex: '0 0 auto'
+  },
+  facetTab: {
+    border: 'none',
+    borderRadius: 999,
+    padding: '3px 12px',
     fontSize: 11,
     fontWeight: 600,
     cursor: 'pointer',
     whiteSpace: 'nowrap',
     flex: '0 0 auto'
   },
-  facetTabActive: { background: UI.accent, color: UI.accentText, borderColor: UI.accent },
   tab: {
     display: 'inline-flex',
     alignItems: 'center',

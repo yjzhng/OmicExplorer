@@ -4,7 +4,7 @@
  *  export into a flat list of render jobs (spec × facet × all/GOI). No React imports. */
 import type { Edge } from '@xyflow/react'
 
-import { facetCompareRows, facetContextDims } from '../engine'
+import { facetCompareRows, facetDims } from '../engine'
 import type { ConditionKey, ContextRow } from '../engine'
 import type { NodeKind, NodeResult } from '../graph/types'
 import type { ExportSpec } from './specs'
@@ -39,16 +39,18 @@ export function facetViews(
   // DR/bubble consume one condition as their axis, so it isn't a facet dimension.
   const exclude =
     kind === 'dr' || kind === 'bubble' ? [(config as { axis: ConditionKey }).axis] : undefined
-  const dims = facetContextDims(rows, exclude)
+  const dims = facetDims(rows, exclude)
   if (dims.length === 0) return SINGLE
   const groups = facetCompareRows(rows, dims)
   if (groups.length <= 1) return SINGLE
+  // Filename-safe token (the `comparison` value can hold spaces / "|").
+  const safe = (v: string): string => v.replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/^-+|-+$/g, '')
   return groups.map((g) => {
     const sel: Record<string, string> = {}
     const parts: string[] = []
     for (const { dim, value } of g.values) {
       sel[dim] = String(value)
-      parts.push(`${dim}-${value}`)
+      parts.push(`${dim}-${safe(String(value))}`)
     }
     return { sel, suffix: parts.join('_') }
   })

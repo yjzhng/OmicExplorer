@@ -1,12 +1,25 @@
 import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from 'react'
 
-import { facetContextDims, type ConditionKey } from '../engine'
+import {
+  crossPairs,
+  facetContextDims,
+  previewCompare,
+  previewTwoWay,
+  type ConditionKey,
+  type Pair,
+  type StandardizeResult
+} from '../engine'
 import { UI } from '../ui/theme'
+import { ComparisonDialog } from './ComparisonDialog'
+import { InteractiveImportDialog } from './InteractiveImportDialog'
 import { DEFAULT_FOCUS } from './focus'
 import { accentOf, categoryOf, CATEGORIES, NODE_SPECS } from './registry'
 import { useGraph } from './store'
 import {
+  isCompareConfigured,
   isStep,
+  normalizeCompareConfig,
+  resolveLoadMode,
   type BarConfig,
   type BubbleConfig,
   type CompareConfig,
@@ -21,8 +34,10 @@ import {
   type NodeKind,
   type NodeResult,
   type ClusterConfig,
+  type CorrConfig,
   type PlotChild,
   type PlotGroupConfig,
+  type QcConfig,
   type ScatterConfig,
   type StandardizeConfig,
   type TdrConfig,
@@ -153,6 +168,10 @@ function PlotConfig({
       return <GeneBarPanel config={config as BarConfig} {...props} />
     case 'pca':
       return <ClusterPanel config={config as ClusterConfig} {...props} />
+    case 'qc':
+      return <QcPanel config={config as QcConfig} {...props} />
+    case 'corr':
+      return <CorrPanel config={config as CorrConfig} {...props} />
     default:
       return null
   }
@@ -264,35 +283,130 @@ function LoadPanel({ id, config }: { id: string; config: LoadConfig }) {
   const update = useGraph((s) => s.updateConfig)
   const inputFiles = useGraph((s) => s.inputFiles)
   const refreshDataFiles = useGraph((s) => s.refreshDataFiles)
+  const [dialogOpen, setDialogOpen] = useState(false)
+  const [refreshState, setRefreshState] = useState<'idle' | 'busy' | 'done'>('idle')
   const opts = [{ value: '', label: '—' }, ...inputFiles.map((f) => ({ value: f, label: f }))]
+  // Effective mode (tolerates legacy/unset values so a chip is always selected — see
+  // resolveLoadMode); a fresh tile defaults to interactive.
+  const mode = resolveLoadMode(config)
+  // Interactive import is set up once the standard files have been generated (config.data set).
+  const converted = !!config.data
+  const doRefresh = async () => {
+    if (refreshState === 'busy') return
+    setRefreshState('busy')
+    await refreshDataFiles()
+    setRefreshState('done')
+    window.setTimeout(() => setRefreshState('idle'), 1400)
+  }
+  const refreshLabel =
+    refreshState === 'busy' ? 'Refreshing…' : refreshState === 'done' ? '✓ Refreshed' : '⟳ Refresh'
   return (
-    <Section title="Input files">
-      <div style={styles.hint}>Choose from files in the project&apos;s data folder.</div>
-      <Field label="data">
-        <Select
-          value={config.data ?? ''}
-          onChange={(v) => update(id, { data: v || null })}
-          options={opts}
-        />
-      </Field>
-      <Field label="samplesheet">
-        <Select
-          value={config.samplesheet ?? ''}
-          onChange={(v) => update(id, { samplesheet: v || null })}
-          options={opts}
-        />
-      </Field>
-      <Field label="ID map">
-        <Select
-          value={config.db ?? ''}
-          onChange={(v) => update(id, { db: v || null })}
-          options={opts}
-        />
-      </Field>
-      <button style={styles.btn} onClick={() => void refreshDataFiles()}>
-        Refresh data folder
-      </button>
-    </Section>
+    <>
+      {/* Import mode: Manual = pick the three standard files; Interactive = pick one raw data
+          matrix and configure samples in a dialog, which materializes the standard files. */}
+      <Section title="Import mode">
+        <div style={styles.subTabs}>
+          {(['interactive', 'manual'] as const).map((m) => {
+            const on = m === mode
+            return (
+              <button
+                key={m}
+                onClick={() => update(id, { mode: m })}
+                style={{
+                  ...styles.subTab,
+                  background: on ? UI.accent : 'transparent',
+                  color: on ? UI.accentText : UI.text,
+                  borderColor: on ? UI.accent : UI.border
+                }}
+              >
+                {m === 'manual' ? 'Manual' : 'Interactive'}
+              </button>
+            )
+          })}
+        </div>
+        <div style={styles.hint}>
+          {mode === 'manual'
+            ? 'Provide the three standard input files.'
+            : 'Provide one data matrix; configure samples to generate the standard files.'}
+        </div>
+      </Section>
+
+      <Section
+        title={mode === 'manual' ? 'Input files' : 'Input file'}
+        action={
+          <button
+            style={{
+              ...styles.chip,
+              ...(refreshState === 'done' ? styles.chipDone : null),
+              opacity: refreshState === 'busy' ? 0.6 : 1
+            }}
+            disabled={refreshState === 'busy'}
+            onClick={() => void doRefresh()}
+          >
+            {refreshLabel}
+          </button>
+        }
+      >
+        {mode === 'manual' ? (
+          <>
+            <div style={styles.hint}>Choose from files in the project&apos;s data folder.</div>
+            <Field label="data">
+              <Select
+                value={config.data ?? ''}
+                onChange={(v) => update(id, { data: v || null })}
+                options={opts}
+              />
+            </Field>
+            <Field label="samplesheet">
+              <Select
+                value={config.samplesheet ?? ''}
+                onChange={(v) => update(id, { samplesheet: v || null })}
+                options={opts}
+              />
+            </Field>
+            <Field label="ID map">
+              <Select
+                value={config.db ?? ''}
+                onChange={(v) => update(id, { db: v || null })}
+                options={opts}
+              />
+            </Field>
+          </>
+        ) : (
+          <>
+            <div style={styles.hint}>Choose the data matrix from the data folder.</div>
+            <Field label="raw data">
+              <Select
+                value={config.matrix ?? ''}
+                onChange={(v) => update(id, { matrix: v || null })}
+                options={opts}
+              />
+            </Field>
+            <div
+              style={{
+                ...styles.hint,
+                marginBottom: 0,
+                color: converted ? '#3fae5a' : '#e2b93b'
+              }}
+            >
+              {converted
+                ? `✓ Ready · generated ${config.data}`
+                : '⚠ Not configured — pipeline blocked'}
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 8 }}>
+              <button
+                style={{ ...styles.btn, opacity: config.matrix ? 1 : 0.5 }}
+                disabled={!config.matrix}
+                onClick={() => setDialogOpen(true)}
+              >
+                {converted ? 'Edit samples…' : 'Configure samples…'}
+              </button>
+            </div>
+            {dialogOpen && <InteractiveImportDialog id={id} onClose={() => setDialogOpen(false)} />}
+          </>
+        )}
+      </Section>
+    </>
   )
 }
 
@@ -304,6 +418,40 @@ function StandardizePanel({ id, config }: { id: string; config: StandardizeConfi
     return r?.kind === 'standardize' ? r.std : null
   })
   const active = config.activeConditions ?? CONDS
+  // Interactive-import conditions from the upstream Load tile (if any) — lets us grey out absent
+  // conditions BEFORE the node runs. Stable reference so the presence memo doesn't churn.
+  const upConditions = useGraph((s) => {
+    const upId = s.edges.find((e) => e.target === id)?.source
+    const up = upId ? s.nodes.find((n) => n.id === upId) : undefined
+    if (up && isStep(up) && up.data.kind === 'load') {
+      return (up.data.config as LoadConfig).interactive?.conditions ?? null
+    }
+    return null
+  })
+  // Which conditions actually carry values (computed independently of the user's active selection,
+  // mirroring the engine's presence test). Prefer the standardized result once the node has run;
+  // before that, fall back to the upstream interactive samplesheet so absent conditions grey out
+  // immediately. null only when neither is available (a manual load that hasn't run yet).
+  // Memoized — these scan every row, so they must not re-run on each config edit.
+  const present = useMemo(() => {
+    if (std)
+      return new Set(
+        CONDS.filter((c) =>
+          c === 'strain' || c === 'cmpd'
+            ? std.rows.some((r) => r[c] !== '')
+            : std.rows.some((r) => r[c] != null)
+        )
+      )
+    if (upConditions) {
+      const vals = Object.values(upConditions)
+      return new Set(CONDS.filter((c) => vals.some((v) => String(v[c] ?? '').trim() !== '')))
+    }
+    return null
+  }, [std, upConditions])
+  const geneTotal = useMemo(
+    () => (std ? new Set(std.rows.map((r) => r.uniqID)).size : 0),
+    [std]
+  )
   const toggle = (c: ConditionKey) => {
     const set = new Set(active)
     if (set.has(c)) set.delete(c)
@@ -314,10 +462,20 @@ function StandardizePanel({ id, config }: { id: string; config: StandardizeConfi
   return (
     <>
       <Section title="Active conditions">
-        <div style={styles.hint}>Conditions absent from the data are ignored automatically.</div>
-        {CONDS.map((c) => (
-          <Checkbox key={c} label={c} checked={active.includes(c)} onChange={() => toggle(c)} />
-        ))}
+        <div style={styles.hint}>Conditions absent from the data are greyed out (auto-ignored).</div>
+        {CONDS.map((c) => {
+          const avail = present ? present.has(c) : true
+          return (
+            <Checkbox
+              key={c}
+              label={c}
+              checked={avail && active.includes(c)}
+              disabled={!avail}
+              title={avail ? undefined : 'No values for this condition in the data'}
+              onChange={() => toggle(c)}
+            />
+          )
+        })}
       </Section>
       <Section title="Clean-up">
         <div style={styles.hint}>
@@ -337,10 +495,8 @@ function StandardizePanel({ id, config }: { id: string; config: StandardizeConfi
         {std && (std.cleanup?.droppedGenes ?? 0) > 0 && (
           <div style={styles.hint}>
             Dropped {std.cleanup.droppedGenes.toLocaleString()} of{' '}
-            {(
-              std.cleanup.droppedGenes + new Set(std.rows.map((r) => r.uniqID)).size
-            ).toLocaleString()}{' '}
-            genes below {std.cleanup.minSamplePct}% of {std.cleanup.sampleCount} samples.
+            {(std.cleanup.droppedGenes + geneTotal).toLocaleString()} genes below{' '}
+            {std.cleanup.minSamplePct}% of {std.cleanup.sampleCount} samples.
           </div>
         )}
       </Section>
@@ -357,179 +513,104 @@ function StandardizePanel({ id, config }: { id: string; config: StandardizeConfi
   )
 }
 
-function ComparePanel({ id, config }: { id: string; config: CompareConfig }) {
+/** How many comparisons the configured comparison would run (a dry-run count for the ready
+ *  message): distinct num|den labels for an explicit compare, or the interaction groups for a
+ *  two-way ANOVA. Null if it can't be determined (not configured / incomplete). */
+function comparisonCount(std: StandardizeResult, config: CompareConfig): number | null {
+  try {
+    if (config.analysis === 'two_way_anova') {
+      // Level pairs from the multi-select num/den values (legacy single fields as fallback).
+      const factorPairs = (c: ConditionKey, n1: string, d1: string): Pair[] => {
+        const cross = crossPairs(config.num[c] ?? [], config.den[c] ?? [])
+        return cross.length > 0 ? cross : n1 && d1 ? [[n1, d1]] : []
+      }
+      const p1 = factorPairs(config.condition, config.pairNum, config.pairDen)
+      const p2 = factorPairs(config.condition2, config.pair2Num, config.pair2Den)
+      if (p1.length === 0 || p2.length === 0) return null
+      return previewTwoWay({
+        rows: std.rows,
+        factors: [
+          { condition: config.condition, pairs: p1 },
+          { condition: config.condition2, pairs: p2 }
+        ],
+        activeConditions: std.activeConditions
+      }).groups
+    }
+    return previewCompare({
+      rows: std.rows,
+      num: config.num,
+      den: config.den,
+      match: config.match,
+      activeConditions: std.activeConditions
+    }).labels.length
+  } catch {
+    return null
+  }
+}
+
+function ComparePanel({ id, config: rawConfig }: { id: string; config: CompareConfig }) {
+  const config = normalizeCompareConfig(rawConfig)
+  const configured = isCompareConfigured(config)
   const update = useGraph((s) => s.updateConfig)
+  const [dialogOpen, setDialogOpen] = useState(false)
   const std = useGraph((s) => {
     const upId = s.edges.find((e) => e.target === id)?.source
     const r = upId ? s.results[upId] : undefined
     return r?.kind === 'standardize' ? r.std : null
   })
-  // distinct levels per condition, read from the upstream standardized table
-  const levels = useMemo(() => {
-    const conds: ConditionKey[] = ['strain', 'cmpd', 'dose', 'time']
-    const m = {} as Record<ConditionKey, string[]>
-    for (const c of conds) {
-      const seen = new Set<string>()
-      if (std)
-        for (const row of std.rows) {
-          const v = row[c]
-          if (v === '' || v == null) continue
-          seen.add(String(v))
-        }
-      m[c] = Array.from(seen)
-    }
-    return m
-  }, [std])
-  const active: ConditionKey[] = std?.activeConditions ?? ['cmpd']
-  const condOpts = active.map((c) => ({ value: c, label: c }))
-  const lvlOpts = (c: ConditionKey): { value: string; label: string }[] =>
-    levels[c].length
-      ? levels[c].map((v) => ({ value: v, label: v }))
-      : [{ value: '', label: '(run upstream first)' }]
 
   const t = config.threshold
   const setT = (partial: Partial<CompareConfig['threshold']>) =>
     update(id, { threshold: { ...t, ...partial } })
 
+  // Only the comparison-defining fields change the count — NOT threshold/transform. Keying the
+  // memo on those (references stay stable when only the threshold changes) avoids re-running the
+  // O(rows) previewCompare dry-run on every unrelated edit, which stalled on large data.
+  const nComparisons = useMemo(
+    () => (std && configured ? comparisonCount(std, config) : null),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [
+      std,
+      configured,
+      config.analysis,
+      config.num,
+      config.den,
+      config.match,
+      config.condition,
+      config.condition2,
+      config.pairNum,
+      config.pairDen,
+      config.pair2Num,
+      config.pair2Den
+    ]
+  )
+  const readyMsg =
+    nComparisons != null
+      ? `✓ Ready, ${nComparisons} comparison${nComparisons === 1 ? '' : 's'} configured interactively`
+      : '✓ Ready, configured interactively'
+
   return (
     <>
       <Section title="Comparison">
-        <Field label="analysis">
-          <Select
-            value={config.analysis}
-            onChange={(v) =>
-              update(id, {
-                analysis: v as CompareConfig['analysis'],
-                condition: config.condition ?? 'cmpd',
-                condition2: config.condition2 ?? 'dose',
-                pairNum: '',
-                pairDen: '',
-                pair2Num: '',
-                pair2Den: ''
-              })
-            }
-            options={[
-              { value: 'veh_norm', label: 'veh_norm' },
-              { value: 'direct', label: 'direct' },
-              { value: 'two_way_anova', label: 'two-way ANOVA' }
-            ]}
-          />
-        </Field>
-
-        {config.analysis === 'veh_norm' && (
-          <>
-            <Field label="treatment">
-              <Select
-                value={config.pairNum}
-                onChange={(v) => update(id, { pairNum: v })}
-                options={lvlOpts('cmpd')}
-              />
-            </Field>
-            <Field label="vehicle">
-              <Select
-                value={config.pairDen}
-                onChange={(v) => update(id, { pairDen: v })}
-                options={lvlOpts('cmpd')}
-              />
-            </Field>
-          </>
+        <button
+          style={styles.configBtn}
+          disabled={!std}
+          title={std ? undefined : 'Run the upstream Standardize first'}
+          onClick={() => setDialogOpen(true)}
+        >
+          Configure comparison…
+        </button>
+        <div style={{ ...styles.compareSummary, color: configured ? '#3fae5a' : '#e2b93b' }}>
+          {configured ? readyMsg : '⚠ Not configured — pipeline blocked'}
+        </div>
+        {dialogOpen && std && (
+          <ComparisonDialog id={id} config={config} std={std} onClose={() => setDialogOpen(false)} />
         )}
-
-        {config.analysis === 'direct' && (
-          <>
-            <Field label="condition">
-              <Select
-                value={config.condition}
-                onChange={(v) =>
-                  update(id, { condition: v as ConditionKey, pairNum: '', pairDen: '' })
-                }
-                options={condOpts}
-              />
-            </Field>
-            <Field label="numerator">
-              <Select
-                value={config.pairNum}
-                onChange={(v) => update(id, { pairNum: v })}
-                options={lvlOpts(config.condition)}
-              />
-            </Field>
-            <Field label="denominator">
-              <Select
-                value={config.pairDen}
-                onChange={(v) => update(id, { pairDen: v })}
-                options={lvlOpts(config.condition)}
-              />
-            </Field>
-          </>
-        )}
-
-        {config.analysis === 'two_way_anova' && (
-          <>
-            <Field label="factor 1">
-              <Select
-                value={config.condition}
-                onChange={(v) =>
-                  update(id, { condition: v as ConditionKey, pairNum: '', pairDen: '' })
-                }
-                options={condOpts}
-              />
-            </Field>
-            <Field label="f1 num">
-              <Select
-                value={config.pairNum}
-                onChange={(v) => update(id, { pairNum: v })}
-                options={lvlOpts(config.condition)}
-              />
-            </Field>
-            <Field label="f1 den">
-              <Select
-                value={config.pairDen}
-                onChange={(v) => update(id, { pairDen: v })}
-                options={lvlOpts(config.condition)}
-              />
-            </Field>
-            <Field label="factor 2">
-              <Select
-                value={config.condition2}
-                onChange={(v) =>
-                  update(id, { condition2: v as ConditionKey, pair2Num: '', pair2Den: '' })
-                }
-                options={condOpts}
-              />
-            </Field>
-            <Field label="f2 num">
-              <Select
-                value={config.pair2Num}
-                onChange={(v) => update(id, { pair2Num: v })}
-                options={lvlOpts(config.condition2)}
-              />
-            </Field>
-            <Field label="f2 den">
-              <Select
-                value={config.pair2Den}
-                onChange={(v) => update(id, { pair2Den: v })}
-                options={lvlOpts(config.condition2)}
-              />
-            </Field>
-          </>
-        )}
-
-        {config.analysis !== 'two_way_anova' && (
-          <>
-            <Field label="method">
-              <Select
-                value={config.method}
-                onChange={() => {}}
-                options={[{ value: 'ttest', label: 'Welch t-test' }]}
-              />
-            </Field>
-            <Checkbox
-              label="log2-transform before testing"
-              checked={config.transform}
-              onChange={(v) => update(id, { transform: v })}
-            />
-          </>
-        )}
+        <Checkbox
+          label="log2-transform before testing"
+          checked={config.transform}
+          onChange={(v) => update(id, { transform: v })}
+        />
       </Section>
       <Section title="Threshold">
         <Field label="significance">
@@ -740,7 +821,7 @@ function DRPanel({ config, update, focusNodeId }: PlotPanelProps<DRConfig>) {
           options={AXIS_OPTS}
         />
       </Field>
-      <Field label="highlight top N (0 = none)">
+      <Field label="highlight top N (0 = top 10)">
         <NumberInput
           value={config.topGenes}
           step={1}
@@ -763,7 +844,7 @@ function BubblePanel({ config, update, focusNodeId }: PlotPanelProps<BubbleConfi
           options={AXIS_OPTS}
         />
       </Field>
-      <Field label="top genes (0 = top 100)">
+      <Field label="top genes (0 = top 20)">
         <NumberInput
           value={config.topGenes}
           step={1}
@@ -864,6 +945,60 @@ function ClusterPanel({ config, update, focusNodeId }: PlotPanelProps<ClusterCon
   )
 }
 
+// Plot types valid per metric: distributions (intensity/CV) → violin/box; a per-sample count
+// (proteins) → bar only.
+function qcPlotOptions(metric: QcConfig['metric']): QcConfig['plot'][] {
+  return metric === 'proteins' ? ['bar'] : ['violin', 'box']
+}
+
+function QcPanel({ config, update }: PlotPanelProps<QcConfig>) {
+  const plotOpts = qcPlotOptions(config.metric)
+  const plot = plotOpts.includes(config.plot) ? config.plot : plotOpts[0]
+  return (
+    <Section title="QC">
+      <div style={styles.hint}>Per-sample quality: intensity distribution, %CV, or protein count.</div>
+      <Field label="metric">
+        <Select
+          value={config.metric}
+          onChange={(v) => {
+            const m = v as QcConfig['metric']
+            const opts = qcPlotOptions(m)
+            update({ metric: m, plot: opts.includes(config.plot) ? config.plot : opts[0] })
+          }}
+          options={[
+            { value: 'intensity', label: 'intensity' },
+            { value: 'cv', label: 'CV %' },
+            { value: 'proteins', label: '# proteins' }
+          ]}
+        />
+      </Field>
+      {/* Proteins is bar-only, so the plot selector only appears for the distribution metrics. */}
+      {plotOpts.length > 1 && (
+        <Field label="plot">
+          <Select
+            value={plot}
+            onChange={(v) => update({ plot: v as QcConfig['plot'] })}
+            options={plotOpts.map((o) => ({ value: o, label: o }))}
+          />
+        </Field>
+      )}
+    </Section>
+  )
+}
+
+function CorrPanel({ config, update }: PlotPanelProps<CorrConfig>) {
+  return (
+    <Section title="Correlation">
+      <div style={styles.hint}>All-samples × all-samples Pearson correlation.</div>
+      <Checkbox
+        label="cluster samples"
+        checked={config.cluster ?? true}
+        onChange={(v) => update({ cluster: v })}
+      />
+    </Section>
+  )
+}
+
 function HeatmapPanel({ config, update, focusNodeId }: PlotPanelProps<HeatmapConfig>) {
   return (
     <Section title="Heatmap">
@@ -887,10 +1022,21 @@ function HeatmapPanel({ config, update, focusNodeId }: PlotPanelProps<HeatmapCon
 
 // ── small controls ──────────────────────────────────────────────────────────────
 
-function Section({ title, children }: { title: string; children: ReactNode }) {
+function Section({
+  title,
+  action,
+  children
+}: {
+  title: string
+  action?: ReactNode
+  children: ReactNode
+}) {
   return (
     <div style={styles.section}>
-      <div style={styles.sectionTitle}>{title}</div>
+      <div style={styles.sectionHead}>
+        <div style={styles.sectionTitle}>{title}</div>
+        {action}
+      </div>
       {children}
     </div>
   )
@@ -1106,21 +1252,51 @@ function FocusField({
 function Checkbox({
   label,
   checked,
-  onChange
+  onChange,
+  disabled,
+  title
 }: {
   label: string
   checked: boolean
   onChange: (v: boolean) => void
+  disabled?: boolean
+  title?: string
 }) {
   return (
-    <label style={styles.checkRow}>
-      <input type="checkbox" checked={checked} onChange={(e) => onChange(e.target.checked)} />
+    <label
+      style={{ ...styles.checkRow, ...(disabled ? { opacity: 0.45, cursor: 'default' } : null) }}
+      title={title}
+    >
+      <input
+        type="checkbox"
+        checked={checked}
+        disabled={disabled}
+        onChange={(e) => onChange(e.target.checked)}
+      />
       <span>{label}</span>
     </label>
   )
 }
 
 const styles: Record<string, CSSProperties> = {
+  configBtn: {
+    width: '100%',
+    background: UI.panelAlt,
+    color: UI.text,
+    border: `1px solid ${UI.border}`,
+    borderRadius: 6,
+    padding: '8px 10px',
+    fontSize: 12,
+    fontWeight: 600,
+    cursor: 'pointer'
+  },
+  compareSummary: {
+    fontSize: 11,
+    color: UI.textMuted,
+    marginTop: 6,
+    overflowWrap: 'anywhere',
+    lineHeight: 1.4
+  },
   panel: {
     width: 268,
     maxHeight: '58vh',
@@ -1171,13 +1347,19 @@ const styles: Record<string, CSSProperties> = {
   headId: { color: UI.textMuted, fontSize: 11 },
   scroll: { flex: 1, overflow: 'auto', minHeight: 0 },
   section: { padding: '12px 14px', borderBottom: `1px solid ${UI.border}` },
+  sectionHead: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
+    marginBottom: 10
+  },
   sectionTitle: {
     fontSize: 11,
     fontWeight: 700,
     textTransform: 'uppercase',
     letterSpacing: 0.4,
-    color: UI.textMuted,
-    marginBottom: 10
+    color: UI.textMuted
   },
   hint: { color: UI.textMuted, fontSize: 11, marginBottom: 8, lineHeight: 1.4 },
   subTabs: { display: 'flex', flexWrap: 'wrap', gap: 4, marginBottom: 6 },
@@ -1284,6 +1466,26 @@ const styles: Record<string, CSSProperties> = {
     borderColor: UI.accent,
     fontWeight: 600,
     width: '100%'
+  },
+  chip: {
+    background: UI.panelAlt,
+    color: UI.textMuted,
+    border: '1px solid transparent',
+    borderRadius: 999,
+    padding: '3px 10px',
+    fontSize: 10.5,
+    fontWeight: 600,
+    letterSpacing: 0.3,
+    cursor: 'pointer',
+    whiteSpace: 'nowrap',
+    boxSizing: 'border-box',
+    minWidth: 96,
+    textAlign: 'center',
+    transition: 'color 120ms, border-color 120ms, background 120ms'
+  },
+  chipDone: {
+    color: UI.accent,
+    borderColor: UI.accent
   },
   footer: { display: 'flex', gap: 8, padding: 12, borderTop: `1px solid ${UI.border}` }
 }

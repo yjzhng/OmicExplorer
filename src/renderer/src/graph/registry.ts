@@ -15,7 +15,9 @@ import type {
   NodeConfig,
   NodeKind,
   ClusterConfig,
+  CorrConfig,
   PlotGroupConfig,
+  QcConfig,
   ScatterConfig,
   StandardizeConfig,
   TdrConfig,
@@ -43,7 +45,13 @@ export const NODE_SPECS: Record<NodeKind, NodeSpec> = {
     category: 'data',
     acceptsFrom: [],
     hasRun: false,
-    defaultConfig: (): LoadConfig => ({ data: null, samplesheet: null, db: null })
+    defaultConfig: (): LoadConfig => ({
+      mode: 'interactive',
+      data: null,
+      samplesheet: null,
+      db: null,
+      matrix: null
+    })
   },
   standardize: {
     kind: 'standardize',
@@ -65,9 +73,13 @@ export const NODE_SPECS: Record<NodeKind, NodeSpec> = {
     acceptsFrom: ['standardize'],
     hasRun: true,
     defaultConfig: (): CompareConfig => ({
-      analysis: 'veh_norm',
+      analysis: 'compare',
       method: 'ttest',
       transform: true,
+      // Fresh tile: nothing declared — the user opens "Configure comparison" to define it.
+      num: {},
+      den: {},
+      match: [],
       condition: 'cmpd',
       pairNum: '',
       pairDen: '',
@@ -102,7 +114,8 @@ export const NODE_SPECS: Record<NodeKind, NodeSpec> = {
     kind: 'heatmap',
     label: 'Heatmap',
     category: 'plotting',
-    acceptsFrom: ['standardize'],
+    // Standardize → intensity heatmap; Compare → log2FC heatmap (same tile, upstream decides).
+    acceptsFrom: ['standardize', 'compare'],
     hasRun: false,
     defaultConfig: (): HeatmapConfig => ({ maxGenes: 0, log10: true, focus: mkFocus() })
   },
@@ -130,7 +143,7 @@ export const NODE_SPECS: Record<NodeKind, NodeSpec> = {
     category: 'plotting',
     acceptsFrom: ['compare'],
     hasRun: false,
-    defaultConfig: (): DRConfig => ({ axis: 'dose', topGenes: 0, focus: mkFocus() })
+    defaultConfig: (): DRConfig => ({ axis: 'dose', topGenes: 10, focus: mkFocus() })
   },
   bubble: {
     kind: 'bubble',
@@ -138,7 +151,7 @@ export const NODE_SPECS: Record<NodeKind, NodeSpec> = {
     category: 'plotting',
     acceptsFrom: ['compare'],
     hasRun: false,
-    defaultConfig: (): BubbleConfig => ({ axis: 'dose', topGenes: 0, focus: mkFocus() })
+    defaultConfig: (): BubbleConfig => ({ axis: 'dose', topGenes: 20, focus: mkFocus() })
   },
   dumbbell: {
     kind: 'dumbbell',
@@ -171,6 +184,22 @@ export const NODE_SPECS: Record<NodeKind, NodeSpec> = {
     acceptsFrom: ['standardize', 'compare'],
     hasRun: false,
     defaultConfig: (): ClusterConfig => ({ method: 'pca', colorBy: 'cmpd', display: 'centroid' })
+  },
+  qc: {
+    kind: 'qc',
+    label: 'QC',
+    category: 'plotting',
+    acceptsFrom: ['standardize'],
+    hasRun: false,
+    defaultConfig: (): QcConfig => ({ metric: 'intensity', plot: 'box' })
+  },
+  corr: {
+    kind: 'corr',
+    label: 'Correlation',
+    category: 'plotting',
+    acceptsFrom: ['standardize'],
+    hasRun: false,
+    defaultConfig: (): CorrConfig => ({ cluster: true })
   },
   plotGroup: {
     kind: 'plotGroup',
@@ -214,7 +243,9 @@ export const CATEGORIES: Record<NodeCategory, CategorySpec> = {
       'dumbbell',
       'tdr',
       'geneBar',
-      'pca'
+      'pca',
+      'qc',
+      'corr'
     ]
   }
 }
@@ -236,6 +267,8 @@ export const ALL_OPS: NodeKind[] = [
   'tdr',
   'geneBar',
   'pca',
+  'qc',
+  'corr',
   // `plotGroup` is intentionally omitted from CATEGORIES.plotting.ops (never offered in the
   // picker or the Operation dropdown) but must be in ALL_OPS so canConnect/lookup resolve it.
   'plotGroup'

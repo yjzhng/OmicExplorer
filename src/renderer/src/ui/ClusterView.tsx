@@ -1,6 +1,7 @@
 import { useMemo } from 'react'
 
 import type { ClusterData, ClusterPoint } from '../engine'
+import { blues, reds, rgbHex } from './colormap'
 import { PlotlyChart } from './PlotlyChart'
 import { axisBase, CATEGORICAL, PALETTES, plotBase } from './theme'
 import { useUiTheme } from './useUiTheme'
@@ -58,9 +59,9 @@ function territory(pts: ClusterPoint[], scale = 2, segments = 48): Array<[number
   return poly
 }
 
-/** Sample/condition embedding (PCA / UMAP / t-SNE). In 'replicate' mode every point is
- *  drawn; in 'centroid' mode each condition collapses to a centroid + spread territory
- *  (single-replicate conditions just show the point). */
+/** Sample/condition embedding (PCA / UMAP / t-SNE). The spread territory (≥2-replicate
+ *  conditions) is always drawn; `display` only toggles what sits on top of it: 'centroid'
+ *  shows one marker per condition, 'replicate' shows every underlying data point. */
 export function ClusterView({
   cluster,
   title,
@@ -92,59 +93,67 @@ export function ClusterView({
           ? ['UMAP 1', 'UMAP 2']
           : ['t-SNE 1', 't-SNE 2']
 
+    // Dose/time are quantitative: colour their groups on a sequential ramp (time→Reds, dose→Blues),
+    // dark = high value, light = low — instead of unordered categorical colours. Groups are then
+    // ordered by value so the legend reads low→high.
+    const quant =
+      (cluster.colorBy === 'dose' || cluster.colorBy === 'time') &&
+      [...groups.keys()].every((g) => g === '' || Number.isFinite(Number(g)))
+    const ramp = cluster.colorBy === 'time' ? reds : blues
+    const nums = [...groups.keys()].map(Number).filter(Number.isFinite)
+    const lo = nums.length ? Math.min(...nums) : 0
+    const hi = nums.length ? Math.max(...nums) : 1
+    const colorOf = (g: string, idx: number): string => {
+      if (quant && Number.isFinite(Number(g))) {
+        const t = hi > lo ? (Number(g) - lo) / (hi - lo) : 0.5
+        // Start above 0 so the lowest value isn't near-white.
+        return rgbHex(ramp(0.2 + 0.8 * t))
+      }
+      return CATEGORICAL[idx % CATEGORICAL.length]
+    }
+    const groupEntries = quant
+      ? [...groups.entries()].sort((a, b) => Number(a[0]) - Number(b[0]))
+      : [...groups.entries()]
+
     const traces: Array<Record<string, unknown>> = []
     let i = 0
-    for (const [g, pts] of groups.entries()) {
-      const color = CATEGORICAL[i % CATEGORICAL.length]
+    for (const [g, pts] of groupEntries) {
+      const color = colorOf(g, i)
       const name = g || '(none)'
-      if (display === 'replicate') {
-        traces.push({
-          type: 'scatter',
-          mode: 'markers',
-          name,
-          legendgroup: name,
-          x: pts.map((pt) => pt.x),
-          y: pts.map((pt) => pt.y),
-          text: pts.map((pt) => pt.sample),
-          hovertemplate: `%{text}<br>${xLabel}=%{x:.2f}<br>${yLabel}=%{y:.2f}<extra></extra>`,
-          marker: { color, size: 10, opacity: 0.9 }
-        })
-      } else {
-        // Collapse each condition's replicates to a centroid; draw a territory ellipse
-        // for conditions with ≥2 replicates (others show the centroid alone).
-        const byCond = new Map<string, ClusterPoint[]>()
-        for (const pt of pts) {
-          let arr = byCond.get(pt.cond)
-          if (!arr) {
-            arr = []
-            byCond.set(pt.cond, arr)
-          }
-          arr.push(pt)
+      // Group replicates by condition for the territory ellipses + centroids.
+      const byCond = new Map<string, ClusterPoint[]>()
+      for (const pt of pts) {
+        let arr = byCond.get(pt.cond)
+        if (!arr) {
+          arr = []
+          byCond.set(pt.cond, arr)
         }
-        for (const reps of byCond.values()) {
-          const poly = territory(reps)
-          if (poly) {
-            traces.push({
-              type: 'scatter',
-              mode: 'lines',
-              name,
-              legendgroup: name,
-              showlegend: false,
-              hoverinfo: 'skip',
-              x: poly.map((q) => q[0]),
-              y: poly.map((q) => q[1]),
-              fill: 'toself',
-              fillcolor: rgba(color, 0.13),
-              line: { color: rgba(color, 0.5), width: 1 }
-            })
-          }
+        arr.push(pt)
+      }
+      // Territory ellipse per condition (≥2 replicates) — ALWAYS drawn; the centroid/data toggle
+      // only changes whether the centroid marker or the raw points are shown on top of it.
+      for (const reps of byCond.values()) {
+        const poly = territory(reps)
+        if (poly) {
+          traces.push({
+            type: 'scatter',
+            mode: 'lines',
+            name,
+            legendgroup: name,
+            showlegend: false,
+            hoverinfo: 'skip',
+            x: poly.map((q) => q[0]),
+            y: poly.map((q) => q[1]),
+            fill: 'toself',
+            fillcolor: rgba(color, 0.13),
+            line: { color: rgba(color, 0.5), width: 1 }
+          })
         }
-        const cx = [...byCond.values()].map(
-          (reps) => reps.reduce((s, r) => s + r.x, 0) / reps.length
-        )
-        const cy = [...byCond.values()].map(
-          (reps) => reps.reduce((s, r) => s + r.y, 0) / reps.length
-        )
+      }
+      if (display === 'centroid') {
+        // Just the centroid: one marker per condition.
+        const cx = [...byCond.values()].map((reps) => reps.reduce((s, r) => s + r.x, 0) / reps.length)
+        const cy = [...byCond.values()].map((reps) => reps.reduce((s, r) => s + r.y, 0) / reps.length)
         const labels = [...byCond.entries()].map(([cond, reps]) => `${cond} (n=${reps.length})`)
         traces.push({
           type: 'scatter',
@@ -156,6 +165,19 @@ export function ClusterView({
           text: labels,
           hovertemplate: `%{text}<br>${xLabel}=%{x:.2f}<br>${yLabel}=%{y:.2f}<extra></extra>`,
           marker: { color, size: 13, opacity: 0.95, line: { color: p.panel, width: 1.5 } }
+        })
+      } else {
+        // Just the data: every replicate as a solid dot.
+        traces.push({
+          type: 'scatter',
+          mode: 'markers',
+          name,
+          legendgroup: name,
+          x: pts.map((pt) => pt.x),
+          y: pts.map((pt) => pt.y),
+          text: pts.map((pt) => pt.sample),
+          hovertemplate: `%{text}<br>${xLabel}=%{x:.2f}<br>${yLabel}=%{y:.2f}<extra></extra>`,
+          marker: { color, size: 8, opacity: 0.9 }
         })
       }
       i++

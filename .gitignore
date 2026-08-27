@@ -25,3 +25,4 @@ demo.omicexplorer
 *.omicexplorer.bak
 test_project/
 test.omicexplorer
+pressure_test/

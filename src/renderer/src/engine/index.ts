@@ -3,13 +3,35 @@
  * to call directly or from a Web Worker (see worker.ts / client.ts).
  */
 export { standardize } from './ingest'
+export {
+  parseMatrix,
+  guessRoles,
+  guessRolesPreset,
+  MATRIX_PRESETS,
+  colsWithRole,
+  buildStandardInputs,
+  columnFacet,
+  deriveFieldRule,
+  applyFieldRule,
+  fieldRuleSpan,
+  type InteractiveSampleCond,
+  type InteractiveRole,
+  type FilterSpec,
+  type ColumnFacet,
+  type MatrixInfo,
+  type MatrixPreset,
+  type FieldRule
+} from './interactive'
 export { runVehNorm } from './compare'
-export { runDirect } from './direct'
-export { runTwoWayAnova } from './twoWay'
+export { runDirect, runCompare, previewCompare } from './direct'
+export type { ComparePreview } from './direct'
+export { runTwoWayAnova, previewTwoWay, crossPairs } from './twoWay'
+export type { TwoWayPreview } from './twoWay'
 export { runContrast } from './contrast'
 export {
   buildVolcano,
   buildHeatmap,
+  buildFcHeatmap,
   buildScatter,
   buildIntensityScatter,
   buildMA,
@@ -20,7 +42,10 @@ export {
   buildGeneBar,
   buildCluster,
   buildResponseCluster,
+  buildQc,
+  buildSampleCorr,
   facetContextDims,
+  facetDims,
   facetCompareRows
 } from './plotData'
 export type { ClusterMethod } from './embed'
@@ -41,6 +66,8 @@ export type {
   StandardizeInput,
   StandardizeResult,
   Pair,
+  CondSelector,
+  CompareInput,
   VehNormInput,
   VehNormResult,
   CompareResultRow
@@ -54,6 +81,8 @@ export type {
   VolcanoOptions,
   HeatmapData,
   HeatmapOptions,
+  FcHeatmapData,
+  FcHeatmapOptions,
   ScatterData,
   ScatterPoint,
   ScatterOptions,
@@ -77,7 +106,12 @@ export type {
   ClusterData,
   ClusterPoint,
   ClusterOptions,
+  QcData,
+  QcGroup,
+  QcMetric,
+  CorrData,
   FacetGroup,
+  FacetKey,
   ContextRow
 } from './plotData'
 export type { Analysis, PlotOption } from './plotChoice'

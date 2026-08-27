@@ -48,6 +48,27 @@ export interface StandardizeResult {
 /** A (numerator, denominator) compound pair for a comparison. */
 export type Pair = [string, string]
 
+/** Explicit per-condition value selection for one side of a comparison: condition → the
+ *  chosen value(s) (as strings; numeric conditions compared value-wise). A condition absent
+ *  from the map is unpinned ("any") for that side. */
+export type CondSelector = Partial<Record<ConditionKey, string[]>>
+
+/** An explicit comparison: numerator vs denominator cond-value selections, plus which of the
+ *  remaining (unpinned) conditions must be matched like-for-like between the two sides. Every
+ *  non-axis condition present in the numerator becomes a context facet; matched ones also
+ *  constrain the denominator, unmatched ones let the denominator pool over them. */
+export interface CompareInput {
+  rows: StandardRow[]
+  num: CondSelector
+  den: CondSelector
+  /** conditions (not the comparison axis) to match like-for-like; others are pooled */
+  match: ConditionKey[]
+  activeConditions: ConditionKey[]
+  method?: 'ttest'
+  transform?: boolean
+  threshold?: import('./stats').ThresholdConfig
+}
+
 export interface VehNormInput {
   rows: StandardRow[]
   /** compound pairs, e.g. [["E28","DMSO"]] */

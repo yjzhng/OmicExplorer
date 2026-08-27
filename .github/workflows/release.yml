@@ -62,8 +62,10 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run build
-      # Unsigned on both OSes (no signing certs configured) — matches the local
-      # ad-hoc builds. electron-builder auto-signs only when CSC_*/APPLE_* env is set.
+      # No Developer-ID cert configured, so builds aren't notarized. macOS apps are still
+      # ad-hoc-sealed (electron-builder afterPack hook) so a quarantined download shows the
+      # recoverable "unidentified developer" prompt, not the unescapable "damaged" one.
+      # electron-builder does a real sign/notarize only when CSC_*/APPLE_* env is set.
       # --publish never: electron-builder otherwise auto-publishes in CI (needs a
       # token); we only want it to build — the next step attaches via gh.
       - name: Package installer(s)

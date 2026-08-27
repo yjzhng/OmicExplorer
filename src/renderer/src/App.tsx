@@ -7,6 +7,7 @@ import {
   type MouseEvent as ReactMouseEvent
 } from 'react'
 import {
+  applyNodeChanges,
   Background,
   BackgroundVariant,
   Controls,
@@ -17,6 +18,7 @@ import {
   SelectionMode,
   useReactFlow,
   type FinalConnectionState,
+  type NodeChange,
   type OnConnectStartParams
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
@@ -29,7 +31,7 @@ import { edgeTypes } from './graph/GraphEdge'
 import { nodeTypes } from './graph/GraphNode'
 import { useGraph } from './graph/store'
 import { accentOf, ALL_OPS, canConnect, categoryOf, NODE_SPECS } from './graph/registry'
-import { isStep, type NodeData, type StepNode } from './graph/types'
+import { isStep, type GraphNode, type NodeData, type StepNode } from './graph/types'
 import { cssVars, PALETTES, UI } from './ui/theme'
 import { useAppView, type AppView } from './ui/useAppView'
 import { useUiTheme } from './ui/useUiTheme'
@@ -167,9 +169,35 @@ function SelectionActions({
 
 function Canvas() {
   const mode = useUiTheme((s) => s.mode)
-  const nodes = useGraph((s) => s.nodes)
+  const storeNodes = useGraph((s) => s.nodes)
+  const storeOnNodesChange = useGraph((s) => s.onNodesChange)
+  // Transient drag positions live in LOCAL state and are pushed to the global store only on
+  // drag-STOP. Writing every drag frame to the store would notify every subscriber (RunButton,
+  // each node's selectors, …) and re-evaluate them; with large result arrays sharing the heap,
+  // that per-frame allocation churn surfaces as GC jank and the drag stutters. Keeping it local
+  // confines per-frame work to React Flow + this component.
+  const draggingRef = useRef(false)
+  const [nodes, setNodes] = useState(storeNodes)
+  // Keep a ref to the latest local nodes so drag-STOP can read the final layout without a stale
+  // closure (updated in an effect, never during render).
+  const nodesRef = useRef(nodes)
+  useEffect(() => {
+    nodesRef.current = nodes
+  }, [nodes])
+  // Mirror the store into local state whenever we're NOT mid-drag, so external changes (adds,
+  // deletes, undo/redo, project load, selection) still show. During a drag the store isn't
+  // touched, so this effect stays quiet.
+  useEffect(() => {
+    if (!draggingRef.current) setNodes(storeNodes)
+  }, [storeNodes])
+  const onNodesChange = useCallback(
+    (changes: NodeChange<GraphNode>[]) => {
+      if (draggingRef.current) setNodes((cur) => applyNodeChanges(changes, cur))
+      else storeOnNodesChange(changes)
+    },
+    [storeOnNodesChange]
+  )
   const edges = useGraph((s) => s.edges)
-  const onNodesChange = useGraph((s) => s.onNodesChange)
   const onEdgesChange = useGraph((s) => s.onEdgesChange)
   const onConnect = useGraph((s) => s.onConnect)
   const onReconnect = useGraph((s) => s.onReconnect)
@@ -355,7 +383,16 @@ function Canvas() {
           dismissPlaceholders()
           selectNode(null)
         }}
-        onNodeDragStart={() => commit()}
+        onNodeDragStart={() => {
+          draggingRef.current = true
+          commit()
+        }}
+        onNodeDragStop={() => {
+          draggingRef.current = false
+          // One write of the final layout to the store (marks the project dirty). Moving a node
+          // has no downstream side effects, so setting nodes directly is safe.
+          useGraph.setState({ nodes: nodesRef.current, dirty: true })
+        }}
         onSelectionChange={onSelectionChange}
         onMoveStart={onMoveStart}
         onMoveEnd={onMoveEnd}
@@ -1218,13 +1255,18 @@ export default function App() {
       {!projectOpen ? (
         <Home />
       ) : view === 'canvas' ? (
+        // Results is unmounted on the canvas so its many Plotly charts don't sit in the DOM
+        // (and in memory) making the whole app sluggish. Re-opening it rebuilds the tiles, but
+        // paced by the reveal queue + buffering spinners so the mount stays responsive.
         <div style={styles.canvasArea}>
           <ReactFlowProvider>
             <Canvas />
           </ReactFlowProvider>
         </div>
       ) : (
-        <ResultsView />
+        <div style={styles.resultsArea}>
+          <ResultsView />
+        </div>
       )}
     </div>
   )
@@ -1797,6 +1839,14 @@ const styles: Record<string, CSSProperties> = {
   },
   canvasArea: {
     display: 'flex',
+    flex: 1,
+    minHeight: 0,
+    borderTop: `1px solid ${UI.border}`
+  },
+  // Results dashboard fill.
+  resultsArea: {
+    display: 'flex',
+    flexDirection: 'column',
     flex: 1,
     minHeight: 0,
     borderTop: `1px solid ${UI.border}`

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { facetContextDims, facetCompareRows } from './plotData'
+import { facetContextDims, facetCompareRows, facetDims } from './plotData'
 import type { CompareResultRow } from './types'
 
 function row(partial: Partial<CompareResultRow>): CompareResultRow {
@@ -41,6 +41,21 @@ describe('context faceting (omicViz plot_group_cols parity)', () => {
       row({ cmp_cond: 'strain', strain: 'clpP', cmpd: 'H2O', dose: 0 })
     ]
     expect(facetContextDims(rows)).toEqual(['cmpd', 'dose'])
+  })
+
+  it('facetDims prepends `comparison` only when a tile has multiple comparisons', () => {
+    // Single comparison → no comparison facet (just context).
+    const one = [row({ comparison: 'Amk | H2O', dose: 10 }), row({ comparison: 'Amk | H2O', dose: 5 })]
+    expect(facetDims(one)).toEqual(['dose'])
+    // Multiple comparisons (all-compounds veh_norm) → `comparison` becomes the first facet, so the
+    // pairs split into separate plots instead of merging.
+    const many = [
+      row({ comparison: 'Amk | H2O', cmpd: 'Amk', dose: 10 }),
+      row({ comparison: 'Kan | H2O', cmpd: 'Kan', dose: 10 })
+    ]
+    expect(facetDims(many)).toEqual(['comparison', 'dose'])
+    const groups = facetCompareRows(many, ['comparison'])
+    expect(groups.map((g) => g.key)).toEqual(['comparison=Amk | H2O', 'comparison=Kan | H2O'])
   })
 
   it('two-way ANOVA (cmp_cond=cmpd:dose): excludes both factors, keeps strain', () => {

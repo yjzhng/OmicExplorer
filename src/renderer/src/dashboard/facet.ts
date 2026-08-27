@@ -7,10 +7,10 @@
  */
 import { create } from 'zustand'
 
-import { facetCompareRows, type ConditionKey, type ContextRow } from '../engine'
+import { facetCompareRows, type ContextRow, type FacetKey } from '../engine'
 
 export interface FacetBar {
-  dim: ConditionKey
+  dim: FacetKey
   value: string | number
   /** the levels valid alongside the dims already fixed to the left */
   options: (string | number)[]
@@ -24,11 +24,11 @@ export interface FacetBar {
  */
 export function resolveFacets<T extends ContextRow>(
   rows: T[],
-  dims: ConditionKey[],
+  dims: FacetKey[],
   sel: Record<string, string>
 ): { bars: FacetBar[]; rows: T[] } {
   const groups = facetCompareRows(rows, dims)
-  const valueOf = (g: (typeof groups)[number], d: ConditionKey): string | number =>
+  const valueOf = (g: (typeof groups)[number], d: FacetKey): string | number =>
     g.values.find((v) => v.dim === d)?.value as string | number
   const bars: FacetBar[] = []
   let candidates = groups

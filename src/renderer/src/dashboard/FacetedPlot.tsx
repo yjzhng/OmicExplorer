@@ -11,7 +11,7 @@
  */
 import { useMemo, useState, type CSSProperties, type ReactNode } from 'react'
 
-import { facetContextDims, type ContextRow, type ConditionKey } from '../engine'
+import { facetDims, type ContextRow, type ConditionKey } from '../engine'
 import { UI } from '../ui/theme'
 import { resolveFacets } from './facet'
 
@@ -29,7 +29,7 @@ export function FacetedPlot<T extends ContextRow>({
    *  Undefined = standalone, with its own interactive tabs. */
   facetSel?: Record<string, string>
 }) {
-  const dims = useMemo(() => facetContextDims(rows, exclude), [rows, exclude])
+  const dims = useMemo(() => facetDims(rows, exclude), [rows, exclude])
   const [selState, setSel] = useState<Record<string, string>>({})
   const sel = facetSel ?? selState
   const { bars, rows: groupRows } = useMemo(() => resolveFacets(rows, dims, sel), [rows, dims, sel])

@@ -1,7 +1,7 @@
 /** A single dashboard panel: a titled header over a tile body.
  *  The header carries the `.panel-drag` class so the grid stage (added later) can
  *  bind dragging to the header only, leaving the body free for chart interaction. */
-import { memo, useState, type CSSProperties, type ReactNode } from 'react'
+import { memo, useEffect, useState, type CSSProperties, type ReactNode } from 'react'
 import type { Edge } from '@xyflow/react'
 
 import { rasterizeGd } from '../export/plotExport'
@@ -11,8 +11,10 @@ import { accentOf, categoryOf, NODE_SPECS } from '../graph/registry'
 import { useGraph } from '../graph/store'
 import { UI } from '../ui/theme'
 import type { NodeResult, PlotChild, PlotOrient, StepNode } from '../graph/types'
+import { Spinner } from '../ui/Spinner'
 import { GOI_TOGGLE_KINDS } from './goi'
 import { PanelBody } from './PanelBody'
+import { enqueueReveal } from './renderQueue'
 import { PanelDownloadDialog, type DownloadOpts } from './PanelDownloadDialog'
 import { useInView } from './useInView'
 
@@ -76,10 +78,9 @@ export const PanelTile = memo(function PanelTile({
    *  faceted plots read it instead of showing their own tabs. */
   facetSel?: Record<string, string>
 }): ReactNode {
-  // A subcard's header shows its plot kind; the group id keeps it traceable to the tile.
+  // A tile's header shows its plot kind.
   const kind = child ? child.kind : node.data.kind
   const label = NODE_SPECS[kind].label
-  const idLabel = child ? `${node.id} · ${child.id}` : node.id
   const [bodyRef, inView] = useInView<HTMLDivElement>()
   // Per-tile view state: plot all genes (default) or only the GOI/focus subset. Only
   // offered for kinds that otherwise draw all genes (see GOI_TOGGLE_KINDS).
@@ -160,7 +161,6 @@ export const PanelTile = memo(function PanelTile({
       <div className="panel-drag" style={{ ...styles.head, cursor: editing ? 'grab' : 'default' }}>
         <span style={{ ...styles.dot, background: accentOf(categoryOf(kind)) }} />
         <span style={styles.title}>{label}</span>
-        <span style={styles.id}>{idLabel}</span>
         <div style={styles.controls}>
           {canToggle && (
             <div style={styles.goiToggle} title="Show all genes or only the genes of interest">
@@ -234,19 +234,32 @@ export const PanelTile = memo(function PanelTile({
       )}
       <div style={styles.body} ref={bodyRef}>
         {inView ? (
-          <PanelBody
-            node={node}
-            edges={edges}
-            results={results}
-            child={child}
-            goiOnly={goiOnly}
-            facetSel={facetSel}
-          />
+          <DeferredMount>
+            <PanelBody
+              node={node}
+              edges={edges}
+              results={results}
+              child={child}
+              goiOnly={goiOnly}
+              facetSel={facetSel}
+            />
+          </DeferredMount>
         ) : null}
       </div>
     </div>
   )
 })
+
+/** Paint a buffering spinner, then reveal `children` via the global reveal queue (one tile per
+ *  frame). Building a tile's plot data is synchronous and can block for a while (clustering,
+ *  correlation, big pivots); deferring lets the spinner show first, and pacing reveals through
+ *  the queue keeps the app responsive when many heavy tiles mount at once (tab/project switch)
+ *  instead of freezing while they all build in the same frame. Remounts show the spinner again. */
+function DeferredMount({ children }: { children: ReactNode }): ReactNode {
+  const [show, setShow] = useState(false)
+  useEffect(() => enqueueReveal(() => setShow(true)), [])
+  return show ? <>{children}</> : <Spinner />
+}
 
 const styles: Record<string, CSSProperties> = {
   tile: {
@@ -270,7 +283,6 @@ const styles: Record<string, CSSProperties> = {
   },
   dot: { width: 8, height: 8, borderRadius: '50%', display: 'inline-block', flex: '0 0 auto' },
   title: { fontSize: 12, fontWeight: 700, color: UI.text },
-  id: { fontSize: 11, color: UI.textMuted },
   // Right-aligned control group: GOI switch (optional) + download button.
   controls: {
     marginLeft: 'auto',

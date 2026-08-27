@@ -1,11 +1,13 @@
-import { Handle, Position, type NodeProps, type Node } from '@xyflow/react'
-import { Fragment, useState, type CSSProperties } from 'react'
+import { Handle, Position, useReactFlow, type NodeProps, type Node } from '@xyflow/react'
+import { Fragment, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 
 import { UI } from '../ui/theme'
 import { NodeConfigPanel } from './NodeConfigPanel'
 import { accentOf, categoryOf, CATEGORIES, hasSourceHandle, NODE_SPECS } from './registry'
 import { useGraph } from './store'
 import { TilePicker } from './TilePicker'
+import { isCompareConfigured, isStep, normalizeCompareConfig, resolveLoadMode } from './types'
+import { VALID_CONDITIONS } from '../engine'
 import type {
   CompareConfig,
   LoadConfig,
@@ -16,17 +18,70 @@ import type {
   StepStatus
 } from './types'
 
-/** Text-chip run control: Run (idle) · Stop (running) · Re-run (done) · Retry (error). */
+// One-time keyframes for the running-status pulse (self-contained; canvas nodes don't share
+// the dashboard stylesheet).
+if (typeof document !== 'undefined' && !document.getElementById('oe-status-kf')) {
+  const el = document.createElement('style')
+  el.id = 'oe-status-kf'
+  el.textContent = '@keyframes oe-status-pulse{0%,100%{opacity:1}50%{opacity:.3}}'
+  document.head.appendChild(el)
+}
+
+interface StatusInfo {
+  color: string
+  label: string
+  pulse: boolean
+}
+
+/** Status shown for a runnable step from its run lifecycle. */
+function runStatusInfo(status: StepStatus): StatusInfo {
+  switch (status) {
+    case 'running':
+      return { color: '#e2b93b', label: 'Running…', pulse: true }
+    case 'done':
+      return { color: '#3fae5a', label: 'Completed', pulse: false }
+    case 'error':
+      return { color: '#e5484d', label: 'Error', pulse: false }
+    default:
+      return { color: UI.textMuted, label: 'Not run', pulse: false }
+  }
+}
+
+/** A persistent top-right status dot: run state for runnable tiles, upstream-readiness for
+ *  live tiles (plots), so every tile shows its state at a glance. */
+function StatusDot({ color, label, pulse }: StatusInfo) {
+  return (
+    <span
+      role="img"
+      aria-label={label}
+      title={label}
+      style={{
+        width: 9,
+        height: 9,
+        borderRadius: '50%',
+        background: color,
+        flexShrink: 0,
+        ...(pulse ? { animation: 'oe-status-pulse 1.1s ease-in-out infinite' } : {})
+      }}
+    />
+  )
+}
+
+/** Text-chip run control: Run (idle) · Stop (running) · Re-run (done) · Retry (error).
+ *  When `gate` is set the step is blocked (e.g. Interactive samples not set up) — the chip is
+ *  disabled and explains why. */
 function RunControl({
   status,
   accent,
   onRun,
-  onStop
+  onStop,
+  gate
 }: {
   status: StepStatus
   accent: string
   onRun: () => void
   onStop: () => void
+  gate?: string | null
 }) {
   const chip = (label: string, color: string, fn: () => void) => (
     <button
@@ -40,6 +95,17 @@ function RunControl({
       {label}
     </button>
   )
+  if (gate) {
+    return (
+      <span
+        className="nodrag"
+        title={gate}
+        style={{ ...runChip, color: UI.textMuted, borderColor: UI.border, cursor: 'not-allowed' }}
+      >
+        Set up first
+      </span>
+    )
+  }
   if (status === 'running') return chip('Stop', '#e2b93b', onStop)
   if (status === 'done') return chip('Re-run', accent, onRun)
   if (status === 'error') return chip('Retry', '#e15759', onRun)
@@ -134,6 +200,23 @@ export function GraphNode({ id, data, selected: rfSelected }: NodeProps<Node<Nod
   const result = useGraph((s) => s.results[id])
   const runNode = useGraph((s) => s.runNode)
   const cancelNode = useGraph((s) => s.cancelNode)
+  // Gate: a Standardize whose upstream is an Interactive Load that hasn't been converted yet is
+  // blocked until the user completes the sample setup (which materializes the input files).
+  const stdGate = useGraph((s) => {
+    if (data.kind !== 'standardize') return null
+    const upId = s.upstreamId(id)
+    const up = upId ? s.nodes.find((n) => n.id === upId) : undefined
+    if (up && isStep(up) && up.data.kind === 'load') {
+      const c = up.data.config as LoadConfig
+      if (resolveLoadMode(c) === 'interactive' && !c.data) return 'Configure samples first'
+    }
+    return null
+  })
+  const gate =
+    stdGate ??
+    (data.kind === 'compare' && !isCompareConfigured(data.config as CompareConfig)
+      ? 'Configure comparison first'
+      : null)
   // Config float opens for the single store selection; the accent border also lights up
   // for React Flow's own selection so every marquee-selected tile reads as selected.
   const configOpen = selectedId === id
@@ -141,8 +224,66 @@ export function GraphNode({ id, data, selected: rfSelected }: NodeProps<Node<Nod
   const [hovered, setHovered] = useState(false)
   const sideColor = selected ? accent : UI.border
 
+  // Status dot: runnable tiles show their run lifecycle; live tiles (plots) show whether their
+  // upstream has produced data yet (ready vs waiting). Load (no upstream) reads as ready.
+  const upstreamReady = useGraph((s) => {
+    if (spec.hasRun) return false // unused for runnable tiles
+    const up = s.upstreamId(id)
+    return up ? !!s.results[up] : true
+  })
+  const statusInfo: StatusInfo = spec.hasRun
+    ? runStatusInfo(data.status)
+    : upstreamReady
+      ? { color: '#3fae5a', label: 'Ready', pulse: false }
+      : { color: UI.textMuted, label: 'Waiting for data', pulse: false }
+
+  // Inline rename: double-click the title to edit; Enter/blur commits, Escape cancels.
+  const renameNode = useGraph((s) => s.renameNode)
+  const [editing, setEditing] = useState(false)
+  const [nameHover, setNameHover] = useState(false)
+  const [draft, setDraft] = useState('')
+  const typeText =
+    data.kind === 'plotGroup'
+      ? `${spec.label} · ${(data.config as PlotGroupConfig).children.length}`
+      : spec.label
+  const startRename = (): void => {
+    setDraft(data.name ?? '')
+    setEditing(true)
+  }
+  const commitRename = (): void => {
+    renameNode(id, draft)
+    setEditing(false)
+  }
+
+  // Wheel over the tile BODY zooms the canvas at the cursor. React Flow's own pan/zoom handler
+  // lives on the renderer above us, and with pan-on-scroll a wheel over a node would pan instead of
+  // zoom — so we intercept it here with a native, non-passive listener (fires before the renderer's)
+  // and drive the viewport directly. Empty-canvas scroll still pans. The detail window (config
+  // float, `.nowheel`) is EXCLUDED so its own content can scroll natively.
+  const rf = useReactFlow()
+  const cardRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    const el = cardRef.current
+    if (!el) return
+    const onWheel = (e: WheelEvent): void => {
+      // Inside the scrollable detail window → let it scroll; don't hijack the wheel to zoom.
+      if ((e.target as HTMLElement).closest?.('.nowheel')) return
+      e.preventDefault()
+      e.stopPropagation()
+      const { x, y, zoom } = rf.getViewport()
+      const nextZoom = Math.min(2, Math.max(0.5, zoom * Math.pow(1.0015, -e.deltaY)))
+      if (nextZoom === zoom) return
+      // Keep the flow point under the cursor fixed: new translate = old + p·(zoom − nextZoom).
+      const p = rf.screenToFlowPosition({ x: e.clientX, y: e.clientY })
+      rf.setViewport({ x: x + p.x * (zoom - nextZoom), y: y + p.y * (zoom - nextZoom), zoom: nextZoom })
+    }
+    el.addEventListener('wheel', onWheel, { passive: false })
+    return () => el.removeEventListener('wheel', onWheel)
+  }, [rf])
+
   return (
     <div
+      ref={cardRef}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
       style={{
@@ -158,24 +299,60 @@ export function GraphNode({ id, data, selected: rfSelected }: NodeProps<Node<Nod
         boxShadow: selected ? `0 0 0 1px ${accent}, 0 3px 14px rgba(0,0,0,0.4)` : card.boxShadow
       }}
     >
-      {spec.acceptsFrom.length > 0 && <Handle type="target" position={Position.Left} />}
+      {spec.acceptsFrom.length > 0 && (
+        <Handle type="target" position={Position.Left} style={handleStyle} />
+      )}
       <div style={header}>
         <span style={titleWrap}>
           <span style={{ ...catTag, color: accent }}>{CATEGORIES[category].label}</span>
-          <span style={opLabel}>
-            {data.kind === 'plotGroup'
-              ? `${spec.label} · ${(data.config as PlotGroupConfig).children.length}`
-              : spec.label}
-          </span>
+          {editing ? (
+            <input
+              // `nodrag` + stopPropagation so typing/clicking the field doesn't drag the node.
+              className="nodrag"
+              autoFocus
+              value={draft}
+              placeholder={typeText}
+              onChange={(e) => setDraft(e.target.value)}
+              onBlur={commitRename}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') commitRename()
+                else if (e.key === 'Escape') setEditing(false)
+              }}
+              onPointerDown={(e) => e.stopPropagation()}
+              style={nameInput}
+            />
+          ) : (
+            <span
+              // Dashed chip appears only while hovering the name itself; single click edits.
+              // Border stays 1px (transparent when idle) so revealing it doesn't shift layout.
+              style={{ ...opLabel, ...nameChip, borderColor: nameHover ? accent : 'transparent' }}
+              onMouseEnter={() => setNameHover(true)}
+              onMouseLeave={() => setNameHover(false)}
+              onClick={(e) => {
+                e.stopPropagation()
+                startRename()
+              }}
+              title="Click to rename"
+            >
+              {data.name ?? typeText}
+            </span>
+          )}
+          {/* Type label as a subtitle whenever there's a name, and always while editing (so the
+              type stays visible as you name the tile). */}
+          {(data.name || editing) && <span style={typeSub}>{spec.label}</span>}
         </span>
-        {spec.hasRun && (hovered || selected) && (
-          <RunControl
-            status={data.status}
-            accent={accent}
-            onRun={() => void runNode(id)}
-            onStop={() => cancelNode(id)}
-          />
-        )}
+        <div style={headerRight}>
+          {spec.hasRun && (hovered || selected) && (
+            <RunControl
+              status={data.status}
+              accent={accent}
+              onRun={() => void runNode(id)}
+              onStop={() => cancelNode(id)}
+              gate={gate}
+            />
+          )}
+          <StatusDot {...statusInfo} />
+        </div>
       </div>
       <div style={body}>
         {data.kind === 'plotGroup' ? (
@@ -185,7 +362,9 @@ export function GraphNode({ id, data, selected: rfSelected }: NodeProps<Node<Nod
         )}
         {data.error && <div style={errText}>{data.error}</div>}
       </div>
-      {hasSourceHandle(data.kind) && <Handle type="source" position={Position.Right} />}
+      {hasSourceHandle(data.kind) && (
+        <Handle type="source" position={Position.Right} style={handleStyle} />
+      )}
       {configOpen && (
         // Stop clicks inside the panel from bubbling to the node's onNodeClick, which
         // calls selectNode → clears selectedSub — that reset the active subcard to the
@@ -208,20 +387,21 @@ function NodeSummary({
   result: ReturnType<typeof useGraph.getState>['results'][string] | undefined
   config: NodeData['config']
 }) {
+  // Significant-row count is O(rows); memoize on the result so it isn't recomputed on every
+  // re-render of the tile (e.g. a hover toggle) — that stalled on large comparison tables.
+  const signfCount = useMemo(() => {
+    if (result?.kind === 'compare') return result.cmp.rows.filter((r) => r.signf).length
+    if (result?.kind === 'contrast') return result.ctr.rows.filter((r) => r.signf).length
+    return 0
+  }, [result])
   if (kind === 'load') {
     const cfg = config as LoadConfig
+    const loaded = !!cfg.data && !!cfg.samplesheet
     return (
       <div style={muted}>
-        {cfg.data ? (
-          <>
-            {cfg.data}
-            <br />
-            {cfg.samplesheet ?? 'no samplesheet'}
-            {cfg.db ? ` · ${cfg.db}` : ''}
-          </>
-        ) : (
-          'Pick input files in the inspector.'
-        )}
+        {loaded
+          ? `Data loaded ${resolveLoadMode(cfg) === 'interactive' ? 'interactively' : 'manually'}`
+          : 'Data not yet loaded'}
       </div>
     )
   }
@@ -236,15 +416,26 @@ function NodeSummary({
     )
   }
   if (kind === 'compare') {
-    const cfg = config as CompareConfig
+    const cfg = normalizeCompareConfig(config as CompareConfig)
     const cmp = result?.kind === 'compare' ? result.cmp : null
+    const sideShort = (sel: CompareConfig['num']): string =>
+      VALID_CONDITIONS.filter((k) => (sel[k]?.length ?? 0) > 0)
+        .map((k) => (sel[k] as string[]).join('/'))
+        .join(',') || '—'
+    // Once run, show just the comparison COUNT (the detailed strings can be long when a
+    // comparison spans many values); before running, a concise config preview.
+    const n = cmp?.comparisons.length ?? 0
+    const label = cmp
+      ? `${n} comparison${n === 1 ? '' : 's'}`
+      : cfg.analysis === 'two_way_anova'
+        ? `two-way · ${cfg.condition}×${cfg.condition2}`
+        : `${sideShort(cfg.num)} vs ${sideShort(cfg.den)}`
     return (
       <div style={muted}>
-        {cfg.pairNum || '—'} vs {cfg.pairDen || '—'}
+        {label}
         {cmp && (
           <div style={stat}>
-            {cmp.rows.length.toLocaleString()} rows · {cmp.rows.filter((r) => r.signf).length}{' '}
-            signif
+            {cmp.rows.length.toLocaleString()} rows · {signfCount} signif
           </div>
         )}
       </div>
@@ -259,8 +450,7 @@ function NodeSummary({
           : 'Connect a Compare tile, then pick two levels.'}
         {ctr && (
           <div style={stat}>
-            {ctr.rows.length.toLocaleString()} rows · {ctr.rows.filter((r) => r.signf).length}{' '}
-            signif
+            {ctr.rows.length.toLocaleString()} rows · {signfCount} signif
           </div>
         )}
       </div>
@@ -278,6 +468,10 @@ function NodeSummary({
     return <div style={muted}>Focus gene value across conditions. Select to view.</div>
   if (kind === 'pca')
     return <div style={muted}>Cluster samples or responsome (PCA/UMAP/t-SNE). Select to view.</div>
+  if (kind === 'qc')
+    return <div style={muted}>Per-sample QC (intensity / CV / #proteins). Select to view.</div>
+  if (kind === 'corr')
+    return <div style={muted}>Sample × sample correlation matrix. Select to view.</div>
   return <div style={muted}>Genes × samples. Select to view.</div>
 }
 
@@ -287,7 +481,7 @@ export function PlaceholderNode({ id, data }: NodeProps<Node<PlaceholderData>>) 
   const resolvePlaceholder = useGraph((s) => s.resolvePlaceholder)
   return (
     <div style={{ position: 'relative' }}>
-      <Handle type="target" position={Position.Left} />
+      <Handle type="target" position={Position.Left} style={handleStyle} />
       <TilePicker ops={data.ops} header="New step" onPick={(ops) => resolvePlaceholder(id, ops)} />
     </div>
   )
@@ -299,6 +493,15 @@ export const nodeTypes = {
   placeholder: PlaceholderNode
 }
 
+// Connection handles: enlarge React Flow's default ~6px dots so the edge
+// attach/detach points between step tiles are easier to see and grab. Fill/stroke
+// use theme vars so they invert in dark mode (light dot + dark ring, and vice versa).
+const handleStyle: CSSProperties = {
+  width: 12,
+  height: 12,
+  background: UI.bg,
+  border: `2px solid ${UI.textMuted}`
+}
 const card: CSSProperties = {
   width: 230,
   background: UI.panel,
@@ -317,6 +520,16 @@ const header: CSSProperties = {
   borderBottom: `1px solid ${UI.border}`
 }
 const titleWrap: CSSProperties = { display: 'flex', flexDirection: 'column', gap: 1 }
+// Header right cluster: the run chip (on hover) and the always-on status dot. The fixed
+// minHeight matches the run chip so the dot keeps its vertical position whether or not the
+// chip is present (otherwise the taller chip re-centers the dot when it appears).
+const headerRight: CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: 6,
+  flexShrink: 0,
+  minHeight: 21
+}
 const catTag: CSSProperties = {
   fontSize: 9,
   fontWeight: 700,
@@ -324,8 +537,49 @@ const catTag: CSSProperties = {
   letterSpacing: 0.6
 }
 const opLabel: CSSProperties = { fontWeight: 600 }
+// Dashed pill around the tile name, hinting it's editable (double-click to rename).
+const nameChip: CSSProperties = {
+  display: 'inline-flex',
+  alignItems: 'center',
+  alignSelf: 'flex-start',
+  maxWidth: '100%',
+  padding: '0 6px',
+  border: `1px dashed ${UI.border}`,
+  borderRadius: 5,
+  cursor: 'pointer',
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+  whiteSpace: 'nowrap'
+}
+// Type subtitle, shown under a user-given name (the intrinsic kind label, e.g. "Compare").
+const typeSub: CSSProperties = { fontSize: 10, color: UI.textMuted, fontWeight: 500 }
+// Inline rename field — matches the name chip's box (same font, padding, border, radius) so
+// swapping the label for the input doesn't change the header's height or push the body.
+const nameInput: CSSProperties = {
+  fontWeight: 600,
+  fontSize: 12,
+  lineHeight: 'inherit',
+  background: UI.panelAlt,
+  color: UI.text,
+  border: `1px solid ${UI.accent}`,
+  borderRadius: 5,
+  padding: '0 6px',
+  margin: 0,
+  width: 150,
+  maxWidth: '100%',
+  boxSizing: 'border-box'
+}
 const body: CSSProperties = { padding: 10, display: 'flex', flexDirection: 'column', gap: 8 }
-const muted: CSSProperties = { color: UI.textMuted, fontSize: 11, lineHeight: 1.45 }
+const muted: CSSProperties = {
+  color: UI.textMuted,
+  fontSize: 11,
+  lineHeight: 1.45,
+  // Break long unbroken filenames (underscores/paths) so they wrap inside the fixed-width tile
+  // instead of overflowing it.
+  overflowWrap: 'anywhere',
+  wordBreak: 'break-word',
+  minWidth: 0
+}
 const subList: CSSProperties = { display: 'flex', flexDirection: 'column', gap: 5 }
 const subCard: CSSProperties = {
   display: 'flex',
