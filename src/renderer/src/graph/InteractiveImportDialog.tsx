@@ -35,7 +35,7 @@ import {
 import { cssVars, PALETTES, UI } from '../ui/theme'
 import { useUiTheme } from '../ui/useUiTheme'
 import { useGraph } from './store'
-import { isStep, type LoadConfig } from './types'
+import { isStep, type AnnotationSet, type LoadConfig } from './types'
 
 const FIELDS = ['strain', 'cmpd', 'dose', 'time', 'rep'] as const
 type Field = (typeof FIELDS)[number]
@@ -381,6 +381,20 @@ function Roadmap({
   )
 }
 
+/** UniProt fields offered by the annotation fetch (id → display label + resulting DB column).
+ *  A fetch always pulls ALL of these and caches them, so toggling which are shown never refetches. */
+const UNIPROT_FIELDS: { id: string; label: string; col: string }[] = [
+  { id: 'protein_name', label: 'Protein name', col: 'proteinName' },
+  { id: 'gene_names', label: 'Gene name', col: 'geneName' },
+  { id: 'go', label: 'GO terms', col: 'GO' },
+  { id: 'kegg', label: 'KEGG pathway', col: 'keggPathway' },
+  { id: 'string', label: 'STRING', col: 'stringId' },
+  // Local DEG (Database of Essential Genes) join by UniProt accession — no network.
+  { id: 'essentiality', label: 'Essential gene (DEG)', col: 'essentiality' }
+]
+const colsForIds = (ids: string[]): string[] =>
+  UNIPROT_FIELDS.filter((f) => ids.includes(f.id)).map((f) => f.col)
+
 export function InteractiveImportDialog({ id, onClose }: { id: string; onClose: () => void }): ReactNode {
   const mode = useUiTheme((s) => s.mode)
   const cfg = useGraph((s) => {
@@ -413,6 +427,9 @@ export function InteractiveImportDialog({ id, onClose }: { id: string; onClose: 
   const [confirmedSheet, setConfirmedSheet] = useState(false)
   const [confirmed, setConfirmed] = useState(false)
   const [msg, setMsg] = useState<string | null>(null)
+  // Annotation fetch (Metadata step): status text + in-flight flag.
+  const [annBusy, setAnnBusy] = useState(false)
+  const [annMsg, setAnnMsg] = useState<string | null>(null)
   // Active classification mode: 'none' (default, nothing painted) or a tool preset re-runs
   // detection; 'custom' is set automatically once the user hand-edits any column's role.
   const [preset, setPreset] = useState<MatrixPreset | 'custom'>(
@@ -599,6 +616,11 @@ export function InteractiveImportDialog({ id, onClose }: { id: string; onClose: 
     setPreset(detectPreset)
     await detectWith(detectPreset)
   }
+  // Browse the whole filesystem for a matrix (not restricted to the data folder), then switch to it.
+  const browseMatrix = async (): Promise<void> => {
+    const path = await window.api.pickDataFile()
+    if (path) await changeMatrix(path)
+  }
 
   const STEP_NAMES = ['Columns', 'Filtering', 'Conditions', 'Samplesheet', 'Metadata']
   const hasFilters = filterCols.length > 0
@@ -614,6 +636,19 @@ export function InteractiveImportDialog({ id, onClose }: { id: string; onClose: 
   }
   const canNext =
     stage === 1 ? !!idCol && sampleCols.length > 0 : stage === 4 ? confirmedSheet : true
+  // Why Next is blocked (shown next to the button), so it's clear what's still needed.
+  const nextBlock =
+    canNext || stage >= 5
+      ? ''
+      : stage === 1
+        ? !idCol && sampleCols.length === 0
+          ? 'Mark an ID column and at least one Sample column'
+          : !idCol
+            ? 'Mark an ID column'
+            : 'Mark at least one Sample column'
+        : stage === 4
+          ? 'Tick “Everything is correct” to continue'
+          : ''
 
   // Metadata preview must reflect the Filtering step — rows dropped by an active filter must not
   // appear in (or be counted for) the generated DB. Computed only on the Metadata step (a single
@@ -650,6 +685,142 @@ export function InteractiveImportDialog({ id, onClose }: { id: string; onClose: 
     return { rows, total }
   })()
 
+  const annotations = interactive?.annotations
+  // Toggling which annotation columns are shown just re-slices the cached data — no refetch.
+  const setAnnotationFields = (selectedIds: string[]): void => {
+    if (!annotations) return
+    setInteractive(id, { annotations: { ...annotations, fields: colsForIds(selectedIds) } })
+  }
+  // Fetch annotations for every kept feature and merge them into the DB (persisted in config,
+  // written on convert). Runs in the main process (no renderer CSP) via window.api. Only the
+  // SELECTED fields are fetched, but results are MERGED into any previously-fetched columns — so
+  // a plain re-slice of already-fetched fields (see setAnnotationFields) never hits the network.
+  const runFetchAnnotations = async (selectedIds: string[]): Promise<void> => {
+    if (!idCol || annBusy) return
+    const wantsString = selectedIds.includes('string')
+    setAnnBusy(true)
+    setAnnMsg(wantsString ? '1/3 Fetching annotations & STRING ids (UniProt)…' : 'Fetching from UniProt…')
+    try {
+      const active = filterCols
+        .filter((c) => filters[c]?.active)
+        .map((c) => ({ col: c, drop: new Set(filters[c].drop ?? []), spec: filters[c] }))
+      const passes = (r: Record<string, string>): boolean => {
+        for (const { col, drop, spec } of active) {
+          const raw = (r[col] ?? '').trim()
+          if (drop.size > 0 && drop.has(raw)) return false
+          if (spec.min != null || spec.max != null) {
+            const x = Number(raw)
+            if (
+              !Number.isFinite(x) ||
+              (spec.min != null && x < spec.min) ||
+              (spec.max != null && x > spec.max)
+            )
+              return false
+          }
+        }
+        return true
+      }
+      // A feature id → clean UniProt accession: first of a `;`-group, middle of `sp|ACC|NAME`,
+      // minus any isoform suffix.
+      const accOf = (uid: string): string => {
+        const first = uid.split(';')[0].trim()
+        const parts = first.split('|')
+        return (parts.length >= 2 ? parts[1] : first).replace(/-\d+$/, '').trim()
+      }
+      const accByUniq = new Map<string, string>()
+      const accSet = new Set<string>()
+      for (const r of allRows) {
+        if (active.length && !passes(r)) continue
+        const uid = (r[idCol] ?? '').trim()
+        if (!uid || accByUniq.has(uid)) continue
+        const acc = accOf(uid)
+        accByUniq.set(uid, acc)
+        if (acc) accSet.add(acc)
+      }
+      if (accSet.size === 0) {
+        setAnnMsg('No accessions found in the ID column.')
+        return
+      }
+      const base = wantsString ? '1/3 Fetching annotations & STRING ids (UniProt)…' : 'Fetching from UniProt…'
+      const offAnn = window.api.onAnnotProgress((p) => {
+        setAnnMsg(p.total > 0 ? `${base} ${p.done}/${p.total}` : base)
+      })
+      let res: Awaited<ReturnType<typeof window.api.fetchUniprot>>
+      try {
+        res = await window.api.fetchUniprot([...accSet], selectedIds)
+      } finally {
+        offAnn()
+      }
+      // Merge onto any previously-fetched columns so this fetch only adds/refreshes the selected
+      // ones instead of wiping the rest of the cache.
+      const prev = annotations?.byId ?? {}
+      const byId: Record<string, Record<string, string>> = {}
+      for (const [uid, acc] of accByUniq) {
+        const rec = res.byId[acc]
+        if (prev[uid] || rec) byId[uid] = { ...(prev[uid] ?? {}), ...(rec ?? {}) }
+      }
+      // Keep any species / KEGG-org / categories already learned from a prior fetch if this one
+      // didn't resolve them (a fully-cached fetch returns no new categories).
+      const taxon = res.taxon && res.taxon > 0 ? res.taxon : annotations?.taxon
+      const keggOrg = res.keggOrg || annotations?.keggOrg
+      const keggCategories =
+        res.keggCategories && Object.keys(res.keggCategories).length
+          ? { ...annotations?.keggCategories, ...res.keggCategories }
+          : annotations?.keggCategories
+      setInteractive(id, {
+        annotations: {
+          source: 'uniprot',
+          fields: colsForIds(selectedIds),
+          byId,
+          taxon,
+          keggOrg,
+          keggCategories
+        }
+      })
+      const n = Object.keys(byId).length
+      const sp = taxon ? ` • species taxon ${taxon}` : ''
+      const catN = keggCategories ? Object.keys(keggCategories).length : 0
+      const cat = catN ? ` • ${catN} KEGG pathway categories` : ''
+      // When STRING is selected, download the organism's interactome so the network builds offline.
+      if (wantsString && taxon) {
+        setAnnMsg(`2/3 Resolving species — taxon ${taxon}…`)
+        const stageLabel: Record<string, string> = {
+          links: 'interactome',
+          info: 'gene names',
+          aliases: 'gene-name map'
+        }
+        const off = window.api.onStringProgress((p) => {
+          const pct = p.total > 0 ? ` ${Math.round((p.loaded / p.total) * 100)}%` : ''
+          setAnnMsg(`3/3 STRING data — ${stageLabel[p.stage] ?? p.stage} for taxon ${taxon}…${pct}`)
+        })
+        try {
+          const r = await window.api.ensureStringOrg(taxon)
+          setAnnMsg(
+            r.error
+              ? `Annotated ${n} features${sp}${cat}. STRING download failed: ${r.error}`
+              : `Annotated ${n} features${sp}${cat}. STRING v${r.version} ${r.cached ? 'ready (cached)' : 'downloaded'}.`
+          )
+        } finally {
+          off()
+        }
+      } else {
+        setAnnMsg(
+          res.error
+            ? `Partial: ${n}/${accByUniq.size} annotated (${res.error})${sp}${cat}`
+            : `Annotated ${n} of ${accByUniq.size} features.${sp}${cat}`
+        )
+      }
+    } catch (e) {
+      setAnnMsg(e instanceof Error ? e.message : 'Fetch failed.')
+    } finally {
+      setAnnBusy(false)
+    }
+  }
+  const clearAnnotations = (): void => {
+    setInteractive(id, { annotations: undefined })
+    setAnnMsg(null)
+  }
+
   return createPortal(
     <div style={{ ...cssVars(PALETTES[mode]), ...styles.overlay }}>
       <div style={styles.scrim} onClick={onClose} />
@@ -678,6 +849,7 @@ export function InteractiveImportDialog({ id, onClose }: { id: string; onClose: 
               matrix={matrix}
               inputFiles={inputFiles}
               onMatrix={changeMatrix}
+              onBrowse={browseMatrix}
               preset={preset}
               onPreset={applyPreset}
               detecting={detecting}
@@ -724,6 +896,12 @@ export function InteractiveImportDialog({ id, onClose }: { id: string; onClose: 
               metaCols={metaCols}
               rows={metaPreview?.rows ?? null}
               total={metaPreview?.total ?? 0}
+              annotations={annotations}
+              annBusy={annBusy}
+              annMsg={annMsg}
+              onFetch={runFetchAnnotations}
+              onSelectFields={setAnnotationFields}
+              onClearAnnotations={clearAnnotations}
             />
           )}
           {msg && <div style={styles.hint}>{msg}</div>}
@@ -747,13 +925,16 @@ export function InteractiveImportDialog({ id, onClose }: { id: string; onClose: 
             </label>
           )}
           {stage < 5 ? (
-            <button
-              style={{ ...styles.btnPrimary, opacity: canNext ? 1 : 0.5 }}
-              disabled={!canNext}
-              onClick={goNext}
-            >
-              Next →
-            </button>
+            <>
+              {nextBlock && <span style={styles.nextBlock}>{nextBlock}</span>}
+              <button
+                style={{ ...styles.btnPrimary, opacity: canNext ? 1 : 0.5 }}
+                disabled={!canNext}
+                onClick={goNext}
+              >
+                Next →
+              </button>
+            </>
           ) : (
             <>
               <label style={styles.confirm}>
@@ -813,6 +994,7 @@ function Step1Columns({
   matrix,
   inputFiles,
   onMatrix,
+  onBrowse,
   preset,
   onPreset,
   detecting,
@@ -825,6 +1007,7 @@ function Step1Columns({
   matrix: string | null
   inputFiles: string[]
   onMatrix: (file: string) => void
+  onBrowse: () => void
   preset: MatrixPreset | 'custom'
   onPreset: (p: MatrixPreset) => void
   detecting: boolean
@@ -889,7 +1072,8 @@ function Step1Columns({
       <div style={styles.row}>
         <span style={styles.label}>Data file</span>
         {/* The data file is chosen in the tile, but can be swapped here — a chip-style select so
-            the user can re-point the import without leaving the wizard. */}
+            the user can re-point the import without leaving the wizard. An external file (picked via
+            Browse, an absolute path outside the data folder) shows as its own option. */}
         <select
           style={styles.fileChip}
           value={matrix ?? ''}
@@ -897,12 +1081,22 @@ function Step1Columns({
           title={matrix ?? 'Choose a data file'}
         >
           {!matrix && <option value="">— choose a data file —</option>}
+          {matrix && !inputFiles.includes(matrix) && (
+            <option value={matrix}>{`${matrix.replace(/^.*[\\/]/, '')} (external)`}</option>
+          )}
           {inputFiles.map((f) => (
             <option key={f} value={f}>
               {f}
             </option>
           ))}
         </select>
+        <button
+          style={styles.btn}
+          onClick={onBrowse}
+          title="Choose a data file from anywhere on disk"
+        >
+          Browse…
+        </button>
         <button
           style={{ ...styles.btn, opacity: !matrix || detecting ? 0.5 : 1 }}
           disabled={!matrix || detecting}
@@ -1111,20 +1305,43 @@ function Step4Metadata({
   labelCol,
   metaCols,
   rows,
-  total
+  total,
+  annotations,
+  annBusy,
+  annMsg,
+  onFetch,
+  onSelectFields,
+  onClearAnnotations
 }: {
   idCol: string | null
   labelCol: string | null
   metaCols: string[]
   rows: Record<string, string>[] | null
   total: number
+  annotations?: AnnotationSet
+  annBusy: boolean
+  annMsg: string | null
+  onFetch: (fields: string[]) => void
+  onSelectFields: (fields: string[]) => void
+  onClearAnnotations: () => void
 }): ReactNode {
-  const cols = idCol ? ['uniqID', 'gene', ...metaCols] : []
+  // Which fields are ticked — seeded from an already-fetched set so a reopened wizard matches.
+  const [picked, setPicked] = useState<Set<string>>(() =>
+    annotations
+      ? new Set(UNIPROT_FIELDS.filter((f) => annotations.fields.includes(f.col)).map((f) => f.id))
+      : new Set(['protein_name', 'gene_names'])
+  )
+  const annCols = annotations?.fields ?? []
+  const cols = idCol ? ['uniqID', 'gene', ...metaCols, ...annCols] : []
   const accessors: ((r: Record<string, string>) => string)[] = idCol
     ? [
         (r) => r[idCol] ?? '',
         (r) => (labelCol ? (r[labelCol] ?? '') : ''),
-        ...metaCols.map((c) => (r: Record<string, string>) => r[c] ?? '')
+        ...metaCols.map((c) => (r: Record<string, string>) => r[c] ?? ''),
+        ...annCols.map(
+          (f) => (r: Record<string, string>) =>
+            annotations?.byId[(r[idCol] ?? '').trim()]?.[f] ?? ''
+        )
       ]
     : []
 
@@ -1168,10 +1385,62 @@ function Step4Metadata({
     <>
       <div style={styles.hint}>
         ID map to be written: <b>uniqID</b> ← {idCol}, <b>gene</b> ← {labelCol ?? '(none)'}
-        {metaCols.length ? `, + ${metaCols.length} metadata column(s)` : ''}.{' '}
+        {metaCols.length ? `, + ${metaCols.length} metadata column(s)` : ''}
+        {annCols.length ? `, + ${annCols.length} annotation column(s)` : ''}.{' '}
         {total > shown.length
           ? `Showing first ${shown.length} of ${total} rows (all written on save).`
           : `${shown.length} rows.`}
+      </div>
+      {/* Fetch external annotations (UniProt) by feature accession — merged into the DB and saved
+          with the project. */}
+      <div style={styles.annPanel}>
+        <span style={styles.annTitle}>Fetch annotations (UniProt)</span>
+        <div style={styles.annFields}>
+          {UNIPROT_FIELDS.map((f) => {
+            const on = picked.has(f.id)
+            return (
+              <label key={f.id} style={styles.annField}>
+                <input
+                  type="checkbox"
+                  checked={on}
+                  disabled={annBusy}
+                  onChange={() => {
+                    const next = new Set(picked)
+                    if (next.has(f.id)) next.delete(f.id)
+                    else next.add(f.id)
+                    setPicked(next)
+                    // Already fetched → just re-slice the cached data, no network round-trip.
+                    if (annotations) onSelectFields([...next])
+                  }}
+                />
+                {f.label}
+              </label>
+            )
+          })}
+        </div>
+        <button
+          style={{ ...styles.btnPrimary, opacity: annBusy || picked.size === 0 ? 0.5 : 1 }}
+          disabled={annBusy || picked.size === 0}
+          onClick={() => onFetch([...picked])}
+        >
+          {annBusy ? 'Fetching…' : 'Fetch'}
+        </button>
+        {annotations && !annBusy && (
+          <button style={styles.btn} onClick={onClearAnnotations}>
+            Clear
+          </button>
+        )}
+        {annMsg && (
+          <span style={styles.annMsg}>
+            {annBusy && (
+              <>
+                <style>{`@keyframes oe-spin{to{transform:rotate(360deg)}}`}</style>
+                <span style={styles.spinner} />
+              </>
+            )}
+            {annMsg}
+          </span>
+        )}
       </div>
       <div style={styles.tableTitle}>Metadata DB</div>
       <ScrollFade>
@@ -2042,6 +2311,8 @@ const styles: Record<string, CSSProperties> = {
   // Apply / Reset row beneath the filter cards.
   filterActions: { display: 'flex', alignItems: 'center', gap: 8, paddingTop: 2 },
   filterDirty: { fontSize: 11, color: '#e2b93b', fontStyle: 'italic' },
+  // Reason the Next button is disabled, shown just to its left.
+  nextBlock: { fontSize: 11, color: '#e2b93b', alignSelf: 'center', textAlign: 'right', maxWidth: 320 },
   filterTools: { display: 'flex', gap: 10 },
   filterLink: {
     background: 'transparent',
@@ -2284,6 +2555,44 @@ const styles: Record<string, CSSProperties> = {
     textTransform: 'uppercase',
     letterSpacing: 0.4,
     color: UI.textMuted
+  },
+  annPanel: {
+    display: 'flex',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: 10,
+    padding: '8px 10px',
+    border: `1px solid ${UI.border}`,
+    borderRadius: 6,
+    background: UI.panelAlt
+  },
+  annTitle: { fontSize: 12, fontWeight: 700, color: UI.text, flex: '0 0 auto' },
+  annFields: { display: 'inline-flex', flexWrap: 'wrap', gap: 12 },
+  annField: {
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: 4,
+    fontSize: 12,
+    color: UI.text,
+    cursor: 'pointer'
+  },
+  annMsg: {
+    fontSize: 12,
+    color: UI.textMuted,
+    flex: '1 1 100%',
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: 6
+  },
+  spinner: {
+    width: 12,
+    height: 12,
+    border: `2px solid ${UI.border}`,
+    borderTopColor: UI.text,
+    borderRadius: '50%',
+    display: 'inline-block',
+    animation: 'oe-spin 0.7s linear infinite',
+    flex: '0 0 auto'
   },
   gridWrap: { overflow: 'auto', border: `1px solid ${UI.border}`, borderRadius: 6 },
   fadeWrap: { position: 'relative', flex: 1, minHeight: 0, display: 'flex' },

@@ -61,10 +61,31 @@ function isNumericColumn(rows: Row[], field: string, threshold = 0.8): boolean {
   return nonEmpty > 0 && numeric / nonEmpty >= threshold
 }
 
+/** Pick the delimiter from the header row (whichever separator occurs most): tab for a TSV/DIA-NN
+ *  export, comma for a CSV, or semicolon. Counting the header is reliable — the real delimiter
+ *  appears once per column there. Defaults to tab if the file is a single column. */
+function detectDelimiter(text: string): string {
+  const nl = text.indexOf('\n')
+  const header = nl >= 0 ? text.slice(0, nl) : text
+  const count = (d: string): number => header.split(d).length - 1
+  const candidates: string[] = ['\t', ',', ';']
+  let best = '\t'
+  let bestN = -1
+  for (const d of candidates) {
+    const n = count(d)
+    if (n > bestN) {
+      bestN = n
+      best = d
+    }
+  }
+  return best
+}
+
 function parse(matrixText: string): { fields: string[]; rows: Row[] } {
-  const res = Papa.parse<Row>(matrixText.replace(BOM, ''), {
+  const clean = matrixText.replace(BOM, '')
+  const res = Papa.parse<Row>(clean, {
     header: true,
-    delimiter: '\t',
+    delimiter: detectDelimiter(clean),
     skipEmptyLines: 'greedy',
     transformHeader: (h) => h.replace(BOM, '').trim()
   })
@@ -303,7 +324,7 @@ const PRESETS: Record<MatrixPreset, PresetSpec> = {
   },
   spectronaut: {
     label: 'Spectronaut',
-    idCols: ['PG.ProteinGroups', 'PG.ProteinAccessions'],
+    idCols: ['PG.ProteinGroups', 'PG.ProteinAccessions', 'PG.UniProtIds'],
     geneCols: ['PG.Genes'],
     metaCols: [
       'PG.ProteinAccessions',
@@ -397,6 +418,10 @@ export function buildStandardInputs(
     conditions: Record<string, InteractiveSampleCond>
     /** per-column row filters, keyed by matrix header (only `filter`-role columns apply) */
     filters?: Record<string, FilterSpec>
+    /** fetched external annotations to append to the DB, keyed by the uniqID (trimmed ID value):
+     *  `fields` are the extra column names, `byId[uniqID][field]` the value. `taxon` (if set) is
+     *  written as a hidden per-row `taxon` DB column so the STRING plot can learn the species. */
+    annotations?: { fields: string[]; byId: Record<string, Record<string, string>>; taxon?: number }
   }
 ): InteractiveAdapted {
   const { columns, rows: allRows } = parseMatrix(matrixText)
@@ -426,14 +451,22 @@ export function buildStandardInputs(
   })
   const dataText = Papa.unparse(dataRows, { columns: ['uniqID', ...sampleCols] })
 
-  // db: uniqID + gene (from the label column) + the other metadata columns.
-  const dbCols = ['uniqID', 'gene', ...metaCols]
+  // db: uniqID + gene (from the label column) + the other metadata columns + fetched annotations.
+  // The dataset species (taxon) rides along as a hidden per-row column when known.
+  const annFields = spec.annotations?.fields ?? []
+  const annById = spec.annotations?.byId ?? {}
+  const annTaxon = spec.annotations?.taxon
+  const dbCols = ['uniqID', 'gene', ...metaCols, ...annFields, ...(annTaxon ? ['taxon'] : [])]
   const dbRows = rows.map((r) => {
+    const uniqID = (r[idCol] ?? '').trim()
     const out: Row = {
-      uniqID: (r[idCol] ?? '').trim(),
+      uniqID,
       gene: labelCol ? (r[labelCol] ?? '').trim() : ''
     }
     for (const c of metaCols) out[c] = (r[c] ?? '').trim()
+    const ann = annById[uniqID]
+    for (const f of annFields) out[f] = ann?.[f] ?? ''
+    if (annTaxon) out.taxon = String(annTaxon)
     return out
   })
   const dbText = Papa.unparse(dbRows, { columns: dbCols })

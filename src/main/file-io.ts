@@ -1,5 +1,5 @@
 import { mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises'
-import { basename, join } from 'node:path'
+import { basename, isAbsolute, join } from 'node:path'
 
 import { dialog, ipcMain } from 'electron'
 
@@ -22,6 +22,20 @@ export interface WorkflowEntry {
 /** Default workflow directory: <cwd>/workflow (created if missing). */
 function defaultWorkflowDir(): string {
   return join(process.cwd(), 'workflow')
+}
+
+/** Sanitize a workflow name into ONE safe path segment for the per-workflow data subfolder:
+ *  replace the filesystem-illegal chars (Windows set) with `_`, strip a leading dot / trailing
+ *  dot or space, and never allow a `..` traversal. Readable chars (spaces, hyphens) are kept.
+ *  Empty ⇒ null (write flat, no subfolder). */
+function safeSeg(scope?: string): string | null {
+  if (!scope) return null
+  const cleaned = scope
+    .replace(/[<>:"/\\|?*]/g, '_')
+    .replace(/[. ]+$/, '')
+    .replace(/^\.+/, '')
+    .trim()
+  return cleaned && cleaned !== '..' ? cleaned : null
 }
 
 /**
@@ -108,8 +122,9 @@ export function registerFileIo(): void {
 
   ipcMain.handle(
     'wf:writeInput',
-    async (_evt, dir: string, name: string, content: string): Promise<void> => {
-      const inputDir = join(dir, 'input')
+    async (_evt, dir: string, name: string, content: string, scope?: string): Promise<void> => {
+      const seg = safeSeg(scope)
+      const inputDir = seg ? join(dir, seg, 'input') : join(dir, 'input')
       await mkdir(inputDir, { recursive: true })
       await writeFile(join(inputDir, name), content, 'utf8')
     }
@@ -117,8 +132,9 @@ export function registerFileIo(): void {
 
   ipcMain.handle(
     'wf:writeTemp',
-    async (_evt, dir: string, name: string, content: string): Promise<void> => {
-      const tempDir = join(dir, 'temp')
+    async (_evt, dir: string, name: string, content: string, scope?: string): Promise<void> => {
+      const seg = safeSeg(scope)
+      const tempDir = seg ? join(dir, seg, 'temp') : join(dir, 'temp')
       await mkdir(tempDir, { recursive: true })
       await writeFile(join(tempDir, name), content, 'utf8')
     }
@@ -205,14 +221,46 @@ export function registerFileIo(): void {
     return [...names].sort((a, b) => a.localeCompare(b))
   })
 
-  ipcMain.handle('data:read', async (_evt, dir: string, name: string): Promise<string | null> => {
-    for (const sub of DATA_SUBDIRS) {
-      try {
-        return await readFile(join(dir, sub, name), 'utf8')
-      } catch {
-        // not in this location — try the next
+  ipcMain.handle(
+    'data:read',
+    async (_evt, dir: string, name: string, scope?: string): Promise<string | null> => {
+      // An absolute `name` is a matrix picked from outside the data folder (see data:pickFile) —
+      // read it directly and ignore `dir`. Bare names resolve within the data folder's subdirs.
+      if (name && isAbsolute(name)) {
+        try {
+          return await readFile(name, 'utf8')
+        } catch {
+          return null
+        }
       }
+      // Try the per-workflow subfolder first (when a scope is given), then the shared data-folder
+      // root — so a lone workflow's flat files, manual-mode files, and older projects still resolve.
+      const seg = safeSeg(scope)
+      const roots = seg ? [join(dir, seg), dir] : [dir]
+      for (const root of roots) {
+        for (const sub of DATA_SUBDIRS) {
+          try {
+            return await readFile(join(root, sub, name), 'utf8')
+          } catch {
+            // not in this location — try the next
+          }
+        }
+      }
+      return null
     }
-    return null
+  )
+
+  // Pick a data matrix from anywhere on disk (not restricted to the data folder). Returns the
+  // absolute path (which data:read then reads directly), or null if cancelled.
+  ipcMain.handle('data:pickFile', async (): Promise<string | null> => {
+    const res = await dialog.showOpenDialog({
+      title: 'Choose a data matrix file',
+      properties: ['openFile'],
+      filters: [
+        { name: 'Data', extensions: ['csv', 'tsv', 'txt'] },
+        { name: 'All Files', extensions: ['*'] }
+      ]
+    })
+    return res.canceled || res.filePaths.length === 0 ? null : res.filePaths[0]
   })
 }

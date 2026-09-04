@@ -33,7 +33,5 @@ export function FcHeatmapTile({
       : maxGenes && maxGenes > 0
         ? `top ${Math.min(maxGenes, data.geneIds.length)} differential genes`
         : `${data.geneIds.length} differential genes`
-  return (
-    <FcHeatmapView data={data} title={`log₂ fold change (${scope}, clustered)`} orient={orient} />
-  )
+  return <FcHeatmapView data={data} title={`${scope}, clustered`} orient={orient} />
 }

@@ -5,17 +5,17 @@ import type { Layout as RglLayout, LayoutItem } from 'react-grid-layout'
 
 export type PanelLayout = RglLayout // LayoutItem[]
 
-// Fine grid: 24 cols × 20px rows so tiles snap at half the previous step (double the
-// positioning resolution). Layouts saved on the old 12×40 grid are scaled ×2 on load
-// (see workflowDoc migration), so a pre-existing half-width tile (w:6) becomes w:12 and
-// keeps the same size. Vertical margin is halved to keep tile heights ≈ unchanged.
-export const GRID_COLS = 24
+// Fine grid: 48 cols × 20px rows — columns are twice as dense as before (24), so tiles snap at
+// half the previous horizontal step. Layouts saved on a coarser grid are scaled on load (see the
+// workflowDoc migration): pre-v3 by ×2 on both axes, pre-v4 by a further ×2 on columns only — so a
+// pre-existing half-width tile keeps the same size on the denser grid.
+export const GRID_COLS = 48
 export const ROW_HEIGHT = 20
 export const GRID_MARGIN: [number, number] = [12, 6]
 export const GRID_PADDING: [number, number] = [4, 4]
 
-/** Default tile footprint: half-width, ~340px tall (matches the S1 CSS grid). */
-const DEFAULT_W = 12
+/** Default tile footprint: half-width (24 of 48 cols), ~340px tall (matches the S1 CSS grid). */
+const DEFAULT_W = 24
 const DEFAULT_H = 16
 
 /** Tile members 2-up in member order. Pure — same input, same layout. */

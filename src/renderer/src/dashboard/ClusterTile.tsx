@@ -14,36 +14,41 @@ import {
 import { ClusterView } from '../ui/ClusterView'
 import type { ConditionKey } from '../engine'
 
-const LABEL: Record<ClusterMethod, string> = { pca: 'PCA', umap: 'UMAP', tsne: 't-SNE' }
-
 export function ClusterTile({
   std,
   cmp,
   method,
   colorBy,
-  display
+  scale,
+  missing,
+  center,
+  topVar,
+  transform,
+  replicates,
+  display,
+  legend = 'simple'
 }: {
   std?: StandardizeResult
   cmp?: CompareResultRow[]
   method: ClusterMethod
   colorBy: ConditionKey
+  scale?: 'unit' | 'none'
+  missing?: 'impute' | 'complete'
+  center?: 'median' | 'zscore' | 'quantile' | 'none'
+  topVar?: number
+  transform?: 'auto' | 'log2' | 'log10' | 'none'
+  replicates?: 'individual' | 'mean'
   display: 'replicate' | 'centroid'
+  legend?: 'simple' | 'complex'
 }) {
   const cluster = useMemo(
     () =>
       std
-        ? buildCluster(std.rows, { method, colorBy })
-        : buildResponseCluster(cmp ?? [], { method, colorBy }),
-    [std, cmp, method, colorBy]
+        ? buildCluster(std.rows, { method, colorBy, scale, missing, center, topVar, transform, replicates })
+        : buildResponseCluster(cmp ?? [], { method, colorBy, scale, missing, center, topVar, transform }),
+    [std, cmp, method, colorBy, scale, missing, center, topVar, transform, replicates]
   )
-  const unit = std ? 'samples' : 'conditions'
-  // Use the cluster's effective colorBy (the responsome path may override a degenerate
-  // choice) so the title always matches the legend.
   return (
-    <ClusterView
-      cluster={cluster}
-      display={display}
-      title={`${LABEL[method]} — ${unit} colored by ${cluster.colorBy}`}
-    />
+    <ClusterView cluster={cluster} display={display} legend={legend} />
   )
 }

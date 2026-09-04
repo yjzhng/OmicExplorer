@@ -81,6 +81,9 @@ function detectIdColumn(fields: string[], dbFields: string[]): string | null {
 interface IdMap {
   lookup: Map<string, string>
   displayMap: Record<string, string>
+  /** uniqID → { db column → value } for every non-structural DB column (GO, keggPathway,
+   *  geneName, …). First non-empty value per (uniqID, column) wins. */
+  annotationMap: Record<string, Record<string, string>>
   idColumn: string
 }
 
@@ -113,8 +116,34 @@ function buildIdMap(dbRows: Row[], dbFields: string[], idColumn: string): IdMap 
     else if (e.loci.size > 0) displayMap[uid] = [...e.loci].join('/')
     else displayMap[uid] = uid
   }
-  void dbFields
-  return { lookup, displayMap, idColumn }
+  // Disambiguate duplicate labels: when two features map to the SAME display name, append their
+  // uniqID so every plot's gene label stays distinguishable (unique names are left untouched).
+  const nameCount = new Map<string, number>()
+  for (const uid in displayMap) nameCount.set(displayMap[uid], (nameCount.get(displayMap[uid]) ?? 0) + 1)
+  for (const uid in displayMap) {
+    if (displayMap[uid] !== uid && (nameCount.get(displayMap[uid]) ?? 0) > 1)
+      displayMap[uid] = `${displayMap[uid]} (${uid})`
+  }
+  // Carry every non-structural DB column through as a per-uniqID annotation (GO, keggPathway,
+  // geneName, …). uniqID and the ID column are structural; gene/locus_tag already drive the
+  // display label. First non-empty value per (uniqID, column) wins.
+  const skip = new Set([idColumn, 'uniqID', 'gene', 'locus_tag'])
+  const annCols = dbFields.filter((f) => !skip.has(f))
+  const annotationMap: Record<string, Record<string, string>> = {}
+  if (annCols.length > 0) {
+    for (const r of dbRows) {
+      const uid = (r.uniqID ?? '').trim()
+      if (uid === '') continue
+      let rec = annotationMap[uid]
+      for (const c of annCols) {
+        const val = (r[c] ?? '').trim()
+        if (val === '') continue
+        if (!rec) rec = annotationMap[uid] = {}
+        if (rec[c] == null) rec[c] = val
+      }
+    }
+  }
+  return { lookup, displayMap, annotationMap, idColumn }
 }
 
 /**
@@ -186,8 +215,28 @@ export function standardize(input: StandardizeInput): StandardizeResult {
     })
   }
 
+  // ── replicate numbering ─────────────────────────────────────────────────────
+  // Replicates are distinguished downstream (cluster/heatmap pivots) by (condition, rep). When
+  // the samplesheet doesn't carry a `rep`, two replicate samples of one condition are otherwise
+  // indistinguishable and collapse into one point/column. So auto-number distinct samples within
+  // each condition by first appearance; an explicit rep is always kept.
+  const repOf = new Map<string, number>()
+  {
+    const perCond = new Map<string, number>()
+    const seen = new Set<string>()
+    for (const m of merged) {
+      if (seen.has(m.sample)) continue
+      seen.add(m.sample)
+      const condKey = [m.strain, m.cmpd, m.dose ?? '', m.time ?? ''].join('')
+      const n = (perCond.get(condKey) ?? 0) + 1
+      perCond.set(condKey, n)
+      repOf.set(m.sample, m.rep != null ? m.rep : n)
+    }
+  }
+
   // ── optional ID mapping (feature ID → uniqID) ───────────────────────────────
   let displayMap: Record<string, string> = {}
+  let annotationMap: Record<string, Record<string, string>> = {}
   let idMap: IdMap | null = null
   if (input.dbText) {
     const db = parseCsv(input.dbText)
@@ -195,6 +244,7 @@ export function standardize(input: StandardizeInput): StandardizeResult {
     if (idCol) {
       idMap = buildIdMap(db.rows, db.fields, idCol)
       displayMap = idMap.displayMap
+      annotationMap = idMap.annotationMap
     }
   }
 
@@ -203,8 +253,11 @@ export function standardize(input: StandardizeInput): StandardizeResult {
   // Used by the optional low-coverage clean-up below.
   const presence = new Map<string, Set<string>>()
   const allSamples = new Set<string>()
+  // sample → strain, so per-strain coverage can be computed from `presence` in the clean-up below.
+  const sampleStrain = new Map<string, string>()
   for (const m of merged) {
     allSamples.add(m.sample)
+    if (!sampleStrain.has(m.sample)) sampleStrain.set(m.sample, m.strain)
     // Expand ';'-concatenated IDs, then map each through the DB (unmapped kept as-is).
     const ids = m.id.includes(';')
       ? m.id
@@ -225,7 +278,7 @@ export function standardize(input: StandardizeInput): StandardizeResult {
         cmpd: m.cmpd,
         dose: m.dose,
         time: m.time,
-        rep: m.rep,
+        rep: repOf.get(m.sample) ?? m.rep,
         value: m.value,
         peptides: m.peptides
       })
@@ -233,16 +286,51 @@ export function standardize(input: StandardizeInput): StandardizeResult {
   }
 
   // ── clean-up: drop low-coverage genes (identified in < minSamplePct of samples) ──
+  // Across-all mode measures coverage over every sample pooled and drops the whole gene when it's
+  // below threshold. Per-strain mode measures coverage WITHIN each strain and DELETES the gene's
+  // values in every strain where it falls short (nulling those cells) — so a gene is kept only in
+  // the strains where it clears the bar; a gene that fails in all strains is removed entirely.
   const sampleCount = allSamples.size
   const minSamplePct = Math.min(100, Math.max(0, input.minSamplePct ?? 0))
+  const perStrain = !!input.minSamplePctPerStrain
   let droppedGenes = 0
   if (minSamplePct > 0 && sampleCount > 0) {
     const dropped = new Set<string>()
-    for (const [uniqID, samples] of presence) {
-      if ((samples.size / sampleCount) * 100 < minSamplePct) dropped.add(uniqID)
+    if (perStrain) {
+      // Distinct samples per strain (the per-strain denominators), and per-(gene, strain) hit counts.
+      const strainTotal = new Map<string, number>()
+      for (const strain of sampleStrain.values())
+        strainTotal.set(strain, (strainTotal.get(strain) ?? 0) + 1)
+      const hitsByGene = new Map<string, Map<string, number>>()
+      for (const [uniqID, samples] of presence) {
+        const perStrainHits = new Map<string, number>()
+        for (const s of samples) {
+          const st = sampleStrain.get(s) ?? ''
+          perStrainHits.set(st, (perStrainHits.get(st) ?? 0) + 1)
+        }
+        hitsByGene.set(uniqID, perStrainHits)
+      }
+      // A (gene, strain) fails when its coverage within that strain is below the threshold.
+      const fails = (uniqID: string, strain: string): boolean => {
+        const total = strainTotal.get(strain) ?? 0
+        const hits = hitsByGene.get(uniqID)?.get(strain) ?? 0
+        return total > 0 && (hits / total) * 100 < minSamplePct
+      }
+      // Null out every value in a failing (gene, strain).
+      for (const r of rows) {
+        if (r.value != null && fails(r.uniqID, r.strain)) r.value = null
+      }
+      // Any gene left with no surviving value in any strain is removed outright.
+      const survives = new Set<string>()
+      for (const r of rows) if (r.value != null) survives.add(r.uniqID)
+      for (const r of rows) if (!survives.has(r.uniqID)) dropped.add(r.uniqID)
+    } else {
+      for (const [uniqID, samples] of presence) {
+        if ((samples.size / sampleCount) * 100 < minSamplePct) dropped.add(uniqID)
+      }
+      // A uniqID with no non-null value anywhere never enters `presence`; treat it as 0%.
+      for (const r of rows) if (!presence.has(r.uniqID)) dropped.add(r.uniqID)
     }
-    // A uniqID with no non-null value anywhere never enters `presence`; treat it as 0%.
-    for (const r of rows) if (!presence.has(r.uniqID)) dropped.add(r.uniqID)
     if (dropped.size > 0) {
       droppedGenes = dropped.size
       rows = rows.filter((r) => !dropped.has(r.uniqID))
@@ -261,8 +349,10 @@ export function standardize(input: StandardizeInput): StandardizeResult {
   return {
     rows,
     displayMap,
+    annotationMap,
+    keggCategories: input.keggCategories ?? {},
     activeConditions,
     compounds,
-    cleanup: { droppedGenes, sampleCount, minSamplePct }
+    cleanup: { droppedGenes, sampleCount, minSamplePct, ...(perStrain ? { perStrain: true } : {}) }
   }
 }

@@ -15,6 +15,9 @@ export interface Embedding {
   coords: Array<[number, number]>
   /** fraction of variance on each axis — PCA only ([0, 0] for UMAP/t-SNE). */
   varExplained: [number, number]
+  /** PCA only: variance fraction of every component, sorted descending (the scree). Undefined
+   *  for UMAP/t-SNE. */
+  scree?: number[]
 }
 
 /** Small deterministic PRNG (mulberry32) so seeded runs are reproducible. */
@@ -206,8 +209,10 @@ function embedPCA(matrix: number[][]): Embedding {
   const [k1, k2] = [order[0], order[1] ?? order[0]]
   const total = values.reduce((s, v) => s + Math.max(v, 0), 0) || 1
   const score = (i: number, k: number): number => vectors[i][k] * Math.sqrt(Math.max(values[k], 0))
+  const scree = order.map((k) => Math.max(values[k], 0) / total)
   return {
     coords: matrix.map((_, i) => [score(i, k1), score(i, k2)]),
-    varExplained: [Math.max(values[k1], 0) / total, Math.max(values[k2], 0) / total]
+    varExplained: [Math.max(values[k1], 0) / total, Math.max(values[k2], 0) / total],
+    scree
   }
 }

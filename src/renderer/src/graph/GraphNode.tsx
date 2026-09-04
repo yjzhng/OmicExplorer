@@ -3,7 +3,7 @@ import { Fragment, useEffect, useMemo, useRef, useState, type CSSProperties } fr
 
 import { UI } from '../ui/theme'
 import { NodeConfigPanel } from './NodeConfigPanel'
-import { accentOf, categoryOf, CATEGORIES, hasSourceHandle, NODE_SPECS } from './registry'
+import { accentOf, categoryOf, CATEGORIES, hasSourceHandle, NODE_SPECS, plotLabel } from './registry'
 import { useGraph } from './store'
 import { TilePicker } from './TilePicker'
 import { isCompareConfigured, isStep, normalizeCompareConfig, resolveLoadMode } from './types'
@@ -181,7 +181,7 @@ function GroupBody({
             >
               <span style={grip}>⠿</span>
               <span style={{ ...dot, background: accent }} />
-              <span style={subLabel}>{NODE_SPECS[c.kind].label}</span>
+              <span style={subLabel}>{plotLabel(c.kind, c.config)}</span>
             </button>
             {lineAfter && <div style={dropLine} />}
           </Fragment>
@@ -519,7 +519,15 @@ const header: CSSProperties = {
   padding: '7px 10px',
   borderBottom: `1px solid ${UI.border}`
 }
-const titleWrap: CSSProperties = { display: 'flex', flexDirection: 'column', gap: 1 }
+// flex:1 + minWidth:0 so the title column (and the rename input inside it) shares the header width
+// and shrinks — otherwise a fixed-width input grows the column and shoves the run/status cluster.
+const titleWrap: CSSProperties = {
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 1,
+  flex: 1,
+  minWidth: 0
+}
 // Header right cluster: the run chip (on hover) and the always-on status dot. The fixed
 // minHeight matches the run chip so the dot keeps its vertical position whether or not the
 // chip is present (otherwise the taller chip re-centers the dot when it appears).
@@ -565,8 +573,7 @@ const nameInput: CSSProperties = {
   borderRadius: 5,
   padding: '0 6px',
   margin: 0,
-  width: 150,
-  maxWidth: '100%',
+  width: '100%', // fill the (flex) title column instead of a fixed width that pushes the header
   boxSizing: 'border-box'
 }
 const body: CSSProperties = { padding: 10, display: 'flex', flexDirection: 'column', gap: 8 }

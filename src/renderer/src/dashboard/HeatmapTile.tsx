@@ -38,7 +38,7 @@ export function HeatmapTile({
   return (
     <HeatmapView
       heatmap={heatmap}
-      title={`Standardized intensities (${scope}, clustered)`}
+      title={`${heatmap.samples.length} samples · ${scope}, clustered`}
       orient={orient}
     />
   )

@@ -1,0 +1,25 @@
+/* App-level overrides on top of @xyflow/react's base stylesheet. */
+
+/* Connection-drag validity feedback. `isValidConnection` (see store) already REJECTS an illegal
+   wiring — this makes that rejection visible: while dragging a new edge, the handle the cursor is
+   over flashes RED when the connection is disallowed (e.g. a plot that can't consume this node's
+   output), and reads GREEN when it's allowed. React Flow tags the hovered target handle
+   `connectingto`, adding `valid` only when the connection passes `isValidConnection`. */
+@keyframes oe-conn-invalid {
+  0%,
+  100% {
+    box-shadow: 0 0 0 2px rgba(229, 72, 77, 0.6);
+  }
+  50% {
+    box-shadow: 0 0 0 6px rgba(229, 72, 77, 0);
+  }
+}
+.react-flow__handle.connectingto:not(.valid) {
+  background: #e5484d !important;
+  border-color: #e5484d !important;
+  animation: oe-conn-invalid 0.55s ease-in-out infinite;
+}
+.react-flow__handle.connectingto.valid {
+  background: #3fae5a !important;
+  border-color: #3fae5a !important;
+}

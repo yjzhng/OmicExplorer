@@ -66,12 +66,12 @@ const api = {
   /** Read a file under <dir>/input (null if missing). */
   readInputFile: (dir: string, name: string): Promise<string | null> =>
     ipcRenderer.invoke('wf:readInput', dir, name),
-  /** Write a file under <dir>/input. */
-  writeInputFile: (dir: string, name: string, content: string): Promise<void> =>
-    ipcRenderer.invoke('wf:writeInput', dir, name, content),
-  /** Write processed data under <dir>/temp. */
-  writeTempFile: (dir: string, name: string, content: string): Promise<void> =>
-    ipcRenderer.invoke('wf:writeTemp', dir, name, content),
+  /** Write a file under <dir>/[scope/]input (scope = the per-workflow subfolder, when nesting). */
+  writeInputFile: (dir: string, name: string, content: string, scope?: string): Promise<void> =>
+    ipcRenderer.invoke('wf:writeInput', dir, name, content, scope),
+  /** Write processed data under <dir>/[scope/]temp. */
+  writeTempFile: (dir: string, name: string, content: string, scope?: string): Promise<void> =>
+    ipcRenderer.invoke('wf:writeTemp', dir, name, content, scope),
 
   // ── projects (.omicexplorer) ─────────────────────────────────────────────────
   /** Open a project via native picker; returns its path + JSON text (null if cancelled). */
@@ -92,9 +92,14 @@ const api = {
     ipcRenderer.invoke('fs:exists', p),
   /** List input files (csv/tsv/txt) directly under a data folder. */
   listDataFiles: (dir: string): Promise<string[]> => ipcRenderer.invoke('data:list', dir),
-  /** Read a file from the data folder (null if missing). */
-  readDataFile: (dir: string, name: string): Promise<string | null> =>
-    ipcRenderer.invoke('data:read', dir, name),
+  /** Read a file from the data folder — or, when `name` is an absolute path, that file directly
+   *  (null if missing). When `scope` (a per-workflow subfolder) is given, the workflow subfolder is
+   *  tried first, then the shared data-folder root. */
+  readDataFile: (dir: string, name: string, scope?: string): Promise<string | null> =>
+    ipcRenderer.invoke('data:read', dir, name, scope),
+  /** Pick a data matrix from anywhere on disk via the native picker; returns its absolute path
+   *  (readable via readDataFile), or null if cancelled. */
+  pickDataFile: (): Promise<string | null> => ipcRenderer.invoke('data:pickFile'),
 
   // ── plot export ──────────────────────────────────────────────────────────────
   /** Write rendered plots (PNG/PDF) under baseDir; returns count + any per-file errors. */
@@ -107,7 +112,61 @@ const api = {
     items: TableItem[]
   }): Promise<ExportResult> => ipcRenderer.invoke('tables:export', payload),
   /** Reveal a folder in the OS file manager. */
-  revealFolder: (dir: string): Promise<void> => ipcRenderer.invoke('plots:reveal', dir)
+  revealFolder: (dir: string): Promise<void> => ipcRenderer.invoke('plots:reveal', dir),
+
+  // ── external annotation ────────────────────────────────────────────────────────
+  /** Fetch UniProt annotations for a list of accessions; returns {byId, fields, found, taxon, error?}. */
+  fetchUniprot: (
+    accessions: string[],
+    fields: string[]
+  ): Promise<{
+    byId: Record<string, Record<string, string>>
+    fields: string[]
+    found: number
+    taxon?: number
+    keggOrg?: string
+    keggCategories?: Record<string, string>
+    error?: string
+  }> => ipcRenderer.invoke('annot:uniprot', accessions, fields),
+
+  /** Subscribe to UniProt fetch progress (accessions done / total); returns an unsubscribe fn. */
+  onAnnotProgress: (cb: (p: { done: number; total: number }) => void): (() => void) => {
+    const listener = (_e: unknown, p: { done: number; total: number }): void => cb(p)
+    ipcRenderer.on('annot:progress', listener)
+    return () => ipcRenderer.removeListener('annot:progress', listener)
+  },
+
+  /** Fetch the STRING interaction network among `identifiers` for a species (NCBI taxon).
+   *  `requiredScore` is 0–1000 (STRING confidence). When `maxInteractors > 0`, also includes up to
+   *  that many first-shell interactors (top proteins connecting to the query set) ON TOP of the query.
+   *  Returns nodes (`isQuery` flagged) + confidence-scored edges. */
+  fetchStringNetwork: (
+    identifiers: string[],
+    species: number,
+    requiredScore: number,
+    maxInteractors = 0
+  ): Promise<{
+    nodes: { id: string; name: string; isQuery: boolean }[]
+    edges: { aId: string; bId: string; score: number }[]
+    error?: string
+  }> => ipcRenderer.invoke('string:network', identifiers, species, requiredScore, maxInteractors),
+
+  /** Download an organism's STRING interactome + canonical gene-name map into the app cache
+   *  (idempotent). */
+  ensureStringOrg: (
+    taxon: number
+  ): Promise<{ cached: boolean; version: string; error?: string }> =>
+    ipcRenderer.invoke('string:ensureOrg', taxon),
+
+  /** Subscribe to STRING download progress events; returns an unsubscribe fn. */
+  onStringProgress: (
+    cb: (p: { taxon: number; stage: string; loaded: number; total: number }) => void
+  ): (() => void) => {
+    const listener = (_e: unknown, p: { taxon: number; stage: string; loaded: number; total: number }): void =>
+      cb(p)
+    ipcRenderer.on('string:progress', listener)
+    return () => ipcRenderer.removeListener('string:progress', listener)
+  }
 }
 
 if (process.contextIsolated) {

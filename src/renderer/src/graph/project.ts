@@ -32,9 +32,15 @@ export interface ProjectFile {
   name: string
   folders: ProjectFolder[]
   activeFolderId: string
+  /** UI page to restore on open — the Workflow canvas or the Results dashboard. Optional (older
+   *  files default to the canvas). */
+  view?: 'canvas' | 'results'
+  /** the Results tab (analysis-group id) that was active, restored alongside `view`. */
+  resultsTab?: string | null
 }
 
-/** Counter-based ids (no Math.random — deterministic and test-stable). */
+/** Counter-based ids (no Math.random — deterministic and test-stable). The counter is shared
+ *  across folder and workflow ids, so it stays globally unique within a session. */
 let seq = 0
 const uid = (p: string): string => {
   seq += 1
@@ -42,6 +48,26 @@ const uid = (p: string): string => {
 }
 export const nextWorkflowId = (): string => uid('wf')
 export const nextFolderId = (): string => uid('fd')
+
+/** Advance the id counter past every `…-N` id already present in a loaded project, so ids minted
+ *  afterwards (e.g. a new workflow) never collide with saved ones. Without this the counter resets
+ *  to 0 each launch and `addWorkflow` re-mints `wf-1`, which then resolves to the *existing* wf-1 —
+ *  the new workflow appears in the list but switching to it lands on the old one. */
+function reserveIds(raw: Partial<ProjectFile> & ProjectFileV1): void {
+  let max = seq
+  const scan = (id: unknown): void => {
+    if (typeof id !== 'string') return
+    const m = /-(\d+)$/.exec(id)
+    if (m) max = Math.max(max, Number(m[1]))
+  }
+  const folders = Array.isArray(raw.folders) ? raw.folders : []
+  for (const f of folders) {
+    scan(f?.id)
+    for (const w of Array.isArray(f?.workflows) ? f.workflows : []) scan(w?.id)
+  }
+  for (const w of Array.isArray(raw.workflows) ? raw.workflows : []) scan(w?.id) // v1
+  seq = max
+}
 
 export function emptyWorkflow(name = 'Workflow 1'): ProjectWorkflow {
   return { id: nextWorkflowId(), name, doc: emptyWorkflowDoc(), results: {} }
@@ -89,6 +115,8 @@ function coerceWorkflows(
 /** Parse + validate a project file, migrating the v1 (flat) shape into a folder. */
 export function deserializeProject(text: string): ProjectFile {
   const raw = JSON.parse(text) as Partial<ProjectFile> & ProjectFileV1
+  // Reserve every existing id so parse-time and later-minted ids can't collide with saved ones.
+  reserveIds(raw)
   let folders: ProjectFolder[]
   if (Array.isArray(raw.folders) && raw.folders.length) {
     folders = raw.folders.map((f, i) => {
@@ -124,7 +152,9 @@ export function deserializeProject(text: string): ProjectFile {
     version: 2,
     name: raw.name ?? 'Untitled project',
     folders,
-    activeFolderId
+    activeFolderId,
+    view: raw.view === 'results' ? 'results' : 'canvas',
+    resultsTab: typeof raw.resultsTab === 'string' ? raw.resultsTab : null
   }
 }
 

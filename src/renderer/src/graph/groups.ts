@@ -7,7 +7,7 @@
  */
 import type { Edge } from '@xyflow/react'
 
-import { NODE_SPECS } from './registry'
+import { categoryOf, NODE_SPECS } from './registry'
 import { isStep, type GraphNode, type NodeKind, type PlotGroupConfig } from './types'
 
 /** Separator between a group id and a subcard id in an expanded panel id. */
@@ -29,7 +29,9 @@ export function parsePanelId(panelId: string): PanelRef {
 /**
  * Expand analysis members into dashboard panel ids: a plot group is transparent here,
  * contributing one panel per subcard (`${groupId}::${childId}`); every other member maps
- * to itself. Members whose node is gone are dropped.
+ * to itself. Members whose node is gone are dropped. Processing steps (the group root:
+ * standardize/compare/contrast) produce NO tile — their results are viewed via a separate
+ * Data table (or plot) node, so the root would only be an empty tile.
  */
 export function expandMembers(memberIds: string[], nodes: GraphNode[]): string[] {
   const byId = new Map(nodes.filter(isStep).map((n) => [n.id, n]))
@@ -37,6 +39,7 @@ export function expandMembers(memberIds: string[], nodes: GraphNode[]): string[]
   for (const id of memberIds) {
     const n = byId.get(id)
     if (!n) continue
+    if (categoryOf(n.data.kind) === 'processing') continue
     if (n.data.kind === 'plotGroup') {
       for (const c of (n.data.config as PlotGroupConfig).children) out.push(childPanelId(id, c.id))
     } else {
@@ -44,6 +47,53 @@ export function expandMembers(memberIds: string[], nodes: GraphNode[]): string[]
     }
   }
   return out
+}
+
+/**
+ * Order the step nodes by workflow flow for the results tabs: by topological LEVEL first (a node's
+ * longest path from a source — so upstream analyses come first), then, within one level, by the
+ * tile's canvas position top→bottom (y), then left→right (x). Not creation order.
+ */
+export function topoStepOrder(nodes: GraphNode[], edges: Edge[]): string[] {
+  const steps = nodes.filter(isStep)
+  const byId = new Map(steps.map((n) => [n.id, n]))
+  const ids = new Set(steps.map((n) => n.id))
+  const indeg = new Map<string, number>()
+  const out = new Map<string, string[]>()
+  const level = new Map<string, number>()
+  for (const n of steps) {
+    indeg.set(n.id, 0)
+    out.set(n.id, [])
+    level.set(n.id, 0)
+  }
+  for (const e of edges) {
+    if (!ids.has(e.source) || !ids.has(e.target)) continue
+    out.get(e.source)!.push(e.target)
+    indeg.set(e.target, (indeg.get(e.target) ?? 0) + 1)
+  }
+  // Kahn's algorithm in topological order; each node's level = max(pred level) + 1 (longest path).
+  const queue = steps.filter((n) => indeg.get(n.id) === 0).map((n) => n.id)
+  const seen = new Set<string>()
+  while (queue.length) {
+    const id = queue.shift() as string
+    if (seen.has(id)) continue
+    seen.add(id)
+    for (const t of out.get(id) ?? []) {
+      level.set(t, Math.max(level.get(t) ?? 0, (level.get(id) ?? 0) + 1))
+      const d = (indeg.get(t) ?? 0) - 1
+      indeg.set(t, d)
+      if (d <= 0) queue.push(t)
+    }
+  }
+  // Sort every step by (level, y, x). Cycle members keep level 0 and fall back to position.
+  return [...ids].sort((a, b) => {
+    const la = level.get(a) ?? 0
+    const lb = level.get(b) ?? 0
+    if (la !== lb) return la - lb
+    const na = byId.get(a)!
+    const nb = byId.get(b)!
+    return na.position.y - nb.position.y || na.position.x - nb.position.x
+  })
 }
 
 export interface AnalysisGroup {

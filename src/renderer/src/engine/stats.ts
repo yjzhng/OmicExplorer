@@ -147,9 +147,14 @@ export function madNormal(vals: number[]): number {
 }
 
 /**
- * Eigen-decomposition of a small symmetric matrix via the cyclic Jacobi method.
- * Returns eigenvalues and eigenvectors (as columns of `vectors`). Suitable for
- * the samples×samples Gram matrix in PCA (n ≤ a few dozen).
+ * Eigen-decomposition of a symmetric matrix via the cyclic Jacobi method (Numerical Recipes
+ * `jacobi`). Returns eigenvalues and eigenvectors as COLUMNS of `vectors` (vectors[i][k] is the
+ * i-th component of eigenvector k). Used for the samples×samples Gram matrix in PCA.
+ *
+ * This uses the numerically-stable in-place rotation (updating only the entries a rotation touches,
+ * with the tan/tau formulation) rather than a naive full matrix-multiply per rotation — the latter
+ * accumulates error and fails to converge as n grows past a handful, silently returning wrong
+ * eigenvalues (a dominant axis gets smeared across many components).
  */
 export function jacobiEigenSymmetric(input: number[][]): { values: number[]; vectors: number[][] } {
   const n = input.length
@@ -157,38 +162,67 @@ export function jacobiEigenSymmetric(input: number[][]): { values: number[]; vec
   const v: number[][] = Array.from({ length: n }, (_, i) =>
     Array.from({ length: n }, (_, j) => (i === j ? 1 : 0))
   )
+  const d = new Array<number>(n)
+  const b = new Array<number>(n)
+  const z = new Array<number>(n)
+  for (let i = 0; i < n; i++) {
+    b[i] = d[i] = a[i][i]
+    z[i] = 0
+  }
+  // In-place Givens rotation of the (i,j) and (k,l) entries (NR's ROTATE macro).
+  const rot = (m: number[][], s: number, tau: number, i: number, j: number, k: number, l: number): void => {
+    const g = m[i][j]
+    const h = m[k][l]
+    m[i][j] = g - s * (h + g * tau)
+    m[k][l] = h + s * (g - h * tau)
+  }
   for (let sweep = 0; sweep < 100; sweep++) {
-    let off = 0
-    for (let p = 0; p < n; p++) for (let q = p + 1; q < n; q++) off += a[p][q] * a[p][q]
-    if (off < 1e-24) break
-    for (let p = 0; p < n; p++) {
+    let sm = 0
+    for (let p = 0; p < n - 1; p++) for (let q = p + 1; q < n; q++) sm += Math.abs(a[p][q])
+    if (sm === 0) break // fully diagonal → converged
+    const thresh = sweep < 4 ? (0.2 * sm) / (n * n) : 0
+    for (let p = 0; p < n - 1; p++) {
       for (let q = p + 1; q < n; q++) {
-        if (Math.abs(a[p][q]) < 1e-300) continue
-        const phi = 0.5 * Math.atan2(2 * a[p][q], a[p][p] - a[q][q])
-        const c = Math.cos(phi)
-        const s = Math.sin(phi)
-        for (let i = 0; i < n; i++) {
-          const aip = a[i][p]
-          const aiq = a[i][q]
-          a[i][p] = c * aip - s * aiq
-          a[i][q] = s * aip + c * aiq
-        }
-        for (let i = 0; i < n; i++) {
-          const api = a[p][i]
-          const aqi = a[q][i]
-          a[p][i] = c * api - s * aqi
-          a[q][i] = s * api + c * aqi
-        }
-        for (let i = 0; i < n; i++) {
-          const vip = v[i][p]
-          const viq = v[i][q]
-          v[i][p] = c * vip - s * viq
-          v[i][q] = s * vip + c * viq
+        const g = 100 * Math.abs(a[p][q])
+        if (
+          sweep > 4 &&
+          Math.abs(d[p]) + g === Math.abs(d[p]) &&
+          Math.abs(d[q]) + g === Math.abs(d[q])
+        ) {
+          a[p][q] = 0
+        } else if (Math.abs(a[p][q]) > thresh) {
+          let h = d[q] - d[p]
+          let t: number
+          if (Math.abs(h) + g === Math.abs(h)) {
+            t = a[p][q] / h
+          } else {
+            const theta = (0.5 * h) / a[p][q]
+            t = 1 / (Math.abs(theta) + Math.sqrt(1 + theta * theta))
+            if (theta < 0) t = -t
+          }
+          const c = 1 / Math.sqrt(1 + t * t)
+          const s = t * c
+          const tau = s / (1 + c)
+          h = t * a[p][q]
+          z[p] -= h
+          z[q] += h
+          d[p] -= h
+          d[q] += h
+          a[p][q] = 0
+          for (let j = 0; j < p; j++) rot(a, s, tau, j, p, j, q)
+          for (let j = p + 1; j < q; j++) rot(a, s, tau, p, j, j, q)
+          for (let j = q + 1; j < n; j++) rot(a, s, tau, p, j, q, j)
+          for (let j = 0; j < n; j++) rot(v, s, tau, j, p, j, q)
         }
       }
     }
+    for (let i = 0; i < n; i++) {
+      b[i] += z[i]
+      d[i] = b[i]
+      z[i] = 0
+    }
   }
-  return { values: a.map((row, i) => row[i]), vectors: v }
+  return { values: d, vectors: v }
 }
 
 // ── aggregation + Welch t-test ─────────────────────────────────────────────────
@@ -364,8 +398,10 @@ export const DEFAULT_THRESHOLD: ThresholdConfig = {
   fcLow: -1.0,
   fcHigh: 1.0,
   statMin: 1.3,
-  b: 2.5,
-  s0: 0.2,
+  // SAM curve, stored as a hyperbola with a positive FC asymptote FC_lim = −s0 (see applyThreshold).
+  // Defaults: P_lim (statMin) = 1.3, FC_lim = 0.5 (s0 = −0.5), b = 1.
+  b: 1,
+  s0: -0.5,
   statType: 'pQ'
 }
 
@@ -380,7 +416,8 @@ export function thresholdLabel(cfg: ThresholdConfig): string {
   if (cfg.type === 'linear') {
     return `linear, log2FC ∉ (${pyFloat(cfg.fcLow)}, ${pyFloat(cfg.fcHigh)}) and ${sc} > ${pyFloat(cfg.statMin)}`
   }
-  return `non-linear (SAM), ${sc} > stat_min + b/(|FC| + s0)  [stat_min=${pyFloat(cfg.statMin)}, b=${pyFloat(cfg.b)}, s0=${pyFloat(cfg.s0)}]`
+  // SAM hyperbola with a positive FC asymptote FC_lim = −s0 and P asymptote P_lim = statMin.
+  return `non-linear (SAM), ${sc} > P_lim + b/(|FC| − FC_lim)  [P_lim=${pyFloat(cfg.statMin)}, FC_lim=${pyFloat(-cfg.s0)}, b=${pyFloat(cfg.b)}]`
 }
 
 export type Effect = 'up' | 'down' | 'none'
@@ -397,8 +434,12 @@ export function applyThreshold(log2FC: number, stat: number, cfg: ThresholdConfi
     if (cfg.type === 'linear') {
       signf = (log2FC < cfg.fcLow || log2FC > cfg.fcHigh) && stat >= cfg.statMin
     } else {
-      const t = cfg.statMin + cfg.b / (Math.abs(log2FC) + cfg.s0)
-      signf = stat >= t
+      // SAM boundary as a hyperbola with a positive FC asymptote: stat = statMin + b/(|FC| − FC_lim),
+      // stored with s0 = −FC_lim. Genes at/inside the FC floor (|FC| ≤ FC_lim ⇒ denom ≤ 0) are never
+      // significant, however significant — the required stat there is infinite. (For the legacy
+      // s0 ≥ 0 form the denominator is always positive, so this is unchanged.)
+      const denom = Math.abs(log2FC) + cfg.s0
+      signf = denom > 0 && stat >= cfg.statMin + cfg.b / denom
     }
   }
   const effect: Effect = signf && log2FC > 0 ? 'up' : signf && log2FC < 0 ? 'down' : 'none'

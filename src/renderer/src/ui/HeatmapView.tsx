@@ -280,7 +280,13 @@ export function HeatmapView({
       if (tracks) lay.xaxis2 = { ...trackAxis, domain: [mainEnd + gap, 1], anchor: 'y', tickangle: -45 }
     } else {
       lay.xaxis = { ...sampleAxis }
-      lay.yaxis = { ...geneAxis, domain: nT > 0 ? [0, mainEnd] : [0, 1] }
+      // Reverse so the FIRST gene row renders at the TOP (Plotly puts index 0 at the bottom by
+      // default) — the intuitive reading order, and it puts the highest-value group on top.
+      lay.yaxis = {
+        ...geneAxis,
+        autorange: 'reversed',
+        domain: nT > 0 ? [0, mainEnd] : [0, 1]
+      }
       if (tracks) lay.yaxis2 = { ...trackAxis, domain: [mainEnd + gap, 1], anchor: 'x' }
     }
     return { data: traces, layout: lay }

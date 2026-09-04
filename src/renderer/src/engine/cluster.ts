@@ -8,10 +8,69 @@
  * Callers impute missing values first (omicViz fills each column with its mean).
  */
 
+/** The clustering result: the dendrogram leaf order plus the merge tree (child arrays, indexed by
+ *  internal-node id − n), so callers can also cut the tree into groups. */
+interface Dendrogram {
+  order: number[]
+  childA: number[]
+  childB: number[]
+  /** number of leaves */
+  n: number
+}
+
 /** Return a row ordering that places similar rows adjacent (dendrogram leaf order). */
 export function clusterRowOrder(rows: number[][]): number[] {
+  return buildDendrogram(rows).order
+}
+
+/**
+ * Cluster the rows, then cut the dendrogram into (up to) `k` groups, returning each group as a list
+ * of row indices in within-group leaf order. Groups are the k subtrees left after undoing the top
+ * k−1 merges; each subtree's leaves are a contiguous block of the full leaf order, so within-group
+ * clustering is preserved. The caller decides how to order the groups themselves (e.g. by value).
+ */
+export function clusterRowGroups(rows: number[][], k: number): number[][] {
   const n = rows.length
-  if (n <= 2) return rows.map((_, i) => i)
+  if (n === 0) return []
+  if (n <= 2 || k <= 1) return [rows.map((_, i) => i)]
+  const d = buildDendrogram(rows)
+  const merges = d.childA.length // = n − 1
+  const target = Math.min(k, n)
+  const keep = merges - (target - 1) // perform only the first `keep` merges → `target` components
+  // Union-find over the ORIGINAL leaves, applying just the kept (lower) merges.
+  const parent = new Int32Array(n)
+  for (let i = 0; i < n; i++) parent[i] = i
+  const find = (x: number): number => {
+    while (parent[x] !== x) x = parent[x] = parent[parent[x]]
+    return x
+  }
+  // A representative original leaf for each node id (leaf → itself; internal → its A-child's rep).
+  const rep = new Int32Array(2 * n - 1)
+  for (let i = 0; i < n; i++) rep[i] = i
+  for (let i = 0; i < merges; i++) {
+    const a = d.childA[i]
+    const b = d.childB[i]
+    rep[n + i] = rep[a]
+    if (i < keep) {
+      const ra = find(rep[a])
+      const rb = find(rep[b])
+      if (ra !== rb) parent[ra] = rb
+    }
+  }
+  // Walk the leaf order, collecting one group per root (in first-appearance order).
+  const byRoot = new Map<number, number[]>()
+  for (const leaf of d.order) {
+    const r = find(leaf)
+    let g = byRoot.get(r)
+    if (!g) byRoot.set(r, (g = []))
+    g.push(leaf)
+  }
+  return [...byRoot.values()]
+}
+
+function buildDendrogram(rows: number[][]): Dendrogram {
+  const n = rows.length
+  if (n <= 2) return { order: rows.map((_, i) => i), childA: [], childB: [], n }
   const m = rows[0]?.length ?? 0
 
   // Full symmetric euclidean distance matrix.
@@ -106,5 +165,5 @@ export function clusterRowOrder(rows: number[][]): number[] {
     stack.push(childB[idx]) // push B then A so A is visited first
     stack.push(childA[idx])
   }
-  return order
+  return { order, childA, childB, n }
 }

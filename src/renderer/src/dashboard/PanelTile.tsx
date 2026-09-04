@@ -7,23 +7,23 @@ import type { Edge } from '@xyflow/react'
 import { rasterizeGd } from '../export/plotExport'
 import { sanitize } from '../export/paths'
 import { collectTableExports } from '../export/tables'
-import { accentOf, categoryOf, NODE_SPECS } from '../graph/registry'
+import { accentOf, categoryOf, plotLabel } from '../graph/registry'
 import { useGraph } from '../graph/store'
 import { UI } from '../ui/theme'
-import type { NodeResult, PlotChild, PlotOrient, StepNode } from '../graph/types'
+import type { ClusterConfig, NodeResult, PlotChild, PlotOrient, StepNode } from '../graph/types'
 import { Spinner } from '../ui/Spinner'
 import { GOI_TOGGLE_KINDS } from './goi'
 import { PanelBody } from './PanelBody'
 import { enqueueReveal } from './renderQueue'
-import { PanelDownloadDialog, type DownloadOpts } from './PanelDownloadDialog'
+import { PanelSettingsDialog, type DownloadOpts, type PcaSettings } from './PanelSettingsDialog'
 import { useInView } from './useInView'
 
-/** Download glyph (tray + down arrow). */
-function IconDownload(): ReactNode {
+/** Gear glyph for the panel-settings button. */
+function IconGear(): ReactNode {
   return (
     <svg
-      width="13"
-      height="13"
+      width="14"
+      height="14"
       viewBox="0 0 24 24"
       fill="none"
       stroke="currentColor"
@@ -31,29 +31,8 @@ function IconDownload(): ReactNode {
       strokeLinecap="round"
       strokeLinejoin="round"
     >
-      <path d="M12 3v11" />
-      <path d="M8 11l4 4 4-4" />
-      <path d="M5 20h14" />
-    </svg>
-  )
-}
-
-/** Orientation glyphs: a wide rectangle (landscape) and a tall one (portrait). */
-function IconOrient({ portrait }: { portrait: boolean }): ReactNode {
-  const w = portrait ? 9 : 15
-  const h = portrait ? 15 : 9
-  return (
-    <svg width="16" height="16" viewBox="0 0 16 16" style={{ display: 'block' }}>
-      <rect
-        x={(16 - w) / 2}
-        y={(16 - h) / 2}
-        width={w}
-        height={h}
-        rx="1.5"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.6"
-      />
+      <circle cx="12" cy="12" r="3" />
+      <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
     </svg>
   )
 }
@@ -78,9 +57,9 @@ export const PanelTile = memo(function PanelTile({
    *  faceted plots read it instead of showing their own tabs. */
   facetSel?: Record<string, string>
 }): ReactNode {
-  // A tile's header shows its plot kind.
+  // A tile's header shows its plot kind (a dr tile shows its axis: Dose- vs Time-response).
   const kind = child ? child.kind : node.data.kind
-  const label = NODE_SPECS[kind].label
+  const label = plotLabel(kind, child ? child.config : node.data.config)
   const [bodyRef, inView] = useInView<HTMLDivElement>()
   // Per-tile view state: plot all genes (default) or only the GOI/focus subset. Only
   // offered for kinds that otherwise draw all genes (see GOI_TOGGLE_KINDS).
@@ -106,7 +85,21 @@ export const PanelTile = memo(function PanelTile({
   // window (format, and DPI for plots).
   const isTable = kind === 'standardize' || kind === 'compare' || kind === 'contrast'
   const isPlot = categoryOf(kind) === 'plotting'
-  const [dlOpen, setDlOpen] = useState(false)
+  const canDownload = isPlot || isTable
+  // The gear opens the per-tile settings window (view toggles + download); show it whenever
+  // the tile has at least one setting to offer.
+  // PCA/cluster tiles expose their computation parameters in the settings dialog.
+  const pca: PcaSettings | undefined =
+    kind === 'pca'
+      ? {
+          cfg: cfg as ClusterConfig,
+          onChange: patchConfig,
+          standardize:
+            results[edges.find((e) => e.target === node.id)?.source ?? '']?.kind === 'standardize'
+        }
+      : undefined
+  const hasSettings = canDownload || canToggle || canOrient || !!pca
+  const [settingsOpen, setSettingsOpen] = useState(false)
   const [busy, setBusy] = useState(false)
   async function runDownload(opts: DownloadOpts): Promise<void> {
     if (busy) return
@@ -150,7 +143,7 @@ export const PanelTile = memo(function PanelTile({
         }
       }
       // Close on a successful write; keep the window open otherwise.
-      if (written > 0) setDlOpen(false)
+      if (written > 0) setSettingsOpen(false)
     } finally {
       setBusy(false)
     }
@@ -162,74 +155,33 @@ export const PanelTile = memo(function PanelTile({
         <span style={{ ...styles.dot, background: accentOf(categoryOf(kind)) }} />
         <span style={styles.title}>{label}</span>
         <div style={styles.controls}>
-          {canToggle && (
-            <div style={styles.goiToggle} title="Show all genes or only the genes of interest">
-              {(['all', 'goi'] as const).map((m) => {
-                const on = (m === 'goi') === goiOnly
-                return (
-                  <button
-                    key={m}
-                    onClick={() => setGoiOnly(m === 'goi')}
-                    style={{
-                      ...styles.goiBtn,
-                      background: on ? UI.accent : 'transparent',
-                      color: on ? UI.accentText : UI.textMuted
-                    }}
-                  >
-                    {m === 'all' ? 'All' : 'GOI'}
-                  </button>
-                )
-              })}
-            </div>
-          )}
-          {canOrient && (
-            <div style={styles.goiToggle} title="Plot orientation">
-              {(['landscape', 'portrait'] as const).map((o) => {
-                const on = o === orient
-                return (
-                  <button
-                    key={o}
-                    onClick={() => patchConfig({ orient: o })}
-                    title={
-                      o === 'landscape'
-                        ? 'Landscape (categories across)'
-                        : 'Portrait (categories down)'
-                    }
-                    aria-label={o}
-                    style={{
-                      ...styles.goiBtn,
-                      display: 'inline-flex',
-                      alignItems: 'center',
-                      padding: '3px 7px',
-                      background: on ? UI.accent : 'transparent',
-                      color: on ? UI.accentText : UI.textMuted
-                    }}
-                  >
-                    <IconOrient portrait={o === 'portrait'} />
-                  </button>
-                )
-              })}
-            </div>
-          )}
-          {(isPlot || isTable) && (
+          {hasSettings && (
             <button
-              onClick={() => setDlOpen(true)}
-              title="Download panel…"
-              aria-label="Download panel"
+              onClick={() => setSettingsOpen(true)}
+              title="Panel settings…"
+              aria-label="Panel settings"
               style={styles.dlBtn}
             >
-              <IconDownload />
+              <IconGear />
             </button>
           )}
         </div>
       </div>
-      {dlOpen && (
-        <PanelDownloadDialog
+      {settingsOpen && (
+        <PanelSettingsDialog
           title={label}
+          canToggle={canToggle}
+          goiOnly={goiOnly}
+          onGoi={setGoiOnly}
+          canOrient={canOrient}
+          orient={orient}
+          onOrient={(o) => patchConfig({ orient: o })}
+          canDownload={canDownload}
           isPlot={isPlot}
+          pca={pca}
           busy={busy}
-          onClose={() => setDlOpen(false)}
-          onConfirm={runDownload}
+          onClose={() => setSettingsOpen(false)}
+          onDownload={runDownload}
         />
       )}
       <div style={styles.body} ref={bodyRef}>
@@ -283,29 +235,13 @@ const styles: Record<string, CSSProperties> = {
   },
   dot: { width: 8, height: 8, borderRadius: '50%', display: 'inline-block', flex: '0 0 auto' },
   title: { fontSize: 12, fontWeight: 700, color: UI.text },
-  // Right-aligned control group: GOI switch (optional) + download button.
+  // Right-aligned control group: the settings (gear) button.
   controls: {
     marginLeft: 'auto',
     display: 'inline-flex',
     alignItems: 'center',
     gap: 6,
     flex: '0 0 auto'
-  },
-  goiToggle: {
-    display: 'inline-flex',
-    flex: '0 0 auto',
-    border: `1px solid ${UI.border}`,
-    borderRadius: 5,
-    overflow: 'hidden'
-  },
-  goiBtn: {
-    border: 'none',
-    padding: '2px 8px',
-    fontSize: 10,
-    fontWeight: 700,
-    letterSpacing: 0.3,
-    cursor: 'pointer',
-    lineHeight: 1.4
   },
   dlBtn: {
     display: 'inline-flex',

@@ -1,8 +1,8 @@
 import { useMemo } from 'react'
 
-import type { MAData, MAPoint } from '../engine'
-import { PlotlyChart } from './PlotlyChart'
-import { axisBase, EFFECT_COLOR, HIGHLIGHT, PALETTES, plotBase } from './theme'
+import type { MAData, MAPoint, ThresholdConfig } from '../engine'
+import { PlotlyChart, type GuideDrag } from './PlotlyChart'
+import { axisBase, EFFECT_COLOR, guideLine, PALETTES, plotBase } from './theme'
 import { useSelection } from './useSelection'
 import { useUiTheme } from './useUiTheme'
 
@@ -11,13 +11,29 @@ const ORDER: Eff[] = ['none', 'down', 'up']
 
 /** MA plot: mean log2 abundance (A) vs log2 fold change (M), colored by effect.
  *  `focus` genes stay emphasized while the rest dims to a grey background. */
-export function MAView({ ma, title, focus }: { ma: MAData; title?: string; focus?: string[] }) {
+export function MAView({
+  ma,
+  title,
+  focus,
+  samThreshold,
+  onThresholdChange
+}: {
+  ma: MAData
+  title?: string
+  focus?: string[]
+  /** upstream compare uses a non-linear (SAM) threshold — hide the fold-change guide lines, which
+   *  imply a fixed FC cutoff that SAM doesn't have (SAM depends on the stat, absent from MA axes). */
+  samThreshold?: boolean
+  /** when set (linear mode only), the fold-change lines drag to update the SHARED compare threshold —
+   *  the same fcLow/fcHigh volcano uses — so MA and volcano stay in sync. */
+  onThresholdChange?: (partial: Partial<ThresholdConfig>) => void
+}) {
   const mode = useUiTheme((s) => s.mode)
   // Pinned genes become a "Selected" legend group. Subscribe to pinnedIds only (not hoverId),
   // so the plot rebuilds on a click-select, not on every hover.
   const pinnedIds = useSelection((s) => s.pinnedIds)
 
-  const { data, layout } = useMemo(() => {
+  const { data, layout, labels, guides } = useMemo(() => {
     const p = PALETTES[mode]
     const focusSet = new Set(focus ?? [])
     const hasFocus = focusSet.size > 0
@@ -67,17 +83,21 @@ export function MAView({ ma, title, focus }: { ma: MAData; title?: string; focus
     if (sel.length) {
       traces.push({
         type: 'scatter',
-        mode: 'markers+text',
+        // Markers only — the pinned gene's LABEL comes from the shared selection overlay (which
+        // labels each active gene exactly once); duplicating it here caused a doubled label.
+        mode: 'markers',
         name: `Selected (${sel.length})`,
         showlegend: true,
         x: sel.map((pt) => pt.x),
         y: sel.map((pt) => pt.y),
-        text: sel.map((pt) => pt.label),
-        textposition: 'top center',
-        textfont: { size: 10, color: p.text },
         customdata: sel.map((pt) => pt.uniqID),
         hovertemplate: hover,
-        marker: { color: sel.map((pt) => EFFECT_COLOR[pt.effect]), size: 13, opacity: 1, line: { color: HIGHLIGHT, width: 2.5 } }
+        // A single/few pins are enlarged for emphasis; a big group (e.g. a legend-group click)
+        // shrinks so the cloud doesn't overwhelm.
+        marker:
+          sel.length > 12
+            ? { color: sel.map((pt) => EFFECT_COLOR[pt.effect]), size: 8, opacity: 1 }
+            : { color: sel.map((pt) => EFFECT_COLOR[pt.effect]), size: 13, opacity: 1 }
       })
     }
 
@@ -90,7 +110,7 @@ export function MAView({ ma, title, focus }: { ma: MAData; title?: string; focus
       x1: hi,
       y0: y,
       y1: y,
-      line: { color: p.border, width: 1, dash: 'dash' }
+      line: guideLine(p)
     })
     // Pin explicit axis ranges (with padding) so the range never re-pads on hover — otherwise
     // the enlarged overlay marker on an edge point shifts the whole cloud and bounces the hover.
@@ -122,10 +142,50 @@ export function MAView({ ma, title, focus }: { ma: MAData; title?: string; focus
         range: [yLo - yPad, yHi + yPad],
         autorange: false
       },
-      shapes: [guide(ma.fcLow), guide(ma.fcHigh)]
+      // Guide order: [0]=fcLow, [1]=fcHigh — horizontal log2FC cutoffs. Hidden under SAM.
+      shapes: samThreshold ? [] : [guide(ma.fcLow), guide(ma.fcHigh)]
     }
-    return { data: traces, layout: lay }
-  }, [ma, title, mode, focus, pinnedIds])
+    // Draggable, symmetric fold-change lines (linear mode only) — they edit the SAME compare
+    // threshold as volcano, so both plots move together. Drag vertically (ns-resize).
+    const guides: GuideDrag[] | undefined =
+      !onThresholdChange || samThreshold
+        ? undefined
+        : [
+            {
+              shapeIndex: 0, axis: 'y', kind: 'line', cursor: 'ns-resize', value: ma.fcLow,
+              key: 'fc', mirrorShapeIndex: 1, format: (v) => `|log₂FC| ≥ ${Math.abs(v).toFixed(2)}`
+            },
+            {
+              shapeIndex: 1, axis: 'y', kind: 'line', cursor: 'ns-resize', value: ma.fcHigh,
+              key: 'fc', mirrorShapeIndex: 0, format: (v) => `|log₂FC| ≥ ${Math.abs(v).toFixed(2)}`
+            }
+          ]
+    // Collision-managed labels for the SIGNIFICANT genes (largest |log2FC| first), excluding
+    // GOI/pinned genes already named by their own emphasis traces.
+    const named = new Set([...(focus ?? []), ...pinnedIds])
+    const labels = ma.points
+      .filter((pt) => pt.effect !== 'none' && !named.has(pt.uniqID))
+      .map((pt) => ({ x: pt.x, y: pt.y, text: pt.label, priority: Math.abs(pt.y), id: pt.uniqID }))
+    return { data: traces, layout: lay, labels, guides }
+  }, [ma, title, mode, focus, pinnedIds, samThreshold, onThresholdChange])
 
-  return <PlotlyChart data={data} layout={layout} />
+  // Fold change is symmetric: whichever line moved, set both cutoffs to ±|value| about 0.
+  const onGuide = (key: string, value: number): void => {
+    if (!onThresholdChange) return
+    if (key === 'fc') {
+      const mag = Math.abs(value)
+      onThresholdChange({ fcLow: -mag, fcHigh: mag })
+    }
+  }
+
+  return (
+    <PlotlyChart
+      data={data}
+      layout={layout}
+      labels={labels}
+      labelColor={PALETTES[mode].text}
+      guides={guides}
+      onGuide={onGuide}
+    />
+  )
 }

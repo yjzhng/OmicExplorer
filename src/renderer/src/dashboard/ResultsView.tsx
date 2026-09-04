@@ -2,15 +2,22 @@
  *  of panel tiles. Replaces the old two-level (section pill → tile tab) OutputDock
  *  that showed a single plot at a time. Grouping is derived from the pipeline DAG;
  *  tile layout is drag/resizable in edit mode (persisted with the workflow later). */
-import { useMemo, useState, type CSSProperties, type ReactNode } from 'react'
+import { Fragment, useMemo, useState, type CSSProperties, type ReactNode } from 'react'
 import type { Edge } from '@xyflow/react'
 
 import { facetDims, type ContextRow } from '../engine'
-import { deriveGroups, expandMembers, parsePanelId, type AnalysisGroup } from '../graph/groups'
+import {
+  deriveGroups,
+  expandMembers,
+  parsePanelId,
+  topoStepOrder,
+  type AnalysisGroup
+} from '../graph/groups'
 import { NODE_SPECS } from '../graph/registry'
 import { useGraph } from '../graph/store'
 import { isStep, type NodeResult, type PlotGroupConfig, type StepNode } from '../graph/types'
 import type { PanelLayoutItem } from '../graph/types'
+import { GeneSelectMenu } from '../ui/GeneSelectMenu'
 import { UI } from '../ui/theme'
 import { useAppView } from '../ui/useAppView'
 import { DashboardGrid } from './DashboardGrid'
@@ -44,14 +51,47 @@ export function ResultsView(): ReactNode {
   const results = useGraph((s) => s.results)
   const groupLayouts = useGraph((s) => s.groupLayouts)
   const setGroupLayout = useGraph((s) => s.setGroupLayout)
+  const groupMeta = useGraph((s) => s.groupMeta)
+  const reorderGroups = useGraph((s) => s.reorderGroups)
   const editMode = useAppView((s) => s.editMode)
   const toggleEdit = useAppView((s) => s.toggleEdit)
   // Active tab lives in the app-view store (not local state) so it survives Results unmounting
   // when you switch to the canvas — returning lands on the same tab, not the first.
   const activeId = useAppView((s) => s.resultsTab)
   const setResultsTab = useAppView((s) => s.setResultsTab)
+  // Tab being dragged (rootId) and the insertion index a drop would land at (0..n), for the live
+  // placeholder shown between tabs while dragging.
+  const [dragId, setDragId] = useState<string | null>(null)
+  const [dropIndex, setDropIndex] = useState<number | null>(null)
 
-  const groups = useMemo(() => deriveGroups(nodes, edges), [nodes, edges])
+  const groups = useMemo(() => {
+    const derived = deriveGroups(nodes, edges)
+    // Default order follows workflow TOPOLOGY (upstream analyses first), not creation order.
+    const topo = topoStepOrder(nodes, edges)
+    const rank = new Map(topo.map((id, i) => [id, i]))
+    // A user-set `order` (from drag-reorder) wins; otherwise fall back to the topological rank.
+    return derived
+      .map((g) => ({ g, rank: rank.get(g.rootId) ?? Infinity, order: groupMeta[g.rootId]?.order }))
+      .sort((a, b) => (a.order ?? Infinity) - (b.order ?? Infinity) || a.rank - b.rank)
+      .map((x) => x.g)
+  }, [nodes, edges, groupMeta])
+
+  // Drop `fromId` into insertion slot `index` (0..n in the current order) and persist.
+  const dropTabAt = (fromId: string, index: number): void => {
+    const ids = groups.map((g) => g.rootId)
+    const from = ids.indexOf(fromId)
+    if (from < 0) return
+    ids.splice(from, 1)
+    // Removing the dragged tab shifts later slots left by one.
+    const to = from < index ? index - 1 : index
+    if (to === from) return // no-op (dropped back onto its own slot)
+    ids.splice(to, 0, fromId)
+    reorderGroups(ids)
+  }
+  const endDrag = (): void => {
+    setDragId(null)
+    setDropIndex(null)
+  }
   const active = groups.find((g) => g.id === activeId) ?? groups[0] ?? null
   // Tabs are kept alive once opened: building a tab's plots costs ~1s, and
   // unmounting on every switch made you pay it again each time you came back.
@@ -69,6 +109,107 @@ export function ResultsView(): ReactNode {
 
   const nodeById = useMemo(() => new Map(nodes.filter(isStep).map((n) => [n.id, n])), [nodes])
 
+  // uniqID → display name, merged across every result's displayMap, so the selected-genes chips
+  // can show gene names for the pinned selection (which carries only ids).
+  const geneLabels = useMemo(() => {
+    const m: Record<string, string> = {}
+    for (const r of Object.values(results)) {
+      const dm = r.kind === 'standardize' ? r.std.displayMap : r.displayMap
+      if (dm) for (const k in dm) if (!(k in m)) m[k] = dm[k]
+    }
+    return m
+  }, [results])
+  // Genes grouped pathway-CATEGORY → PATHWAY → gene for the multi-select menu. Pathways come from the
+  // merged per-gene annotationMap (keggPathway; ';'/'|'-separated); each pathway's category from the
+  // merged keggCategories map (BRITE top level). A gene appears under every pathway it's annotated
+  // with. Genes with no pathway → "No pathway"; pathways with no known category → "Other".
+  const geneCategories = useMemo(() => {
+    const ann: Record<string, Record<string, string>> = {}
+    const kcat: Record<string, string> = {}
+    for (const r of Object.values(results)) {
+      if (r.kind !== 'compare') continue
+      for (const k in r.annotationMap) if (!(k in ann)) ann[k] = r.annotationMap[k]
+      for (const k in r.keggCategories) if (!(k in kcat)) kcat[k] = r.keggCategories[k]
+    }
+    const NONE = 'No pathway'
+    const OTHER = 'Other'
+    type Gene = { id: string; label: string }
+    // category → pathway → genes
+    const cats = new Map<string, Map<string, Gene[]>>()
+    const put = (cat: string, path: string, gene: Gene): void => {
+      let byPath = cats.get(cat)
+      if (!byPath) cats.set(cat, (byPath = new Map()))
+      const arr = byPath.get(path)
+      if (arr) arr.push(gene)
+      else byPath.set(path, [gene])
+    }
+    for (const id in geneLabels) {
+      const gene = { id, label: geneLabels[id] }
+      const paths = [
+        ...new Set(
+          (ann[id]?.keggPathway ?? '')
+            .split(/[;|]/)
+            .map((s) => s.trim())
+            .filter(Boolean)
+        )
+      ]
+      if (paths.length === 0) put(NONE, NONE, gene)
+      else for (const pw of paths) put(kcat[pw] ?? OTHER, pw, gene)
+    }
+    const byName = (a: string, b: string): number =>
+      a.localeCompare(b, undefined, { numeric: true })
+    // "No pathway"/"Other" sink to the bottom; genes and pathways sorted by name.
+    const rank = (name: string): number => (name === NONE ? 2 : name === OTHER ? 1 : 0)
+    return [...cats.entries()]
+      .sort((a, b) => rank(a[0]) - rank(b[0]) || byName(a[0], b[0]))
+      .map(([name, byPath]) => ({
+        name,
+        pathways: [...byPath.entries()]
+          .sort((a, b) => byName(a[0], b[0]))
+          .map(([pw, genes]) => ({
+            name: pw,
+            genes: genes.sort((x, y) => byName(x.label, y.label))
+          }))
+      }))
+  }, [results, geneLabels])
+
+  // Genes grouped by essentiality — Essential / NA — a flat two-level tree for the menu's second
+  // tab. Backed by DEG (Database of Essential Genes, essential-only), so the model is binary: a gene
+  // flagged essential lands in Essential; everything else (not in DEG, or unannotated) is NA. The
+  // flag is read from any per-gene annotation column whose name mentions "essential".
+  const geneEssentiality = useMemo(() => {
+    const ann: Record<string, Record<string, string>> = {}
+    for (const r of Object.values(results)) {
+      if (r.kind !== 'compare') continue
+      for (const k in r.annotationMap) if (!(k in ann)) ann[k] = r.annotationMap[k]
+    }
+    // Which annotation column carries essentiality, if any.
+    const essCol = [...new Set(Object.values(ann).flatMap((rec) => Object.keys(rec)))].find((c) =>
+      /essential/i.test(c)
+    )
+    // DEG is essential-only: a positive flag → Essential, anything else → NA.
+    const isEssential = (v: string | undefined): boolean => {
+      const s = (v ?? '').trim().toLowerCase()
+      if (s === '' || s.startsWith('non')) return false
+      return s.includes('essential') || s === 'e' || s === 'yes' || s === 'true' || s === '1'
+    }
+    const byName = (a: string, b: string): number =>
+      a.localeCompare(b, undefined, { numeric: true })
+    const buckets: Record<'Essential' | 'NA', { id: string; label: string }[]> = {
+      Essential: [],
+      NA: []
+    }
+    for (const id in geneLabels)
+      buckets[essCol && isEssential(ann[id]?.[essCol]) ? 'Essential' : 'NA'].push({
+        id,
+        label: geneLabels[id]
+      })
+    return (['Essential', 'NA'] as const).map((name) => ({
+      name,
+      genes: buckets[name].sort((x, y) => byName(x.label, y.label))
+    }))
+  }, [results, geneLabels])
+
   if (groups.length === 0) {
     return (
       <div style={styles.view}>
@@ -84,24 +225,71 @@ export function ResultsView(): ReactNode {
     <div style={styles.view}>
       <div style={styles.header}>
         <div style={styles.tabRow}>
-          <div style={styles.tabs}>
-            {groups.map((g) => {
+          <div
+            style={styles.tabs}
+            // Dropping anywhere in the row uses the last-computed insertion index.
+            onDragOver={(e) => {
+              if (dragId) e.preventDefault()
+            }}
+            onDrop={(e) => {
+              e.preventDefault()
+              if (dragId && dropIndex != null) dropTabAt(dragId, dropIndex)
+              endDrag()
+            }}
+          >
+            {groups.map((g, i) => {
               const isActive = g.id === active?.id
               return (
-                <button
-                  key={g.id}
-                  onClick={() => openTab(g.id)}
-                  style={{ ...styles.tab, ...(isActive ? styles.tabActive : {}) }}
-                  title={groupTitle(g, results)}
-                >
-                  {groupLabel(g, nodeById.get(g.rootId)?.data.name)}
-                  {/* Real panel count: plot groups unfold into one panel per subcard, so this
-                      matches the tiles actually shown (a folded group is not counted as 1). */}
-                  <span style={styles.tabCount}>{expandMembers(g.memberIds, nodes).length}</span>
-                </button>
+                <Fragment key={g.id}>
+                  {dropIndex === i && dragId && <div style={styles.dropMark} />}
+                  <button
+                    draggable
+                    onClick={() => openTab(g.id)}
+                    onDragStart={(e) => {
+                      setDragId(g.rootId)
+                      e.dataTransfer.effectAllowed = 'move'
+                    }}
+                    onDragOver={(e) => {
+                      if (!dragId) return
+                      e.preventDefault() // allow the drop
+                      e.dataTransfer.dropEffect = 'move'
+                      // Insert before this tab or after it, by which half the cursor is over.
+                      const r = e.currentTarget.getBoundingClientRect()
+                      const after = e.clientX > r.left + r.width / 2
+                      const idx = i + (after ? 1 : 0)
+                      if (idx !== dropIndex) setDropIndex(idx)
+                    }}
+                    onDrop={(e) => {
+                      e.preventDefault()
+                      if (dragId && dropIndex != null) dropTabAt(dragId, dropIndex)
+                      endDrag()
+                    }}
+                    onDragEnd={endDrag}
+                    style={{
+                      ...styles.tab,
+                      ...(isActive ? styles.tabActive : {}),
+                      ...(dragId === g.rootId ? { opacity: 0.4 } : {})
+                    }}
+                    title={groupTitle(g, results)}
+                  >
+                    {groupLabel(g, nodeById.get(g.rootId)?.data.name)}
+                    {/* Real panel count: plot groups unfold into one panel per subcard, so this
+                        matches the tiles actually shown (a folded group is not counted as 1). */}
+                    <span style={styles.tabCount}>{expandMembers(g.memberIds, nodes).length}</span>
+                  </button>
+                </Fragment>
               )
             })}
+            {dropIndex === groups.length && dragId && <div style={styles.dropMark} />}
           </div>
+          {/* Searchable multi-select of all genes (drives the pinned selection), between the tabs
+              and the layout toggle. */}
+          <GeneSelectMenu
+            tabs={[
+              { key: 'pathway', label: 'Pathway', categories: geneCategories },
+              { key: 'essentiality', label: 'Essentiality', categories: geneEssentiality }
+            ]}
+          />
           {/* Right-aligned dashboard layout toggle, on the tab row (not the main nav). */}
           <button
             onClick={toggleEdit}
@@ -291,10 +479,23 @@ const styles: Record<string, CSSProperties> = {
   },
   tabs: {
     display: 'flex',
+    alignItems: 'center',
     gap: 6,
     flex: 1,
     minWidth: 0,
     overflowX: 'auto'
+  },
+  // Live insertion marker shown between tabs while dragging one — a thin accent bar. It must not
+  // intercept drag events (else the underlying tab's dragOver stops firing), hence pointerEvents.
+  dropMark: {
+    flex: '0 0 auto',
+    alignSelf: 'stretch',
+    width: 3,
+    minHeight: 22,
+    margin: '0 -3px',
+    borderRadius: 2,
+    background: UI.accent,
+    pointerEvents: 'none'
   },
   editBtn: {
     flex: '0 0 auto',

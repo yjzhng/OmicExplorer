@@ -34,8 +34,11 @@ export type NodeKind =
   | 'pca'
   | 'tdr'
   | 'geneBar'
+  | 'enrich'
+  | 'string'
   | 'qc'
   | 'corr'
+  | 'table'
   | 'plotGroup'
 export type StepStatus = 'idle' | 'running' | 'done' | 'error'
 /** Plot orientation for the tiles that support it (bubble/dumbbell/heatmap/bar): genes/
@@ -109,6 +112,25 @@ export interface InteractiveImport {
   step?: number
   /** last column-classification preset (Columns step) */
   preset?: MatrixPreset | 'custom'
+  /** fetched external annotations (UniProt) merged into the DB, keyed by the feature's ID value
+   *  (uniqID/accession). Persisted so a reopened wizard keeps them and they're written on convert. */
+  annotations?: AnnotationSet
+}
+
+/** External-annotation columns fetched for the feature IDs (e.g. from UniProt). */
+export interface AnnotationSet {
+  /** provider tag (currently 'uniprot') */
+  source: string
+  /** output column names, in order (e.g. ['proteinName', 'geneNames']) */
+  fields: string[]
+  /** feature ID (accession) → { field → value } */
+  byId: Record<string, Record<string, string>>
+  /** dominant NCBI taxon id learned from the fetch — the species for the STRING network */
+  taxon?: number
+  /** dominant KEGG organism code (e.g. 'hsa') learned from the fetch — for STRING pathway mode */
+  keggOrg?: string
+  /** pathway name → top-level KEGG category (BRITE), for grouping/colouring enrichment terms */
+  keggCategories?: Record<string, string>
 }
 
 export interface StandardizeConfig {
@@ -120,6 +142,9 @@ export interface StandardizeConfig {
   /** clean-up: drop genes identified (non-null) in fewer than this % of samples.
    *  0 = keep everything. */
   minSamplePct: number
+  /** apply the % threshold per strain (kept if it clears in any one strain) instead of across all
+   *  samples pooled. */
+  minSamplePctPerStrain?: boolean
 }
 
 export interface CompareConfig {
@@ -203,11 +228,20 @@ export function isCompareConfigured(config: CompareConfig): boolean {
  *  condition (omicViz's `type: contrast` entry = condition + [[num, den]] pairs). */
 export interface ContrastConfig {
   relationship: 'correlated' | 'independent'
-  /** the condition contrasted over (the contrast axis) */
+  /** how the two sides (FC1/FC2) are formed:
+   *   - 'split' (default): pool the single upstream Compare and split it by two levels of one
+   *     condition (the classic omicViz contrast).
+   *   - 'pair': two upstream inputs (two Compares → FC-vs-FC, or two Standardizes →
+   *     abundance-vs-abundance), joined by uniqID + the matched context. */
+  source?: 'split' | 'pair'
+  /** the condition contrasted over (the contrast axis) — 'split' mode only */
   condition: ConditionKey
-  /** its two levels: numerator → FC1, denominator → FC2 */
+  /** its two levels: numerator → FC1, denominator → FC2 — 'split' mode only */
   pairNum: string
   pairDen: string
+  /** 'pair' mode: context dims to align the two inputs on (joined with uniqID); unmatched dims are
+   *  averaged. Empty = join on uniqID alone (one point per gene). */
+  match?: ConditionKey[]
 }
 
 export interface VolcanoConfig {
@@ -280,6 +314,34 @@ export interface BarConfig {
   orient?: PlotOrient
 }
 
+/** Enrichment (compare): over-representation of GO terms / KEGG pathways in the significant
+ *  gene set, drawn as a dot or bar plot. Reads the annotations fetched in the interactive import. */
+export interface EnrichConfig {
+  /** 'ora' = over-representation (hypergeometric); 'gsea' reserved (ranked, not yet computed). */
+  method: 'ora' | 'gsea'
+  /** which annotation term set to test */
+  source: 'go' | 'kegg'
+  /** plot style ('ridge' is GSEA-only: per-set log₂FC density ridges) */
+  style: 'dot' | 'bar' | 'ridge'
+  /** how many top terms to show */
+  topTerms: number
+}
+
+/** STRING network (compare): PPI network among the top differential genes, fetched from STRING-DB.
+ *  Species comes from the interactive-import annotation fetch (NCBI taxon); a non-zero `species`
+ *  here overrides it. Nodes = genes coloured by log₂FC, sized by degree; edges = STRING confidence. */
+export interface StringConfig {
+  /** STRING confidence cutoff bucket (maps to required_score 150/400/700/900) */
+  confidence: 'low' | 'medium' | 'high' | 'highest'
+  /** cap on the number of genes (strongest |log₂FC|) sent to STRING */
+  maxGenes: number
+  /** also include first-shell interactors of the query set (proteins that directly connect to a
+   *  differential gene above the confidence threshold), up to maxGenes of them. */
+  addInteractors?: boolean
+  /** manual NCBI taxon override; 0/undefined = use the species from the annotation fetch */
+  species?: number
+}
+
 /** Sample QC plot (standardize): a per-sample distribution of one quality metric, drawn as
  *  a violin, box, or bar. */
 export interface QcConfig {
@@ -291,6 +353,13 @@ export interface QcConfig {
 export interface CorrConfig {
   /** cluster samples by correlation profile so replicate groups block on the diagonal */
   cluster: boolean
+}
+
+/** Data-table tile (plotting): shows the upstream step's results table interactively in the
+ *  dashboard. The upstream step already computes the table; this node just opts a tile in. */
+export interface TableConfig {
+  /** initial view for tables that offer a Long ⇆ Matrix toggle (standardize/compare). */
+  view?: 'long' | 'matrix'
 }
 
 /** One plot inside a group tile: a full plot spec with a stable subcard id. The `kind`
@@ -316,6 +385,30 @@ export interface ClusterConfig {
    *  replicates to a centroid + spread territory (falling back to the point when
    *  a condition has a single replicate). */
   display: 'replicate' | 'centroid'
+  /** 'simple' colours by a single condition (colorBy). 'complex' drives marker aesthetics
+   *  from every varying condition at once — colour by the qualitative condition(s), shade
+   *  by a quantitative one, and connect a dose/time series with arrows. */
+  legend?: 'simple' | 'complex'
+  /** Per-gene scaling before embedding. 'unit' z-scores each gene to unit variance
+   *  (correlation PCA — every gene weighted equally); 'none' only mean-centers, letting
+   *  high-variance genes dominate (covariance PCA — matches Spectronaut). Defaults to 'unit'. */
+  scale?: 'unit' | 'none'
+  /** Missing-value policy. 'impute' fills gaps with the gene mean (keeps every gene); 'complete'
+   *  drops any gene missing in any sample (Spectronaut-style, no imputation). Defaults to 'impute'. */
+  missing?: 'impute' | 'complete'
+  /** Per-sample normalization. 'median' removes each sample's offset; 'zscore' also removes its
+   *  scale (per-sample standardization, like Pearson); 'quantile' forces a common distribution;
+   *  'none' leaves the log2 values as-is. Defaults to 'median'. */
+  center?: 'median' | 'zscore' | 'quantile' | 'none'
+  /** Feature selection: embed only the N most-variable genes (0 / undefined = all). Restricting to
+   *  the most variable proteins stops p ≫ n dilution from flattening PC1. */
+  topVar?: number
+  /** Log transform: 'auto' (heuristic), 'log2'/'log10' (force), 'none' (linear). Defaults to
+   *  'auto'. */
+  transform?: 'auto' | 'log2' | 'log10' | 'none'
+  /** Replicate handling: 'individual' embeds every replicate; 'mean' averages to condition means
+   *  first (cuts noise, lifts a real group axis). Defaults to 'individual'. */
+  replicates?: 'individual' | 'mean'
 }
 
 export type NodeConfig =
@@ -333,8 +426,11 @@ export type NodeConfig =
   | ClusterConfig
   | TdrConfig
   | BarConfig
+  | EnrichConfig
+  | StringConfig
   | QcConfig
   | CorrConfig
+  | TableConfig
   | PlotGroupConfig
 
 /** Data carried on a materialized step node (kept light — heavy results live in the store).
@@ -376,7 +472,15 @@ export function isStep(n: GraphNode): n is StepNode {
 
 export type NodeResult =
   | { kind: 'standardize'; std: StandardizeResult }
-  | { kind: 'compare'; cmp: VehNormResult; displayMap: Record<string, string> }
+  | {
+      kind: 'compare'
+      cmp: VehNormResult
+      displayMap: Record<string, string>
+      /** uniqID → annotation columns (GO / keggPathway), carried from Standardize for enrichment */
+      annotationMap: Record<string, Record<string, string>>
+      /** pathway name → KEGG category, carried from Standardize for grouping enrichment terms */
+      keggCategories: Record<string, string>
+    }
   | { kind: 'contrast'; ctr: ContrastResult; displayMap: Record<string, string> }
 
 // ── dashboard layout persistence (structural mirror of react-grid-layout's item) ──
@@ -391,8 +495,28 @@ export interface PanelLayoutItem {
   h: number
 }
 
+/** A gene reference: its feature uniqID plus the display label captured when it was added, so chips
+ *  can render app-wide without a per-node displayMap lookup. */
+export interface FavGene {
+  id: string
+  label: string
+}
+
+/** A named, user-defined collection of genes — a saved gene selection the user can switch between. */
+export interface GeneSet {
+  id: string
+  name: string
+  genes: FavGene[]
+  /** when true, this set's genes are MASKED — forced non-significant across every comparison /
+   *  contrast result in the project (e.g. to drop inherently-variable genes). */
+  hidden?: boolean
+}
+
 /** User overrides for a derived analysis group, keyed by the group's root node id. */
 export interface GroupMeta {
   label?: string
   hidden?: boolean
+  /** results-page tab position (lower = earlier). Unset groups sort after ordered ones, in the
+   *  derived (node) order. Written when the user drag-reorders the tabs. */
+  order?: number
 }

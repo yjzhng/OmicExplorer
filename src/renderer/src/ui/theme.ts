@@ -133,6 +133,12 @@ export function plotBase(p: Palette): Record<string, unknown> {
   }
 }
 
+/** Shared style for threshold / reference guide lines (volcano/MA/scatter). Uses the muted text
+ *  colour (not the near-invisible border) at 1.5px so thresholds read clearly against the cloud. */
+export function guideLine(p: Palette): { color: string; width: number; dash: 'dash' } {
+  return { color: p.textMuted, width: 1.5, dash: 'dash' }
+}
+
 /**
  * Faint axis chrome, no gridlines by default. Lines/ticks use the border color; tick
  * labels inherit the muted layout font. Plots that need to track named categories

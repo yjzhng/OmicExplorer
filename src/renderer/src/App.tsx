@@ -22,6 +22,7 @@ import {
   type OnConnectStartParams
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
+import './app.css'
 
 import { ResultsView } from './dashboard/ResultsView'
 import { ExportModal } from './export/ExportModal'
@@ -230,11 +231,11 @@ function Canvas() {
       const ids = sel.filter((n) => n.type !== 'placeholder').map((n) => n.id)
       setSelectedIds(ids)
       useGraph.getState().setCanvasSelection(ids)
-      // A deliberate single selection also opens that node's config float; 0 or many
-      // leave the float alone (so grouping, which reselects the new group, isn't undone).
-      if (ids.length === 1) selectNode(ids[0])
+      // Opening a node's config float is the job of a CLICK (onNodeClick) — a marquee drag
+      // (which is what drives selection change) must not open it, even when it happens to
+      // catch a single node.
     },
-    [selectNode]
+    []
   )
   // Group is offered only for ≥2 plotting tiles sharing one upstream (see store.groupNodes).
   const selStep = selectedIds
@@ -415,6 +416,16 @@ function Canvas() {
           size={1.4}
           color={PALETTES[mode].axis}
         />
+        {/* Empty canvas: a centred prompt to add the first step. */}
+        {nodes.length === 0 && !placing && (
+          <div style={styles.emptyHint}>
+            <div style={styles.emptyTitle}>Empty workflow</div>
+            <div style={styles.emptyText}>Add your first step to start building the pipeline.</div>
+            <button style={styles.emptyBtn} onClick={togglePlacing}>
+              + Add first step
+            </button>
+          </div>
+        )}
         {/* Bottom-centre; hidden while the selection action bar occupies that spot. */}
         {selectedIds.length === 0 && <NewStep placing={placing} onToggle={togglePlacing} />}
         {selectedIds.length > 0 && (
@@ -639,7 +650,9 @@ function FolderChip() {
                     style={styles.folderPick}
                     title={f.path || 'no path set'}
                     onClick={() => {
-                      if (missing) void repathFolder(f.id)
+                      // A missing OR path-less folder needs a folder picked for it; otherwise just
+                      // switch to it.
+                      if (missing || !f.path) void repathFolder(f.id)
                       else switchFolder(f.id)
                       setOpen(false)
                     }}
@@ -754,22 +767,24 @@ function WorkflowChip() {
                   </button>
                 )}
                 <button
-                  style={styles.folderDel}
+                  style={styles.rowIconBtn}
                   title="Rename workflow"
+                  aria-label="Rename workflow"
                   onClick={() => {
                     setRenamingId(w.id)
                     setRenameText(w.name)
                   }}
                 >
-                  ✎
+                  <IconEdit />
                 </button>
                 {workflows.length > 1 && (
                   <button
-                    style={styles.folderDel}
+                    style={{ ...styles.rowIconBtn, color: '#e15759' }}
                     title="Delete workflow"
+                    aria-label="Delete workflow"
                     onClick={() => deleteWorkflow(w.id)}
                   >
-                    🗑
+                    <IconTrash />
                   </button>
                 )}
               </div>
@@ -1034,6 +1049,42 @@ function IconPencil() {
   )
 }
 
+/** Minimalist rename (pencil) icon for menu rows. */
+function IconEdit() {
+  return (
+    <svg
+      width="13"
+      height="13"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M4 20l1-4L16 5l3 3L8 19z" />
+      <path d="M14 7l3 3" />
+    </svg>
+  )
+}
+/** Minimalist delete (trash) icon for menu rows. */
+function IconTrash() {
+  return (
+    <svg
+      width="13"
+      height="13"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M4 7h16M9 7V5h6v2M6 7l1 13h10l1-13" />
+    </svg>
+  )
+}
+
 /** Control chip: save / save-as / undo / redo, one bordered group split by dividers. */
 function ControlChip() {
   const dirty = useGraph((s) => s.dirty)
@@ -1090,8 +1141,24 @@ function ControlChip() {
 function Home() {
   const newProject = useGraph((s) => s.newProject)
   const openProject = useGraph((s) => s.openProject)
+  const resumeProject = useGraph((s) => s.resumeProject)
   const recents = useGraph((s) => s.recentProjects)
   const forgetRecent = useGraph((s) => s.forgetRecent)
+  const openError = useGraph((s) => s.openError)
+  const projectName = useGraph((s) => s.projectName)
+  const projectPath = useGraph((s) => s.projectPath)
+  const dirty = useGraph((s) => s.dirty)
+  // "Last project": resume the project still live in this session (goHome keeps it in memory, so its
+  // unsaved changes survive an accidental trip home). On a fresh session with none live, fall back to
+  // the most-recently opened project, which "resumes" by opening it from disk.
+  const hasSession = useGraph((s) => s.folders.length > 0)
+  const last = hasSession
+    ? { mode: 'resume' as const, name: projectName, path: projectPath, dirty }
+    : recents.length > 0
+      ? { mode: 'open' as const, name: recents[0].name, path: recents[0].path, dirty: false }
+      : null
+  // Don't list the last project again under Recent (avoid a duplicate row).
+  const recentRest = last?.path ? recents.filter((r) => r.path !== last.path) : recents
   return (
     <div style={styles.home}>
       <div style={styles.homeInner}>
@@ -1105,34 +1172,75 @@ function Home() {
             Open project…
           </button>
         </div>
-        <div style={styles.recentHead}>Recent projects</div>
-        {recents.length === 0 ? (
-          <div style={styles.recentEmpty}>No recent projects yet.</div>
-        ) : (
-          <div style={styles.recentList}>
-            {recents.map((r) => (
-              <div key={r.path} style={styles.recentRow}>
+        {openError && <div style={styles.openError}>{openError}</div>}
+        {last && (
+          <>
+            <div style={styles.recentHead}>Last project</div>
+            <div style={styles.recentList}>
+              <div style={styles.recentRow}>
                 <button
                   style={styles.recentItem}
-                  title={r.path}
-                  onClick={() => void openProject(r.path)}
+                  title={
+                    last.mode === 'resume'
+                      ? 'Resume where you left off (keeps unsaved changes)'
+                      : last.path ?? ''
+                  }
+                  onClick={() =>
+                    last.mode === 'resume' ? resumeProject() : void openProject(last.path ?? undefined)
+                  }
                 >
-                  <span style={styles.recentName}>{r.name}</span>
-                  <span style={styles.recentPath}>{r.path}</span>
-                </button>
-                <button
-                  style={styles.recentForget}
-                  title="Remove from recents"
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    forgetRecent(r.path)
-                  }}
-                >
-                  ✕
+                  <span
+                    style={{ ...styles.recentName, display: 'inline-flex', alignItems: 'center', gap: 6 }}
+                  >
+                    <span style={{ ...styles.statusDot, background: last.dirty ? '#e2b93b' : '#3fb950' }} />
+                    {last.name}
+                  </span>
+                  <span style={styles.recentPath}>
+                    {last.mode === 'resume'
+                      ? last.dirty
+                        ? 'Unsaved changes — resume to keep them'
+                        : (last.path ?? 'Resume this session')
+                      : (last.path ?? '')}
+                  </span>
                 </button>
               </div>
-            ))}
-          </div>
+            </div>
+          </>
+        )}
+        {/* Recent list, minus whatever is already shown as the Last project. Only the fresh-fresh
+            case (no session, no recents) shows the empty state. */}
+        {(recentRest.length > 0 || !last) && (
+          <>
+            <div style={styles.recentHead}>Recent projects</div>
+            {recentRest.length === 0 ? (
+              <div style={styles.recentEmpty}>No recent projects yet.</div>
+            ) : (
+              <div style={styles.recentList}>
+                {recentRest.map((r) => (
+                  <div key={r.path} style={styles.recentRow}>
+                    <button
+                      style={styles.recentItem}
+                      title={r.path}
+                      onClick={() => void openProject(r.path)}
+                    >
+                      <span style={styles.recentName}>{r.name}</span>
+                      <span style={styles.recentPath}>{r.path}</span>
+                    </button>
+                    <button
+                      style={styles.recentForget}
+                      title="Remove from recents"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        forgetRecent(r.path)
+                      }}
+                    >
+                      ✕
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </>
         )}
       </div>
     </div>
@@ -1310,6 +1418,8 @@ const styles: Record<string, CSSProperties> = {
     top: '50%',
     transform: 'translate(-50%, -50%)',
     display: 'inline-flex',
+    alignItems: 'center',
+    gap: 10,
     zIndex: 1
   },
   // Vertical divider between the workflow-action buttons and the general buttons.
@@ -1411,6 +1521,16 @@ const styles: Record<string, CSSProperties> = {
     padding: '0 10px',
     fontSize: 13
   },
+  rowIconBtn: {
+    background: 'transparent',
+    border: 'none',
+    color: UI.textMuted,
+    cursor: 'pointer',
+    padding: '0 7px',
+    display: 'inline-flex',
+    alignItems: 'center',
+    flex: '0 0 auto'
+  },
   pathWarn: { color: '#e15759' },
   repathHint: { fontSize: 11, color: '#e15759', fontWeight: 600, marginTop: 2 },
   renameInput: {
@@ -1473,9 +1593,19 @@ const styles: Record<string, CSSProperties> = {
     letterSpacing: 0.5,
     color: UI.textMuted,
     fontWeight: 700,
+    marginTop: 24,
     marginBottom: 10
   },
   recentEmpty: { color: UI.textMuted, fontSize: 13 },
+  openError: {
+    marginTop: 12,
+    padding: '8px 12px',
+    borderRadius: 6,
+    border: '1px solid #e15759',
+    background: 'rgba(225,87,89,0.12)',
+    color: UI.text,
+    fontSize: 12
+  },
   recentList: { display: 'flex', flexDirection: 'column', gap: 6 },
   recentRow: {
     display: 'flex',
@@ -1851,5 +1981,34 @@ const styles: Record<string, CSSProperties> = {
     minHeight: 0,
     borderTop: `1px solid ${UI.border}`
   },
-  canvas: { flex: 1, minWidth: 0, minHeight: 0 }
+  canvas: { flex: 1, minWidth: 0, minHeight: 0 },
+  // Centred empty-canvas prompt. The wrapper ignores pointer events (so the pane stays clickable);
+  // only the button re-enables them.
+  emptyHint: {
+    position: 'absolute',
+    top: '50%',
+    left: '50%',
+    transform: 'translate(-50%, -50%)',
+    display: 'flex',
+    flexDirection: 'column',
+    alignItems: 'center',
+    gap: 8,
+    textAlign: 'center',
+    pointerEvents: 'none',
+    zIndex: 5
+  },
+  emptyTitle: { fontSize: 15, fontWeight: 700, color: UI.text },
+  emptyText: { fontSize: 12, color: UI.textMuted, maxWidth: 260, lineHeight: 1.5 },
+  emptyBtn: {
+    marginTop: 4,
+    pointerEvents: 'auto',
+    background: UI.accent,
+    color: UI.accentText,
+    border: `1px solid ${UI.accent}`,
+    borderRadius: 6,
+    padding: '7px 14px',
+    fontSize: 12,
+    fontWeight: 600,
+    cursor: 'pointer'
+  }
 }

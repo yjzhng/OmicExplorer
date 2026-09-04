@@ -2,7 +2,7 @@
  * Promise-based client for the engine Web Worker. React nodes call `engine.*`
  * and await results; compute runs off the UI thread.
  */
-import type { ContrastInput, ContrastResult } from './contrast'
+import type { ContrastInput, ContrastPairInput, ContrastResult } from './contrast'
 import type { CompareTableResult, DirectInput } from './direct'
 import type { TwoWayInput } from './twoWay'
 import type { EngineRequest, EngineResponse } from './worker'
@@ -56,6 +56,8 @@ export const engine = {
   twoWayAnova: (input: TwoWayInput): Promise<CompareTableResult> =>
     call<CompareTableResult>('twoWayAnova', input),
   contrast: (input: ContrastInput): Promise<ContrastResult> => call<ContrastResult>('contrast', input),
+  contrastPair: (input: ContrastPairInput): Promise<ContrastResult> =>
+    call<ContrastResult>('contrastPair', input),
   /** Terminate the worker and reject any in-flight calls (backs the Stop button). */
   cancel: (): void => {
     if (worker) {

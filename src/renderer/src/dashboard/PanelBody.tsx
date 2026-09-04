@@ -6,12 +6,14 @@ import type { Edge } from '@xyflow/react'
 
 import {
   buildDR,
+  buildEnrichment,
   buildFcHeatmap,
+  DEFAULT_THRESHOLD,
   buildMA,
   buildScatter,
   buildIntensityScatter,
   buildVolcano,
-  facetContextDims,
+  responseColorDims,
   type CompareResultRow,
   type ConditionKey,
   type ContrastResultRow,
@@ -19,15 +21,19 @@ import {
   type StandardizeResult
 } from '../engine'
 import { BubbleView } from '../ui/BubbleView'
+import { EnrichView } from '../ui/EnrichView'
+import { StringView } from '../ui/StringView'
 import { DataTableView, fixed, type Column } from '../ui/DataTableView'
 import { DRView } from '../ui/DRView'
 import { DumbbellView } from '../ui/DumbbellView'
+import { ResponseCompareView } from '../ui/ResponseCompareView'
 import { MAView } from '../ui/MAView'
 import { ClusterTile } from './ClusterTile'
 import { CorrTile } from './CorrTile'
 import { QcTile } from './QcTile'
 import { GOI_TOGGLE_KINDS } from './goi'
 import { GeneBarTile } from './GeneBarTile'
+import { GeneSwitch } from './GeneSwitch'
 import { ScatterView } from '../ui/ScatterView'
 import { SwitchBar } from './SwitchBar'
 import { TdrTile } from './TdrTile'
@@ -47,9 +53,10 @@ import {
   type CompareConfig,
   type DRConfig,
   type DumbbellConfig,
+  type EnrichConfig,
+  type StringConfig,
   type HeatmapConfig,
   type LoadConfig,
-  type MAConfig,
   type NodeResult,
   type ClusterConfig,
   type CorrConfig,
@@ -57,10 +64,24 @@ import {
   type QcConfig,
   type ScatterConfig,
   type StepNode,
+  type TableConfig,
   type VolcanoConfig
 } from '../graph/types'
 
 type StdRow = StandardizeResult['rows'][number]
+
+/** Dominant NCBI taxon across an annotationMap's hidden `taxon` column (0 if none). */
+function dominantTaxon(ann: Record<string, Record<string, string>>): number {
+  const tally = new Map<number, number>()
+  for (const rec of Object.values(ann)) {
+    const t = parseInt((rec.taxon ?? '').trim(), 10)
+    if (Number.isFinite(t) && t > 0) tally.set(t, (tally.get(t) ?? 0) + 1)
+  }
+  let best = 0
+  let bestN = 0
+  for (const [t, n] of tally) if (n > bestN) [best, bestN] = [t, n]
+  return best
+}
 
 /** The viridis `value` heat style for a standardize result, scaled globally across every value
  *  (log10 when the values look like raw intensity). Shared by the matrix cells and the long view. */
@@ -145,8 +166,8 @@ function standardizeMatrix(std: StandardizeResult): {
 }
 
 /** The standardized table with a Long ⇆ Matrix (gene × sample) view toggle. */
-function StdTable({ std }: { std: StandardizeResult }): ReactNode {
-  const [view, setView] = useState<'matrix' | 'long'>('matrix')
+function StdTable({ std, initialView = 'matrix' }: { std: StandardizeResult; initialView?: 'matrix' | 'long' }): ReactNode {
+  const [view, setView] = useState<'matrix' | 'long'>(initialView)
   const [colored, setColored] = useState(true)
   const long = useMemo(() => {
     const heat = makeValueHeat(std)
@@ -217,12 +238,12 @@ const toggle: Record<string, CSSProperties> = {
     display: 'inline-flex',
     alignItems: 'center',
     gap: 6,
-    padding: '6px 10px',
+    padding: '3px 10px',
     borderBottom: `1px solid ${UI.border}`,
     flex: '0 0 auto'
   },
   label: {
-    fontSize: 10,
+    fontSize: 9,
     textTransform: 'uppercase',
     letterSpacing: 0.5,
     color: UI.textMuted,
@@ -231,9 +252,9 @@ const toggle: Record<string, CSSProperties> = {
   track: {
     display: 'inline-flex',
     alignItems: 'center',
-    width: 32,
-    height: 18,
-    borderRadius: 9,
+    width: 28,
+    height: 15,
+    borderRadius: 8,
     padding: 2,
     border: 'none',
     cursor: 'pointer',
@@ -241,8 +262,8 @@ const toggle: Record<string, CSSProperties> = {
     transition: 'background 120ms'
   },
   knob: {
-    width: 14,
-    height: 14,
+    width: 11,
+    height: 11,
     borderRadius: '50%',
     background: '#fff',
     boxShadow: '0 1px 2px rgba(0,0,0,0.4)'
@@ -318,14 +339,16 @@ function CompareTable({
   rows,
   analysis,
   displayMap,
-  comparisons
+  comparisons,
+  initialView = 'long'
 }: {
   rows: CompareResultRow[]
   analysis: CompareConfig['analysis']
   displayMap: Record<string, string>
   comparisons: string[]
+  initialView?: 'long' | 'matrix'
 }): ReactNode {
-  const [view, setView] = useState<'long' | 'matrix'>('long')
+  const [view, setView] = useState<'long' | 'matrix'>(initialView)
   const [colored, setColored] = useState(true)
   const long = useMemo(
     () => ({
@@ -358,11 +381,19 @@ function CompareTable({
           key={view}
           columns={columns}
           rows={cur.rows}
-          caption={`Comparison — ${comparisons.join(', ')}`}
+          caption={`Comparison — ${comparisons.join(", ")}`}
         />
       </div>
     </div>
   )
+}
+
+/** Which response axes the compare rows actually carry (dose, time, or both). Drives whether
+ *  DR/TR and Bubble show the dose⇆time switcher — a single-axis dataset needs no switch. */
+function axisChoices(
+  rows: ReadonlyArray<{ dose?: number | null; time?: number | null }>
+): ('dose' | 'time')[] {
+  return (['dose', 'time'] as const).filter((a) => rows.some((r) => r[a] != null))
 }
 
 /** Columns for a contrast (compare-vs-compare) table. */
@@ -464,6 +495,9 @@ export function PanelBody({
       </div>
     )
   }
+  // Processing steps (standardize/compare/contrast) render NO dashboard tile of their own — they are
+  // excluded from the grid (see expandMembers). Their results table is viewed via a separate Data
+  // table tile below. (These branches stay as the canonical table renderers for any direct render.)
   if (kind === 'standardize') {
     if (result?.kind !== 'standardize')
       return <Empty text="Run this tile to produce the standardized table." />
@@ -495,10 +529,45 @@ export function PanelBody({
       />
     )
   }
+  // The Data-table tile renders the UPSTREAM step's results table interactively.
+  if (kind === 'table') {
+    const view = (cfgSource as TableConfig).view
+    if (!upstream) return <Empty text="Connect a Standardize, Compare, or Contrast tile." />
+    if (upstream.kind === 'standardize') return <StdTable std={upstream.std} initialView={view} />
+    if (upstream.kind === 'compare') {
+      const upNode = upId ? steps.find((n) => n.id === upId) : undefined
+      const analysis = (upNode?.data.config as CompareConfig | undefined)?.analysis ?? 'compare'
+      return (
+        <CompareTable
+          rows={upstream.cmp.rows}
+          analysis={analysis}
+          displayMap={upstream.displayMap}
+          comparisons={upstream.cmp.comparisons}
+          initialView={view}
+        />
+      )
+    }
+    if (upstream.kind === 'contrast') {
+      const dm = upstream.displayMap
+      const rows = upstream.ctr.rows.map((r) => ({ ...r, gene: dm[r.uniqID] ?? '' }))
+      return (
+        <DataTableView
+          columns={contrastColumns(upstream.ctr.rows)}
+          rows={rows}
+          caption={`Contrast — ${upstream.ctr.comparisons.join(', ')}`}
+        />
+      )
+    }
+    return <Empty text="Run the upstream step to produce its table." />
+  }
   if (kind === 'volcano') {
     if (upstream?.kind !== 'compare') return <Empty text="Connect a Compare tile and run it." />
     const cfg = cfgSource as VolcanoConfig
     const dm = upstream.displayMap
+    // The compare's own threshold drives BOTH the guide geometry (linear lines vs SAM curve) and the
+    // stored per-gene calls — read it from the upstream Compare node so the drawn boundary matches.
+    const upNode = upId ? steps.find((n) => n.id === upId) : undefined
+    const threshold = (upNode?.data.config as CompareConfig | undefined)?.threshold ?? DEFAULT_THRESHOLD
     return (
       <div style={styles.chart}>
         <FacetedPlot rows={sub(upstream.cmp.rows)} facetSel={facetSel}>
@@ -506,12 +575,17 @@ export function PanelBody({
             <VolcanoView
               volcano={buildVolcano(rows, {
                 statType: cfg.statType,
-                fcLow: -1,
-                fcHigh: 1,
-                statMin: 1.3,
+                fcLow: threshold.fcLow,
+                fcHigh: threshold.fcHigh,
+                statMin: threshold.statMin,
                 displayMap: dm
               })}
               focus={genes}
+              threshold={threshold}
+              // Dragging a guide live-rethresholds the upstream Compare (and re-classifies genes).
+              onThresholdChange={
+                upId ? (partial) => useGraph.getState().setCompareThreshold(upId, partial) : undefined
+              }
             />
           )}
         </FacetedPlot>
@@ -605,15 +679,24 @@ export function PanelBody({
   }
   if (kind === 'ma') {
     if (upstream?.kind !== 'compare') return <Empty text="Connect a Compare tile and run it." />
-    const cfg = cfgSource as MAConfig
     const dm = upstream.displayMap
+    // MA's fold-change lines are the SAME threshold volcano uses — read it from the upstream Compare
+    // so the two plots match and a drag on either updates the shared cutoff. Under a SAM (non-linear)
+    // threshold there's no fixed FC cutoff to draw, so hide the lines (colour still shows calls).
+    const maUp = upId ? steps.find((n) => n.id === upId) : undefined
+    const threshold = (maUp?.data.config as CompareConfig | undefined)?.threshold ?? DEFAULT_THRESHOLD
+    const maSam = threshold.type === 'non-linear'
     return (
       <div style={styles.chart}>
         <FacetedPlot rows={sub(upstream.cmp.rows)} facetSel={facetSel}>
           {(rows) => (
             <MAView
-              ma={buildMA(rows, { fcLow: cfg.fcLow, fcHigh: cfg.fcHigh, displayMap: dm })}
+              ma={buildMA(rows, { fcLow: threshold.fcLow, fcHigh: threshold.fcHigh, displayMap: dm })}
               focus={genes}
+              samThreshold={maSam}
+              onThresholdChange={
+                upId ? (partial) => useGraph.getState().setCompareThreshold(upId, partial) : undefined
+              }
             />
           )}
         </FacetedPlot>
@@ -621,27 +704,68 @@ export function PanelBody({
     )
   }
   if (kind === 'dr') {
-    if (upstream?.kind !== 'compare') return <Empty text="Connect a Compare tile and run it." />
     const cfg = cfgSource as DRConfig
+    // From a Contrast: the hovered/selected gene's response profile on BOTH sides (FC1 vs FC2), for
+    // comparing two datasets/contrasts. From a Compare: every gene's response curve (below).
+    if (upstream?.kind === 'contrast') {
+      const dm = upstream.displayMap
+      const axes = axisChoices(upstream.ctr.rows)
+      const axis = axes.length > 1 ? cfg.axis : (axes[0] ?? cfg.axis)
+      const present = new Set(upstream.ctr.rows.map((r) => r.uniqID))
+      return (
+        <div style={styles.chart}>
+          <div style={styles.stack}>
+            {axes.length > 1 && (
+              <SwitchBar
+                label="axis"
+                value={cfg.axis}
+                options={['dose', 'time']}
+                onChange={(v) => patchConfig({ axis: v })}
+              />
+            )}
+            <div style={styles.stackBody}>
+              {/* One gene at a time — the pager steps through the focus/selected genes. */}
+              <GeneSwitch genes={genes} present={present} displayMap={dm}>
+                {(gene) => (
+                  <FacetedPlot rows={upstream.ctr.rows} exclude={[axis]} facetSel={facetSel}>
+                    {(rows) => (
+                      <ResponseCompareView rows={rows} displayMap={dm} axis={axis} gene={gene} />
+                    )}
+                  </FacetedPlot>
+                )}
+              </GeneSwitch>
+            </div>
+          </div>
+        </div>
+      )
+    }
+    if (upstream?.kind !== 'compare')
+      return <Empty text="Connect a Compare or Contrast tile and run it." />
     const dm = upstream.displayMap
+    // Only offer the dose⇆time switch when the data actually has both; with a single axis
+    // present, force it and drop the switcher (a switch to the absent axis would draw nothing).
+    const axes = axisChoices(upstream.cmp.rows)
+    const axis = axes.length > 1 ? cfg.axis : (axes[0] ?? cfg.axis)
     return (
       <div style={styles.chart}>
         <div style={styles.stack}>
-          <SwitchBar
-            label="axis"
-            value={cfg.axis}
-            options={['dose', 'time']}
-            onChange={(v) => patchConfig({ axis: v })}
-          />
+          {axes.length > 1 && (
+            <SwitchBar
+              label="axis"
+              value={cfg.axis}
+              options={['dose', 'time']}
+              onChange={(v) => patchConfig({ axis: v })}
+            />
+          )}
           <div style={styles.stackBody}>
             {/* DR/TR always draws every gene as a faint background curve; the ALL/GOI
                 toggle only changes WHICH curves are coloured (top-N by response, or the
                 GOI set) — it must not hide genes, so use the full rows (no `sub`). */}
-            <FacetedPlot rows={upstream.cmp.rows} exclude={[cfg.axis]} facetSel={facetSel}>
+            <FacetedPlot rows={upstream.cmp.rows} exclude={[axis]} facetSel={facetSel}>
               {(rows) => (
                 <DRView
                   dr={buildDR(rows, {
-                    axis: cfg.axis,
+                    axis,
                     topGenes: cfg.topGenes,
                     displayMap: dm,
                     focus: goiOnly ? genes : []
@@ -658,23 +782,28 @@ export function PanelBody({
     if (upstream?.kind !== 'compare') return <Empty text="Connect a Compare tile and run it." />
     const cfg = cfgSource as BubbleConfig
     const dm = upstream.displayMap
+    // Show the dose⇆time switch only when both axes exist; otherwise force the present one.
+    const axes = axisChoices(upstream.cmp.rows)
+    const axis = axes.length > 1 ? cfg.axis : (axes[0] ?? cfg.axis)
     return (
       <div style={styles.chart}>
         <div style={styles.stack}>
-          <SwitchBar
-            label="axis"
-            value={cfg.axis}
-            options={['dose', 'time']}
-            onChange={(v) => patchConfig({ axis: v })}
-          />
+          {axes.length > 1 && (
+            <SwitchBar
+              label="axis"
+              value={cfg.axis}
+              options={['dose', 'time']}
+              onChange={(v) => patchConfig({ axis: v })}
+            />
+          )}
           <div style={styles.stackBody}>
             {/* Full rows (no `sub`): base follows the ALL/GOI toggle via `focus`, and
                 BubbleView appends any hovered/pinned gene to the gene axis. */}
-            <FacetedPlot rows={upstream.cmp.rows} exclude={[cfg.axis]} facetSel={facetSel}>
+            <FacetedPlot rows={upstream.cmp.rows} exclude={[axis]} facetSel={facetSel}>
               {(rows) => (
                 <BubbleView
                   rows={rows}
-                  axis={cfg.axis}
+                  axis={axis}
                   topGenes={cfg.topGenes}
                   displayMap={dm}
                   focus={goiOnly ? genes : []}
@@ -697,13 +826,7 @@ export function PanelBody({
       return (
         <Empty text="Set a focus gene (here or on Standardize), or select a gene, to plot TDR." />
       )
-    // TDR uses both axes (dose × time) for one gene, so it shows up to 3, switched by tab.
-    if (tdrGenes.length > 3)
-      return (
-        <Empty
-          text={`TDR shows up to 3 genes — ${tdrGenes.length} selected. Narrow to 3 or fewer.`}
-        />
-      )
+    // TDR uses both axes (dose × time) for one gene; the pager steps through however many are set.
     return (
       <div style={styles.chart}>
         {/* TDR plots over dose × time, so facet by the OTHER context dims (e.g. strain);
@@ -734,13 +857,14 @@ export function PanelBody({
   if (kind === 'pca') {
     const cfg = cfgSource as ClusterConfig
     const display = cfg.display ?? 'centroid'
+    const legend = cfg.legend ?? 'simple'
     // Colour-by options depend on the upstream: a Standardize's active conditions, or a
     // Compare's context dims. Keep the current value selectable if it's off-list.
     const active: ConditionKey[] =
       upstream?.kind === 'standardize'
         ? upstream.std.activeConditions
         : upstream?.kind === 'compare'
-          ? facetContextDims(upstream.cmp.rows)
+          ? responseColorDims(upstream.cmp.rows)
           : (['strain', 'cmpd', 'dose', 'time'] as ConditionKey[])
     const colorOpts = active.includes(cfg.colorBy) ? active : [cfg.colorBy, ...active]
     const withBar = (body: ReactNode): ReactNode => (
@@ -748,17 +872,29 @@ export function PanelBody({
         <div style={styles.stack}>
           <div style={{ display: 'flex', flexWrap: 'wrap' }}>
             <SwitchBar
-              label="colour by"
-              value={cfg.colorBy}
-              options={colorOpts}
-              onChange={(v) => patchConfig({ colorBy: v })}
+              label="legend"
+              value={legend}
+              options={['simple', 'complex']}
+              onChange={(v) => patchConfig({ legend: v })}
             />
+            {/* In complex mode colour is driven by every varying condition, so the single
+                colour-by choice no longer applies. */}
+            {legend === 'simple' && (
+              <SwitchBar
+                label="colour by"
+                value={cfg.colorBy}
+                options={colorOpts}
+                onChange={(v) => patchConfig({ colorBy: v })}
+              />
+            )}
             <SwitchBar
               label="show"
               value={display === 'replicate' ? 'data' : 'centroid'}
               options={['centroid', 'data']}
               onChange={(v) => patchConfig({ display: v === 'data' ? 'replicate' : 'centroid' })}
             />
+            {/* PCA computation parameters (scaling, missing, normalize, features, transform,
+                replicates) live in the tile's settings dialog (gear), not inline. */}
           </div>
           <div style={styles.stackBody}>{body}</div>
         </div>
@@ -770,7 +906,14 @@ export function PanelBody({
           std={upstream.std}
           method={cfg.method}
           colorBy={cfg.colorBy}
+          scale={cfg.scale}
+          missing={cfg.missing}
+          center={cfg.center}
+          topVar={cfg.topVar}
+          transform={cfg.transform}
+          replicates={cfg.replicates}
           display={display}
+          legend={legend}
         />
       )
     if (upstream?.kind === 'compare')
@@ -779,10 +922,133 @@ export function PanelBody({
           cmp={upstream.cmp.rows}
           method={cfg.method}
           colorBy={cfg.colorBy}
+          scale={cfg.scale}
+          missing={cfg.missing}
+          topVar={cfg.topVar}
           display={display}
+          legend={legend}
         />
       )
     return <Empty text="Connect a Standardize or Compare tile and run it." />
+  }
+  if (kind === 'enrich') {
+    if (upstream?.kind !== 'compare') return <Empty text="Connect a Compare tile and run it." />
+    const cfg = cfgSource as EnrichConfig
+    const source = cfg.source ?? 'go'
+    const method = cfg.method ?? 'ora'
+    // 'ridge' is GSEA-only; fall back to dot if a persisted ridge style meets ORA.
+    const style = cfg.style === 'ridge' && method !== 'gsea' ? 'dot' : (cfg.style ?? 'dot')
+    const styleOpts = method === 'gsea' ? ['dot', 'bar', 'ridge'] : ['dot', 'bar']
+    const col = source === 'go' ? 'GO' : 'keggPathway'
+    const ann = upstream.annotationMap ?? {}
+    const hasAnn = Object.values(ann).some((r) => (r[col] ?? '').trim() !== '')
+    const withBar = (body: ReactNode): ReactNode => (
+      <div style={styles.chart}>
+        <div style={styles.stack}>
+          <div style={{ display: 'flex', flexWrap: 'wrap' }}>
+            <SwitchBar
+              label="method"
+              value={method}
+              options={['ora', 'gsea']}
+              onChange={(v) => patchConfig({ method: v })}
+            />
+            <SwitchBar
+              label="terms"
+              value={source}
+              options={['go', 'kegg']}
+              onChange={(v) => patchConfig({ source: v })}
+            />
+            <SwitchBar
+              label="style"
+              value={style}
+              options={styleOpts}
+              onChange={(v) => patchConfig({ style: v })}
+            />
+          </div>
+          <div style={styles.stackBody}>{body}</div>
+        </div>
+      </div>
+    )
+    if (!hasAnn)
+      return withBar(
+        <Empty
+          text={`No ${source === 'go' ? 'GO' : 'KEGG'} annotations on these genes — fetch them in the interactive import (Metadata step), then re-run Standardize and Compare.`}
+        />
+      )
+    return withBar(
+      <FacetedPlot rows={upstream.cmp.rows} facetSel={facetSel}>
+        {(rows) => (
+          <EnrichView
+            enrich={buildEnrichment(rows, {
+              method,
+              source,
+              topTerms: cfg.topTerms,
+              annotationMap: ann,
+              displayMap: upstream.displayMap,
+              keggCategories: source === 'kegg' ? (upstream.keggCategories ?? {}) : undefined
+            })}
+            style={style}
+          />
+        )}
+      </FacetedPlot>
+    )
+  }
+  if (kind === 'string') {
+    if (upstream?.kind !== 'compare') return <Empty text="Connect a Compare tile and run it." />
+    const cfg = cfgSource as StringConfig
+    const confidence = cfg.confidence ?? 'medium'
+    const maxGenes = cfg.maxGenes > 0 ? cfg.maxGenes : 40
+    const addInteractors = cfg.addInteractors ?? false
+    const scoreOf = { low: 150, medium: 400, high: 700, highest: 900 } as const
+    // Species: a manual override, else the dominant taxon learned from the annotation fetch.
+    const ann = upstream.annotationMap ?? {}
+    const species = cfg.species && cfg.species > 0 ? cfg.species : dominantTaxon(ann)
+    const withBar = (body: ReactNode): ReactNode => (
+      <div style={styles.chart}>
+        <div style={styles.stack}>
+          <div style={{ display: 'flex', flexWrap: 'wrap' }}>
+            <SwitchBar
+              label="confidence"
+              value={confidence}
+              options={['low', 'medium', 'high', 'highest']}
+              onChange={(v) => patchConfig({ confidence: v })}
+            />
+            <SwitchBar
+              label="max genes"
+              value={String(maxGenes)}
+              options={['20', '40', '80']}
+              onChange={(v) => patchConfig({ maxGenes: Number(v) })}
+            />
+            <SwitchBar
+              label="interactors"
+              value={addInteractors ? 'add connected' : 'query only'}
+              options={['query only', 'add connected']}
+              onChange={(v) => patchConfig({ addInteractors: v === 'add connected' })}
+            />
+          </div>
+          <div style={styles.stackBody}>{body}</div>
+        </div>
+      </div>
+    )
+    if (!species)
+      return withBar(
+        <Empty text="No species detected — fetch annotations in the interactive import (Metadata step), which reads the organism, then re-run Standardize and Compare." />
+      )
+    return withBar(
+      <FacetedPlot rows={upstream.cmp.rows} facetSel={facetSel}>
+        {(rows) => (
+          <StringView
+            rows={rows}
+            displayMap={upstream.displayMap}
+            annotationMap={ann}
+            species={species}
+            requiredScore={scoreOf[confidence]}
+            maxGenes={maxGenes}
+            addInteractors={addInteractors}
+          />
+        )}
+      </FacetedPlot>
+    )
   }
   if (kind === 'qc') {
     if (upstream?.kind !== 'standardize')

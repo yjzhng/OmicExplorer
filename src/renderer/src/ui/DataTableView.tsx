@@ -58,7 +58,12 @@ function inferType(key: string, rows: Array<Record<string, unknown>>): ColType {
 }
 
 /** Scrollable table with global search, per-column sort + filter, and a reset. */
-export function DataTableView({ columns, rows, maxRows = 500, idKey = 'uniqID' }: DataTableProps) {
+export function DataTableView({
+  columns,
+  rows,
+  maxRows = 500,
+  idKey = 'uniqID'
+}: DataTableProps) {
   const [query, setQuery] = useState('')
   const [sort, setSort] = useState<SortState | null>(null)
   const [filters, setFilters] = useState<Record<string, Filter>>({})
@@ -296,7 +301,11 @@ export function DataTableView({ columns, rows, maxRows = 500, idKey = 'uniqID' }
                   {columns.map((c) => (
                     <td
                       key={c.key}
-                      style={{ ...styles.td, textAlign: c.align ?? 'left', ...c.cellStyle?.(r[c.key]) }}
+                      style={{
+                        ...styles.td,
+                        textAlign: c.align ?? 'left',
+                        ...c.cellStyle?.(r[c.key])
+                      }}
                     >
                       {fmt(c, r[c.key])}
                     </td>

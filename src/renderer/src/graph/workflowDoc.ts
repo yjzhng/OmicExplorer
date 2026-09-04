@@ -6,6 +6,8 @@ import type { Edge } from '@xyflow/react'
 
 import {
   isStep,
+  type FavGene,
+  type GeneSet,
   type GraphNode,
   type GroupMeta,
   type NodeConfig,
@@ -28,6 +30,10 @@ export interface WorkflowDoc {
   edges: Array<{ id: string; source: string; target: string }>
   groupLayouts?: Record<string, PanelLayoutItem[]>
   groupMeta?: Record<string, GroupMeta>
+  /** named custom genesets for this workflow */
+  geneSets?: GeneSet[]
+  /** legacy: a single flat favourites list, migrated to a "Favourites" geneset on load */
+  favourites?: FavGene[]
 }
 
 export interface SerializeInput {
@@ -36,6 +42,7 @@ export interface SerializeInput {
   nextId: number
   groupLayouts: Record<string, PanelLayoutItem[]>
   groupMeta: Record<string, GroupMeta>
+  geneSets: GeneSet[]
 }
 
 /** The undoable graph snapshot plus its (non-undoable) layout maps. */
@@ -45,20 +52,23 @@ export interface LoadedWorkflow {
   nextId: number
   groupLayouts: Record<string, PanelLayoutItem[]>
   groupMeta: Record<string, GroupMeta>
+  geneSets: GeneSet[]
 }
 
 const pruneByRoot = <T>(m: Record<string, T>, live: Set<string>): Record<string, T> =>
   Object.fromEntries(Object.entries(m).filter(([rootId]) => live.has(rootId)))
 
-/** Doc version 3 doubled the dashboard grid resolution (12→24 cols, 40→20px rows). Scale
- *  every pre-v3 layout item ×2 so tiles keep their pixel footprint on the finer grid. */
+/** Scale saved layouts to the current grid. Columns and rows scale independently:
+ *  v2→v3 doubled BOTH axes (12→24 cols, 40→20px rows); v3→v4 doubled COLUMNS only (24→48 cols).
+ *  So `kx` (x,w) can differ from `ky` (y,h). */
 function scaleLayouts(
   m: Record<string, PanelLayoutItem[]>,
-  k: number
+  kx: number,
+  ky: number
 ): Record<string, PanelLayoutItem[]> {
   const out: Record<string, PanelLayoutItem[]> = {}
   for (const [rootId, items] of Object.entries(m)) {
-    out[rootId] = items.map((it) => ({ ...it, x: it.x * k, y: it.y * k, w: it.w * k, h: it.h * k }))
+    out[rootId] = items.map((it) => ({ ...it, x: it.x * kx, y: it.y * ky, w: it.w * kx, h: it.h * ky }))
   }
   return out
 }
@@ -71,7 +81,7 @@ export function buildWorkflowDoc(s: SerializeInput): WorkflowDoc {
   const groupLayouts = pruneByRoot(s.groupLayouts, stepIds)
   const groupMeta = pruneByRoot(s.groupMeta, stepIds)
   return {
-    version: 3,
+    version: 4,
     nextId: s.nextId,
     nodes: steps.map((n) => ({
       id: n.id,
@@ -87,15 +97,18 @@ export function buildWorkflowDoc(s: SerializeInput): WorkflowDoc {
       .filter((e) => stepIds.has(e.source) && stepIds.has(e.target))
       .map((e) => ({ id: e.id, source: e.source, target: e.target })),
     ...(Object.keys(groupLayouts).length ? { groupLayouts } : {}),
-    ...(Object.keys(groupMeta).length ? { groupMeta } : {})
+    ...(Object.keys(groupMeta).length ? { groupMeta } : {}),
+    ...(s.geneSets?.length ? { geneSets: s.geneSets } : {})
   }
 }
 
 /** Parse a workflow doc object into graph nodes/edges + layout maps. */
 export function parseWorkflowDoc(doc: WorkflowDoc): LoadedWorkflow {
   const version = doc.version ?? 1
-  // v3 doubled the grid resolution; older layouts are scaled up so they still fit.
-  const scale = version < 3 ? 2 : 1
+  // Grid migrations compose: v2→v3 doubled both axes; v3→v4 doubled columns only. Accumulate the
+  // per-axis scale so an old layout keeps its pixel footprint on the current 48-col grid.
+  const kx = (version < 3 ? 2 : 1) * (version < 4 ? 2 : 1) // x, w
+  const ky = version < 3 ? 2 : 1 // y, h
   const nodes: GraphNode[] = doc.nodes.map((n) => ({
     id: n.id,
     type: 'step',
@@ -118,11 +131,17 @@ export function parseWorkflowDoc(doc: WorkflowDoc): LoadedWorkflow {
     nextId: doc.nextId ?? maxIdx + 1,
     groupLayouts:
       version >= 2
-        ? scale === 1
+        ? kx === 1 && ky === 1
           ? (doc.groupLayouts ?? {})
-          : scaleLayouts(doc.groupLayouts ?? {}, scale)
+          : scaleLayouts(doc.groupLayouts ?? {}, kx, ky)
         : {},
-    groupMeta: version >= 2 ? (doc.groupMeta ?? {}) : {}
+    groupMeta: version >= 2 ? (doc.groupMeta ?? {}) : {},
+    // Legacy flat favourites migrate into a single "Favourites" geneset.
+    geneSets:
+      doc.geneSets ??
+      (doc.favourites?.length
+        ? [{ id: 'gs_favourites', name: 'Favourites', genes: doc.favourites }]
+        : [])
   }
 }
 

@@ -72,7 +72,10 @@ describe('buildCluster (PCA)', () => {
     const meanAx = a.reduce((s, p) => s + p.x, 0) / a.length
     const meanBx = b.reduce((s, p) => s + p.x, 0) / b.length
     expect(Math.sign(meanAx)).toBe(-Math.sign(meanBx))
-    expect(pca.varExplained[0]).toBeGreaterThan(0.5)
+    // PC1 is the leading component (per-gene z-scoring redistributes variance, so it no
+    // longer swamps the total the way the un-scaled embedding did).
+    expect(pca.varExplained[0]).toBeGreaterThan(0)
+    expect(pca.varExplained[0]).toBeGreaterThanOrEqual(pca.varExplained[1])
   })
 
   it('produces finite 2-D coords for umap and tsne', () => {
@@ -128,14 +131,24 @@ describe('buildResponseCluster (responsome PCA)', () => {
     expect(Math.sign(meanAx)).toBe(-Math.sign(meanBx))
   })
 
-  it('falls back off the comparison dimension when asked to color by it', () => {
-    // cmpd-comparison: coloring by cmpd is degenerate (constant), so it snaps to a
-    // varying context condition instead of collapsing to one series.
-    const cmpdCmp = rows.map((r) => ({ ...r, cmp_cond: 'cmpd', comparison: 'Amk | H2O' }))
+  it('keeps a comparison dimension that varies across the pooled comparisons', () => {
+    // cmpd is the compared dim, but the pool spans two compounds (A, B) — as in a
+    // multi-compound two-way ANOVA — so colouring by cmpd is meaningful and is kept.
+    const cmpdCmp = rows.map((r) => ({ ...r, cmp_cond: 'cmpd', comparison: `${r.cmpd} | H2O` }))
     const c = buildResponseCluster(cmpdCmp, { method: 'pca', colorBy: 'cmpd' })
+    expect(c.colorBy).toBe('cmpd')
+    expect(new Set(c.points.map((p) => p.group))).toEqual(new Set(['A', 'B']))
+  })
+
+  it('falls back off a comparison dimension that is constant across the pool', () => {
+    // A single-compound cmpd-comparison: cmpd is constant, so colouring by it is degenerate
+    // and snaps to a varying context condition (dose here) instead of one collapsed series.
+    const oneCmpd = rows
+      .filter((r) => r.cmpd === 'A')
+      .map((r) => ({ ...r, cmp_cond: 'cmpd', comparison: 'A | H2O' }))
+    const c = buildResponseCluster(oneCmpd, { method: 'pca', colorBy: 'cmpd' })
     expect(c.colorBy).not.toBe('cmpd')
     expect(['strain', 'dose', 'time']).toContain(c.colorBy)
-    // more than one series actually maps (not a single degenerate group)
     expect(new Set(c.points.map((p) => p.group)).size).toBeGreaterThan(1)
   })
 
@@ -258,62 +271,59 @@ describe('buildMA / buildDumbbell', () => {
     expect(ma.points[0].y).toBe(2)
   })
 
-  it('dumbbell keeps the top-N genes by |FCdiff|', () => {
-    const mk = (id: string, fcdiff: number): ContrastResultRow => ({
-      uniqID: id,
-      dose: null,
-      time: null,
-      cmp_cond: 'cmpd',
-      cmp1: 'A | DMSO',
-      cmp2: 'B | DMSO',
-      comparison: 'A | B',
-      FC1: fcdiff,
-      FC2: 0,
-      FCdiff: fcdiff,
-      P1: null,
-      P2: null,
-      Pdiff: null,
-      Q1: null,
-      Q2: null,
-      Qdiff: null,
-      signf1: false,
-      signf2: false,
-      effect1: 'none',
-      effect2: 'none',
-      thrsh: '',
-      signf: false,
-      effect: 'none'
-    })
-    const db = buildDumbbell([mk('g1', 0.5), mk('g2', 3), mk('g3', -2)], { topGenes: 2 })
+  const mkDumbbell = (id: string, fcdiff: number, signf = true): ContrastResultRow => ({
+    uniqID: id,
+    dose: null,
+    time: null,
+    cmp_cond: 'cmpd',
+    cmp1: 'A | DMSO',
+    cmp2: 'B | DMSO',
+    comparison: 'A | B',
+    FC1: fcdiff,
+    FC2: 0,
+    FCdiff: fcdiff,
+    P1: null,
+    P2: null,
+    Pdiff: null,
+    Q1: null,
+    Q2: null,
+    Qdiff: null,
+    signf1: false,
+    signf2: false,
+    effect1: 'none',
+    effect2: 'none',
+    thrsh: '',
+    signf,
+    effect: 'none'
+  })
+
+  it('dumbbell keeps the top-N significant genes by |FCdiff|', () => {
+    const db = buildDumbbell(
+      [mkDumbbell('g1', 0.5), mkDumbbell('g2', 3), mkDumbbell('g3', -2)],
+      { topGenes: 2 }
+    )
     expect(db.rows.map((r) => r.label)).toEqual(['g2', 'g3'])
   })
 
-  it('dumbbell appends `extra` genes after the top-N, deduped', () => {
-    const mk = (id: string, fcdiff: number): ContrastResultRow => ({
-      uniqID: id,
-      dose: null,
-      time: null,
-      cmp_cond: 'cmpd',
-      cmp1: 'A | DMSO',
-      cmp2: 'B | DMSO',
-      comparison: 'A | B',
-      FC1: fcdiff,
-      FC2: 0,
-      FCdiff: fcdiff,
-      P1: null,
-      P2: null,
-      Pdiff: null,
-      Q1: null,
-      Q2: null,
-      Qdiff: null,
-      signf1: false,
-      signf2: false,
-      effect1: 'none',
-      effect2: 'none',
-      thrsh: '',
-      signf: false,
-      effect: 'none'
+  it('dumbbell shows only significant genes (non-significant dropped, even at high |FCdiff|)', () => {
+    const db = buildDumbbell(
+      [mkDumbbell('g1', 9, false), mkDumbbell('g2', 3, true), mkDumbbell('g3', -2, true)],
+      { topGenes: 20 }
+    )
+    // g1 has the largest |FCdiff| but isn't significant, so it's excluded.
+    expect(db.rows.map((r) => r.label)).toEqual(['g2', 'g3'])
+  })
+
+  it('dumbbell focus/GOI overrides the significant-only filter', () => {
+    const db = buildDumbbell([mkDumbbell('g1', 9, false), mkDumbbell('g2', 3, true)], {
+      topGenes: 20,
+      focus: ['g1']
     })
+    expect(db.rows.map((r) => r.label)).toEqual(['g1'])
+  })
+
+  it('dumbbell appends `extra` genes after the top-N, deduped', () => {
+    const mk = (id: string, fcdiff: number): ContrastResultRow => mkDumbbell(id, fcdiff, true)
     const data = [mk('g1', 0.5), mk('g2', 3), mk('g3', -2)]
     // top-1 base is g2; g1 (linked selection) appended after it.
     expect(buildDumbbell(data, { topGenes: 1, extra: ['g1'] }).rows.map((r) => r.label)).toEqual([

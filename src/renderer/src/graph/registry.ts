@@ -7,6 +7,8 @@ import type {
   ContrastConfig,
   DRConfig,
   DumbbellConfig,
+  EnrichConfig,
+  StringConfig,
   FocusConfig,
   HeatmapConfig,
   LoadConfig,
@@ -20,6 +22,7 @@ import type {
   QcConfig,
   ScatterConfig,
   StandardizeConfig,
+  TableConfig,
   TdrConfig,
   VolcanoConfig
 } from './types'
@@ -93,13 +96,17 @@ export const NODE_SPECS: Record<NodeKind, NodeSpec> = {
     kind: 'contrast',
     label: 'Contrast',
     category: 'processing',
-    acceptsFrom: ['compare'],
+    // One Compare (split by a condition), or two same-kind inputs (Compare or Standardize) joined
+    // as FC1/FC2 in 'pair' mode.
+    acceptsFrom: ['compare', 'standardize'],
     hasRun: true,
     defaultConfig: (): ContrastConfig => ({
       relationship: 'correlated',
+      source: 'split',
       condition: 'cmpd',
       pairNum: '',
-      pairDen: ''
+      pairDen: '',
+      match: []
     })
   },
   volcano: {
@@ -141,7 +148,9 @@ export const NODE_SPECS: Record<NodeKind, NodeSpec> = {
     kind: 'dr',
     label: 'Dose/time-response',
     category: 'plotting',
-    acceptsFrom: ['compare'],
+    // From a Compare: every gene's response curve. From a Contrast: the hovered gene's response on
+    // BOTH contrasted sides (FC1 vs FC2), for comparing profiles between two datasets/contrasts.
+    acceptsFrom: ['compare', 'contrast'],
     hasRun: false,
     defaultConfig: (): DRConfig => ({ axis: 'dose', topGenes: 10, focus: mkFocus() })
   },
@@ -163,7 +172,7 @@ export const NODE_SPECS: Record<NodeKind, NodeSpec> = {
   },
   tdr: {
     kind: 'tdr',
-    label: 'TDR',
+    label: 'Time & Dose-response',
     category: 'plotting',
     acceptsFrom: ['compare'],
     hasRun: false,
@@ -183,7 +192,42 @@ export const NODE_SPECS: Record<NodeKind, NodeSpec> = {
     category: 'plotting',
     acceptsFrom: ['standardize', 'compare'],
     hasRun: false,
-    defaultConfig: (): ClusterConfig => ({ method: 'pca', colorBy: 'cmpd', display: 'centroid' })
+    // Defaults chosen to match a standard tool's PCA (e.g. Spectronaut): covariance (no per-gene
+    // scaling), complete cases only (no imputation), log2, individual replicates, no per-sample
+    // normalization.
+    defaultConfig: (): ClusterConfig => ({
+      method: 'pca',
+      colorBy: 'cmpd',
+      display: 'centroid',
+      legend: 'simple',
+      scale: 'none',
+      missing: 'complete',
+      center: 'none',
+      topVar: 0,
+      transform: 'auto',
+      replicates: 'individual'
+    })
+  },
+  enrich: {
+    kind: 'enrich',
+    label: 'Enrichment',
+    category: 'plotting',
+    acceptsFrom: ['compare'],
+    hasRun: false,
+    defaultConfig: (): EnrichConfig => ({
+      method: 'ora',
+      source: 'go',
+      style: 'dot',
+      topTerms: 15
+    })
+  },
+  string: {
+    kind: 'string',
+    label: 'STRING network',
+    category: 'plotting',
+    acceptsFrom: ['compare'],
+    hasRun: false,
+    defaultConfig: (): StringConfig => ({ confidence: 'medium', maxGenes: 40, addInteractors: false })
   },
   qc: {
     kind: 'qc',
@@ -200,6 +244,15 @@ export const NODE_SPECS: Record<NodeKind, NodeSpec> = {
     acceptsFrom: ['standardize'],
     hasRun: false,
     defaultConfig: (): CorrConfig => ({ cluster: true })
+  },
+  table: {
+    kind: 'table',
+    label: 'Data table',
+    category: 'plotting',
+    // Shows the upstream step's results table; any processing step can feed it.
+    acceptsFrom: ['standardize', 'compare', 'contrast'],
+    hasRun: false,
+    defaultConfig: (): TableConfig => ({})
   },
   plotGroup: {
     kind: 'plotGroup',
@@ -231,7 +284,7 @@ export const CATEGORIES: Record<NodeCategory, CategorySpec> = {
   },
   plotting: {
     category: 'plotting',
-    label: 'Plotting',
+    label: 'Visualisation',
     accent: '#e0678f',
     ops: [
       'volcano',
@@ -244,14 +297,29 @@ export const CATEGORIES: Record<NodeCategory, CategorySpec> = {
       'tdr',
       'geneBar',
       'pca',
+      'enrich',
+      'string',
       'qc',
-      'corr'
+      'corr',
+      'table'
     ]
   }
 }
 
 /** Categories offered in the add-node toolbar. */
 export const ADDABLE_CATEGORIES: NodeCategory[] = ['data', 'processing', 'plotting']
+
+/** Sub-sections for the visualisation (plotting) ops, grouped by what each shows. Single source of
+ *  truth for BOTH the add-plot menu (NodeConfigPanel) and the new-step picker (TilePicker), so the
+ *  two stay in sync. Any plotting kind not listed falls into a trailing "Other" section. */
+export const PLOT_SECTIONS: { label: string; kinds: NodeKind[] }[] = [
+  { label: 'Data', kinds: ['table'] },
+  { label: 'Global', kinds: ['qc', 'heatmap', 'corr', 'pca', 'geneBar'] },
+  { label: 'Differential', kinds: ['volcano', 'ma'] },
+  { label: 'Conditions', kinds: ['bubble', 'dr', 'tdr'] },
+  { label: 'Contrast', kinds: ['scatter', 'dumbbell'] },
+  { label: 'Function', kinds: ['enrich', 'string'] }
+]
 export const ALL_OPS: NodeKind[] = [
   'load',
   'standardize',
@@ -267,8 +335,11 @@ export const ALL_OPS: NodeKind[] = [
   'tdr',
   'geneBar',
   'pca',
+  'enrich',
+  'string',
   'qc',
   'corr',
+  'table',
   // `plotGroup` is intentionally omitted from CATEGORIES.plotting.ops (never offered in the
   // picker or the Operation dropdown) but must be in ALL_OPS so canConnect/lookup resolve it.
   'plotGroup'
@@ -280,9 +351,26 @@ export function categoryOf(op: NodeKind): NodeCategory {
 export function accentOf(category: NodeCategory): string {
   return CATEGORIES[category].accent
 }
+/** Display label for a plotting tile. Like NODE_SPECS[kind].label, but a `dr` tile shows its axis
+ *  (Dose- vs Time-response) so the two dr variants read distinctly wherever a tile is labelled —
+ *  group subcards, the canvas group tile, and result panels. */
+export function plotLabel(kind: NodeKind, config?: unknown): string {
+  if (kind === 'dr') {
+    const axis = (config as { axis?: unknown } | null | undefined)?.axis
+    return axis === 'time' ? 'Time-response' : 'Dose-response'
+  }
+  return NODE_SPECS[kind].label
+}
 /** True if an edge from `source` op into `target` op is allowed. */
 export function canConnect(source: NodeKind, target: NodeKind): boolean {
   return NODE_SPECS[target].acceptsFrom.includes(source)
+}
+/** Nodes that accept TWO upstream inputs; every other node accepts one. `contrast` pools two
+ *  comparisons; `compare` pools two datasets so conditions can be drawn from either (joined by
+ *  uniqID — see combineStandardize). */
+const TWO_INPUT_KINDS: NodeKind[] = ['contrast', 'compare']
+export function maxInputsFor(kind: NodeKind): number {
+  return TWO_INPUT_KINDS.includes(kind) ? 2 : 1
 }
 /** True if any op accepts `op` as an input (i.e. the node can be a source). */
 export function hasSourceHandle(op: NodeKind): boolean {

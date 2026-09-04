@@ -30,19 +30,39 @@ export interface StandardizeInput {
   /** clean-up: drop genes identified (non-null value) in fewer than this % of
    *  samples. 0 / undefined = keep everything. */
   minSamplePct?: number
+  /** when true, the % threshold is measured PER STRAIN: a gene's values are removed (nulled) in
+   *  every strain where its within-strain coverage is below the threshold (kept only where it
+   *  clears the bar); a gene failing in all strains is dropped. Otherwise the threshold pools all
+   *  samples and drops the whole gene. */
+  minSamplePctPerStrain?: boolean
+  /** pathway name → KEGG category (global; from the interactive import). Passed straight through to
+   *  the result — it's not per-row, so it can't ride the DB columns. */
+  keggCategories?: Record<string, string>
 }
 
 export interface StandardizeResult {
   rows: StandardRow[]
   /** uniqID → display label (gene name / locus_tag / uniqID) */
   displayMap: Record<string, string>
+  /** uniqID → { annotation column → value } carried from the ID-map DB (e.g. GO terms,
+   *  keggPathway fetched in the interactive import). Empty when no DB / no annotations.
+   *  Consumed by enrichment analysis; other plots ignore it. */
+  annotationMap: Record<string, Record<string, string>>
+  /** pathway name → KEGG category (global; passed through from the interactive import). Used by
+   *  enrichment to group/colour terms. Empty when KEGG categories weren't fetched. */
+  keggCategories: Record<string, string>
   /** condition columns that carry at least one non-empty value */
   activeConditions: ConditionKey[]
   /** distinct compound names found */
   compounds: string[]
-  /** clean-up summary: how many genes were dropped and how many total samples the
-   *  presence threshold was measured against. */
-  cleanup: { droppedGenes: number; sampleCount: number; minSamplePct: number }
+  /** clean-up summary: how many genes were dropped, how many total samples the presence threshold
+   *  was measured against, the threshold, and whether it was applied per strain. */
+  cleanup: {
+    droppedGenes: number
+    sampleCount: number
+    minSamplePct: number
+    perStrain?: boolean
+  }
 }
 
 /** A (numerator, denominator) compound pair for a comparison. */

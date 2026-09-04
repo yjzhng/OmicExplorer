@@ -18,8 +18,15 @@ import {
   parseMatrix,
   type MatrixPreset
 } from '../engine/interactive'
-import { crossPairs } from '../engine'
-import type { CompareTableResult, ConditionKey, Pair } from '../engine'
+import { applyThreshold, combineStandardize, crossPairs, thresholdLabel } from '../engine'
+import type {
+  CompareTableResult,
+  ConditionKey,
+  ContrastResult,
+  ContrastSideRow,
+  Pair,
+  ThresholdConfig
+} from '../engine'
 import { EXAMPLE_LOAD_CONFIG } from './example'
 import {
   deserializeProject,
@@ -30,14 +37,17 @@ import {
   type ProjectFile,
   type ProjectFolder
 } from './project'
+import { childPanelId } from './groups'
 import { loadRecents, pushRecent, removeRecent, saveRecents, type RecentProject } from './recents'
-import { canConnect, categoryOf, NODE_SPECS } from './registry'
+import { canConnect, categoryOf, maxInputsFor, NODE_SPECS } from './registry'
 import {
   isStep,
   normalizeCompareConfig,
   resolveLoadMode,
   type CompareConfig,
   type ContrastConfig,
+  type FavGene,
+  type GeneSet,
   type GraphNode,
   type GroupMeta,
   type InteractiveImport,
@@ -59,6 +69,7 @@ import {
   type LoadedWorkflow,
   type WorkflowDoc
 } from './workflowDoc'
+import { useAppView } from '../ui/useAppView'
 
 /** Minimal objects → CSV for writing processed data to <dir>/temp. */
 function rowsToCsv(rows: Array<Record<string, unknown>>): string {
@@ -118,6 +129,11 @@ interface GraphState {
   /** Select a subcard within a group tile (opens that child's config). */
   selectChildCard: (groupId: string, childId: string) => void
   updateConfig: (id: string, partial: Record<string, unknown>) => void
+  /** Live-patch a Compare tile's threshold (from dragging a volcano guide) and re-classify its
+   *  ALREADY-COMPUTED result rows in place — no recompute, since only the calls (effect/signf)
+   *  depend on the threshold, not the statistics. Keeps the Compare result; stales downstream
+   *  COMPUTE nodes (e.g. contrast masks by the compare's per-gene call, so it needs a re-run). */
+  setCompareThreshold: (id: string, partial: Partial<ThresholdConfig>) => void
   /** Set (or clear, with '') a tile's user-given name. Label only — never invalidates results. */
   renameNode: (id: string, name: string) => void
   /** Patch one subcard's config inside a group tile (display-only keys don't invalidate). */
@@ -126,10 +142,18 @@ interface GraphState {
   groupNodes: (ids: string[]) => void
   /** Explode each selected group tile back into standalone plot nodes (undoable). */
   ungroupNodes: (ids: string[]) => void
-  /** Append a plot subcard to a group tile and select it (undoable). */
-  addGroupChild: (groupId: string, kind: NodeKind) => void
+  /** Append a plot subcard to a group tile and select it (undoable). `override` is merged onto the
+   *  kind's default config, so callers can seed e.g. a dose- vs time-response variant of one kind. */
+  addGroupChild: (groupId: string, kind: NodeKind, override?: Record<string, unknown>) => void
+  /** Append several plot subcards to a group in ONE undoable step (for category "select all"). */
+  addGroupChildren: (
+    groupId: string,
+    specs: { kind: NodeKind; override?: Record<string, unknown> }[]
+  ) => void
   /** Remove a subcard; deletes the whole group tile when it was the last one (undoable). */
   removeGroupChild: (groupId: string, childId: string) => void
+  /** Remove several subcards by id in ONE undoable step; deletes the tile if none remain. */
+  removeGroupChildren: (groupId: string, childIds: string[]) => void
   /** Reorder subcards: drop `fromId` into the gap before/after `targetId` (undoable). */
   moveGroupChild: (
     groupId: string,
@@ -178,9 +202,13 @@ interface GraphState {
   activeWorkflowId: string | null
   /** recently opened/saved projects (persisted to localStorage) */
   recentProjects: RecentProject[]
+  /** last error from opening a project (shown on the Home screen); null when none */
+  openError: string | null
 
   initProject: () => Promise<void>
   goHome: () => void
+  /** Re-enter the in-memory project after goHome, preserving any unsaved changes (no disk reload). */
+  resumeProject: () => void
   newProject: () => void
   openProject: (path?: string) => Promise<void>
   /** returns true if written (false if cancelled at the save-as dialog) */
@@ -229,6 +257,22 @@ interface GraphState {
   setGroupLayout: (rootId: string, layout: PanelLayoutItem[]) => void
   /** Drop a group's saved layout so it falls back to the auto layout. */
   resetGroupLayout: (rootId: string) => void
+  /** Persist the results-page tab order (rootIds in the new left→right order). */
+  reorderGroups: (orderedRootIds: string[]) => void
+
+  // ── custom genesets: named, saved gene selections (persisted with the workflow) ──
+  geneSets: GeneSet[]
+  /** Create a geneset from `genes` (typically the current selection); returns its new id. */
+  createGeneSet: (name: string, genes: FavGene[]) => string
+  /** Rename a geneset. */
+  renameGeneSet: (id: string, name: string) => void
+  /** Replace a geneset's member genes (e.g. save the current selection into it). */
+  updateGeneSetGenes: (id: string, genes: FavGene[]) => void
+  /** Delete a geneset. */
+  deleteGeneSet: (id: string) => void
+  /** Toggle a geneset's HIDDEN flag — masking its genes non-significant across every comparison /
+   *  contrast result in the project (re-applied in place; contrasts go stale for re-run). */
+  toggleGeneSetHidden: (id: string) => void
 
   // ── undo / redo ────────────────────────────────────────────────────────────
   past: Snapshot[]
@@ -246,6 +290,32 @@ function makeNode(id: string, op: NodeKind, position: { x: number; y: number }):
     position,
     data: { kind: op, config: NODE_SPECS[op].defaultConfig(), status: 'idle' }
   }
+}
+
+/** Raise the store-selected node's React Flow zIndex so its config-detail float (which floats to
+ *  the right of the tile, over neighbours) always paints above sibling tiles — a node's own
+ *  zIndex governs the whole `.react-flow__node` stacking context, which the float can't escape. */
+const SELECTED_Z = 1000
+function elevate(nodes: GraphNode[], selId: string | null): GraphNode[] {
+  return nodes.map((n) => {
+    const z = n.id === selId ? SELECTED_Z : undefined
+    return n.zIndex === z ? n : { ...n, zIndex: z }
+  })
+}
+
+/** Rewrite dashboard-layout panel ids (`PanelLayoutItem.i`) through `idMap`, preserving each
+ *  tile's saved position and size. Group/ungroup mint fresh node & subcard ids, so without this
+ *  the old layout entries no longer match any panel and reconcileLayout resets them to defaults. */
+function remapLayouts(
+  layouts: Record<string, PanelLayoutItem[]>,
+  idMap: Map<string, string>
+): Record<string, PanelLayoutItem[]> {
+  return Object.fromEntries(
+    Object.entries(layouts).map(([rid, items]) => [
+      rid,
+      items.map((it) => (idMap.has(it.i) ? { ...it, i: idMap.get(it.i)! } : it))
+    ])
+  )
 }
 
 /** Mint stable subcard ids from the shared node counter, cloning each config. */
@@ -307,12 +377,72 @@ function docFromLive(s: GraphState): WorkflowDoc {
     edges: s.edges,
     nextId: s.nextId,
     groupLayouts: s.groupLayouts,
-    groupMeta: s.groupMeta
+    groupMeta: s.groupMeta,
+    geneSets: s.geneSets
   })
 }
 
 const activeFolder = (s: GraphState): ProjectFolder | undefined =>
   s.folders.find((f) => f.id === s.activeFolderId)
+
+/** The active workflow's name. READS pass this always: main tries the per-workflow subfolder first
+ *  then falls back to the shared data-folder root, so a file resolves whether it was written nested
+ *  (multi-workflow folder) or flat (single workflow, or a pre-workflow-level project) — which also
+ *  makes growing/shrinking the workflow count safe. undefined when no workflow is active. */
+const readScope = (s: GraphState): string | undefined =>
+  activeFolder(s)?.workflows.find((w) => w.id === s.activeWorkflowId)?.name
+
+/** WRITES nest generated files under the workflow subfolder ONLY when the data folder holds more
+ *  than one workflow; a lone workflow writes straight into the shared data folder (no needless
+ *  nesting). undefined = write to the root input/temp dirs. */
+const writeScope = (s: GraphState): string | undefined => {
+  const folder = activeFolder(s)
+  return folder && folder.workflows.length > 1 ? readScope(s) : undefined
+}
+
+/** Union of every HIDDEN geneset's gene uniqIDs — the project-wide significance mask. */
+const hiddenGeneIds = (s: GraphState): Set<string> => {
+  const ids = new Set<string>()
+  for (const g of s.geneSets) if (g.hidden) for (const gene of g.genes) ids.add(gene.id)
+  return ids
+}
+
+/** Force the masked genes non-significant on a result's rows (leaves everything else untouched). */
+function maskSignf<T extends { uniqID: string; signf: boolean; effect: string }>(
+  rows: T[],
+  hidden: Set<string>
+): T[] {
+  if (hidden.size === 0) return rows
+  return rows.map((r) => (hidden.has(r.uniqID) ? { ...r, signf: false, effect: 'none' } : r)) as T[]
+}
+
+/** Re-apply the geneset significance mask across the whole project after a hidden-set change.
+ *  Compare results are re-classified in place (recompute signf from the node's threshold, then
+ *  mask) — cheap and live. Contrasts mask by the compare's per-gene call, so any already-computed
+ *  contrast is AUTO-RECOMPUTED (no manual re-run) against the freshly re-classified compares —
+ *  like a threshold drag, carried through to completion. */
+function reapplyGeneMask(get: Getter, set: Setter): void {
+  const hidden = hiddenGeneIds(get())
+  const results = { ...get().results }
+  for (const n of get().nodes) {
+    if (!isStep(n)) continue
+    const res = results[n.id]
+    if (res?.kind !== 'compare') continue
+    const threshold = (n.data.config as CompareConfig).threshold
+    const label = thresholdLabel(threshold)
+    const rows = res.cmp.rows.map((r) => {
+      const stat = threshold.statType === 'pP' ? r.pP : r.pQ
+      const cls = applyThreshold(r.log2FC ?? NaN, stat ?? NaN, threshold)
+      const signf = cls.signf && !hidden.has(r.uniqID)
+      return { ...r, thrsh: label, signf, effect: signf ? cls.effect : 'none' }
+    })
+    results[n.id] = { ...res, cmp: { ...res.cmp, rows } }
+  }
+  set({ results })
+  // Re-run every already-computed contrast so the mask propagates downstream automatically.
+  for (const n of get().nodes)
+    if (isStep(n) && n.data.kind === 'contrast' && get().results[n.id]) void get().runNode(n.id)
+}
 
 /** Flush the live graph + results into the active folder's active workflow. */
 function syncActiveSlot(get: Getter, set: Setter): void {
@@ -352,6 +482,7 @@ function loadSlot(get: Getter, set: Setter, folderId: string, workflowId?: strin
     nextId: loaded.nextId,
     groupLayouts: loaded.groupLayouts,
     groupMeta: loaded.groupMeta,
+    geneSets: loaded.geneSets,
     results,
     activeFolderId: folderId,
     activeWorkflowId: slot.id,
@@ -364,12 +495,16 @@ function loadSlot(get: Getter, set: Setter, folderId: string, workflowId?: strin
 
 function buildProjectFile(get: Getter): ProjectFile {
   const s = get()
+  const av = useAppView.getState()
   return {
     format: 'omicexplorer-project',
     version: 2,
     name: s.projectName,
     folders: s.folders,
-    activeFolderId: s.activeFolderId ?? s.folders[0]?.id ?? ''
+    activeFolderId: s.activeFolderId ?? s.folders[0]?.id ?? '',
+    // Persist which page the user was on so opening the project resumes it (see openProject).
+    view: av.view,
+    resultsTab: av.resultsTab
   }
 }
 
@@ -394,8 +529,10 @@ export const useGraph = create<GraphState>()((set, get) => ({
   activeFolderId: null,
   activeWorkflowId: null,
   recentProjects: [],
+  openError: null,
   groupLayouts: {},
   groupMeta: {},
+  geneSets: [],
   past: [],
   future: [],
 
@@ -414,8 +551,8 @@ export const useGraph = create<GraphState>()((set, get) => ({
     const tgt = nodes.find((n) => n.id === conn.target)
     if (!src || !tgt || !conn.source || !conn.target) return
     if (!isStep(src) || !isStep(tgt) || !canConnect(src.data.kind, tgt.data.kind)) return
-    // contrast takes two inputs; every other node takes one.
-    const maxInputs = tgt.data.kind === 'contrast' ? 2 : 1
+    // contrast and compare take two inputs; every other node takes one.
+    const maxInputs = maxInputsFor(tgt.data.kind)
     const existing = edges.filter((e) => e.target === conn.target)
     if (existing.some((e) => e.source === conn.source)) return // no duplicate input
     get().commit()
@@ -432,7 +569,7 @@ export const useGraph = create<GraphState>()((set, get) => ({
     const tgt = nodes.find((n) => n.id === conn.target)
     if (!src || !tgt || !conn.source || !conn.target) return
     if (!isStep(src) || !isStep(tgt) || !canConnect(src.data.kind, tgt.data.kind)) return
-    const maxInputs = tgt.data.kind === 'contrast' ? 2 : 1
+    const maxInputs = maxInputsFor(tgt.data.kind)
     const others = edges.filter((e) => e.id !== oldEdge.id && e.target === conn.target)
     if (others.some((e) => e.source === conn.source)) return // no duplicate input
     get().commit()
@@ -605,15 +742,19 @@ export const useGraph = create<GraphState>()((set, get) => ({
     set((s) => ({
       // Copies appended last → drawn on top; originals get deselected so only the
       // fresh tiles read as selected.
-      nodes: [...s.nodes.map((n) => (srcIds.has(n.id) ? { ...n, selected: false } : n)), ...copies],
+      nodes: elevate(
+        [...s.nodes.map((n) => (srcIds.has(n.id) ? { ...n, selected: false } : n)), ...copies],
+        copies.length === 1 ? copies[0].id : null
+      ),
       nextId,
       selectedId: copies.length === 1 ? copies[0].id : null,
       selectedSub: null
     }))
   },
 
-  selectNode: (id) => set({ selectedId: id, selectedSub: null }),
-  selectChildCard: (groupId, childId) => set({ selectedId: groupId, selectedSub: childId }),
+  selectNode: (id) => set((s) => ({ selectedId: id, selectedSub: null, nodes: elevate(s.nodes, id) })),
+  selectChildCard: (groupId, childId) =>
+    set((s) => ({ selectedId: groupId, selectedSub: childId, nodes: elevate(s.nodes, groupId) })),
   setCanvasSelection: (ids) => set({ canvasSelection: ids }),
 
   updateConfig: (id, partial) => {
@@ -646,6 +787,60 @@ export const useGraph = create<GraphState>()((set, get) => ({
       set({ results })
       get().invalidateDownstream(id)
     }
+  },
+
+  setCompareThreshold: (id, partial) => {
+    const node = get().nodes.find((n) => n.id === id)
+    if (!node || !isStep(node) || node.data.kind !== 'compare') return
+    const cur = (node.data.config as CompareConfig).threshold
+    const threshold: ThresholdConfig = { ...cur, ...partial }
+    // No-op guard: dragging that lands back on the same value shouldn't spawn an undo step or
+    // needlessly stale a downstream contrast.
+    if (
+      threshold.type === cur.type &&
+      threshold.fcLow === cur.fcLow &&
+      threshold.fcHigh === cur.fcHigh &&
+      threshold.statMin === cur.statMin &&
+      threshold.b === cur.b &&
+      threshold.s0 === cur.s0 &&
+      threshold.statType === cur.statType
+    )
+      return
+    get().commit()
+    // Patch the threshold on the Compare config WITHOUT going through updateConfig — the statistics
+    // are unchanged, so the compare must stay `done` (updateConfig would stale it and force a re-run).
+    set((s) => ({
+      nodes: s.nodes.map((n) =>
+        n.id === id && isStep(n)
+          ? {
+              ...n,
+              data: {
+                ...n.data,
+                config: { ...(n.data.config as CompareConfig), threshold } as NodeConfig
+              }
+            }
+          : n
+      )
+    }))
+    // Re-classify the stored result rows in place: only thrsh/signf/effect depend on the threshold
+    // (log2FC, pP, pQ are already final). Cheap enough to run synchronously on the UI thread.
+    const res = get().results[id]
+    if (res?.kind === 'compare') {
+      const label = thresholdLabel(threshold)
+      const hidden = hiddenGeneIds(get())
+      const rows = res.cmp.rows.map((r) => {
+        const stat = threshold.statType === 'pP' ? r.pP : r.pQ
+        const cls = applyThreshold(r.log2FC ?? NaN, stat ?? NaN, threshold)
+        const signf = cls.signf && !hidden.has(r.uniqID) // keep the geneset mask across threshold edits
+        return { ...r, thrsh: label, signf, effect: signf ? cls.effect : 'none' }
+      })
+      set((s) => ({
+        results: { ...s.results, [id]: { ...res, cmp: { ...res.cmp, rows } } }
+      }))
+    }
+    // Downstream COMPUTE nodes (contrast) mask by the compare's per-gene call, so a threshold change
+    // genuinely invalidates them → stale for re-run. Downstream plot nodes just re-render live.
+    get().invalidateDownstream(id)
   },
 
   renameNode: (id, name) => {
@@ -708,9 +903,19 @@ export const useGraph = create<GraphState>()((set, get) => ({
           }))
         : [{ kind: n.data.kind, config: n.data.config }]
     )
+    // Each spec's CURRENT dashboard panel id, parallel to `specs`: a group subcard is
+    // `${groupId}::${childId}`; a plain plot is its own node id. Remapped onto the new subcard
+    // ids below so the tiles keep their saved grid position/size across the regroup.
+    const oldPanelIds = sel.flatMap((n) =>
+      n.data.kind === 'plotGroup'
+        ? (n.data.config as PlotGroupConfig).children.map((c) => childPanelId(n.id, c.id))
+        : [n.id]
+    )
     const startId = get().nextId
     const children = toChildren(specs, startId)
     const groupId = `plotGroup-${startId + specs.length}`
+    const layoutRemap = new Map<string, string>()
+    children.forEach((c, i) => layoutRemap.set(oldPanelIds[i], childPanelId(groupId, c.id)))
     // Anchor the group at the top-left-most selected tile.
     const pos = sel.reduce(
       (best, n) =>
@@ -724,12 +929,16 @@ export const useGraph = create<GraphState>()((set, get) => ({
       const results = { ...s.results }
       for (const nid of selIds) delete results[nid]
       return {
-        nodes: [...s.nodes.filter((n) => !selIds.has(n.id)), makeGroupNode(groupId, pos, children)],
+        nodes: elevate(
+          [...s.nodes.filter((n) => !selIds.has(n.id)), makeGroupNode(groupId, pos, children)],
+          groupId
+        ),
         edges: [
           ...s.edges.filter((e) => !selIds.has(e.target) && !selIds.has(e.source)),
           { id: `e-${upstream}-${groupId}`, source: upstream, target: groupId }
         ],
         results,
+        groupLayouts: remapLayouts(s.groupLayouts, layoutRemap),
         nextId: startId + specs.length + 1,
         selectedId: groupId,
         selectedSub: children[0]?.id ?? null
@@ -748,6 +957,9 @@ export const useGraph = create<GraphState>()((set, get) => ({
     const addNodes: StepNode[] = []
     const addEdges: Edge[] = []
     const removeIds = new Set<string>()
+    // Each freed subcard becomes a standalone plot node; carry its saved grid slot over by
+    // remapping the old `${groupId}::${childId}` panel id to the new node id (see remapLayouts).
+    const layoutRemap = new Map<string, string>()
     for (const g of groups) {
       const upstream = edges.find((e) => e.target === g.id)?.source
       const kids = (g.data.config as PlotGroupConfig).children
@@ -759,27 +971,33 @@ export const useGraph = create<GraphState>()((set, get) => ({
           position: { x: g.position.x + i * 28, y: g.position.y + i * 46 },
           data: { kind: c.kind, config: structuredClone(c.config), status: 'idle' }
         })
+        layoutRemap.set(childPanelId(g.id, c.id), nid)
         if (upstream) addEdges.push({ id: `e-${upstream}-${nid}`, source: upstream, target: nid })
       })
       removeIds.add(g.id)
     }
     set((s) => ({
-      nodes: [...s.nodes.filter((n) => !removeIds.has(n.id)), ...addNodes],
+      nodes: elevate(
+        [...s.nodes.filter((n) => !removeIds.has(n.id)), ...addNodes],
+        addNodes[0]?.id ?? null
+      ),
       edges: [
         ...s.edges.filter((e) => !removeIds.has(e.source) && !removeIds.has(e.target)),
         ...addEdges
       ],
+      groupLayouts: remapLayouts(s.groupLayouts, layoutRemap),
       nextId,
       selectedId: addNodes[0]?.id ?? null,
       selectedSub: null
     }))
   },
 
-  addGroupChild: (groupId, kind) => {
+  addGroupChild: (groupId, kind, override) => {
     const group = get().nodes.find((n) => n.id === groupId)
     if (!group || !isStep(group) || group.data.kind !== 'plotGroup') return
     get().commit()
-    const [child] = toChildren([{ kind, config: NODE_SPECS[kind].defaultConfig() }], get().nextId)
+    const config = { ...NODE_SPECS[kind].defaultConfig(), ...(override ?? {}) } as NodeConfig
+    const [child] = toChildren([{ kind, config }], get().nextId)
     set((s) => ({
       nextId: s.nextId + 1,
       selectedSub: child.id,
@@ -788,6 +1006,54 @@ export const useGraph = create<GraphState>()((set, get) => ({
         const cfg = n.data.config as PlotGroupConfig
         return { ...n, data: { ...n.data, config: { children: [...cfg.children, child] } } }
       })
+    }))
+  },
+
+  addGroupChildren: (groupId, specs) => {
+    const group = get().nodes.find((n) => n.id === groupId)
+    if (!group || !isStep(group) || group.data.kind !== 'plotGroup' || specs.length === 0) return
+    get().commit()
+    const startId = get().nextId
+    const added = toChildren(
+      specs.map((s) => ({
+        kind: s.kind,
+        config: { ...NODE_SPECS[s.kind].defaultConfig(), ...(s.override ?? {}) } as NodeConfig
+      })),
+      startId
+    )
+    set((s) => ({
+      nextId: startId + added.length,
+      selectedSub: added[added.length - 1].id,
+      nodes: s.nodes.map((n) => {
+        if (n.id !== groupId || !isStep(n)) return n
+        const cfg = n.data.config as PlotGroupConfig
+        return { ...n, data: { ...n.data, config: { children: [...cfg.children, ...added] } } }
+      })
+    }))
+  },
+
+  removeGroupChildren: (groupId, childIds) => {
+    const group = get().nodes.find((n) => n.id === groupId)
+    if (!group || !isStep(group) || group.data.kind !== 'plotGroup' || childIds.length === 0) return
+    const drop = new Set(childIds)
+    const remaining = (group.data.config as PlotGroupConfig).children.filter((c) => !drop.has(c.id))
+    get().commit()
+    if (remaining.length === 0) {
+      set((s) => ({
+        nodes: s.nodes.filter((n) => n.id !== groupId),
+        edges: s.edges.filter((e) => e.source !== groupId && e.target !== groupId),
+        selectedId: s.selectedId === groupId ? null : s.selectedId,
+        selectedSub: null
+      }))
+      return
+    }
+    set((s) => ({
+      selectedSub: remaining[0].id,
+      nodes: s.nodes.map((n) =>
+        n.id === groupId && isStep(n)
+          ? { ...n, data: { ...n.data, config: { children: remaining } } }
+          : n
+      )
     }))
   },
 
@@ -917,7 +1183,6 @@ export const useGraph = create<GraphState>()((set, get) => ({
       }))
 
     const upId = state.upstreamId(id)
-    const upResult = upId ? state.results[upId] : undefined
 
     try {
       if (kind === 'standardize') {
@@ -940,10 +1205,14 @@ export const useGraph = create<GraphState>()((set, get) => ({
           return
         }
         setStatus('running')
+        // Generated standard files may live under the workflow's own subfolder; the read falls back
+        // to the shared data-folder root, so a lone workflow's flat files, manual-mode files, and
+        // pre-workflow-level projects all still resolve.
+        const wf = readScope(state)
         const [dataText, samplesheetText, dbText] = await Promise.all([
-          window.api.readDataFile(dir, load.data),
-          window.api.readDataFile(dir, load.samplesheet),
-          load.db ? window.api.readDataFile(dir, load.db) : Promise.resolve(null)
+          window.api.readDataFile(dir, load.data, wf),
+          window.api.readDataFile(dir, load.samplesheet, wf),
+          load.db ? window.api.readDataFile(dir, load.db, wf) : Promise.resolve(null)
         ])
         if (get().nodes.find((n) => n.id === id)?.data.status !== 'running') return // cancelled
         if (!dataText || !samplesheetText) {
@@ -961,7 +1230,11 @@ export const useGraph = create<GraphState>()((set, get) => ({
           samplesheetText,
           dbText: dbText ?? undefined,
           activeConditions: cfg.activeConditions ?? undefined,
-          minSamplePct: cfg.minSamplePct ?? 0
+          minSamplePct: cfg.minSamplePct ?? 0,
+          minSamplePctPerStrain: cfg.minSamplePctPerStrain ?? false,
+          // Global (non-per-row) map from the interactive import — passed straight through so
+          // enrichment can group KEGG pathways by category.
+          keggCategories: load.interactive?.annotations?.keggCategories
         })
         if (get().nodes.find((n) => n.id === id)?.data.status !== 'running') return // cancelled
         set((s) => ({ results: { ...s.results, [id]: { kind: 'standardize', std } } }))
@@ -969,15 +1242,24 @@ export const useGraph = create<GraphState>()((set, get) => ({
         void window.api.writeTempFile(
           dir,
           `${id}.standardized.csv`,
-          rowsToCsv(std.rows as unknown as Array<Record<string, unknown>>)
+          rowsToCsv(std.rows as unknown as Array<Record<string, unknown>>),
+          writeScope(state)
         )
         get().invalidateDownstream(id)
       } else if (kind === 'compare') {
-        if (upResult?.kind !== 'standardize') {
+        // Compare accepts up to two Standardize inputs; pool them into one dataset (rows matched
+        // across datasets by uniqID) so numerator/denominator/context conditions can be drawn from
+        // either. One input is the common case and passes through unchanged.
+        const stds = state
+          .upstreamIds(id)
+          .map((u) => state.results[u])
+          .filter((r): r is Extract<NodeResult, { kind: 'standardize' }> => r?.kind === 'standardize')
+          .map((r) => r.std)
+        if (stds.length === 0) {
           setStatus('error', 'Connect a Standardize node upstream.')
           return
         }
-        const std = upResult.std
+        const std = combineStandardize(stds)
         // Migrate any legacy veh_norm/direct config to the explicit num/den/match model, and
         // persist it so the stored workflow is updated on first run.
         const cfg = normalizeCompareConfig(node.data.config as CompareConfig)
@@ -1029,54 +1311,17 @@ export const useGraph = create<GraphState>()((set, get) => ({
           })
         }
         if (get().nodes.find((n) => n.id === id)?.data.status !== 'running') return // cancelled
-        set((s) => ({
-          results: { ...s.results, [id]: { kind: 'compare', cmp, displayMap: std.displayMap } }
-        }))
-        setStatus('done')
-        const dir = get().dataDir
-        if (dir)
-          void window.api.writeTempFile(
-            dir,
-            `${id}.${cfg.analysis}.csv`,
-            rowsToCsv(cmp.rows as unknown as Array<Record<string, unknown>>)
-          )
-        get().invalidateDownstream(id)
-      } else if (kind === 'contrast') {
-        // omicViz model: pool every upstream comparison's rows, then split them by two
-        // levels of `condition` (FC1 = pairNum slice, FC2 = pairDen slice).
-        const cfg = node.data.config as ContrastConfig
-        const ups = state.upstreamIds(id)
-        const cmps = ups
-          .map((u) => state.results[u])
-          .filter((r): r is Extract<NodeResult, { kind: 'compare' }> => r?.kind === 'compare')
-        if (!cmps.length) {
-          setStatus('error', 'Connect a Compare tile and run it first.')
-          return
-        }
-        const pooled = cmps.flatMap((r) => r.cmp.rows)
-        if (!pooled.length) {
-          setStatus('error', 'The upstream comparison has no results.')
-          return
-        }
-        if (!cfg.pairNum || !cfg.pairDen) {
-          setStatus('error', `Choose two ${cfg.condition} levels to contrast.`)
-          return
-        }
-        setStatus('running')
-        const ctr = await engine.contrast({
-          rows: pooled,
-          condition: cfg.condition,
-          pair: [cfg.pairNum, cfg.pairDen],
-          relationship: cfg.relationship
-        })
-        if (get().nodes.find((n) => n.id === id)?.data.status !== 'running') return // cancelled
+        // Apply the project-wide geneset mask so hidden genes are non-significant from the start.
+        cmp = { ...cmp, rows: maskSignf(cmp.rows, hiddenGeneIds(get())) }
         set((s) => ({
           results: {
             ...s.results,
             [id]: {
-              kind: 'contrast',
-              ctr,
-              displayMap: cmps[0].displayMap
+              kind: 'compare',
+              cmp,
+              displayMap: std.displayMap,
+              annotationMap: std.annotationMap ?? {},
+              keggCategories: std.keggCategories ?? {}
             }
           }
         }))
@@ -1085,8 +1330,113 @@ export const useGraph = create<GraphState>()((set, get) => ({
         if (dir)
           void window.api.writeTempFile(
             dir,
+            `${id}.${cfg.analysis}.csv`,
+            rowsToCsv(cmp.rows as unknown as Array<Record<string, unknown>>),
+            writeScope(get())
+          )
+        get().invalidateDownstream(id)
+      } else if (kind === 'contrast') {
+        const cfg = node.data.config as ContrastConfig
+        const ups = state.upstreamIds(id)
+        let ctr: ContrastResult
+        let displayMap: Record<string, string>
+        if (cfg.source === 'pair') {
+          // Pair mode: two same-kind inputs joined side-by-side by uniqID + matched context —
+          // two Compares → FC-vs-FC, two Standardizes → mean-log2-abundance-vs-abundance.
+          if (ups.length < 2) {
+            setStatus('error', 'Pair mode needs two inputs — connect two Compare or two Standardize tiles.')
+            return
+          }
+          const ra = state.results[ups[0]]
+          const rb = state.results[ups[1]]
+          const okKind = (k?: string): boolean => k === 'compare' || k === 'standardize'
+          if (!ra || !rb || !okKind(ra.kind) || rb.kind !== ra.kind) {
+            setStatus('error', 'Pair mode needs two run inputs of the SAME kind (two Compares, or two Standardizes).')
+            return
+          }
+          // Compare → log2FC (+ significance); Standardize → per-sample log2 abundance (the engine
+          // averages replicates + unmatched dims to the matched context).
+          const toSide = (r: NodeResult): ContrastSideRow[] =>
+            r.kind === 'compare'
+              ? r.cmp.rows.map((row) => ({
+                  uniqID: row.uniqID,
+                  strain: row.strain ?? null,
+                  cmpd: row.cmpd,
+                  dose: row.dose,
+                  time: row.time,
+                  value: row.log2FC,
+                  signf: row.signf,
+                  effect: row.effect,
+                  pP: row.pP,
+                  pQ: row.pQ
+                }))
+              : r.kind === 'standardize'
+                ? r.std.rows.map((row) => ({
+                    uniqID: row.uniqID,
+                    strain: row.strain,
+                    cmpd: row.cmpd,
+                    dose: row.dose,
+                    time: row.time,
+                    value: row.value != null && row.value > 0 ? Math.log2(row.value) : null
+                  }))
+                : []
+          const label = (nid: string, fb: string): string => {
+            const n = state.nodes.find((x) => x.id === nid)
+            return (n && isStep(n) && n.data.name?.trim()) || fb
+          }
+          setStatus('running')
+          ctr = await engine.contrastPair({
+            sideA: toSide(ra),
+            sideB: toSide(rb),
+            match: cfg.match ?? [],
+            relationship: cfg.relationship,
+            labelA: label(ups[0], 'A'),
+            labelB: label(ups[1], 'B'),
+            // No per-side significance for abundance pairs → the band is the only divergence call.
+            driverMask: ra.kind === 'compare'
+          })
+          displayMap =
+            ra.kind === 'compare' ? ra.displayMap : ra.kind === 'standardize' ? ra.std.displayMap : {}
+        } else {
+          // Split mode (omicViz): pool every upstream comparison's rows, then split them by two
+          // levels of `condition` (FC1 = pairNum slice, FC2 = pairDen slice).
+          const cmps = ups
+            .map((u) => state.results[u])
+            .filter((r): r is Extract<NodeResult, { kind: 'compare' }> => r?.kind === 'compare')
+          if (!cmps.length) {
+            setStatus('error', 'Connect a Compare tile and run it first.')
+            return
+          }
+          const pooled = cmps.flatMap((r) => r.cmp.rows)
+          if (!pooled.length) {
+            setStatus('error', 'The upstream comparison has no results.')
+            return
+          }
+          if (!cfg.pairNum || !cfg.pairDen) {
+            setStatus('error', `Choose two ${cfg.condition} levels to contrast.`)
+            return
+          }
+          setStatus('running')
+          ctr = await engine.contrast({
+            rows: pooled,
+            condition: cfg.condition,
+            pair: [cfg.pairNum, cfg.pairDen],
+            relationship: cfg.relationship
+          })
+          displayMap = cmps[0].displayMap
+        }
+        if (get().nodes.find((n) => n.id === id)?.data.status !== 'running') return // cancelled
+        // Mask hidden-geneset genes non-significant (covers pair mode with no per-side driver signf).
+        ctr = { ...ctr, rows: maskSignf(ctr.rows, hiddenGeneIds(get())) }
+        set((s) => ({ results: { ...s.results, [id]: { kind: 'contrast', ctr, displayMap } } }))
+        setStatus('done')
+        const dir = get().dataDir
+        if (dir)
+          void window.api.writeTempFile(
+            dir,
             `${id}.contrast.csv`,
-            rowsToCsv(ctr.rows as unknown as Array<Record<string, unknown>>)
+            rowsToCsv(ctr.rows as unknown as Array<Record<string, unknown>>),
+            writeScope(get())
           )
         get().invalidateDownstream(id)
       }
@@ -1217,6 +1567,12 @@ export const useGraph = create<GraphState>()((set, get) => ({
     if (get().projectOpen) syncActiveSlot(get, set)
     set({ projectOpen: false })
   },
+  resumeProject: () => {
+    // The project's live state (nodes/edges/folders/dirty) is kept in memory by goHome, so
+    // re-entering it simply re-shows the workspace — unsaved changes are still there. Guarded so it
+    // is a no-op on a fresh launch with no in-memory project.
+    if (get().folders.length > 0) set({ projectOpen: true })
+  },
   newProject: () => {
     const proj = newProjectFile()
     set({
@@ -1229,35 +1585,61 @@ export const useGraph = create<GraphState>()((set, get) => ({
       inputFiles: []
     })
     loadSlot(get, set, proj.activeFolderId)
+    // A fresh project always starts on the Workflow canvas.
+    useAppView.getState().setView('canvas')
   },
   openProject: async (path) => {
+    set({ openError: null })
     let p = path ?? null
-    let text: string
-    if (p) {
-      text = await window.api.readProject(p)
-    } else {
-      const picked = await window.api.openProject()
-      if (!picked) return
-      p = picked.path
-      text = picked.content
+    try {
+      let text: string
+      if (p) {
+        text = await window.api.readProject(p)
+      } else {
+        const picked = await window.api.openProject()
+        if (!picked) return
+        p = picked.path
+        text = picked.content
+      }
+      const proj = deserializeProject(text)
+      // The project's display name follows its filename (like Save As), so renaming the
+      // `.omicexplorer` file renames the project; fall back to the embedded name if the
+      // path is somehow missing.
+      const nameFromPath = p ? (p.split(/[/\\]/).pop() ?? '').replace(/\.omicexplorer$/i, '') : ''
+      const projectName = nameFromPath || proj.name
+      // Drop dangling path-less placeholder folders once at least one real (path-having) folder
+      // exists — these are leftovers from a project's initial empty folder and only clutter the
+      // selector as "(no path) —" rows. Always keep at least one folder.
+      const hasReal = proj.folders.some((f) => f.path)
+      const folders = hasReal ? proj.folders.filter((f) => f.path) : proj.folders
+      const activeFolderId = folders.some((f) => f.id === proj.activeFolderId)
+        ? proj.activeFolderId
+        : folders[0].id
+      set({
+        projectPath: p,
+        projectName,
+        projectOpen: true,
+        folders,
+        activeFolderId,
+        dirty: false,
+        recentProjects: pushRecent(get().recentProjects, { path: p as string, name: projectName })
+      })
+      loadSlot(get, set, activeFolderId)
+      // Resume the page the user was last on (Workflow canvas vs Results dashboard) and its tab,
+      // instead of always dropping onto the canvas.
+      useAppView.getState().setView(proj.view ?? 'canvas')
+      if (proj.resultsTab) useAppView.getState().setResultsTab(proj.resultsTab)
+      await get().refreshDataFiles()
+    } catch (e) {
+      // Surface the failure instead of a silent no-op (missing file, bad JSON, etc.).
+      const msg = e instanceof Error ? e.message : String(e)
+      const missing = /ENOENT|no such file/i.test(msg)
+      set({
+        openError: p
+          ? `Couldn't open ${p.split(/[/\\]/).pop() ?? p}: ${missing ? 'file not found' : msg}`
+          : `Couldn't open project: ${msg}`
+      })
     }
-    const proj = deserializeProject(text)
-    // The project's display name follows its filename (like Save As), so renaming the
-    // `.omicexplorer` file renames the project; fall back to the embedded name if the
-    // path is somehow missing.
-    const nameFromPath = p ? (p.split(/[/\\]/).pop() ?? '').replace(/\.omicexplorer$/i, '') : ''
-    const projectName = nameFromPath || proj.name
-    set({
-      projectPath: p,
-      projectName,
-      projectOpen: true,
-      folders: proj.folders,
-      activeFolderId: proj.activeFolderId,
-      dirty: false,
-      recentProjects: pushRecent(get().recentProjects, { path: p as string, name: projectName })
-    })
-    loadSlot(get, set, proj.activeFolderId)
-    await get().refreshDataFiles()
   },
   saveProject: async () => {
     syncActiveSlot(get, set)
@@ -1331,7 +1713,10 @@ export const useGraph = create<GraphState>()((set, get) => ({
 
   setInteractive: (id, patch) => {
     // Editing the import spec shouldn't spam undo history, so patch config in place (no commit).
+    // But it MUST mark the project dirty — otherwise the Save button stays disabled and a fetched
+    // annotation set (STRING/KEGG ids, etc.) is silently lost on reopen.
     set((st) => ({
+      dirty: true,
       nodes: st.nodes.map((n) => {
         if (n.id !== id || !isStep(n)) return n
         const cfg = n.data.config as LoadConfig
@@ -1360,7 +1745,14 @@ export const useGraph = create<GraphState>()((set, get) => ({
       adapted = buildStandardInputs(matrixText, {
         roles: interactive.roles,
         conditions: interactive.conditions,
-        filters: interactive.filters
+        filters: interactive.filters,
+        annotations: interactive.annotations
+          ? {
+              fields: interactive.annotations.fields,
+              byId: interactive.annotations.byId,
+              taxon: interactive.annotations.taxon
+            }
+          : undefined
       })
     } catch (e) {
       return { ok: false, error: e instanceof Error ? e.message : 'Failed to build inputs.' }
@@ -1373,9 +1765,12 @@ export const useGraph = create<GraphState>()((set, get) => ({
       samplesheet: `${base}_samplesheet.csv`,
       db: `${base}_DB.csv`
     }
-    await window.api.writeInputFile(dir, files.data, adapted.dataText)
-    await window.api.writeInputFile(dir, files.samplesheet, adapted.samplesheetText)
-    await window.api.writeInputFile(dir, files.db, adapted.dbText)
+    // Generated files nest under the workflow's subfolder when the data folder holds more than one
+    // workflow (else they go flat into the shared data folder).
+    const wf = writeScope(get())
+    await window.api.writeInputFile(dir, files.data, adapted.dataText, wf)
+    await window.api.writeInputFile(dir, files.samplesheet, adapted.samplesheetText, wf)
+    await window.api.writeInputFile(dir, files.db, adapted.dbText, wf)
     // Point the Load tile's standard fields at the generated files — from here the
     // pipeline runs the standard path, identical to a manual custom-format project.
     get().updateConfig(id, { data: files.data, samplesheet: files.samplesheet, db: files.db })
@@ -1390,10 +1785,25 @@ export const useGraph = create<GraphState>()((set, get) => ({
   addFolder: async () => {
     const path = await window.api.pickDataDir()
     if (!path) return
+    const name = path.split(/[/\\]/).pop() ?? path
+    // If the active folder is a pristine, path-less placeholder (e.g. a brand-new project's
+    // initial "Folder 1"), set ITS path in place instead of appending — otherwise the empty
+    // folder lingers in the selector as a "(no path) —" row.
+    const active = activeFolder(get())
+    if (active && !active.path) {
+      set({
+        folders: get().folders.map((f) => (f.id === active.id ? { ...f, path, name } : f)),
+        dataDir: path,
+        dirty: true
+      })
+      await get().refreshDataFiles()
+      return
+    }
     syncActiveSlot(get, set)
     const folder = newFolder(path)
     set({ folders: [...get().folders, folder], dirty: true })
     loadSlot(get, set, folder.id)
+    useAppView.getState().setView('canvas') // fresh folder → empty workflow, built on the canvas
     await get().refreshDataFiles()
   },
   switchFolder: (id) => {
@@ -1465,6 +1875,9 @@ export const useGraph = create<GraphState>()((set, get) => ({
       dirty: true
     })
     loadSlot(get, set, folder.id, wf.id)
+    // A new workflow is empty and built on the canvas — land there rather than leaving the user
+    // on a now-blank Results dashboard (which reads as "stuck").
+    useAppView.getState().setView('canvas')
   },
   switchWorkflow: (id) => {
     if (id === get().activeWorkflowId) return
@@ -1503,6 +1916,60 @@ export const useGraph = create<GraphState>()((set, get) => ({
       delete next[rootId]
       return { groupLayouts: next, dirty: true }
     })
+  },
+  reorderGroups: (orderedRootIds) => {
+    set((s) => {
+      const meta = { ...s.groupMeta }
+      orderedRootIds.forEach((rootId, i) => {
+        meta[rootId] = { ...(meta[rootId] ?? {}), order: i }
+      })
+      return { groupMeta: meta, dirty: true }
+    })
+  },
+
+  createGeneSet: (name, genes) => {
+    const id = `gs_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`
+    set((s) => ({
+      geneSets: [...s.geneSets, { id, name: name.trim() || 'Untitled', genes }],
+      dirty: true
+    }))
+    return id
+  },
+  renameGeneSet: (id, name) => {
+    set((s) => {
+      if (!s.geneSets.some((g) => g.id === id)) return {}
+      return {
+        geneSets: s.geneSets.map((g) => (g.id === id ? { ...g, name: name.trim() || g.name } : g)),
+        dirty: true
+      }
+    })
+  },
+  updateGeneSetGenes: (id, genes) => {
+    set((s) => {
+      if (!s.geneSets.some((g) => g.id === id)) return {}
+      return {
+        geneSets: s.geneSets.map((g) => (g.id === id ? { ...g, genes } : g)),
+        dirty: true
+      }
+    })
+  },
+  deleteGeneSet: (id) => {
+    set((s) => {
+      if (!s.geneSets.some((g) => g.id === id)) return {}
+      return { geneSets: s.geneSets.filter((g) => g.id !== id), dirty: true }
+    })
+    // Deleting a hidden set changes the mask → re-apply.
+    reapplyGeneMask(get, set)
+  },
+  toggleGeneSetHidden: (id) => {
+    set((s) => {
+      if (!s.geneSets.some((g) => g.id === id)) return {}
+      return {
+        geneSets: s.geneSets.map((g) => (g.id === id ? { ...g, hidden: !g.hidden } : g)),
+        dirty: true
+      }
+    })
+    reapplyGeneMask(get, set)
   },
 
   // ── undo / redo ────────────────────────────────────────────────────────────

@@ -3,7 +3,7 @@
  * framework/library-free so the engine has no plotly dependency — the renderer
  * component assembles the actual Plotly traces from these.
  */
-import { clusterRowOrder } from './cluster'
+import { clusterRowGroups, clusterRowOrder } from './cluster'
 import type { ContrastResultRow } from './contrast'
 import { embed2D, type ClusterMethod } from './embed'
 import { benjaminiHochberg, madNormal, median, normalSf, studentTppf, type Effect } from './stats'
@@ -111,6 +111,27 @@ export function facetContextDims(rows: ContextRow[], exclude?: ConditionKey[]): 
   const ex = comparisonDims(rows)
   if (exclude) for (const d of exclude) ex.add(d)
   return VALID_CONDITIONS.filter((c) => !ex.has(c) && condPresentInRows(rows, c))
+}
+
+/** Colour-by choices for the pooled responsome embedding (buildResponseCluster). Like
+ *  facetContextDims it keeps the present context dims, but it ALSO keeps a comparison-consumed
+ *  dim (e.g. cmpd in a two-way ANOVA) when the pooled rows span several comparisons and it
+ *  genuinely varies — the cluster merges every comparison, so such a dim is not degenerate the
+ *  way it is inside a single comparison's facet. */
+export function responseColorDims(rows: ContextRow[]): ConditionKey[] {
+  const consumed = comparisonDims(rows)
+  return VALID_CONDITIONS.filter((c) => {
+    if (!condPresentInRows(rows, c)) return false
+    if (!consumed.has(c)) return true
+    // Consumed dim: only useful to colour by if it takes more than one value across the pool.
+    const seen = new Set<string>()
+    for (const r of rows) {
+      const v = (r as unknown as Record<string, unknown>)[c]
+      if (v != null && v !== '') seen.add(String(v))
+      if (seen.size > 1) return true
+    }
+    return false
+  })
 }
 
 /** Tab-bar facet dimensions: the `comparison` label first (only when several coexist, so a
@@ -507,7 +528,8 @@ export interface BubblePoint {
 }
 export interface BubbleData {
   points: BubblePoint[]
-  genes: string[] // gene axis order (capped/top-N genes)
+  genes: string[] // gene axis order as uniqIDs (unique — so same-named genes stay distinct rows)
+  geneLabels: string[] // display names aligned to `genes`, for the axis tick labels
   axis: 'dose' | 'time'
   /** total genes available before the cap (for a "top N of M" note) */
   total: number
@@ -523,16 +545,25 @@ export interface BubbleOptions {
   extra?: string[]
 }
 
-/** Bubble grid: genes × dose(or time), dot color = log2FC, size = significance. Genes
- *  are ordered by their max (signed) log2FC; top-N/cap picks the most dynamic genes. */
+/** Bubble grid: genes × dose(or time), dot color = log2FC, size = |log2FC| (view). Top-N genes
+ *  are picked (and ordered) by their log2FC at the TOP dose/time level — the same "most
+ *  differential at the max dose" ranking DR/TR use — not by their peak across all levels. */
 export function buildBubble(rows: CompareResultRow[], opts: BubbleOptions): BubbleData {
-  const maxAbs = new Map<string, number>() // |log2FC| — which genes to keep
-  const maxFC = new Map<string, number>() // signed max log2FC — gene axis order
+  const topX = new Map<string, number>() // the highest dose/time level seen per gene
+  const topAbs = new Map<string, number>() // |log2FC| at that top level — which genes to keep
+  const topSigned = new Map<string, number>() // signed log2FC at the top level — gene axis order
   const byGene = new Map<string, CompareResultRow[]>()
   for (const r of rows) {
     if (r.log2FC == null || !Number.isFinite(r.log2FC)) continue
-    maxAbs.set(r.uniqID, Math.max(maxAbs.get(r.uniqID) ?? 0, Math.abs(r.log2FC)))
-    maxFC.set(r.uniqID, Math.max(maxFC.get(r.uniqID) ?? -Infinity, r.log2FC))
+    const x = opts.axis === 'dose' ? r.dose : r.time
+    if (x != null && Number.isFinite(x)) {
+      const cur = topX.get(r.uniqID)
+      if (cur == null || x > cur) {
+        topX.set(r.uniqID, x)
+        topAbs.set(r.uniqID, Math.abs(r.log2FC))
+        topSigned.set(r.uniqID, r.log2FC)
+      }
+    }
     let arr = byGene.get(r.uniqID)
     if (!arr) {
       arr = []
@@ -540,21 +571,21 @@ export function buildBubble(rows: CompareResultRow[], opts: BubbleOptions): Bubb
     }
     arr.push(r)
   }
-  const ranked = [...maxAbs.entries()].sort((a, b) => b[1] - a[1]).map((e) => e[0])
+  const ranked = [...topAbs.entries()].sort((a, b) => b[1] - a[1]).map((e) => e[0])
   // Focus genes (when set) override top-N: keep exactly those present in the data.
   const focus = opts.focus ?? []
   const base =
     focus.length > 0
       ? focus.filter((id) => byGene.has(id))
       : ranked.slice(0, geneLimit(opts.topGenes, ranked.length, 20)) // unset ⇒ top 20
-  // Order the chosen genes by max log2FC (descending) for the gene axis.
-  base.sort((a, b) => (maxFC.get(b) ?? 0) - (maxFC.get(a) ?? 0))
+  // Order the chosen genes by their top-level log2FC (descending) for the gene axis.
+  base.sort((a, b) => (topSigned.get(b) ?? 0) - (topSigned.get(a) ?? 0))
   // Append linked-selection genes not already shown (kept in their own FC order), so a
   // hovered/pinned gene lands at the end of the axis instead of reshuffling the rest.
   const baseSet = new Set(base)
   const extra = (opts.extra ?? [])
     .filter((id) => byGene.has(id) && !baseSet.has(id))
-    .sort((a, b) => (maxFC.get(b) ?? 0) - (maxFC.get(a) ?? 0))
+    .sort((a, b) => (topSigned.get(b) ?? 0) - (topSigned.get(a) ?? 0))
   const top = [...base, ...extra]
   const points: BubblePoint[] = []
   for (const g of top) {
@@ -575,7 +606,8 @@ export function buildBubble(rows: CompareResultRow[], opts: BubbleOptions): Bubb
   }
   return {
     points,
-    genes: top.map((g) => opts.displayMap?.[g] ?? g),
+    genes: top, // uniqIDs — the axis category keys (unique per feature)
+    geneLabels: top.map((g) => opts.displayMap?.[g] ?? g),
     axis: opts.axis,
     total: ranked.length
   }
@@ -607,16 +639,18 @@ export interface DumbbellOptions {
   extra?: string[]
 }
 
-/** Dumbbell: FC1 vs FC2 per gene as connected dots, top-N by |FCdiff|. */
+/** Dumbbell: FC1 vs FC2 per gene as connected dots. Only SIGNIFICANT genes are shown (top-N by
+ *  |FCdiff|); an explicit focus/GOI pick or a linked selection still surfaces any gene. */
 export function buildDumbbell(rows: ContrastResultRow[], opts: DumbbellOptions): DumbbellData {
   const valid = rows.filter((r) => r.FC1 != null && r.FC2 != null)
   valid.sort((a, b) => Math.abs(b.FCdiff ?? 0) - Math.abs(a.FCdiff ?? 0))
+  const sig = valid.filter((r) => r.signf)
   const focus = opts.focus ?? []
   const focusSet = new Set(focus)
   const base =
     focus.length > 0
       ? valid.filter((r) => focusSet.has(r.uniqID))
-      : valid.slice(0, geneLimit(opts.topGenes, valid.length))
+      : sig.slice(0, geneLimit(opts.topGenes, sig.length, 20)) // significant only; unset ⇒ top 20
   // Append linked-selection genes not already shown (hover/pin highlight), preserving the
   // |FCdiff| order, so a selected gene appears at the end of the list instead of replacing.
   const baseIds = new Set(base.map((r) => r.uniqID))
@@ -633,7 +667,7 @@ export function buildDumbbell(rows: ContrastResultRow[], opts: DumbbellOptions):
     })),
     xLabel1: rows[0]?.cmp1 ?? 'FC1',
     xLabel2: rows[0]?.cmp2 ?? 'FC2',
-    total: valid.length
+    total: sig.length
   }
 }
 
@@ -779,6 +813,14 @@ export function buildGeneBar(
 
 // ── cluster / sample embedding (standardize) ─────────────────────────────────────
 
+/** Per-point condition values, so the view can drive multi-condition (complex-legend)
+ *  aesthetics — colour by a qualitative condition, shade/arrow by a quantitative one. */
+export interface ClusterMeta {
+  strain: string
+  cmpd: string
+  dose: number | null
+  time: number | null
+}
 export interface ClusterPoint {
   x: number
   y: number
@@ -789,6 +831,8 @@ export interface ClusterPoint {
   /** condition identity without the replicate — replicates of one condition share
    *  it, so the view can collapse them to a centroid + territory. */
   cond: string
+  /** condition values, for the view's complex-legend aesthetics */
+  meta: ClusterMeta
 }
 export interface ClusterData {
   points: ClusterPoint[]
@@ -796,28 +840,133 @@ export interface ClusterData {
   /** PCA only: variance fraction on each axis ([0, 0] for UMAP/t-SNE). */
   varExplained: [number, number]
   colorBy: ConditionKey
+  /** What the embedding actually ran on, for a diagnostic caption (scree = variance fraction of
+   *  each PC, descending; PCA only). `transform` = the log applied ('log2'|'log10'|'linear');
+   *  `range` = raw value [min, max]. */
+  diag?: {
+    items: number
+    features: number
+    missingPct: number
+    scree?: number[]
+    transform?: string
+    range?: [number, number]
+  }
 }
 export interface ClusterOptions {
   method: ClusterMethod
   colorBy: ConditionKey
+  /** Per-gene scaling before embedding. 'unit' z-scores each gene to unit variance
+   *  (correlation PCA — every gene weighted equally). 'none' only mean-centers each gene, so
+   *  high-variance genes keep their weight (covariance PCA — matches tools like Spectronaut).
+   *  Defaults to 'unit'. */
+  scale?: 'unit' | 'none'
+  /** Missing-value policy. 'impute' fills each gene's gaps with its mean (keeps every gene, but
+   *  flattens genes detected in only some samples). 'complete' drops any gene with a missing value
+   *  in any item (Spectronaut-style — no imputation). Defaults to 'impute'. */
+  missing?: 'impute' | 'complete'
+  /** Per-sample normalization before embedding (standardize path only). 'median' subtracts each
+   *  sample's median (offset). 'zscore' also divides by each sample's SD (per-sample standardization
+   *  — removes scale too, like Pearson correlation). 'quantile' forces a common distribution.
+   *  'none' leaves the log2 values as-is. Defaults to 'median'. */
+  center?: 'median' | 'zscore' | 'quantile' | 'none'
+  /** Feature selection: run the embedding on only the N most-variable genes (0 / undefined = all).
+   *  With p ≫ n, restricting to the most variable proteins keeps the sample covariance from going
+   *  isotropic, so a real group axis dominates PC1 instead of being buried in noise dimensions. */
+  topVar?: number
+  /** Log transform (standardize path). 'auto' logs only raw-looking intensity (positive, ≥2
+   *  decades); 'log2'/'log10' force it; 'none' forces linear. A wrong auto-guess (PCA on linear
+   *  intensity) is a common cause of a flat scree. Defaults to 'auto'. */
+  transform?: 'auto' | 'log2' | 'log10' | 'none'
+  /** Replicate handling (standardize path). 'individual' embeds every replicate; 'mean' averages
+   *  replicates to condition means first, cutting per-protein noise so a real group axis rises above
+   *  the noise floor. Defaults to 'individual'. */
+  replicates?: 'individual' | 'mean'
+}
+
+/** Pull the four condition values off a standardized/compare row into a ClusterMeta. Numeric
+ *  dose/time are coerced to numbers (null when absent); strain/cmpd stay strings. */
+function clusterMetaOf(row: Record<string, unknown> | object): ClusterMeta {
+  const r = row as Record<string, unknown>
+  const num = (v: unknown): number | null =>
+    v == null || v === '' || !Number.isFinite(Number(v)) ? null : Number(v)
+  return {
+    strain: r.strain != null ? String(r.strain) : '',
+    cmpd: r.cmpd != null ? String(r.cmpd) : '',
+    dose: num(r.dose),
+    time: num(r.time)
+  }
 }
 
 /** Core embedding: given a genes×items log2 matrix (NaN = missing) and per-item
- *  labels/colors, center + mean-impute each gene, transpose to items×genes, and embed
- *  to 2-D. Shared by the sample (standardize) and responsome (compare) paths. */
+ *  labels/colors, z-score each gene (center + scale to unit SD, mean-imputing missing),
+ *  transpose to items×genes, and embed to 2-D. Shared by the sample (standardize) and
+ *  responsome (compare) paths. */
 function embedMatrix(
   M: number[][],
-  items: Array<{ label: string; group: string; cond: string }>,
+  items: Array<{ label: string; group: string; cond: string; meta: ClusterMeta }>,
   opts: ClusterOptions
 ): ClusterData {
   const nItems = items.length
-  const nG = M.length
-  if (nItems < 2 || nG < 1) {
-    return { points: [], method: opts.method, varExplained: [0, 0], colorBy: opts.colorBy }
+  // Missing-value fraction across the full gene×item matrix — reported so a flat scree can be
+  // diagnosed (heavy missingness + mean-imputation is a common cause).
+  let missCnt = 0
+  let cellCnt = 0
+  for (const row of M)
+    for (let s = 0; s < nItems; s++) {
+      cellCnt++
+      if (!Number.isFinite(row[s])) missCnt++
+    }
+  const missingPct = cellCnt ? (100 * missCnt) / cellCnt : 0
+  // 'complete' (Spectronaut-style): drop any gene with a gap in any item, so PCA runs on fully
+  // quantified proteins with no imputation. 'impute' (default): keep every gene (gaps filled with
+  // the gene mean below).
+  let Mused =
+    (opts.missing ?? 'complete') === 'complete'
+      ? M.filter((row) => row.every((v) => Number.isFinite(v)))
+      : M
+  // Feature selection: keep only the `topVar` most-variable genes (by log2 variance across items).
+  // With p ≫ n, the many low-signal genes make the sample covariance nearly isotropic, so every PC
+  // gets ~1/(n−1) of the variance and a real group axis is buried; restricting to the most variable
+  // proteins (standard proteomics PCA practice) concentrates the variance on the informative axes.
+  const topVar = opts.topVar ?? 0
+  if (topVar > 0 && Mused.length > topVar) {
+    const geneVar = (row: number[]): number => {
+      let sum = 0
+      let cnt = 0
+      for (let s = 0; s < nItems; s++)
+        if (Number.isFinite(row[s])) {
+          sum += row[s]
+          cnt++
+        }
+      if (cnt < 2) return 0
+      const mean = sum / cnt
+      let ss = 0
+      for (let s = 0; s < nItems; s++) if (Number.isFinite(row[s])) ss += (row[s] - mean) ** 2
+      return ss / (cnt - 1)
+    }
+    Mused = Mused.map((row) => ({ row, v: geneVar(row) }))
+      .sort((a, b) => b.v - a.v)
+      .slice(0, topVar)
+      .map((e) => e.row)
   }
-  // center each gene across items (mean-impute missing → 0 after centering)
+  const nG = Mused.length
+  if (nItems < 2 || nG < 1) {
+    return {
+      points: [],
+      method: opts.method,
+      varExplained: [0, 0],
+      colorBy: opts.colorBy,
+      diag: { items: nItems, features: nG, missingPct }
+    }
+  }
+  // Center each gene across items (subtract the gene mean), and — in 'unit' mode — divide by its
+  // SD so every gene contributes equally to the embedding (correlation PCA: a high-variance
+  // protein no longer dominates). In 'none' mode we only center, keeping each gene's native
+  // variance so high-variance discriminators dominate (covariance PCA — matches Spectronaut).
+  // Missing → 0 (the centered mean); a constant gene (SD 0) in 'unit' mode → all 0.
+  const unit = (opts.scale ?? 'none') === 'unit'
   for (let g = 0; g < nG; g++) {
-    const row = M[g]
+    const row = Mused[g]
     let sum = 0
     let cnt = 0
     for (let s = 0; s < nItems; s++)
@@ -826,24 +975,157 @@ function embedMatrix(
         cnt++
       }
     const mean = cnt ? sum / cnt : 0
-    for (let s = 0; s < nItems; s++) row[s] = Number.isFinite(row[s]) ? row[s] - mean : 0
+    let ss = 0
+    for (let s = 0; s < nItems; s++) if (Number.isFinite(row[s])) ss += (row[s] - mean) ** 2
+    const sd = cnt > 1 ? Math.sqrt(ss / (cnt - 1)) : 0
+    const denom = unit ? sd : 1
+    for (let s = 0; s < nItems; s++)
+      row[s] = Number.isFinite(row[s]) && denom > 0 ? (row[s] - mean) / denom : 0
   }
   // items×genes matrix D = Mᵀ, fed to the chosen embedding.
-  const D: number[][] = Array.from({ length: nItems }, (_, s) => M.map((geneRow) => geneRow[s]))
-  const { coords, varExplained } = embed2D(D, opts.method)
+  const D: number[][] = Array.from({ length: nItems }, (_, s) => Mused.map((geneRow) => geneRow[s]))
+  const { coords, varExplained, scree } = embed2D(D, opts.method)
   const points: ClusterPoint[] = items.map((it, i) => ({
     x: coords[i][0],
     y: coords[i][1],
     sample: it.label,
     group: it.group,
-    cond: it.cond
+    cond: it.cond,
+    meta: it.meta
   }))
-  return { points, method: opts.method, varExplained, colorBy: opts.colorBy }
+  return {
+    points,
+    method: opts.method,
+    varExplained,
+    colorBy: opts.colorBy,
+    diag: { items: nItems, features: nG, missingPct, scree }
+  }
+}
+
+/** Per-sample (column) normalization of a genes×samples matrix, in place. NaN = missing (skipped).
+ *  'median': subtract each column's median. 'zscore': subtract mean and divide by SD (per-sample
+ *  standardization — removes offset AND scale, like Pearson). 'quantile': map every column to a
+ *  common reference distribution (the average of the columns' sorted values, rank-interpolated to
+ *  handle unequal missingness). 'none': leave untouched. */
+function normalizeSamples(
+  M: number[][],
+  nSamp: number,
+  mode: 'median' | 'zscore' | 'quantile' | 'none'
+): void {
+  if (mode === 'none') return
+  const nG = M.length
+  if (mode === 'quantile') {
+    // Reference distribution on a fixed quantile grid, averaged across columns.
+    const Q = 256
+    const ref = new Float64Array(Q)
+    let usedCols = 0
+    const colSorted: number[][] = []
+    for (let c = 0; c < nSamp; c++) {
+      const col: number[] = []
+      for (let g = 0; g < nG; g++) if (Number.isFinite(M[g][c])) col.push(M[g][c])
+      col.sort((a, b) => a - b)
+      colSorted.push(col)
+      if (col.length < 2) continue
+      usedCols++
+      for (let q = 0; q < Q; q++) ref[q] += quantileAt(col, q / (Q - 1))
+    }
+    if (usedCols === 0) return
+    for (let q = 0; q < Q; q++) ref[q] /= usedCols
+    // Map each finite value to the reference at its within-column fractional rank.
+    for (let c = 0; c < nSamp; c++) {
+      const col = colSorted[c]
+      const m = col.length
+      if (m < 2) continue
+      for (let g = 0; g < nG; g++) {
+        const v = M[g][c]
+        if (!Number.isFinite(v)) continue
+        // fractional rank of v within the sorted column (ties → average position)
+        let lo = 0
+        let hi = m
+        while (lo < hi) {
+          const mid = (lo + hi) >> 1
+          if (col[mid] < v) lo = mid + 1
+          else hi = mid
+        }
+        let hi2 = lo
+        while (hi2 < m && col[hi2] === v) hi2++
+        const rank = (lo + hi2 - 1) / 2
+        M[g][c] = quantileAtGrid(ref, m > 1 ? rank / (m - 1) : 0.5)
+      }
+    }
+    return
+  }
+  for (let c = 0; c < nSamp; c++) {
+    let sum = 0
+    let cnt = 0
+    for (let g = 0; g < nG; g++)
+      if (Number.isFinite(M[g][c])) {
+        sum += M[g][c]
+        cnt++
+      }
+    if (cnt === 0) continue
+    if (mode === 'zscore') {
+      const mean = sum / cnt
+      let ss = 0
+      for (let g = 0; g < nG; g++) if (Number.isFinite(M[g][c])) ss += (M[g][c] - mean) ** 2
+      const sd = cnt > 1 ? Math.sqrt(ss / (cnt - 1)) : 0
+      for (let g = 0; g < nG; g++)
+        if (Number.isFinite(M[g][c])) M[g][c] = sd > 0 ? (M[g][c] - mean) / sd : 0
+    } else {
+      // median
+      const col: number[] = []
+      for (let g = 0; g < nG; g++) if (Number.isFinite(M[g][c])) col.push(M[g][c])
+      col.sort((a, b) => a - b)
+      const h = col.length >> 1
+      const med = col.length % 2 ? col[h] : (col[h - 1] + col[h]) / 2
+      for (let g = 0; g < nG; g++) if (Number.isFinite(M[g][c])) M[g][c] -= med
+    }
+  }
+}
+
+/** Value at fractional position t∈[0,1] of an ascending array (linear interpolation). */
+function quantileAt(sorted: number[], t: number): number {
+  const n = sorted.length
+  if (n === 0) return 0
+  if (n === 1) return sorted[0]
+  const pos = t * (n - 1)
+  const i = Math.floor(pos)
+  const f = pos - i
+  return i + 1 < n ? sorted[i] * (1 - f) + sorted[i + 1] * f : sorted[i]
+}
+
+/** Value at fractional position t∈[0,1] of an ascending Float64Array grid (linear interpolation). */
+function quantileAtGrid(grid: Float64Array, t: number): number {
+  const n = grid.length
+  const pos = Math.max(0, Math.min(1, t)) * (n - 1)
+  const i = Math.floor(pos)
+  const f = pos - i
+  return i + 1 < n ? grid[i] * (1 - f) + grid[i + 1] * f : grid[i]
+}
+
+/** Average replicates to one row per (uniqID × condition), so the embedding runs on condition
+ *  means instead of individual replicates. Replicate averaging cuts per-protein technical noise
+ *  (~√n_rep), which in a noisy p ≫ n dataset can lift a real group axis well above the noise floor
+ *  (a flat scree over individual replicates is a common symptom). */
+function collapseReplicates(rows: StandardRow[]): StandardRow[] {
+  const key = (r: StandardRow): string =>
+    `${r.uniqID}${r.strain}${r.cmpd}${r.dose ?? ''}${r.time ?? ''}`
+  const agg = new Map<string, { sum: number; n: number; proto: StandardRow }>()
+  for (const r of rows) {
+    if (r.value == null || !Number.isFinite(r.value)) continue
+    const k = key(r)
+    let a = agg.get(k)
+    if (!a) agg.set(k, (a = { sum: 0, n: 0, proto: r }))
+    a.sum += r.value
+    a.n++
+  }
+  return [...agg.values()].map((a) => ({ ...a.proto, rep: 1, value: a.sum / a.n }))
 }
 
 /** Sample embedding (PCA / UMAP / t-SNE) from the standardized genes×samples log2
  *  matrix — one point per sample, colored by a condition. */
 export function buildCluster(rows: StandardRow[], opts: ClusterOptions): ClusterData {
+  if ((opts.replicates ?? 'individual') === 'mean') rows = collapseReplicates(rows)
   const sampleIdx = new Map<string, number>()
   const sampleMeta: StandardRow[] = []
   const geneIdx = new Map<string, number>()
@@ -866,21 +1148,51 @@ export function buildCluster(rows: StandardRow[], opts: ClusterOptions): Cluster
       if (r.value < min) min = r.value
       if (r.value > max) max = r.value
     }
-  const logScale = min > 0 && max / min >= 100
+  // Which log transform to apply. 'auto' (default) logs only when the values look like RAW
+  // intensity (all positive, ≥2 decades of range) — matching the heatmap/QC/table; already-log
+  // values are left as-is (double-logging distorts the embedding). 'log2'/'log10' force it (needed
+  // when the auto guess is wrong — e.g. a narrow-range raw matrix reads as "already log" and PCA
+  // then runs on linear intensities, which high-abundance proteins dominate). 'none' forces linear.
+  const tOpt = opts.transform ?? 'auto'
+  const applied: 'log2' | 'log10' | 'none' =
+    tOpt === 'auto' ? (min > 0 && max / min >= 100 ? 'log2' : 'none') : tOpt
+  const tf = (v: number): number =>
+    applied === 'log2'
+      ? v > 0
+        ? Math.log2(v)
+        : NaN
+      : applied === 'log10'
+        ? v > 0
+          ? Math.log10(v)
+          : NaN
+        : v
   const M: number[][] = Array.from({ length: geneIdx.size }, () =>
     new Array(sampleMeta.length).fill(NaN)
   )
   for (const r of rows) {
     const v = r.value
-    const lv = v != null && Number.isFinite(v) ? (logScale ? Math.log2(v) : v) : NaN
+    const lv = v != null && Number.isFinite(v) ? tf(v) : NaN
     M[geneIdx.get(r.uniqID) as number][sampleIdx.get(sampleLabel(r)) as number] = lv
   }
+  // Per-sample (column) normalization, so per-run technical differences don't dominate the
+  // embedding. 'median' subtracts each sample's median (removes an OFFSET only). 'zscore' also
+  // divides by each sample's SD (removes SCALE too — the same per-sample standardization Pearson
+  // correlation applies, so PCA reflects pattern rather than a sample's dynamic range). 'quantile'
+  // forces every sample to a common distribution (the strongest normalization; matches tools that
+  // quantile/median-normalize before PCA). 'none' leaves the log2 values untouched.
+  normalizeSamples(M, sampleMeta.length, opts.center ?? 'none')
   const items = sampleMeta.map((meta) => ({
     label: sampleLabel(meta),
     group: String((meta as unknown as Record<string, unknown>)[opts.colorBy] ?? ''),
-    cond: sampleCond(meta)
+    cond: sampleCond(meta),
+    meta: clusterMetaOf(meta)
   }))
-  return embedMatrix(M, items, opts)
+  const out = embedMatrix(M, items, opts)
+  // Record what the log decision was and the raw value range, so the caption can show whether the
+  // PCA ran on log or linear values (a wrong auto-guess is a common cause of a flat scree).
+  if (out.diag) out.diag.transform = applied === 'none' ? 'linear' : applied
+  if (out.diag && Number.isFinite(min) && Number.isFinite(max)) out.diag.range = [min, max]
+  return out
 }
 
 /** Condition key for a comparison row: its present context columns joined, e.g.
@@ -893,11 +1205,12 @@ function conditionLabel(r: CompareResultRow): string {
 
 /** Responsome embedding: the same PCA / UMAP / t-SNE, but over a comparison's
  *  genes×conditions log2FC matrix — one point per condition (omicViz's pca_response),
- *  colored by a condition. Coloring by the comparison's own dimension is degenerate
- *  (it is constant within a single comparison), so an invalid `colorBy` falls back to
- *  the first varying context condition; the effective choice is returned in `colorBy`. */
+ *  colored by a condition. Valid colour-by dims come from responseColorDims: the context
+ *  conditions plus any comparison dim (e.g. cmpd in a multi-compound two-way ANOVA) that
+ *  actually varies across the pooled comparisons. An invalid `colorBy` falls back to the
+ *  first such dim; the effective choice is returned in `colorBy`. */
 export function buildResponseCluster(rows: CompareResultRow[], opts: ClusterOptions): ClusterData {
-  const contextDims = facetContextDims(rows)
+  const contextDims = responseColorDims(rows)
   const colorBy = contextDims.includes(opts.colorBy)
     ? opts.colorBy
     : (contextDims[0] ?? opts.colorBy)
@@ -928,7 +1241,8 @@ export function buildResponseCluster(rows: CompareResultRow[], opts: ClusterOpti
     return {
       label,
       group: String((meta as unknown as Record<string, unknown>)[colorBy] ?? ''),
-      cond: label
+      cond: label,
+      meta: clusterMetaOf(meta)
     }
   })
   return embedMatrix(M, items, { ...opts, colorBy })
@@ -967,6 +1281,9 @@ export interface HeatmapOptions {
   /** cluster gene rows (average-linkage, euclidean) so similar genes are adjacent
    *  (default true; mirrors omicViz's clustered heatmap) */
   cluster?: boolean
+  /** when clustering, cut the dendrogram into this many groups and order the GROUPS by their mean
+   *  (log10) value, high→low, keeping the clustering within each group (default 8). */
+  clusterGroups?: number
   /** focus genes (uniqIDs): when non-empty, show exactly these rows instead of top-by-variance */
   focus?: string[]
 }
@@ -1068,7 +1385,25 @@ export function buildHeatmap(rows: StandardRow[], opts: HeatmapOptions = {}): He
     const imputed = z.map((row) =>
       row.map((v, c) => (v != null && Number.isFinite(v) ? v : colMean[c]))
     )
-    const order = clusterRowOrder(imputed)
+    // Cluster, then cut into groups and order the GROUPS by mean (log10) value, high→low — the
+    // within-group clustering (leaf order) is preserved. Each gene's value = mean of its real cells.
+    const geneVal = (row: (number | null)[]): number => {
+      let sum = 0
+      let cnt = 0
+      for (const v of row)
+        if (v != null && Number.isFinite(v)) {
+          sum += v
+          cnt++
+        }
+      return cnt > 0 ? sum / cnt : -Infinity // all-missing genes sink to the bottom
+    }
+    const groups = clusterRowGroups(imputed, opts.clusterGroups ?? 8)
+    groups.sort((ga, gb) => {
+      const va = ga.reduce((s, i) => s + geneVal(z[i]), 0) / ga.length
+      const vb = gb.reduce((s, i) => s + geneVal(z[i]), 0) / gb.length
+      return vb - va // descending: highest-value group first (top)
+    })
+    const order = groups.flat()
     genes = order.map((i) => genes[i])
     z = order.map((i) => z[i])
   }
@@ -1456,4 +1791,463 @@ export function buildSampleCorr(
   }
 
   return { labels, z, min: Number.isFinite(lo) ? lo : 0 }
+}
+
+// ── enrichment (over-representation analysis) ────────────────────────────────────
+
+/** Which annotation term set to test. */
+export type EnrichSource = 'go' | 'kegg'
+/** Enrichment method. `ora` is over-representation (hypergeometric on the significant set);
+ *  `gsea` is ranked gene-set enrichment (weighted running-sum over the log2FC-ranked list with
+ *  gene-label permutation). */
+export type EnrichMethod = 'ora' | 'gsea'
+
+/** DB annotation column each source reads (see engine/ingest annotationMap). */
+const ENRICH_COL: Record<EnrichSource, string> = { go: 'GO', kegg: 'keggPathway' }
+
+export interface EnrichTerm {
+  /** the GO term / KEGG pathway name */
+  term: string
+  /** ORA: query genes hitting the term (k). GSEA: leading-edge gene count. */
+  count: number
+  /** genes in the background / data annotated with this term (K) */
+  setSize: number
+  /** ORA: k / n (query fraction). GSEA: leading-edge / setSize. */
+  geneRatio: number
+  /** ORA: K / N (background fraction). GSEA: unused (0). */
+  bgRatio: number
+  /** ORA: fold enrichment (geneRatio / bgRatio). GSEA: unused (0). */
+  fold: number
+  /** nominal p-value (ORA: hypergeometric tail; GSEA: permutation) */
+  pValue: number
+  /** Benjamini–Hochberg FDR-adjusted p-value */
+  pAdjust: number
+  /** display names of the driving genes (ORA: query hits; GSEA: leading-edge genes) */
+  genes: string[]
+  /** uniqIDs of the driving genes, aligned to `genes` (for cross-view hover linking); GSEA only */
+  geneIds?: string[]
+  /** GSEA normalized enrichment score (sign = direction); undefined for ORA */
+  nes?: number
+  /** GSEA: the ranking metric (log2FC) of every member gene, for the ridgeline density */
+  dist?: number[]
+  /** GSEA: the ranking metric (log2FC) of the leading-edge genes, aligned to `genes` */
+  leadingDist?: number[]
+  /** KEGG top-level category (BRITE) of this pathway, when the source is KEGG and it's known */
+  category?: string
+}
+
+export interface EnrichData {
+  /** which analysis produced these terms */
+  method: EnrichMethod
+  /** up-regulated enrichment — ORA: enriched among up-significant genes; GSEA: positive-NES sets */
+  up: EnrichTerm[]
+  /** down-regulated enrichment — ORA: down-significant genes; GSEA: negative-NES sets */
+  down: EnrichTerm[]
+  source: EnrichSource
+  /** ORA: annotated significant genes per direction. GSEA: sets tested per direction. */
+  querySize: { up: number; down: number }
+  /** ORA: annotated background genes N. GSEA: ranked genes N. */
+  bgSize: number
+  /** terms tested per direction (before the topTerms cap) */
+  totalTested: { up: number; down: number }
+  /** GSEA: the ranking metric (log2FC) of every ranked gene — the global reference distribution
+   *  for the ridgeline plot. Undefined for ORA. */
+  ranked?: number[]
+}
+
+export interface EnrichOptions {
+  /** 'ora' (over-representation) or 'gsea' (ranked). Defaults to 'ora'. */
+  method?: EnrichMethod
+  source: EnrichSource
+  /** how many top terms to keep per direction (<= 0 → default 15) */
+  topTerms: number
+  /** uniqID → { column → value } from the ID-map DB (carries GO / keggPathway) */
+  annotationMap: Record<string, Record<string, string>>
+  /** uniqID → display name (for the per-term gene lists) */
+  displayMap?: Record<string, string>
+  /** KEGG source only: pathway name → top-level category, for grouping/colouring terms */
+  keggCategories?: Record<string, string>
+  /** ORA: minimum query-gene hits for a term to be tested (default 2) */
+  minCount?: number
+  /** GSEA: minimum / maximum genes a set must have in the data (default 5 / 500) */
+  minSet?: number
+  maxSet?: number
+  /** GSEA: number of gene-label permutations (default 1000) */
+  permutations?: number
+}
+
+/** Split a semicolon/pipe-separated annotation cell into distinct trimmed terms. */
+function splitTerms(raw: string | undefined): string[] {
+  if (!raw) return []
+  const out = new Set<string>()
+  for (const s of raw.split(/[;|]/)) {
+    const t = s.trim()
+    if (t) out.add(t)
+  }
+  return [...out]
+}
+
+/** ln Γ(z) via the Lanczos approximation — for hypergeometric log-binomials. */
+function lnGamma(z: number): number {
+  const g = 7
+  const c = [
+    0.99999999999980993, 676.5203681218851, -1259.1392167224028, 771.32342877765313,
+    -176.61502916214059, 12.507343278686905, -0.13857109526572012, 9.9843695780195716e-6,
+    1.5056327351493116e-7
+  ]
+  if (z < 0.5) return Math.log(Math.PI / Math.sin(Math.PI * z)) - lnGamma(1 - z)
+  z -= 1
+  let x = c[0]
+  for (let i = 1; i < g + 2; i++) x += c[i] / (z + i)
+  const t = z + g + 0.5
+  return 0.5 * Math.log(2 * Math.PI) + (z + 0.5) * Math.log(t) - t + Math.log(x)
+}
+
+/** ln C(n, k). */
+function lnChoose(n: number, k: number): number {
+  if (k < 0 || k > n) return -Infinity
+  return lnGamma(n + 1) - lnGamma(k + 1) - lnGamma(n - k + 1)
+}
+
+/** P(X ≥ k) for X ~ Hypergeometric(N, K, n): drawing n from N with K "successes".
+ *  Equivalent to a one-tailed Fisher exact test for over-representation. */
+function hyperTail(k: number, K: number, n: number, N: number): number {
+  if (n === 0 || N === 0) return 1
+  const hi = Math.min(K, n)
+  const denom = lnChoose(N, n)
+  let p = 0
+  for (let i = k; i <= hi; i++) p += Math.exp(lnChoose(K, i) + lnChoose(N - K, n - i) - denom)
+  return Math.min(1, Math.max(0, p))
+}
+
+/** Enrichment dispatcher: ORA (over-representation) or GSEA (ranked). See runOra / runGsea. */
+export function buildEnrichment(rows: CompareResultRow[], opts: EnrichOptions): EnrichData {
+  return (opts.method ?? 'ora') === 'gsea' ? runGsea(rows, opts) : runOra(rows, opts)
+}
+
+/** Over-representation analysis, run separately for UP- and DOWN-regulated significant genes.
+ *  The background is all annotated genes (shared); the up query is the significant genes whose
+ *  effect is 'up', the down query those whose effect is 'down'. Each direction is tested with
+ *  the hypergeometric (Fisher) tail and BH-corrected independently. `rows` are one facet's Compare
+ *  result; genes with no term of the chosen source are excluded from both query and background. */
+function runOra(rows: CompareResultRow[], opts: EnrichOptions): EnrichData {
+  const col = ENRICH_COL[opts.source]
+  const ann = opts.annotationMap ?? {}
+  const dm = opts.displayMap ?? {}
+  const termsOf = (uid: string): string[] => splitTerms(ann[uid]?.[col])
+  const push = (m: Map<string, string[]>, t: string, uid: string): void => {
+    const arr = m.get(t)
+    if (arr) arr.push(uid)
+    else m.set(t, [uid])
+  }
+  const minCount = opts.minCount ?? 2
+  const limit = opts.topTerms > 0 ? opts.topTerms : 15
+
+  // Per gene: is it a significant UP hit / significant DOWN hit? (A gene pooled across several
+  // comparisons in one facet could be both; it then counts toward each direction it hits.)
+  const dir = new Map<string, { up: boolean; down: boolean }>()
+  for (const r of rows) {
+    let e = dir.get(r.uniqID)
+    if (!e) dir.set(r.uniqID, (e = { up: false, down: false }))
+    if (r.signf && r.effect === 'up') e.up = true
+    if (r.signf && r.effect === 'down') e.down = true
+  }
+
+  // Background = annotated genes; also collect the two directional query sets.
+  const bgByTerm = new Map<string, string[]>()
+  const upGenes = new Set<string>()
+  const downGenes = new Set<string>()
+  let N = 0
+  for (const [uid, e] of dir) {
+    const terms = termsOf(uid)
+    if (terms.length === 0) continue
+    N++
+    if (e.up) upGenes.add(uid)
+    if (e.down) downGenes.add(uid)
+    for (const t of terms) push(bgByTerm, t, uid)
+  }
+
+  const runDir = (queryGenes: Set<string>): { terms: EnrichTerm[]; total: number } => {
+    const n = queryGenes.size
+    const qByTerm = new Map<string, string[]>()
+    for (const uid of queryGenes) for (const t of termsOf(uid)) push(qByTerm, t, uid)
+    const staged: { term: string; k: number; K: number; genes: string[] }[] = []
+    for (const [t, qg] of qByTerm) {
+      if (qg.length < minCount) continue
+      staged.push({ term: t, k: qg.length, K: (bgByTerm.get(t) ?? qg).length, genes: qg })
+    }
+    const pvals = staged.map((e) => hyperTail(e.k, e.K, n, N))
+    const padj = benjaminiHochberg(pvals)
+    const terms: EnrichTerm[] = staged.map((e, i) => ({
+      term: e.term,
+      count: e.k,
+      setSize: e.K,
+      geneRatio: n > 0 ? e.k / n : 0,
+      bgRatio: N > 0 ? e.K / N : 0,
+      fold: n > 0 && N > 0 && e.K > 0 ? e.k / n / (e.K / N) : 0,
+      pValue: pvals[i],
+      pAdjust: padj[i],
+      genes: e.genes.map((uid) => dm[uid] ?? uid).sort(),
+      category: opts.keggCategories?.[e.term]
+    }))
+    terms.sort((a, b) => a.pAdjust - b.pAdjust || b.count - a.count)
+    return { terms: terms.slice(0, limit), total: terms.length }
+  }
+
+  const up = runDir(upGenes)
+  const down = runDir(downGenes)
+  return {
+    method: 'ora',
+    up: up.terms,
+    down: down.terms,
+    source: opts.source,
+    querySize: { up: upGenes.size, down: downGenes.size },
+    bgSize: N,
+    totalTested: { up: up.total, down: down.total }
+  }
+}
+
+// ── GSEA (ranked gene-set enrichment) ────────────────────────────────────────────
+
+/** Deterministic PRNG (mulberry32) — GSEA permutations are seeded so a facet's result is stable
+ *  across re-renders instead of shifting every time. */
+function mulberry32(seed: number): () => number {
+  let a = seed >>> 0
+  return () => {
+    a |= 0
+    a = (a + 0x6d2b79f5) | 0
+    let t = Math.imul(a ^ (a >>> 15), 1 | a)
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296
+  }
+}
+
+/** Weighted running-sum enrichment score for a set, given its member positions (ascending) in the
+ *  ranked list and the per-position weights |metric|. Returns the signed peak ES and the peak
+ *  position (the deepest point of the walk), from which the leading edge is read.
+ *  Between hits the sum falls by 1/(N−K) per miss; at a hit it rises by w/N_R (N_R = Σ member w). */
+function runningEs(
+  positions: number[],
+  weightAt: (pos: number) => number,
+  N: number
+): { es: number; peakAt: number } {
+  const K = positions.length
+  if (K === 0 || K >= N) return { es: 0, peakAt: -1 }
+  let nr = 0
+  for (const pos of positions) nr += weightAt(pos)
+  if (nr <= 0) return { es: 0, peakAt: -1 }
+  const missPenalty = 1 / (N - K)
+  let cum = 0
+  let prev = -1
+  let maxDev = 0
+  let minDev = 0
+  let peakAt = positions[0]
+  for (const pos of positions) {
+    cum -= (pos - prev - 1) * missPenalty // misses since the previous hit
+    if (cum < minDev) minDev = cum
+    cum += weightAt(pos) / nr
+    if (cum > maxDev) {
+      maxDev = cum
+      if (maxDev >= -minDev) peakAt = pos
+    }
+    prev = pos
+  }
+  const es = maxDev >= -minDev ? maxDev : minDev
+  // For a negative ES the peak is the deepest trough — recover it by tracking the min side.
+  if (es < 0) {
+    cum = 0
+    prev = -1
+    let dev = 0
+    for (const pos of positions) {
+      cum -= (pos - prev - 1) * missPenalty
+      if (cum < dev) {
+        dev = cum
+        peakAt = pos
+      }
+      cum += weightAt(pos) / nr
+      prev = pos
+    }
+  }
+  return { es, peakAt }
+}
+
+/** Ranked gene-set enrichment. Genes are ranked by log2FC (descending); each GO term / KEGG
+ *  pathway is scored by the weighted running-sum ES, with significance from gene-label
+ *  permutation (sets of random genes of the same size). Positive-NES sets (enriched at the
+ *  up-regulated top) go to `up`, negative-NES sets to `down`. `rows` are one facet's Compare
+ *  result. Gene-set (not phenotype) permutation is used since only per-gene fold changes are
+ *  available; p-values are nominal and BH-adjusted within each direction. */
+function runGsea(rows: CompareResultRow[], opts: EnrichOptions): EnrichData {
+  const col = ENRICH_COL[opts.source]
+  const ann = opts.annotationMap ?? {}
+  const dm = opts.displayMap ?? {}
+  const termsOf = (uid: string): string[] => splitTerms(ann[uid]?.[col])
+  const minSet = Math.max(2, opts.minSet ?? 5)
+  const maxSet = opts.maxSet ?? 500
+  const nPerm = Math.max(100, opts.permutations ?? 1000)
+  const limit = opts.topTerms > 0 ? opts.topTerms : 15
+  const empty: EnrichData = {
+    method: 'gsea',
+    up: [],
+    down: [],
+    source: opts.source,
+    querySize: { up: 0, down: 0 },
+    bgSize: 0,
+    totalTested: { up: 0, down: 0 }
+  }
+
+  // Rank metric: mean log2FC per gene (one entry per gene), most up-regulated first.
+  const fc = new Map<string, { sum: number; n: number }>()
+  for (const r of rows) {
+    if (r.log2FC == null || !Number.isFinite(r.log2FC)) continue
+    const e = fc.get(r.uniqID) ?? { sum: 0, n: 0 }
+    e.sum += r.log2FC
+    e.n += 1
+    fc.set(r.uniqID, e)
+  }
+  const ranked = [...fc.entries()]
+    .map(([uid, e]) => ({ uid, metric: e.sum / e.n }))
+    .sort((a, b) => b.metric - a.metric)
+  const N = ranked.length
+  if (N < minSet + 1) return empty
+  const weights = ranked.map((g) => Math.abs(g.metric)) // p = 1 weighting
+  const posOf = new Map<string, number>()
+  ranked.forEach((g, i) => posOf.set(g.uid, i))
+
+  // Gene sets: term → member positions within the ranked list (size-filtered).
+  const members = new Map<string, number[]>()
+  ranked.forEach((g, i) => {
+    for (const t of termsOf(g.uid)) {
+      const arr = members.get(t)
+      if (arr) arr.push(i)
+      else members.set(t, [i])
+    }
+  })
+  const sets = [...members.entries()]
+    .map(([term, pos]) => ({ term, pos: pos.sort((a, b) => a - b) }))
+    .filter((s) => s.pos.length >= minSet && s.pos.length <= maxSet)
+  if (sets.length === 0) return empty
+
+  const wAt = (pos: number): number => weights[pos]
+
+  // Null ES per set size (permutations depend only on K), reused across sets of equal size.
+  const rand = mulberry32(0x9e3779b9 ^ N ^ (sets.length << 8))
+  const nullBySize = new Map<number, { es: number[]; posMean: number; negMean: number }>()
+  const sample = (k: number): number[] => {
+    // Partial Fisher–Yates over an index pool for k distinct ranked positions.
+    const pool = new Set<number>()
+    const out: number[] = []
+    while (out.length < k) {
+      const idx = (rand() * N) | 0
+      if (!pool.has(idx)) {
+        pool.add(idx)
+        out.push(idx)
+      }
+    }
+    return out.sort((a, b) => a - b)
+  }
+  const nullFor = (k: number): { es: number[]; posMean: number; negMean: number } => {
+    const cached = nullBySize.get(k)
+    if (cached) return cached
+    const es: number[] = []
+    let posSum = 0
+    let posN = 0
+    let negSum = 0
+    let negN = 0
+    for (let i = 0; i < nPerm; i++) {
+      const e = runningEs(sample(k), wAt, N).es
+      es.push(e)
+      if (e >= 0) {
+        posSum += e
+        posN++
+      } else {
+        negSum += -e
+        negN++
+      }
+    }
+    const rec = {
+      es,
+      posMean: posN > 0 ? posSum / posN : 1e-9,
+      negMean: negN > 0 ? negSum / negN : 1e-9
+    }
+    nullBySize.set(k, rec)
+    return rec
+  }
+
+  interface Scored {
+    term: string
+    nes: number
+    p: number
+    setSize: number
+    leading: string[]
+    /** leading-edge genes' uniqIDs, aligned to `leading` */
+    leadIds: string[]
+    /** leading-edge genes' log2FC, aligned to `leading` */
+    leadDist: number[]
+    dist: number[]
+  }
+  const scored: Scored[] = []
+  for (const s of sets) {
+    const { es, peakAt } = runningEs(s.pos, wAt, N)
+    if (es === 0) continue
+    const nul = nullFor(s.pos.length)
+    const mean = es >= 0 ? nul.posMean : nul.negMean
+    const nes = mean > 0 ? es / mean : 0
+    // Nominal p: fraction of same-sign null ES at least as extreme.
+    let as = 0
+    let tot = 0
+    for (const e of nul.es) {
+      if (es >= 0 ? e >= 0 : e < 0) {
+        tot++
+        if (Math.abs(e) >= Math.abs(es)) as++
+      }
+    }
+    const p = tot > 0 ? (as + 1) / (tot + 1) : 1
+    // Leading edge: members up to (positive) / from (negative) the peak position, ordered by
+    // |log2FC| so the most extreme drivers come first (names + values kept aligned).
+    const leadPos = s.pos
+      .filter((pos) => (es >= 0 ? pos <= peakAt : pos >= peakAt))
+      .sort((a, b) => Math.abs(ranked[b].metric) - Math.abs(ranked[a].metric))
+    const leading = leadPos.map((pos) => dm[ranked[pos].uid] ?? ranked[pos].uid)
+    const leadIds = leadPos.map((pos) => ranked[pos].uid)
+    const leadDist = leadPos.map((pos) => ranked[pos].metric)
+    const dist = s.pos.map((pos) => ranked[pos].metric)
+    scored.push({ term: s.term, nes, p, setSize: s.pos.length, leading, leadIds, leadDist, dist })
+  }
+  if (scored.length === 0) return empty
+
+  // BH within each direction.
+  const pack = (group: Scored[]): { terms: EnrichTerm[]; total: number } => {
+    const padj = benjaminiHochberg(group.map((g) => g.p))
+    const terms: EnrichTerm[] = group.map((g, i) => ({
+      term: g.term,
+      count: g.leading.length,
+      setSize: g.setSize,
+      geneRatio: g.setSize > 0 ? g.leading.length / g.setSize : 0,
+      bgRatio: 0,
+      fold: 0,
+      pValue: g.p,
+      pAdjust: padj[i],
+      genes: g.leading,
+      geneIds: g.leadIds,
+      nes: g.nes,
+      dist: g.dist,
+      leadingDist: g.leadDist,
+      category: opts.keggCategories?.[g.term]
+    }))
+    terms.sort((a, b) => a.pAdjust - b.pAdjust || Math.abs(b.nes ?? 0) - Math.abs(a.nes ?? 0))
+    return { terms: terms.slice(0, limit), total: terms.length }
+  }
+  const up = pack(scored.filter((s) => s.nes > 0))
+  const down = pack(scored.filter((s) => s.nes < 0))
+  return {
+    method: 'gsea',
+    up: up.terms,
+    down: down.terms,
+    source: opts.source,
+    querySize: { up: up.total, down: down.total },
+    bgSize: N,
+    totalTested: { up: up.total, down: down.total },
+    ranked: ranked.map((g) => g.metric)
+  }
 }

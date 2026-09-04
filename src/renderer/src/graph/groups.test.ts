@@ -96,7 +96,7 @@ describe('deriveGroups', () => {
 })
 
 describe('expandMembers (group tiles → dashboard panels)', () => {
-  it('expands a plot group into one panel per subcard, mapping others to themselves', () => {
+  it('expands a plot group into one panel per subcard, drops the processing root, maps others to themselves', () => {
     const nodes = [
       step('compare-6', 'compare'),
       groupNode('plotGroup-9', [
@@ -105,17 +105,17 @@ describe('expandMembers (group tiles → dashboard panels)', () => {
       ]),
       step('heatmap-4', 'heatmap')
     ]
+    // compare-6 (a processing step) produces NO tile — its table lives in a separate Data table node.
     expect(expandMembers(['compare-6', 'plotGroup-9', 'heatmap-4'], nodes)).toEqual([
-      'compare-6',
       'plotGroup-9::sub-3',
       'plotGroup-9::sub-4',
       'heatmap-4'
     ])
   })
 
-  it('drops members whose node is gone', () => {
-    const nodes = [step('compare-6', 'compare')]
-    expect(expandMembers(['compare-6', 'ghost-1'], nodes)).toEqual(['compare-6'])
+  it('drops members whose node is gone (and the processing root)', () => {
+    const nodes = [step('compare-6', 'compare'), step('table-2', 'table')]
+    expect(expandMembers(['compare-6', 'table-2', 'ghost-1'], nodes)).toEqual(['table-2'])
   })
 
   it('round-trips panel ids through childPanelId/parsePanelId', () => {

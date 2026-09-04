@@ -55,6 +55,40 @@ export interface ContrastResult {
   comparisons: string[]
 }
 
+/** One per-gene value on one side of a PAIRED contrast: a scalar keyed by uniqID + condition
+ *  context. From a Compare it is the log2FC (with its significance); from a Standardize it is a
+ *  per-sample log2 abundance (runContrastPair averages replicates + unmatched dims to the matched
+ *  context). */
+export interface ContrastSideRow {
+  uniqID: string
+  strain?: string | null
+  cmpd?: string | null
+  dose?: number | null
+  time?: number | null
+  value: number | null
+  signf?: boolean
+  effect?: string
+  pP?: number | null
+  pQ?: number | null
+}
+
+/** A paired contrast: two independent value series (two datasets), joined side-by-side by
+ *  uniqID + the matched context, then scored for divergence by the same band/outlier model as the
+ *  single-input condition-split contrast. */
+export interface ContrastPairInput {
+  sideA: ContrastSideRow[]
+  sideB: ContrastSideRow[]
+  /** context dims to align the two sides on (joined with uniqID); unmatched dims are averaged. */
+  match: ConditionKey[]
+  relationship?: 'correlated' | 'independent'
+  /** axis labels for the two sides (the two input tiles' names). */
+  labelA?: string
+  labelB?: string
+  /** keep a divergent call only where a side is itself significant. Off when the sides carry no
+   *  per-side significance (abundance / Standardize inputs). */
+  driverMask?: boolean
+}
+
 const Q_THRESH = 0.01
 
 const cval = (r: CompareResultRow, c: ConditionKey): string | number | null =>
@@ -171,11 +205,117 @@ export function runContrast(input: ContrastInput): ContrastResult {
   return { rows: records, comparisons: records.length ? [comparison] : [] }
 }
 
-/** Add thrsh/signf/effect via OLS or marginal outlier detection, then mask by driver signf. */
+/** Read a condition value off a side row (numbers for dose/time), '' / null when absent. */
+const csval = (r: ContrastSideRow, c: ConditionKey): string | number | null =>
+  (r as unknown as Record<string, string | number | null>)[c] ?? null
+
+/** Collapse a side to one row per (uniqID + matched context): mean of its values (pooling
+ *  replicates and any unmatched dims), OR-ed significance, best (largest −log10) p per group. */
+function aggregateSide(
+  rows: ContrastSideRow[],
+  ctx: ConditionKey[]
+): Map<string, ContrastSideRow> {
+  const groups = new Map<string, ContrastSideRow[]>()
+  for (const r of rows) {
+    const k = [r.uniqID, ...ctx.map((c) => String(csval(r, c)))].join('¦')
+    let arr = groups.get(k)
+    if (!arr) groups.set(k, (arr = []))
+    arr.push(r)
+  }
+  const best = (grp: ContrastSideRow[], key: 'pP' | 'pQ'): number | null =>
+    grp.reduce<number | null>((m, r) => {
+      const v = r[key]
+      return v != null && (m == null || v > m) ? v : m
+    }, null)
+  const out = new Map<string, ContrastSideRow>()
+  for (const [k, grp] of groups) {
+    const vals = grp.map((r) => r.value).filter((v): v is number => v != null && Number.isFinite(v))
+    const rep = grp[0]
+    out.set(k, {
+      uniqID: rep.uniqID,
+      strain: rep.strain,
+      cmpd: rep.cmpd,
+      dose: rep.dose,
+      time: rep.time,
+      value: vals.length ? vals.reduce((s, v) => s + v, 0) / vals.length : null,
+      signf: grp.some((r) => r.signf),
+      pP: best(grp, 'pP'),
+      pQ: best(grp, 'pQ')
+    })
+  }
+  return out
+}
+
+/**
+ * Paired contrast: join two value series (two datasets) on uniqID + the shared matched context, and
+ * score divergence with the same band/outlier model as the single-input path. FC1 = side A's value,
+ * FC2 = side B's. Values are fold-changes (Compare inputs) or mean log2 abundances (Standardize
+ * inputs) — the caller decides which.
+ *
+ * The join is a FULL OUTER join: every (gene × matched context) present on EITHER side becomes a
+ * row, with the absent side's FC left null. So a point measured at only one side's dose/time (e.g.
+ * one dataset has fewer doses) is still carried — the table and the DR/TR response plots show it,
+ * while the divergence model, scatter, and dumbbell (which all require both FCs) naturally skip it,
+ * staying matched-only.
+ */
+export function runContrastPair(input: ContrastPairInput): ContrastResult {
+  const method = input.relationship === 'independent' ? 'marginal' : 'ols'
+  const labelA = input.labelA || 'A'
+  const labelB = input.labelB || 'B'
+  const comparison = `${labelA} | ${labelB}`
+  const present = (rows: ContrastSideRow[], c: ConditionKey): boolean =>
+    rows.some((r) => csval(r, c) !== null && csval(r, c) !== '')
+  // Align only on the requested dims that both sides actually carry.
+  const ctxConds = input.match.filter((c) => present(input.sideA, c) && present(input.sideB, c))
+
+  const A = aggregateSide(input.sideA, ctxConds)
+  const B = aggregateSide(input.sideB, ctxConds)
+
+  const records: ContrastResultRow[] = []
+  for (const key of new Set([...A.keys(), ...B.keys()])) {
+    const a = A.get(key)
+    const b = B.get(key)
+    const rep = (a ?? b)! // one side is always present for a key drawn from either map
+    records.push({
+      uniqID: rep.uniqID,
+      strain: ctxConds.includes('strain') ? ((rep.strain ?? null) as string | null) : undefined,
+      cmpd: ctxConds.includes('cmpd') ? ((rep.cmpd ?? undefined) as string | undefined) : undefined,
+      dose: ctxConds.includes('dose') ? (rep.dose ?? null) : null,
+      time: ctxConds.includes('time') ? (rep.time ?? null) : null,
+      cmp_cond: 'dataset',
+      cmp1: labelA,
+      cmp2: labelB,
+      comparison,
+      FC1: a?.value ?? null,
+      FC2: b?.value ?? null,
+      FCdiff: sub(a?.value ?? null, b?.value ?? null),
+      P1: a?.pP ?? null,
+      P2: b?.pP ?? null,
+      Pdiff: sub(a?.pP ?? null, b?.pP ?? null),
+      Q1: a?.pQ ?? null,
+      Q2: b?.pQ ?? null,
+      Qdiff: sub(a?.pQ ?? null, b?.pQ ?? null),
+      signf1: a?.signf ?? false,
+      signf2: b?.signf ?? false,
+      effect1: a?.effect ?? 'none',
+      effect2: b?.effect ?? 'none',
+      thrsh: '',
+      signf: false,
+      effect: 'none'
+    })
+  }
+
+  addGaussianOutliers(records, ctxConds, method, input.driverMask ?? true)
+  return { rows: records, comparisons: records.length ? [comparison] : [] }
+}
+
+/** Add thrsh/signf/effect via OLS or marginal outlier detection, then (when `driverMask`) keep a
+ *  divergent call only where a side is itself significant. */
 function addGaussianOutliers(
   rows: ContrastResultRow[],
   ctxCols: ConditionKey[],
-  method: 'ols' | 'marginal'
+  method: 'ols' | 'marginal',
+  driverMask = true
 ): void {
   const label =
     method === 'ols'
@@ -255,10 +395,13 @@ function addGaussianOutliers(
     }
   }
 
-  // mask: keep signf only if at least one side is itself norm-significant.
-  for (const r of rows) {
-    r.signf = r.signf && (r.signf1 || r.signf2)
-    if (!r.signf) r.effect = 'none'
+  // mask: keep signf only if at least one side is itself norm-significant. Skipped when the sides
+  // carry no per-side significance (abundance / Standardize pairs), where the band is the only call.
+  if (driverMask) {
+    for (const r of rows) {
+      r.signf = r.signf && (r.signf1 || r.signf2)
+      if (!r.signf) r.effect = 'none'
+    }
   }
 }
 

@@ -6,6 +6,8 @@ import { initAutoUpdate } from './updater'
 import { getShootRequest, runScreenshot } from './screenshot'
 import { registerFileIo } from './file-io'
 import { registerPlotExport } from './plot-export'
+import { registerAnnotate } from './annotate'
+import { registerStringNet } from './string-net'
 import pkg from '../../package.json'
 
 // Derive the app name from package.json's productName. Without this, dev (which runs
@@ -66,6 +68,8 @@ if (shoot) {
     assertRenamedFromTemplate()
     registerFileIo() // renderer ↔ main file picking/reading for the Load node
     registerPlotExport() // renderer ↔ main plot-image writing (Export plots)
+    registerAnnotate() // renderer ↔ main external-annotation fetch (UniProt)
+    registerStringNet() // renderer ↔ main STRING network fetch
     installAppMenu() // dev-only aspect-ratio switcher — lives here, not in the app UI
     openDefaultWindow()
     initAutoUpdate() // no-op unless packaged + appConfig.publish is set

@@ -79,6 +79,59 @@ export function rgbHex([r, g, b]: [number, number, number]): string {
   return '#' + [r, g, b].map((v) => Math.round(v).toString(16).padStart(2, '0')).join('')
 }
 
+// ── HSL helpers (used by the cluster plot's complex-legend aesthetics) ─────────────
+
+/** HSL (h∈[0,360), s,l∈[0,1]) → `#rrggbb`. */
+export function hslHex(h: number, s: number, l: number): string {
+  const hh = ((h % 360) + 360) % 360
+  const c = (1 - Math.abs(2 * l - 1)) * s
+  const x = c * (1 - Math.abs(((hh / 60) % 2) - 1))
+  const m = l - c / 2
+  const [r, g, b] =
+    hh < 60
+      ? [c, x, 0]
+      : hh < 120
+        ? [x, c, 0]
+        : hh < 180
+          ? [0, c, x]
+          : hh < 240
+            ? [0, x, c]
+            : hh < 300
+              ? [x, 0, c]
+              : [c, 0, x]
+  return rgbHex([(r + m) * 255, (g + m) * 255, (b + m) * 255])
+}
+
+/** `#rrggbb` → HSL (h∈[0,360), s,l∈[0,1]). */
+export function hexHsl(hex: string): [number, number, number] {
+  const s0 = hex.replace('#', '')
+  const r = parseInt(s0.slice(0, 2), 16) / 255
+  const g = parseInt(s0.slice(2, 4), 16) / 255
+  const b = parseInt(s0.slice(4, 6), 16) / 255
+  const max = Math.max(r, g, b)
+  const min = Math.min(r, g, b)
+  const l = (max + min) / 2
+  const d = max - min
+  if (d === 0) return [0, 0, l]
+  const s = d / (1 - Math.abs(2 * l - 1))
+  let h: number
+  if (max === r) h = ((g - b) / d) % 6
+  else if (max === g) h = (b - r) / d + 2
+  else h = (r - g) / d + 4
+  return [h * 60, s, l]
+}
+
+/** A lighter→darker "shade" of a base colour: keeps its hue and saturation, and slides the
+ *  lightness from light (t=0) to dark (t=1). Used to encode a quantitative condition (dose/time)
+ *  within a qualitative colour group in the cluster plot's complex legend. */
+export function shadeHex(baseHex: string, t: number): string {
+  const [h, s] = hexHsl(baseHex)
+  const tt = Math.max(0, Math.min(1, t))
+  // 0.74 (light) → 0.30 (dark); keep saturation up so the hue stays legible at both ends.
+  const l = 0.74 - 0.44 * tt
+  return hslHex(h, Math.max(s, 0.55), l)
+}
+
 const rgb = ([r, g, b]: [number, number, number]): string => `rgb(${r | 0},${g | 0},${b | 0})`
 
 export interface ValueRange {
@@ -160,6 +213,16 @@ function diverge(t: number): [number, number, number] {
       ? [DIVERGE_STOPS[0], DIVERGE_STOPS[1], x / 0.5]
       : [DIVERGE_STOPS[1], DIVERGE_STOPS[2], (x - 0.5) / 0.5]
   return [a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f, a[2] + (b[2] - a[2]) * f]
+}
+
+/** A signed value → `rgb()` string on the diverging effect scale (down→none→up), symmetric about
+ *  0 with ±absMax at the extremes. Same palette as the bubble/heatmap, for e.g. colouring a line. */
+export function divergeColor(absMax: number): (v: number) => string {
+  const m = absMax > 0 ? absMax : 1
+  return (v) => {
+    const [r, g, b] = diverge(0.5 + (0.5 * v) / m)
+    return `rgb(${r | 0},${g | 0},${b | 0})`
+  }
 }
 
 /** Table-cell style for a signed value on the diverging effect scale, symmetric about 0.

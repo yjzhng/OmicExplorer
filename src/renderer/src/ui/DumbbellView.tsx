@@ -31,20 +31,40 @@ export function DumbbellView({
 
   const { data, layout } = useMemo(() => {
     const p = PALETTES[mode]
+    // `#rrggbb` → `rgba` so the connector can be a softened (lighter) grey.
+    const rgba = (hex: string, a: number): string => {
+      const h = hex.replace('#', '')
+      return `rgba(${parseInt(h.slice(0, 2), 16)},${parseInt(h.slice(2, 4), 16)},${parseInt(h.slice(4, 6), 16)},${a})`
+    }
     const extra = new Set(pinnedIds)
     if (hoverId) extra.add(hoverId)
     const dumbbell = buildDumbbell(rows, { topGenes, displayMap, focus, extra: [...extra] })
     const genes = dumbbell.rows.map((r) => r.label)
-    const [c1, c2] = [CATEGORICAL[0], CATEGORICAL[1]]
+    // Numerator (FC1) dot is orange; the denominator (FC2) dot is grey — the reference side.
+    const [c1, c2] = [CATEGORICAL[1], p.textMuted]
     const landscape = orient === 'landscape'
 
-    // connector line per gene: horizontal (FC on x) in portrait, vertical in landscape.
-    const shapes = dumbbell.rows.map((r) => {
-      const line = { color: r.signf ? p.text : p.textMuted, width: r.signf ? 2 : 1 }
-      return landscape
-        ? { type: 'line', x0: r.label, x1: r.label, y0: r.fc1, y1: r.fc2, line }
-        : { type: 'line', x0: r.fc1, x1: r.fc2, y0: r.label, y1: r.label, line }
-    })
+    // Grey connector per gene, drawn as an ARROW pointing from the denominator (FC2) dot to the
+    // numerator (FC1) dot — horizontal (FC on x) in portrait, vertical in landscape. The
+    // stand-offs keep the arrow clear of the two markers.
+    const arrows = dumbbell.rows.map((r) => ({
+      // head = numerator (FC1), tail (ax/ay) = denominator (FC2)
+      x: landscape ? r.label : r.fc1,
+      y: landscape ? r.fc1 : r.label,
+      ax: landscape ? r.label : r.fc2,
+      ay: landscape ? r.fc2 : r.label,
+      xref: 'x',
+      yref: 'y',
+      axref: 'x',
+      ayref: 'y',
+      showarrow: true,
+      arrowhead: 2, // solid triangle
+      arrowsize: 1,
+      arrowwidth: 1.5,
+      arrowcolor: rgba(p.textMuted, 0.7), // softened mid grey
+      standoff: 5, // clearance from the numerator dot
+      startstandoff: 5 // clearance from the denominator dot
+    }))
 
     const dots = (key: 'fc1' | 'fc2', name: string, color: string) => ({
       type: 'scatter',
@@ -59,11 +79,7 @@ export function DumbbellView({
       marker: { color, size: 9 }
     })
 
-    const note =
-      dumbbell.total > dumbbell.rows.length
-        ? `top ${dumbbell.rows.length} of ${dumbbell.total} genes`
-        : ''
-    const heading = [title, note].filter(Boolean).join(' · ')
+    const heading = title ?? ''
     const fcAxis = { ...axisBase(p), title: 'log₂ fold change', zeroline: false }
     const geneAxis = {
       ...axisBase(p),
@@ -80,7 +96,13 @@ export function DumbbellView({
       title: heading ? { text: heading, font: { size: 13 } } : undefined,
       xaxis: landscape ? geneAxis : fcAxis,
       yaxis: landscape ? fcAxis : geneAxis,
-      shapes
+      // Landscape (genes across x) keeps the legend on the right; portrait (tall gene list down
+      // y) puts it horizontally on top, where it doesn't fight the long list for width.
+      showlegend: true,
+      legend: landscape
+        ? { orientation: 'v', yanchor: 'top', y: 1, xanchor: 'left', x: 1.02 }
+        : { orientation: 'h', yanchor: 'bottom', y: 1.02, xanchor: 'center', x: 0.5 },
+      annotations: arrows
     }
     return {
       data: [dots('fc1', dumbbell.xLabel1, c1), dots('fc2', dumbbell.xLabel2, c2)],

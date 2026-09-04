@@ -52,15 +52,15 @@ const styles: Record<string, CSSProperties> = {
     display: 'flex',
     flexWrap: 'wrap',
     alignItems: 'center',
-    rowGap: 6,
-    columnGap: 20,
-    padding: '6px 10px',
+    rowGap: 4,
+    columnGap: 14,
+    padding: '3px 10px',
     borderBottom: `1px solid ${UI.border}`,
     flex: '0 0 auto'
   },
-  bar: { display: 'inline-flex', alignItems: 'center', gap: 8, flex: '0 0 auto' },
+  bar: { display: 'inline-flex', alignItems: 'center', gap: 6, flex: '0 0 auto' },
   barLabel: {
-    fontSize: 10,
+    fontSize: 9,
     textTransform: 'uppercase',
     letterSpacing: 0.5,
     color: UI.textMuted,
@@ -68,18 +68,18 @@ const styles: Record<string, CSSProperties> = {
   },
   pill: {
     display: 'inline-flex',
-    gap: 4,
+    gap: 2,
     border: `1px solid ${UI.border}`,
     borderRadius: 999,
-    padding: 3,
+    padding: 2,
     background: UI.panel,
     flex: '0 0 auto'
   },
   tab: {
     border: 'none',
     borderRadius: 999,
-    padding: '5px 16px',
-    fontSize: 12,
+    padding: '2px 11px',
+    fontSize: 11,
     fontWeight: 600,
     cursor: 'pointer',
     whiteSpace: 'nowrap'

@@ -7,7 +7,7 @@ import { useSelection } from './useSelection'
 import { useUiTheme } from './useUiTheme'
 
 /** Bubble grid: genes (x) × dose/time (y). Dot fill = log2FC (diverging), size =
- *  significance (−log10 p); no outline. Genes are pre-ordered by max log2FC. The base
+ *  |log2FC|; no outline. Genes are pre-ordered by max log2FC. The base
  *  set is top-N (or the GOI subset); hovered/pinned genes are appended to the axis so a
  *  linked selection shows up alongside rather than replacing the list. */
 export function BubbleView({
@@ -35,11 +35,11 @@ export function BubbleView({
   // is highlighted imperatively by the overlay in PlotlyChart instead (no re-plot).
   const pinnedIds = useSelection((s) => s.pinnedIds)
 
-  const { data, layout } = useMemo(() => {
+  const { data, layout, boldTicks } = useMemo(() => {
     const p = PALETTES[mode]
     const extra = [...pinnedIds]
     const bubble = buildBubble(rows, { axis, topGenes, displayMap, focus, extra })
-    const maxSig = Math.max(1e-9, ...bubble.points.map((pt) => pt.sig))
+    const maxAbsFC = Math.max(1e-9, ...bubble.points.map((pt) => Math.abs(pt.log2FC)))
     // Discrete dose/time levels. Placed at evenly-spaced INDEX positions on a LINEAR axis
     // (ticked with the real values), NOT a category axis: a category axis with numeric-looking
     // values gets auto-flipped to quantitative when Plotly restyles the hover overlay. A linear
@@ -47,7 +47,8 @@ export function BubbleView({
     const distinctLevels = [...new Set(bubble.points.map((pt) => pt.x))].sort((a, b) => a - b)
     const levelIdx = new Map(distinctLevels.map((v, i) => [v, i]))
     const landscape = orient !== 'portrait'
-    const geneVals = bubble.points.map((pt) => pt.gene)
+    // Axis category = uniqID (unique), so two features sharing a display name stay distinct rows.
+    const geneVals = bubble.points.map((pt) => pt.uniqID)
     const levelVals = bubble.points.map((pt) => levelIdx.get(pt.x) ?? 0)
     const trace = {
       type: 'scatter',
@@ -61,10 +62,9 @@ export function BubbleView({
       customdata: bubble.points.map((pt) => pt.uniqID),
       // Level index is not human-readable, so carry the real value in the hover text.
       text: bubble.points.map((pt) => `${pt.gene}<br>${bubble.axis}=${pt.x}`),
-      hovertemplate:
-        `%{text}<br>log2FC=%{marker.color:.3f}<br>−log10 p=%{marker.size:.2f}<extra></extra>`,
+      hovertemplate: `%{text}<br>log2FC=%{marker.color:.3f}<extra></extra>`,
       marker: {
-        size: bubble.points.map((pt) => 6 + (pt.sig / maxSig) * 22),
+        size: bubble.points.map((pt) => 6 + (Math.abs(pt.log2FC) / maxAbsFC) * 22),
         color: bubble.points.map((pt) => pt.log2FC),
         // Same diverging sense as the volcano: −log2FC → blue (down), +log2FC → red (up).
         colorscale: [
@@ -75,14 +75,25 @@ export function BubbleView({
         cmid: 0,
         opacity: 0.9,
         line: { width: 0 },
-        colorbar: { title: { text: 'log₂FC', side: 'right' }, thickness: 12 }
+        // Portrait (genes down a tall y axis): the dose/time axis moves to the TOP (see levelAxis),
+        // so the log₂FC colourbar goes horizontally along the BOTTOM. Landscape keeps it vertical
+        // on the right.
+        colorbar: landscape
+          ? { title: { text: 'log₂FC', side: 'right' }, thickness: 12 }
+          : {
+              orientation: 'h',
+              // Horizontal colourbar tick labels sit BELOW the bar, so keep the title there too.
+              title: { text: 'log₂FC', side: 'bottom' },
+              thickness: 12,
+              len: 1, // span the full plot width
+              x: 0.5,
+              xanchor: 'center',
+              y: -0.02, // just below the plot bottom
+              yanchor: 'top'
+            }
       }
     }
-    const note =
-      bubble.total > bubble.genes.length
-        ? `top ${bubble.genes.length} of ${bubble.total} genes`
-        : ''
-    const heading = [title, note].filter(Boolean).join(' · ')
+    const heading = title ?? ''
     const geneAxis = {
       ...axisBase(p),
       title: '',
@@ -92,9 +103,17 @@ export function BubbleView({
       // on the RIGHT. Portrait puts genes on y, which runs bottom→up, so reverse the order
       // to keep the appended genes at the BOTTOM (and the top-N reading top→down).
       categoryarray: landscape ? bubble.genes : [...bubble.genes].reverse(),
+      // Category values are uniqIDs; show the display names as tick labels (value→label by pairing).
+      tickmode: 'array',
+      tickvals: bubble.genes,
+      ticktext: bubble.geneLabels,
       showgrid: true, // grid helps track genes across the row/column
       tickangle: landscape ? -45 : 0,
-      automargin: true
+      automargin: true,
+      // Pin the range to a half-gap past the first/last gene so the category axis doesn't add
+      // large default padding before the first and after the last gene.
+      range: [-0.5, bubble.genes.length - 0.5],
+      autorange: false
     }
     const levelAxis = {
       ...axisBase(p),
@@ -109,7 +128,9 @@ export function BubbleView({
       range: [-0.5, distinctLevels.length - 0.5],
       autorange: false,
       showgrid: true,
-      automargin: true
+      automargin: true,
+      // Portrait puts this (the x axis) along the TOP, leaving the bottom for the colourbar.
+      ...(landscape ? {} : { side: 'top' })
     }
     const lay: Record<string, unknown> = {
       ...plotBase(p),
@@ -118,8 +139,15 @@ export function BubbleView({
       xaxis: landscape ? geneAxis : levelAxis,
       yaxis: landscape ? levelAxis : geneAxis
     }
-    return { data: [trace], layout: lay }
+    // Bold the tick label of a hovered/pinned gene on the gene axis (x in landscape, y in portrait).
+    const boldTicks = {
+      genesByTick: bubble.genes.map((g) => [g]),
+      tickLabel: (i: number, active: boolean): string =>
+        active ? `<b>${bubble.geneLabels[i]}</b>` : bubble.geneLabels[i],
+      axis: (landscape ? 'x' : 'y') as 'x' | 'y'
+    }
+    return { data: [trace], layout: lay, boldTicks }
   }, [rows, axis, topGenes, displayMap, focus, orient, pinnedIds, title, mode])
 
-  return <PlotlyChart data={data} layout={layout} />
+  return <PlotlyChart data={data} layout={layout} boldTicks={boldTicks} />
 }

@@ -1,7 +1,7 @@
 import { useState, type CSSProperties, type ReactNode } from 'react'
 
 import { UI } from '../ui/theme'
-import { accentOf, categoryOf, CATEGORIES, NODE_SPECS } from './registry'
+import { accentOf, categoryOf, CATEGORIES, NODE_SPECS, PLOT_SECTIONS } from './registry'
 import type { NodeCategory, NodeKind } from './types'
 
 const CATS: NodeCategory[] = ['data', 'processing', 'plotting']
@@ -99,6 +99,22 @@ export function TilePicker({
   const plotting = current?.cat === 'plotting'
   const canGoBack = cat != null && byCat.length > 1
 
+  // The visualisation list is grouped into the SAME sections as the plot-selector menu (shared
+  // PLOT_SECTIONS), with any uncategorised op falling into a trailing "Other" section.
+  const plotSections = ((): { label: string; kinds: NodeKind[] }[] => {
+    if (!plotting || !current) return []
+    const present = new Set(current.ops)
+    const used = new Set<NodeKind>()
+    const secs = PLOT_SECTIONS.map((s) => {
+      const kinds = s.kinds.filter((k) => present.has(k))
+      kinds.forEach((k) => used.add(k))
+      return { label: s.label, kinds }
+    }).filter((s) => s.kinds.length > 0)
+    const rest = current.ops.filter((k) => !used.has(k))
+    if (rest.length) secs.push({ label: 'Other', kinds: rest })
+    return secs
+  })()
+
   return (
     <div className="nodrag" style={{ ...card, ...style }}>
       <div style={headerRow}>
@@ -122,7 +138,12 @@ export function TilePicker({
       <div style={body}>
         {current
           ? plotting
-            ? current.ops.map((op) => optRow(op, accentOf(current.cat)))
+            ? plotSections.map((s) => (
+                <div key={s.label}>
+                  <div style={sectionHead}>{s.label}</div>
+                  {s.kinds.map((op) => optRow(op, accentOf(current.cat)))}
+                </div>
+              ))
             : current.ops.map((op) =>
                 row(op, accentOf(current.cat), NODE_SPECS[op].label, '', () => onPick([op]))
               )
@@ -145,10 +166,10 @@ export function TilePicker({
             style={{ ...addBtn, opacity: chosen.size === 0 ? 0.45 : 1 }}
           >
             {chosen.size > 1
-              ? `Add ${chosen.size} plots as a group`
+              ? `Add ${chosen.size} visualisations as a group`
               : chosen.size === 1
-                ? 'Add plot'
-                : 'Select plots…'}
+                ? 'Add visualisation'
+                : 'Select visualisation…'}
           </button>
         </div>
       )}
@@ -196,6 +217,14 @@ const backBtn: CSSProperties = {
 const backArrow: CSSProperties = { fontSize: 16, lineHeight: 1, fontWeight: 700, display: 'block' }
 const backText: CSSProperties = { lineHeight: 1, display: 'block' }
 const body: CSSProperties = { padding: 4, display: 'flex', flexDirection: 'column', gap: 2 }
+const sectionHead: CSSProperties = {
+  fontSize: 9,
+  fontWeight: 700,
+  textTransform: 'uppercase',
+  letterSpacing: 0.5,
+  color: UI.textMuted,
+  padding: '6px 8px 2px'
+}
 const item: CSSProperties = {
   display: 'inline-flex',
   alignItems: 'center',

@@ -39,14 +39,14 @@ describe('workflow v2 serialization', () => {
       groupMeta: meta
     })
     const doc = JSON.parse(json)
-    expect(doc.version).toBe(3)
+    expect(doc.version).toBe(4)
     const back = deserializeWorkflow(json)
     expect(back.groupLayouts).toEqual(LAYOUT)
     expect(back.groupMeta).toEqual(meta)
     expect(back.nodes.map((n) => n.id)).toEqual(['standardize-1', 'heatmap-2'])
   })
 
-  it('scales a pre-v3 layout ×2 onto the doubled grid', () => {
+  it('scales a pre-v3 layout onto the current grid (×4 columns, ×2 rows)', () => {
     const v2 = JSON.stringify({
       version: 2,
       nextId: 3,
@@ -55,9 +55,31 @@ describe('workflow v2 serialization', () => {
       groupLayouts: LAYOUT
     })
     const back = deserializeWorkflow(v2)
+    // v2→v3 doubled both axes, v3→v4 doubled columns again: x,w ×4; y,h ×2.
     expect(back.groupLayouts['standardize-1']).toEqual([
-      { i: 'standardize-1', x: 0, y: 0, w: 12, h: 16 },
-      { i: 'heatmap-2', x: 12, y: 0, w: 12, h: 16 }
+      { i: 'standardize-1', x: 0, y: 0, w: 24, h: 16 },
+      { i: 'heatmap-2', x: 24, y: 0, w: 24, h: 16 }
+    ])
+  })
+
+  it('scales a v3 layout by ×2 columns only onto the denser v4 grid', () => {
+    const v3 = JSON.stringify({
+      version: 3,
+      nextId: 3,
+      nodes: NODES.map((n) => ({ id: n.id, position: n.position, data: n.data })),
+      edges: EDGES,
+      groupLayouts: {
+        'standardize-1': [
+          { i: 'standardize-1', x: 0, y: 4, w: 12, h: 8 },
+          { i: 'heatmap-2', x: 12, y: 4, w: 12, h: 8 }
+        ]
+      }
+    })
+    const back = deserializeWorkflow(v3)
+    // Columns ×2 (x, w); rows unchanged (y, h).
+    expect(back.groupLayouts['standardize-1']).toEqual([
+      { i: 'standardize-1', x: 0, y: 4, w: 24, h: 8 },
+      { i: 'heatmap-2', x: 24, y: 4, w: 24, h: 8 }
     ])
   })
 

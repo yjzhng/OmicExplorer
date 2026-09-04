@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest'
 
-import { deserializeProject, newProjectFile, serializeProject, type ProjectFile } from './project'
+import {
+  deserializeProject,
+  newProjectFile,
+  nextWorkflowId,
+  serializeProject,
+  type ProjectFile
+} from './project'
 import type { NodeResult } from './types'
 import { emptyWorkflowDoc } from './workflowDoc'
 
@@ -77,6 +83,35 @@ describe('project (folders) serialization', () => {
     )
     expect(back.folders).toHaveLength(1)
     expect(back.activeFolderId).toBe(back.folders[0].id)
+  })
+
+  it('reserves ids on load so a newly minted workflow id cannot collide with a saved one', () => {
+    // Regression: the id counter resets each launch; without reservation the next id would be
+    // wf-1, colliding with the saved wf-1 (so switching to the "new" workflow lands on the old one).
+    deserializeProject(
+      JSON.stringify({
+        format: 'omicexplorer-project',
+        version: 2,
+        name: 'ids',
+        activeFolderId: 'fd-7',
+        folders: [
+          {
+            id: 'fd-7',
+            name: 'f',
+            path: '/d',
+            activeWorkflowId: 'wf-3',
+            workflows: [
+              { id: 'wf-1', name: 'A', doc: emptyWorkflowDoc(), results: {} },
+              { id: 'wf-2', name: 'B', doc: emptyWorkflowDoc(), results: {} },
+              { id: 'wf-3', name: 'C', doc: emptyWorkflowDoc(), results: {} }
+            ]
+          }
+        ]
+      })
+    )
+    const fresh = nextWorkflowId()
+    const n = Number(/-(\d+)$/.exec(fresh)?.[1])
+    expect(n).toBeGreaterThan(3) // past wf-3 and fd-7 → no collision
   })
 
   it('newProjectFile starts with one folder + one workflow, no data path', () => {

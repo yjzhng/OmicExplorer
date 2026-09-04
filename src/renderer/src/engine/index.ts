@@ -3,6 +3,7 @@
  * to call directly or from a Web Worker (see worker.ts / client.ts).
  */
 export { standardize } from './ingest'
+export { combineStandardize } from './combine'
 export {
   parseMatrix,
   guessRoles,
@@ -27,7 +28,8 @@ export { runDirect, runCompare, previewCompare } from './direct'
 export type { ComparePreview } from './direct'
 export { runTwoWayAnova, previewTwoWay, crossPairs } from './twoWay'
 export type { TwoWayPreview } from './twoWay'
-export { runContrast } from './contrast'
+export { runContrast, runContrastPair } from './contrast'
+export type { ContrastSideRow, ContrastPairInput } from './contrast'
 export {
   buildVolcano,
   buildHeatmap,
@@ -44,7 +46,9 @@ export {
   buildResponseCluster,
   buildQc,
   buildSampleCorr,
+  buildEnrichment,
   facetContextDims,
+  responseColorDims,
   facetDims,
   facetCompareRows
 } from './plotData'
@@ -105,10 +109,16 @@ export type {
   GeneBarValue,
   ClusterData,
   ClusterPoint,
+  ClusterMeta,
   ClusterOptions,
   QcData,
   QcGroup,
   QcMetric,
+  EnrichData,
+  EnrichTerm,
+  EnrichOptions,
+  EnrichSource,
+  EnrichMethod,
   CorrData,
   FacetGroup,
   FacetKey,
