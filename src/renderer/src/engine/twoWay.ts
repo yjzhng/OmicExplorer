@@ -53,6 +53,8 @@ interface InteractionRow {
   uniqID: string
   log2FC: number
   pVal: number
+  /** SE of the interaction term (the t-test denominator) — the two-way FC's uncertainty. */
+  fcSE: number
 }
 
 /** Per-gene Welch–Satterthwaite interaction t-test over four 2×2 cells (log2 values). */
@@ -99,7 +101,7 @@ function interactionTTest(
     if (seTotal > 0 && Number.isFinite(interaction)) {
       pVal = studentTTwoSided(Math.abs(interaction / seTotal), df)
     }
-    out.push({ uniqID, log2FC: interaction, pVal })
+    out.push({ uniqID, log2FC: interaction, pVal, fcSE: seTotal > 0 ? seTotal : NaN })
   }
   return out
 }
@@ -120,7 +122,8 @@ function rawFrom(
     sd1: NaN,
     sd2: NaN,
     log2FC: w.log2FC,
-    pVal: w.pVal
+    pVal: w.pVal,
+    fcSE: w.fcSE
   }
   for (const [c, v] of conds) setCond(row, c, v)
   return row

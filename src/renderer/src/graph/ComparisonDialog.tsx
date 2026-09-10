@@ -21,13 +21,14 @@ import {
   VALID_CONDITIONS,
   type CondSelector,
   type ConditionKey,
-  type StandardizeResult,
   type StandardRow
 } from '../engine'
 import { useGraph } from './store'
 import { cssVars, PALETTES, UI } from '../ui/theme'
 import { useUiTheme } from '../ui/useUiTheme'
-import type { CompareConfig } from './types'
+
+/** The two steps that share this window: Compare (t-test / two-way) and Contrast (divergence). */
+export type SelectVariant = 'compare' | 'contrast'
 
 type Analysis = 'compare' | 'two_way_anova'
 
@@ -36,10 +37,10 @@ type Combo = Record<ConditionKey, string>
 
 /** Distinct condition-tuples ('' = absent) from the upstream table — the small "sample space"
  *  the value chips are derived from (far smaller than the gene×sample rows). */
-function combosOf(std: StandardizeResult): Combo[] {
+function combosOf(rows: StandardRow[]): Combo[] {
   const seen = new Set<string>()
   const out: Combo[] = []
-  for (const r of std.rows) {
+  for (const r of rows) {
     const rec = {} as Combo
     for (const c of VALID_CONDITIONS) rec[c] = r[c] == null || r[c] === '' ? '' : String(r[c])
     const key = VALID_CONDITIONS.map((c) => rec[c]).join('|')
@@ -94,31 +95,108 @@ function PreviewTable({ columns, rows }: { columns: string[]; rows: string[][] }
   )
 }
 
+/** Does a row satisfy every pinned condition of a side's selector (unpinned conditions are free)? */
+function rowMatchesSel(
+  r: Record<ConditionKey, unknown>,
+  sel: CondSelector,
+  active: ConditionKey[]
+): boolean {
+  return active.every((c) => {
+    const want = sel[c]
+    if (!want || want.length === 0) return true
+    const v = r[c]
+    return v != null && v !== '' && want.map(String).includes(String(v))
+  })
+}
+
+/** Contrast preview: split the rows into the two explicit selections, join on the match context,
+ *  and report how many genes pair per context group (the Contrast analogue of `previewCompare`). */
+function previewContrast(
+  rows: StandardRow[],
+  num: CondSelector,
+  den: CondSelector,
+  match: ConditionKey[],
+  active: ConditionKey[]
+): {
+  groups: number
+  columns: string[]
+  rows: string[][]
+  matched: ConditionKey[]
+  pooled: ConditionKey[]
+  warnings: string[]
+} {
+  const pinned = (sel: CondSelector): boolean => active.some((c) => (sel[c]?.length ?? 0) > 0)
+  const warnings: string[] = []
+  if (!pinned(num) || !pinned(den)) warnings.push('Pin at least one value on each side (FC1 and FC2).')
+  const recs = rows as unknown as Record<ConditionKey, unknown>[]
+  const A = recs.filter((r) => rowMatchesSel(r, num, active))
+  const B = recs.filter((r) => rowMatchesSel(r, den, active))
+  // Only align on match dims both sides actually carry.
+  const ctx = match.filter(
+    (c) =>
+      A.some((r) => r[c] != null && r[c] !== '') && B.some((r) => r[c] != null && r[c] !== '')
+  )
+  const ctxKey = (r: Record<ConditionKey, unknown>): string =>
+    ctx.map((c) => String(r[c] ?? '')).join('¦')
+  const group = (src: Record<ConditionKey, unknown>[]): Map<string, Set<string>> => {
+    const m = new Map<string, Set<string>>()
+    for (const r of src) {
+      const k = ctxKey(r)
+      let s = m.get(k)
+      if (!s) m.set(k, (s = new Set()))
+      s.add(String((r as { uniqID?: unknown }).uniqID ?? ''))
+    }
+    return m
+  }
+  const aG = group(A)
+  const bG = group(B)
+  const ctxKeys = [...aG.keys()].filter((k) => bG.has(k))
+  const columns = [...ctx.map(String), 'genes paired']
+  const tableRows: string[][] = ctxKeys.slice(0, 50).map((k) => {
+    const aSet = aG.get(k)!
+    const bSet = bG.get(k)!
+    let n = 0
+    for (const g of aSet) if (bSet.has(g)) n++
+    return [...(ctx.length ? k.split('¦') : []), String(n)]
+  })
+  if (pinned(num) && pinned(den) && ctxKeys.length === 0)
+    warnings.push('No genes pair across the two sides with the current match context.')
+  const pooled = active.filter((c) => !ctx.includes(c))
+  return { groups: ctxKeys.length, columns, rows: tableRows, matched: ctx, pooled, warnings }
+}
+
 export function ComparisonDialog({
   id,
-  config,
-  std,
+  variant = 'compare',
+  rows,
+  active,
+  initial,
   onClose
 }: {
   id: string
-  config: CompareConfig
-  std: StandardizeResult
+  variant?: SelectVariant
+  /** gene-level rows with condition fields (Compare/Standardize rows) for combos + preview */
+  rows: StandardRow[]
+  /** conditions offered as selectable (Standardize's active set, or those present upstream) */
+  active: ConditionKey[]
+  initial: { num: CondSelector; den: CondSelector; match: ConditionKey[]; analysis?: Analysis }
   onClose: () => void
 }): ReactNode {
   const update = useGraph((s) => s.updateConfig)
   const mode = useUiTheme((s) => s.mode)
+  const contrast = variant === 'contrast'
   const [analysis, setAnalysis] = useState<Analysis>(
-    config.analysis === 'two_way_anova' ? 'two_way_anova' : 'compare'
+    initial.analysis === 'two_way_anova' ? 'two_way_anova' : 'compare'
   )
-  const [num, setNum] = useState<CondSelector>(() => ({ ...config.num }))
-  const [den, setDen] = useState<CondSelector>(() => ({ ...config.den }))
-  const [match, setMatch] = useState<ConditionKey[]>(() => [...config.match])
+  const [num, setNum] = useState<CondSelector>(() => ({ ...initial.num }))
+  const [den, setDen] = useState<CondSelector>(() => ({ ...initial.den }))
+  const [match, setMatch] = useState<ConditionKey[]>(() => [...initial.match])
   // Conditions the user has explicitly emptied on each side — auto-fill leaves these alone so a
   // forced single value can still be deselected (otherwise it would be re-pinned immediately).
   const [clearedNum, setClearedNum] = useState<Set<ConditionKey>>(() => new Set())
   const [clearedDen, setClearedDen] = useState<Set<ConditionKey>>(() => new Set())
 
-  const combos = useMemo(() => combosOf(std), [std])
+  const combos = useMemo(() => combosOf(rows), [rows])
   // All distinct values per condition (every chip is always shown; non-co-occurring / invalid
   // ones are greyed out rather than hidden).
   const allValues = useMemo(() => {
@@ -130,8 +208,7 @@ export function ComparisonDialog({
     }
     return out
   }, [combos])
-  const active = std.activeConditions
-  const twoWay = analysis === 'two_way_anova'
+  const twoWay = !contrast && analysis === 'two_way_anova'
 
   // Values available for condition `c` on a side = distinct values of `c` among the sample-space
   // tuples that satisfy the side's OTHER pinned conditions. So pinning cmpd=dmso narrows dose to
@@ -213,8 +290,11 @@ export function ComparisonDialog({
   const matchable = active.filter((c) => !axis.includes(c))
 
   const preview = useMemo(
-    () => previewCompare({ rows: std.rows, num, den, match, activeConditions: active }),
-    [std, num, den, match, active]
+    () =>
+      contrast
+        ? previewContrast(rows, num, den, match, active)
+        : previewCompare({ rows, num, den, match, activeConditions: active }),
+    [contrast, rows, num, den, match, active]
   )
   // Two-way ANOVA needs exactly two axes (two factors). Each factor may carry MULTIPLE numerator
   // and/or denominator levels — every numerator × denominator level pair runs as its own 2×2
@@ -238,7 +318,7 @@ export function ComparisonDialog({
     if (!twoWay || !twoWayCheck.ok) return null
     const [a, b] = axis
     return previewTwoWay({
-      rows: std.rows,
+      rows,
       factors: [
         { condition: a, pairs: crossPairs(num[a] ?? [], den[a] ?? []) },
         { condition: b, pairs: crossPairs(num[b] ?? [], den[b] ?? []) }
@@ -247,6 +327,8 @@ export function ComparisonDialog({
     })
   })()
 
+  // Compare's preview carries the distinct comparison labels (axes); Contrast's doesn't.
+  const axisLabels: string[] = !contrast && 'labels' in preview ? (preview.labels as string[]) : []
   // Apply is gated on a clean preview: any warning in the active mode blocks it.
   const activeWarnings = twoWay
     ? [...twoWayCheck.warnings, ...(twoWayView?.warnings ?? [])]
@@ -283,6 +365,12 @@ export function ComparisonDialog({
     }
     const cleanNum = clean(num)
     const cleanDen = clean(den)
+    if (contrast) {
+      // Contrast: FC1 = num selection, FC2 = den selection, aligned on the matchable context.
+      update(id, { num: cleanNum, den: cleanDen, match: match.filter((c) => matchable.includes(c)) })
+      onClose()
+      return
+    }
     if (twoWay) {
       // Derive the two factors from the pinned axes for the existing two-way engine/run path.
       const [a, b] = axis
@@ -319,7 +407,9 @@ export function ComparisonDialog({
     const cleared = side === 'num' ? clearedNum : clearedDen
     return (
       <div style={styles.side}>
-        <div style={styles.sideHead}>{side === 'num' ? 'Numerator' : 'Denominator'}</div>
+        <div style={styles.sideHead}>
+          {side === 'num' ? (contrast ? 'FC1 (side A)' : 'Numerator') : contrast ? 'FC2 (side B)' : 'Denominator'}
+        </div>
         {active.map((c) => {
           const chosen = sel[c] ?? []
           // Every value is shown; those that don't co-occur with this side's other pins are greyed.
@@ -340,7 +430,7 @@ export function ComparisonDialog({
                     if (!coOccur.has(v)) {
                       disabled = true
                       reason = 'Not present with this side’s current selection'
-                    } else if (otherPinned) {
+                    } else if (!contrast && otherPinned) {
                       const nextThis = finalizeSide({ ...sel, [c]: [...chosen, v] }, c, cleared)
                       const nextNum = side === 'num' ? nextThis : num
                       const nextDen = side === 'den' ? nextThis : den
@@ -380,22 +470,24 @@ export function ComparisonDialog({
     // root where they're defined), otherwise UI.* (var(--panel) …) resolve to transparent.
     <div style={cssVars(PALETTES[mode])}>
       <div style={styles.scrim} onClick={onClose} />
-      <div style={styles.modal} role="dialog" aria-label="Configure comparison">
+      <div style={styles.modal} role="dialog" aria-label={contrast ? 'Configure contrast' : 'Configure comparison'}>
         <div style={styles.head}>
-          <span style={styles.title}>Configure comparison</span>
-          {/* Analysis toggle: a plain two-level comparison, or a 2×2 interaction (two-way ANOVA). */}
-          <div style={styles.pill}>
-            {(['compare', 'two_way_anova'] as Analysis[]).map((a) => (
-              <button
-                key={a}
-                onClick={() => setAnalysis(a)}
-                style={{ ...styles.pillBtn, ...(analysis === a ? styles.pillBtnOn : null) }}
-              >
-                {a === 'compare' ? 't-test' : '2-way ANOVA'}
-              </button>
-            ))}
-          </div>
-          <button style={styles.close} onClick={onClose} aria-label="Close">
+          <span style={styles.title}>{contrast ? 'Configure contrast' : 'Configure comparison'}</span>
+          {/* Analysis toggle (Compare only): a plain two-level comparison, or a 2×2 interaction. */}
+          {!contrast && (
+            <div style={styles.pill}>
+              {(['compare', 'two_way_anova'] as Analysis[]).map((a) => (
+                <button
+                  key={a}
+                  onClick={() => setAnalysis(a)}
+                  style={{ ...styles.pillBtn, ...(analysis === a ? styles.pillBtnOn : null) }}
+                >
+                  {a === 'compare' ? 't-test' : '2-way ANOVA'}
+                </button>
+              ))}
+            </div>
+          )}
+          <button style={{ ...styles.close, ...(contrast ? { marginLeft: 'auto' } : null) }} onClick={onClose} aria-label="Close">
             ✕
           </button>
         </div>
@@ -453,8 +545,9 @@ export function ComparisonDialog({
         ) : (
           <div style={styles.preview}>
             <div style={styles.previewHead}>
-              Comparisons ({preview.groups} context{preview.groups === 1 ? '' : 's'}
-              {preview.labels.length > 1 ? ` · ${preview.labels.length} axes` : ''})
+              {contrast ? 'Contrast' : 'Comparisons'} ({preview.groups} context
+              {preview.groups === 1 ? '' : 's'}
+              {axisLabels.length > 1 ? ` · ${axisLabels.length} axes` : ''})
             </div>
             {preview.rows.length === 0 ? (
               <div style={styles.previewEmpty}>Nothing yet — pin a value on each side.</div>

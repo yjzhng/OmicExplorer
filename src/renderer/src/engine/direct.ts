@@ -98,7 +98,8 @@ export function runDirect(input: DirectInput): CompareTableResult {
           sd1: w.sd1,
           sd2: w.sd2,
           log2FC: w.log2FC,
-          pVal: w.pVal
+          pVal: w.pVal,
+          fcSE: w.fcSE
         }
         setCond(row, condition, numVal) // numerator condition value
         for (const d of otherDims) setCond(row, d, condValue(rep, d)) // context values
@@ -226,7 +227,8 @@ export function runCompare(input: CompareInput): CompareTableResult {
         sd1: w.sd1,
         sd2: w.sd2,
         log2FC: w.log2FC,
-        pVal: w.pVal
+        pVal: w.pVal,
+        fcSE: w.fcSE
       }
       for (const c of contextDims) setCond(row, c, condValue(rep, c))
       raw.push(row)

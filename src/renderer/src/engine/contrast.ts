@@ -20,6 +20,9 @@ export interface ContrastInput {
   pair: [string, string]
   /** correlated → OLS band; independent → marginal per-axis Gaussian */
   relationship?: 'correlated' | 'independent'
+  /** keep a divergent call only where a side is itself significant. Off for abundance inputs
+   *  (Standardize-fed split) which carry no per-side significance. Defaults to true. */
+  driverMask?: boolean
 }
 
 export interface ContrastResultRow {
@@ -34,6 +37,10 @@ export interface ContrastResultRow {
   comparison: string
   FC1: number | null
   FC2: number | null
+  /** standard error of each side's value (log2 scale): fold-change SE (Compare/two-way) or the mean
+   *  abundance SE, SD/√n (Standardize). Drives the DR/TR error bands; null when < 2 reps. */
+  FC1err?: number | null
+  FC2err?: number | null
   FCdiff: number | null
   P1: number | null
   P2: number | null
@@ -53,6 +60,9 @@ export interface ContrastResultRow {
 export interface ContrastResult {
   rows: ContrastResultRow[]
   comparisons: string[]
+  /** What the FC1/FC2 side values represent: 'fc' = log2 fold-change (Compare-fed contrasts),
+   *  'abundance' = log2 abundance (Standardize-fed pair). Drives axis labelling; defaults to 'fc'. */
+  valueKind?: 'abundance' | 'fc'
 }
 
 /** One per-gene value on one side of a PAIRED contrast: a scalar keyed by uniqID + condition
@@ -70,6 +80,9 @@ export interface ContrastSideRow {
   effect?: string
   pP?: number | null
   pQ?: number | null
+  /** uncertainty of `value` (log2 scale): fold-change SE (Compare) — for Standardize it's left
+   *  null here and computed as the abundance SD across replicates in aggregateSide. */
+  se?: number | null
 }
 
 /** A paired contrast: two independent value series (two datasets), joined side-by-side by
@@ -184,6 +197,8 @@ export function runContrast(input: ContrastInput): ContrastResult {
       comparison,
       FC1: a.log2FC,
       FC2: b.log2FC,
+      FC1err: a.fcSE ?? null,
+      FC2err: b.fcSE ?? null,
       FCdiff: sub(a.log2FC, b.log2FC),
       P1: a.pP,
       P2: b.pP,
@@ -201,7 +216,7 @@ export function runContrast(input: ContrastInput): ContrastResult {
     })
   }
 
-  addGaussianOutliers(records, ctxConds, method)
+  addGaussianOutliers(records, ctxConds, method, input.driverMask ?? true)
   return { rows: records, comparisons: records.length ? [comparison] : [] }
 }
 
@@ -231,13 +246,26 @@ function aggregateSide(
   for (const [k, grp] of groups) {
     const vals = grp.map((r) => r.value).filter((v): v is number => v != null && Number.isFinite(v))
     const rep = grp[0]
+    const mean = vals.length ? vals.reduce((s, v) => s + v, 0) / vals.length : null
+    // Standard error of the aggregated value: if the rows carry a per-row SE (Compare
+    // fold-changes), the mean's SE is √(Σ seᵢ²)/n; otherwise (Standardize abundances) it's the
+    // replicate SD / √n. null when there's nothing to estimate from.
+    const ses = grp.map((r) => r.se).filter((v): v is number => v != null && Number.isFinite(v))
+    let se: number | null = null
+    if (ses.length) {
+      se = Math.sqrt(ses.reduce((s, v) => s + v * v, 0)) / ses.length
+    } else if (vals.length >= 2 && mean != null) {
+      const varr = vals.reduce((s, v) => s + (v - mean) ** 2, 0) / (vals.length - 1)
+      se = Math.sqrt(varr) / Math.sqrt(vals.length)
+    }
     out.set(k, {
       uniqID: rep.uniqID,
       strain: rep.strain,
       cmpd: rep.cmpd,
       dose: rep.dose,
       time: rep.time,
-      value: vals.length ? vals.reduce((s, v) => s + v, 0) / vals.length : null,
+      value: mean,
+      se,
       signf: grp.some((r) => r.signf),
       pP: best(grp, 'pP'),
       pQ: best(grp, 'pQ')
@@ -288,6 +316,8 @@ export function runContrastPair(input: ContrastPairInput): ContrastResult {
       comparison,
       FC1: a?.value ?? null,
       FC2: b?.value ?? null,
+      FC1err: a?.se ?? null,
+      FC2err: b?.se ?? null,
       FCdiff: sub(a?.value ?? null, b?.value ?? null),
       P1: a?.pP ?? null,
       P2: b?.pP ?? null,

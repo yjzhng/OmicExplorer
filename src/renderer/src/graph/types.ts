@@ -5,7 +5,6 @@ import type {
   CondSelector,
   ConditionKey,
   ContrastResult,
-  FieldRule,
   FilterSpec,
   InteractiveRole,
   InteractiveSampleCond,
@@ -105,9 +104,12 @@ export interface InteractiveImport {
   conditions: Record<string, InteractiveSampleCond>
   /** filter-column header → row-filter spec (Filtering step); absent = no row filtering */
   filters?: Record<string, FilterSpec>
-  /** condition field → learned name-region rule (Conditions step); persisted so reopening the
-   *  wizard restores the highlighted regions, mirroring how column roles are remembered */
-  rules?: Record<string, FieldRule>
+  /** sample header → condition field → the token-index range [start, end) that field occupies in
+   *  the sample name (Conditions step). The single source of truth for the step: the extracted
+   *  value, the highlight and the samplesheet "original" all derive from it. Stored per row (not one
+   *  global rule) so a paint on one group of rows can't disturb another, and unaffected by a value
+   *  rename. Persisted so reopening restores the highlights, mirroring how column roles are kept. */
+  spans?: Record<string, Partial<Record<string, [number, number]>>>
   /** last wizard stage the user was on (1–5) — reopens the wizard where they left off */
   step?: number
   /** last column-classification preset (Columns step) */
@@ -224,24 +226,35 @@ export function isCompareConfigured(config: CompareConfig): boolean {
   return !!(cfg.pairNum && cfg.pairDen && cfg.pair2Num && cfg.pair2Den)
 }
 
-/** Contrast pools its upstream comparison rows, then splits them by two levels of one
- *  condition (omicViz's `type: contrast` entry = condition + [[num, den]] pairs). */
+/** Contrast forms two sides (FC1/FC2) and scores per-gene divergence between them. */
 export interface ContrastConfig {
   relationship: 'correlated' | 'independent'
   /** how the two sides (FC1/FC2) are formed:
-   *   - 'split' (default): pool the single upstream Compare and split it by two levels of one
-   *     condition (the classic omicViz contrast).
+   *   - 'select' (default): ONE upstream input, split into two EXPLICIT cond-value selections
+   *     (num → FC1, den → FC2) aligned on the chosen match context — the same interactive selector
+   *     window as Compare, so the two sides and their context are declared, never inferred.
    *   - 'pair': two upstream inputs (two Compares → FC-vs-FC, or two Standardizes →
    *     abundance-vs-abundance), joined by uniqID + the matched context. */
-  source?: 'split' | 'pair'
-  /** the condition contrasted over (the contrast axis) — 'split' mode only */
-  condition: ConditionKey
-  /** its two levels: numerator → FC1, denominator → FC2 — 'split' mode only */
-  pairNum: string
-  pairDen: string
-  /** 'pair' mode: context dims to align the two inputs on (joined with uniqID); unmatched dims are
-   *  averaged. Empty = join on uniqID alone (one point per gene). */
+  source?: 'select' | 'pair'
+  /** 'select' mode: the two sides' cond-value selections (like Compare's num/den). FC1 = rows
+   *  matching `num`, FC2 = rows matching `den`. */
+  num?: CondSelector
+  den?: CondSelector
+  /** context dims to align the two sides on (joined with uniqID); unmatched dims are averaged.
+   *  Empty = join on uniqID alone (one point per gene). Used by both 'select' and 'pair'. */
   match?: ConditionKey[]
+}
+
+/** Effective contrast source, tolerating older saved values (the pre-rename 'split' → 'select'). */
+export function resolveContrastSource(c: ContrastConfig): 'select' | 'pair' {
+  return c.source === 'pair' ? 'pair' : 'select'
+}
+
+/** Whether a 'select'-mode contrast has both sides pinned (so it can run). */
+export function isContrastConfigured(c: ContrastConfig): boolean {
+  const pinned = (s?: CondSelector): boolean =>
+    !!s && Object.values(s).some((v) => v != null && v.length > 0)
+  return pinned(c.num) && pinned(c.den)
 }
 
 export interface VolcanoConfig {

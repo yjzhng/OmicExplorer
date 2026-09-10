@@ -192,4 +192,33 @@ describe('buildStandardInputs', () => {
     expect(new Set(std.rows.map((r) => r.cmpd))).toEqual(new Set(['drugA', 'vehicle']))
     expect(std.displayMap['PRT001']).toBe('G1')
   })
+
+  it('falls back to the fetched UniProt gene name when no Name column is assigned', () => {
+    // Demote the guessed label column (Genes) so no Name role remains, and supply UniProt
+    // annotations carrying a gene name for one protein but not the other.
+    const noLabel = { ...roles, Genes: 'ignore' as const }
+    const cond = (h: string): InteractiveSampleCond => ({
+      sample: h,
+      strain: '',
+      cmpd: 'drugA',
+      dose: '',
+      time: '',
+      rep: '1'
+    })
+    const a = buildStandardInputs(MATRIX, {
+      roles: noLabel,
+      conditions: { [RX1]: cond(RX1), [RX2]: cond(RX2), [RY1]: cond(RY1) },
+      annotations: { fields: ['geneName'], byId: { PRT001: { geneName: 'FetchedA' } } }
+    })
+    // DB `gene` = the fetched gene name where available (PRT001), empty otherwise (PRT002).
+    expect(a.dbText).toContain('PRT001,FetchedA')
+    const std = standardize({
+      dataText: a.dataText,
+      dataFilename: a.dataFilename,
+      samplesheetText: a.samplesheetText,
+      dbText: a.dbText
+    })
+    expect(std.displayMap['PRT001']).toBe('FetchedA') // fetched gene name drives the display
+    expect(std.displayMap['PRT002']).toBe('PRT002') // no Name, no fetch → falls back to the ID
+  })
 })

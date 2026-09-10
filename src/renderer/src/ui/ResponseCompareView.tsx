@@ -5,6 +5,15 @@ import { PlotlyChart } from './PlotlyChart'
 import { axisBase, CATEGORICAL, PALETTES, plotBase } from './theme'
 import { useUiTheme } from './useUiTheme'
 
+/** `#rrggbb` → `rgba(r,g,b,a)` for translucent error-band fills. */
+function rgba(hex: string, a: number): string {
+  const h = hex.replace('#', '')
+  const r = parseInt(h.slice(0, 2), 16)
+  const g = parseInt(h.slice(2, 4), 16)
+  const b = parseInt(h.slice(4, 6), 16)
+  return `rgba(${r},${g},${b},${a})`
+}
+
 /**
  * Response-compare: for ONE gene (chosen by the tile's gene pager — see GeneSwitch), overlay its
  * dose- (or time-) response profile on BOTH contrasted sides — side A (FC1) and side B (FC2) as two
@@ -16,7 +25,8 @@ export function ResponseCompareView({
   displayMap,
   axis,
   gene,
-  title
+  title,
+  yLabel = 'value (log₂)'
 }: {
   rows: ContrastResultRow[]
   displayMap: Record<string, string>
@@ -24,6 +34,8 @@ export function ResponseCompareView({
   /** the uniqID to plot (the pager picks it) */
   gene: string
   title?: string
+  /** y-axis title reflecting what FC1/FC2 represent (log2 abundance vs log2 fold-change) */
+  yLabel?: string
 }): ReactNode {
   const mode = useUiTheme((s) => s.mode)
 
@@ -32,14 +44,17 @@ export function ResponseCompareView({
     const mine = rows.filter((r) => r.uniqID === gene && r[axis] != null)
     if (mine.length === 0) return null
     // Mean per axis value (collapses any residual within-facet duplicates into one point per x).
-    const byX = new Map<number, { a: number[]; b: number[] }>()
+    // ae/be collect each side's uncertainty (fold-change SE or abundance SD) for the error band.
+    const byX = new Map<number, { a: number[]; b: number[]; ae: number[]; be: number[] }>()
     for (const r of mine) {
       const x = Number(r[axis])
       if (!Number.isFinite(x)) continue
       let g = byX.get(x)
-      if (!g) byX.set(x, (g = { a: [], b: [] }))
+      if (!g) byX.set(x, (g = { a: [], b: [], ae: [], be: [] }))
       if (r.FC1 != null && Number.isFinite(r.FC1)) g.a.push(r.FC1)
       if (r.FC2 != null && Number.isFinite(r.FC2)) g.b.push(r.FC2)
+      if (r.FC1err != null && Number.isFinite(r.FC1err)) g.ae.push(r.FC1err)
+      if (r.FC2err != null && Number.isFinite(r.FC2err)) g.be.push(r.FC2err)
     }
     const xs = [...byX.keys()].sort((p, q) => p - q)
     const mean = (v: number[]): number | null => (v.length ? v.reduce((s, x) => s + x, 0) / v.length : null)
@@ -47,6 +62,8 @@ export function ResponseCompareView({
       xs,
       yA: xs.map((x) => mean(byX.get(x)!.a)),
       yB: xs.map((x) => mean(byX.get(x)!.b)),
+      eA: xs.map((x) => mean(byX.get(x)!.ae)),
+      eB: xs.map((x) => mean(byX.get(x)!.be)),
       labelA: mine[0].cmp1 || 'A',
       labelB: mine[0].cmp2 || 'B',
       gene: displayMap[gene] ?? gene
@@ -70,7 +87,7 @@ export function ResponseCompareView({
         categoryorder: 'array',
         categoryarray: cats
       },
-      yaxis: { ...axisBase(p), title: { text: 'value (log₂)' }, zeroline: true },
+      yaxis: { ...axisBase(p), title: { text: yLabel }, zeroline: true },
       legend: { orientation: 'h', y: -0.2, font: { size: 11 } },
       showlegend: true
     }
@@ -87,11 +104,46 @@ export function ResponseCompareView({
       marker: { color, size: 7 },
       hovertemplate: `${name}<br>${axis}=%{x}<br>log₂=%{y:.3f}<extra></extra>`
     })
+    // Shaded ±error band as a lower/upper pair: the upper trace fills down to the immediately
+    // preceding (lower) trace via `tonexty` — the canonical Plotly band, which renders reliably on
+    // a categorical axis (a single self-closing polygon does not). Drawn behind the line.
+    const band = (
+      y: (number | null)[],
+      e: (number | null)[],
+      color: string
+    ): Record<string, unknown>[] => {
+      const lo: (number | null)[] = []
+      const hi: (number | null)[] = []
+      let any = false
+      for (let i = 0; i < cats.length; i++) {
+        const v = y[i]
+        const err = e[i]
+        if (v == null || err == null || !Number.isFinite(v) || !Number.isFinite(err)) {
+          lo.push(null)
+          hi.push(null)
+        } else {
+          lo.push(v - err)
+          hi.push(v + err)
+          any = true
+        }
+      }
+      if (!any) return []
+      const common = { type: 'scatter', mode: 'lines', __oeNoLabel: true, x: cats, hoverinfo: 'skip', showlegend: false, line: { width: 0 }, connectgaps: false }
+      return [
+        { ...common, y: lo },
+        { ...common, y: hi, fill: 'tonexty', fillcolor: rgba(color, 0.2) }
+      ]
+    }
     return {
-      data: [line(series.yA, CATEGORICAL[0], series.labelA), line(series.yB, CATEGORICAL[3], series.labelB)],
+      data: [
+        ...band(series.yA, series.eA, CATEGORICAL[0]),
+        ...band(series.yB, series.eB, CATEGORICAL[3]),
+        line(series.yA, CATEGORICAL[0], series.labelA),
+        line(series.yB, CATEGORICAL[3], series.labelB)
+      ],
       layout: lay
     }
-  }, [series, mode, axis, title])
+  }, [series, mode, axis, title, yLabel])
 
   if (!series)
     return <Center>This gene has no {axis} values in the contrast — match the contrast on {axis}.</Center>

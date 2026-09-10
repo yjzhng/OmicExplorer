@@ -45,6 +45,15 @@ function groupTitle(group: AnalysisGroup, results: Record<string, NodeResult>): 
   return comps.length ? comps.join(', ') : group.label
 }
 
+/** Pick a gene's protein description from its annotation record: the UniProt `proteinName` column
+ *  first, else a data column whose name reads like a protein name / description / product. */
+function pickDesc(rec: Record<string, string> | undefined): string | undefined {
+  if (!rec) return undefined
+  if (rec.proteinName) return rec.proteinName
+  const key = Object.keys(rec).find((c) => /protein[_. ]?name|description|product/i.test(c))
+  return key ? rec[key] : undefined
+}
+
 export function ResultsView(): ReactNode {
   const nodes = useGraph((s) => s.nodes)
   const edges = useGraph((s) => s.edges)
@@ -119,18 +128,39 @@ export function ResultsView(): ReactNode {
     }
     return m
   }, [results])
+  // Merged per-gene annotations across EVERY result that carries them — Standardize (std) as well as
+  // Compare — so the description (proteinName) and pathway tags show even in a Standardize-only flow
+  // (previously only Compare results were read, so a Standardize-driven menu had no proteinName).
+  const annById = useMemo(() => {
+    const m: Record<string, Record<string, string>> = {}
+    for (const r of Object.values(results)) {
+      const am =
+        r.kind === 'standardize' ? r.std.annotationMap : r.kind === 'compare' ? r.annotationMap : undefined
+      if (!am) continue
+      for (const id in am) {
+        const rec = m[id] ?? (m[id] = {})
+        for (const c in am[id]) if (rec[c] == null) rec[c] = am[id][c]
+      }
+    }
+    return m
+  }, [results])
+  // Pathway → BRITE category, merged the same way (Standardize + Compare).
+  const kcatAll = useMemo(() => {
+    const m: Record<string, string> = {}
+    for (const r of Object.values(results)) {
+      const kc =
+        r.kind === 'standardize' ? r.std.keggCategories : r.kind === 'compare' ? r.keggCategories : undefined
+      if (kc) for (const k in kc) if (!(k in m)) m[k] = kc[k]
+    }
+    return m
+  }, [results])
   // Genes grouped pathway-CATEGORY → PATHWAY → gene for the multi-select menu. Pathways come from the
   // merged per-gene annotationMap (keggPathway; ';'/'|'-separated); each pathway's category from the
   // merged keggCategories map (BRITE top level). A gene appears under every pathway it's annotated
   // with. Genes with no pathway → "No pathway"; pathways with no known category → "Other".
   const geneCategories = useMemo(() => {
-    const ann: Record<string, Record<string, string>> = {}
-    const kcat: Record<string, string> = {}
-    for (const r of Object.values(results)) {
-      if (r.kind !== 'compare') continue
-      for (const k in r.annotationMap) if (!(k in ann)) ann[k] = r.annotationMap[k]
-      for (const k in r.keggCategories) if (!(k in kcat)) kcat[k] = r.keggCategories[k]
-    }
+    const ann = annById
+    const kcat = kcatAll
     const NONE = 'No pathway'
     const OTHER = 'Other'
     type Gene = { id: string; label: string }
@@ -144,7 +174,7 @@ export function ResultsView(): ReactNode {
       else byPath.set(path, [gene])
     }
     for (const id in geneLabels) {
-      const gene = { id, label: geneLabels[id] }
+      const gene = { id, label: geneLabels[id], desc: pickDesc(ann[id]) }
       const paths = [
         ...new Set(
           (ann[id]?.keggPathway ?? '')
@@ -171,18 +201,14 @@ export function ResultsView(): ReactNode {
             genes: genes.sort((x, y) => byName(x.label, y.label))
           }))
       }))
-  }, [results, geneLabels])
+  }, [annById, kcatAll, geneLabels])
 
   // Genes grouped by essentiality — Essential / NA — a flat two-level tree for the menu's second
   // tab. Backed by DEG (Database of Essential Genes, essential-only), so the model is binary: a gene
   // flagged essential lands in Essential; everything else (not in DEG, or unannotated) is NA. The
   // flag is read from any per-gene annotation column whose name mentions "essential".
   const geneEssentiality = useMemo(() => {
-    const ann: Record<string, Record<string, string>> = {}
-    for (const r of Object.values(results)) {
-      if (r.kind !== 'compare') continue
-      for (const k in r.annotationMap) if (!(k in ann)) ann[k] = r.annotationMap[k]
-    }
+    const ann = annById
     // Which annotation column carries essentiality, if any.
     const essCol = [...new Set(Object.values(ann).flatMap((rec) => Object.keys(rec)))].find((c) =>
       /essential/i.test(c)
@@ -195,20 +221,21 @@ export function ResultsView(): ReactNode {
     }
     const byName = (a: string, b: string): number =>
       a.localeCompare(b, undefined, { numeric: true })
-    const buckets: Record<'Essential' | 'NA', { id: string; label: string }[]> = {
+    const buckets: Record<'Essential' | 'NA', { id: string; label: string; desc?: string }[]> = {
       Essential: [],
       NA: []
     }
     for (const id in geneLabels)
       buckets[essCol && isEssential(ann[id]?.[essCol]) ? 'Essential' : 'NA'].push({
         id,
-        label: geneLabels[id]
+        label: geneLabels[id],
+        desc: pickDesc(ann[id])
       })
     return (['Essential', 'NA'] as const).map((name) => ({
       name,
       genes: buckets[name].sort((x, y) => byName(x.label, y.label))
     }))
-  }, [results, geneLabels])
+  }, [annById, geneLabels])
 
   if (groups.length === 0) {
     return (
@@ -282,33 +309,36 @@ export function ResultsView(): ReactNode {
             })}
             {dropIndex === groups.length && dragId && <div style={styles.dropMark} />}
           </div>
-          {/* Searchable multi-select of all genes (drives the pinned selection), between the tabs
-              and the layout toggle. */}
-          <GeneSelectMenu
-            tabs={[
-              { key: 'pathway', label: 'Pathway', categories: geneCategories },
-              { key: 'essentiality', label: 'Essentiality', categories: geneEssentiality }
-            ]}
-          />
-          {/* Right-aligned dashboard layout toggle, on the tab row (not the main nav). */}
-          <button
-            onClick={toggleEdit}
-            title={editMode ? 'Done editing layout' : 'Edit dashboard layout'}
-            style={{
-              ...styles.editBtn,
-              background: editMode ? UI.accent : 'transparent',
-              color: editMode ? UI.accentText : UI.text,
-              borderColor: editMode ? UI.accent : UI.border
-            }}
-          >
-            {editMode ? 'Done' : 'Edit layout'}
-          </button>
         </div>
-        {/* Shared facet-context control for the active group, on its own row below the
-            analysis tabs — every plot derived from the comparison reads this one selection.
-            A dedicated row lets many condition switchers wrap without crowding the tabs.
-            Renders nothing for a non-faceted group. */}
-        {active && <FacetContextBar group={active} results={results} />}
+        {/* Controls row below the tabs: the shared condition switchers on the left, the gene
+            selector and layout toggle pinned right. Keeping these off the tab row lets the tabs
+            scroll horizontally on their own when many analyses don't fit, and keeps the gene
+            selector / Edit-layout controls fixed regardless of how far the tabs are scrolled.
+            FacetContextBar renders nothing for a non-faceted group — the right controls remain. */}
+        <div style={styles.controlRow}>
+          {active && <FacetContextBar group={active} results={results} />}
+          <div style={styles.controlRight}>
+            {/* Searchable multi-select of all genes (drives the pinned selection). */}
+            <GeneSelectMenu
+              tabs={[
+                { key: 'pathway', label: 'Pathway', categories: geneCategories },
+                { key: 'essentiality', label: 'Essentiality', categories: geneEssentiality }
+              ]}
+            />
+            <button
+              onClick={toggleEdit}
+              title={editMode ? 'Done editing layout' : 'Edit dashboard layout'}
+              style={{
+                ...styles.editBtn,
+                background: editMode ? UI.accent : 'transparent',
+                color: editMode ? UI.accentText : UI.text,
+                borderColor: editMode ? UI.accent : UI.border
+              }}
+            >
+              {editMode ? 'Done' : 'Edit layout'}
+            </button>
+          </div>
+        </div>
       </div>
       <div style={styles.panes}>
         {groups
@@ -462,20 +492,36 @@ const styles: Record<string, CSSProperties> = {
   panes: { flex: 1, minHeight: 0, position: 'relative' },
   pane: { position: 'absolute', inset: 0, overflow: 'auto', padding: '8px 10px 40px' },
   paneHidden: { display: 'none' },
-  // The results header: analysis tabs on top, context-condition switchers on their own
-  // row below (so many switchers wrap instead of crowding the tabs).
+  // The results header: analysis tabs on top (scrolling horizontally on overflow), then a
+  // controls row — condition switchers left, gene selector + Edit-layout right.
   header: {
     display: 'flex',
     flexDirection: 'column',
     flex: '0 0 auto',
     borderBottom: `1px solid ${UI.border}`
   },
-  // The tab row: tabs scroll on the left, the layout toggle stays pinned right.
+  // The tab row: analysis tabs only. They fill the row and scroll horizontally on overflow.
   tabRow: {
     display: 'flex',
     alignItems: 'center',
+    padding: '10px 14px 6px'
+  },
+  // Controls row under the tabs: condition switchers (left) + gene selector/Edit-layout (right).
+  controlRow: {
+    display: 'flex',
+    alignItems: 'flex-start',
+    gap: 12,
+    padding: '2px 14px 8px',
+    minWidth: 0
+  },
+  // Gene selector + layout toggle, pinned to the right of the controls row (top-aligned so they
+  // stay put when the condition switchers wrap to multiple lines).
+  controlRight: {
+    display: 'inline-flex',
+    alignItems: 'center',
     gap: 10,
-    padding: '10px 14px'
+    marginLeft: 'auto',
+    flex: '0 0 auto'
   },
   tabs: {
     display: 'flex',
@@ -509,16 +555,16 @@ const styles: Record<string, CSSProperties> = {
     borderRadius: 6,
     cursor: 'pointer'
   },
-  // Shared facet control on its own row below the tabs: one labelled pill group per context
-  // dim. Wraps to multiple lines when many switchers don't fit, rather than crowding a
-  // single row. No divider from the tabs above — the two rows read as one header block.
+  // Shared facet control, left side of the controls row: one labelled pill group per context
+  // dim. Grows to fill the space left of the right-pinned controls and wraps to multiple lines
+  // when many switchers don't fit, rather than crowding them.
   facetBar: {
     display: 'flex',
     flexWrap: 'wrap',
     alignItems: 'center',
     columnGap: 16,
     rowGap: 8,
-    padding: '2px 14px 8px',
+    flex: 1,
     minWidth: 0
   },
   facetGroup: { display: 'inline-flex', alignItems: 'center', gap: 7, flex: '0 0 auto' },

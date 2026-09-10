@@ -712,6 +712,10 @@ export function PanelBody({
       const axes = axisChoices(upstream.ctr.rows)
       const axis = axes.length > 1 ? cfg.axis : (axes[0] ?? cfg.axis)
       const present = new Set(upstream.ctr.rows.map((r) => r.uniqID))
+      // FC1/FC2 are log2 abundance when the contrast is fed by Standardize inputs, log2 fold-change
+      // when fed by Compare inputs — label the y-axis to match.
+      const yLabel =
+        upstream.ctr.valueKind === 'abundance' ? 'log₂ abundance' : 'log₂ fold change'
       return (
         <div style={styles.chart}>
           <div style={styles.stack}>
@@ -729,7 +733,13 @@ export function PanelBody({
                 {(gene) => (
                   <FacetedPlot rows={upstream.ctr.rows} exclude={[axis]} facetSel={facetSel}>
                     {(rows) => (
-                      <ResponseCompareView rows={rows} displayMap={dm} axis={axis} gene={gene} />
+                      <ResponseCompareView
+                        rows={rows}
+                        displayMap={dm}
+                        axis={axis}
+                        gene={gene}
+                        yLabel={yLabel}
+                      />
                     )}
                   </FacetedPlot>
                 )}

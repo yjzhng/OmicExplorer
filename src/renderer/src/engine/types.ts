@@ -115,6 +115,8 @@ export interface CompareResultRow {
   sd1: number | null
   sd2: number | null
   log2FC: number | null
+  /** standard error of log2FC (log2 scale) — the fold-change's uncertainty; null when < 2 reps */
+  fcSE?: number | null
   pP: number | null
   pQ: number | null
   thrsh: string

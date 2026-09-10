@@ -19,17 +19,13 @@ import {
 import { createPortal } from 'react-dom'
 
 import {
-  applyFieldRule,
   columnFacet,
-  deriveFieldRule,
-  fieldRuleSpan,
   MATRIX_PRESETS,
   parseMatrix,
   type ColumnFacet,
   type FilterSpec,
   type InteractiveRole,
   type InteractiveSampleCond,
-  type FieldRule,
   type MatrixPreset
 } from '../engine'
 import { cssVars, PALETTES, UI } from '../ui/theme'
@@ -39,7 +35,13 @@ import { isStep, type AnnotationSet, type LoadConfig } from './types'
 
 const FIELDS = ['strain', 'cmpd', 'dose', 'time', 'rep'] as const
 type Field = (typeof FIELDS)[number]
-type Rules = Partial<Record<Field, FieldRule>>
+/** A field's location in a sample name as a token-index range [start, end). This is the SINGLE
+ *  source of truth for the Conditions step — the value, the highlight and the samplesheet
+ *  "original" all derive from it (never a separately-coded value-matching heuristic). */
+type Span = [number, number]
+/** Per-sample: which token range each assigned field occupies. Stored per row (never one global
+ *  rule), so a paint on one group of rows can't disturb another group's regions. */
+type RowSpans = Partial<Record<Field, Span>>
 
 const MONO = 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace'
 
@@ -54,6 +56,10 @@ const FIELD_COLORS: Record<Field, string> = {
 
 const DELIM = '_'
 
+/** Page titles for the two condition-assignment steps (also previewed beside Next on Conditions). */
+const COND_TITLE = 'Define experimental conditions systematically'
+const SHEET_TITLE = 'Define experimental conditions manually'
+
 /** How many feature rows the step-4 DB review renders (a preview — the full DB is written on
  *  convert). Rendering every row of a large matrix is slow and needless. */
 const PREVIEW_ROWS = 200
@@ -63,17 +69,159 @@ type Col = 'include' | 'sample' | Field
 /** Extra px added to a measured content width so the input isn't cramped. */
 const COL_PAD = 12
 
-/** Character index → field whose region covers it (or null). */
-function fieldMap(name: string, rules: Rules): (Field | null)[] {
+/** Tokens of a name plus each token's char-start offset (split on the delimiter). */
+function tokenBounds(name: string): { tokens: string[]; starts: number[] } {
+  const tokens = name.split(DELIM)
+  const starts: number[] = []
+  let p = 0
+  for (const t of tokens) {
+    starts.push(p)
+    p += t.length + DELIM.length
+  }
+  return { tokens, starts }
+}
+
+/** Char range [start, end) covered by a token-index span (null if out of range / empty). */
+function spanChars(name: string, [i, j]: Span): [number, number] | null {
+  const { tokens, starts } = tokenBounds(name)
+  if (i < 0 || j > tokens.length || i >= j) return null
+  return [starts[i], starts[j - 1] + tokens[j - 1].length]
+}
+
+/** The value a span extracts from a name (its tokens joined by the delimiter). */
+function spanValue(name: string, span: Span): string {
+  const { tokens } = tokenBounds(name)
+  if (span[0] < 0 || span[1] > tokens.length || span[0] >= span[1]) return ''
+  return tokens.slice(span[0], span[1]).join(DELIM)
+}
+
+/** Char index → field, built directly from a row's applied token spans. Because the highlight and
+ *  the extracted value come from the SAME spans, the highlight always faithfully reflects the
+ *  condition applied (and survives a later value rename, which never touches the span). */
+function fieldMapFromSpans(name: string, rowSpans: RowSpans): (Field | null)[] {
   const m: (Field | null)[] = new Array(name.length).fill(null)
   for (const f of FIELDS) {
-    const rule = rules[f]
-    if (!rule) continue
-    const span = fieldRuleSpan(name, rule)
+    const span = rowSpans[f]
     if (!span) continue
-    for (let k = span[0]; k < Math.min(span[1], name.length); k++) m[k] = f
+    const cs = spanChars(name, span)
+    if (!cs) continue
+    for (let k = cs[0]; k < cs[1] && k < name.length; k++) m[k] = f
   }
   return m
+}
+
+/** How a painted region sits relative to the conditions ALREADY painted around it (and the name's
+ *  ends), so the same paint can be re-placed on rows whose token layout differs. The reference row
+ *  tells us which painted conds sit to the RIGHT of the selection (`right`); every other painted cond
+ *  is a LEFT anchor. At apply time each row anchors to the end of the LAST (right-most) left-anchor it
+ *  carries and the start of the first right-anchor it carries — so a new cond counts from the end of
+ *  ANY existing cond on that row, not one fixed field. A side is FIRM when the selection touches its
+ *  nearest landmark with no unpainted gap (a reliable anchor); an unpainted gap is NOT reliable
+ *  across layouts, so that side isn't firm. */
+interface AnchorDesc {
+  /** painted fields the reference row had to the RIGHT of the selection (bound the region's right
+   *  edge on each row); every OTHER painted cond is treated as a left anchor. */
+  right: Field[]
+  leftFirm: boolean
+  leftGap: number
+  rightFirm: boolean
+  rightGap: number
+  /** selection length in tokens (used for fixed-length one-sided anchoring) */
+  len: number
+}
+
+/** Derive an anchor for the token range [tokStart, tokEnd) painted on `name`, from that row's other
+ *  painted spans (the field being painted is excluded so its own prior region never anchors it). The
+ *  string's start/end are the implicit outermost landmarks. */
+function deriveAnchor(
+  name: string,
+  tokStart: number,
+  tokEnd: number,
+  rowSpans: RowSpans,
+  field: Field
+): AnchorDesc {
+  const N = name.split(DELIM).length
+  const right: Field[] = []
+  let leftEnd = 0 // nearest painted-cond end to the left of the selection (string start if none)
+  let rightStart = N // nearest painted-cond start to the right (string end if none)
+  for (const f of FIELDS) {
+    if (f === field) continue
+    const span = rowSpans[f]
+    if (!span) continue
+    if (span[0] >= tokEnd) {
+      right.push(f)
+      if (span[0] < rightStart) rightStart = span[0]
+    } else if (span[1] <= tokStart && span[1] > leftEnd) {
+      leftEnd = span[1]
+    }
+  }
+  return {
+    right,
+    leftFirm: tokStart === leftEnd,
+    leftGap: tokStart - leftEnd,
+    rightFirm: tokEnd === rightStart,
+    rightGap: rightStart - tokEnd,
+    len: tokEnd - tokStart
+  }
+}
+
+/** Place an anchor on a row: the left base is the end of the LAST (right-most) painted cond that
+ *  isn't a right-anchor; the right base is the start of the nearest painted right-anchor present
+ *  (else the string end). So the paint counts from the end of any existing cond the row carries, not
+ *  a fixed field. Then:
+ *   • both sides firm  → fill the gap between them (variable length — captures internal delimiters
+ *                        that appear on only some rows, e.g. `cell_typeA`);
+ *   • one side firm     → keep the selection's token length from that firm side;
+ *   • neither firm      → anchor from the closer landmark, fixed length.
+ *  Finally trim to the contiguous run of tokens NOT already claimed by another field, so a paint can
+ *  never overwrite an existing one. Returns null when no placeable tokens remain. */
+function applyAnchor(name: string, rowSpans: RowSpans, desc: AnchorDesc, field: Field): Span | null {
+  const N = name.split(DELIM).length
+  const rightSet = new Set<Field>(desc.right)
+  let leftBase = 0
+  let rightBase = N
+  for (const f of FIELDS) {
+    if (f === field) continue
+    const span = rowSpans[f]
+    if (!span) continue
+    if (rightSet.has(f)) {
+      if (span[0] < rightBase) rightBase = span[0] // nearest right-anchor start
+    } else if (span[1] > leftBase) {
+      leftBase = span[1] // end of the last left-anchor cond
+    }
+  }
+  let a: number
+  let b: number
+  if (desc.leftFirm && desc.rightFirm) {
+    a = leftBase
+    b = rightBase
+  } else if (desc.leftFirm) {
+    a = leftBase
+    b = leftBase + desc.len
+  } else if (desc.rightFirm) {
+    b = rightBase
+    a = rightBase - desc.len
+  } else if (desc.leftGap <= desc.rightGap) {
+    a = leftBase + desc.leftGap
+    b = a + desc.len
+  } else {
+    b = rightBase - desc.rightGap
+    a = b - desc.len
+  }
+  a = Math.max(0, Math.min(a, N))
+  b = Math.max(0, Math.min(b, N))
+  if (a >= b) return null
+  const occupied = new Set<number>()
+  for (const f of FIELDS) {
+    if (f === field) continue
+    const span = rowSpans[f]
+    if (!span) continue
+    for (let k = span[0]; k < span[1]; k++) occupied.add(k)
+  }
+  while (a < b && occupied.has(a)) a++
+  let end = a
+  while (end < b && !occupied.has(end)) end++
+  return a < end ? [a, end] : null
 }
 
 /** Split a name into consecutive same-field runs. */
@@ -93,16 +241,25 @@ function fieldRuns(
   return out
 }
 
-/** Sample name with each learned field's region highlighted in its colour. Kept as inline
- *  spans so container-relative offsets still resolve for teaching. */
-function HighlightedName({ name, rules }: { name: string; rules: Rules }): ReactNode {
+/** Static name with each region coloured by a char→field map. `faint` uses a lower-opacity fill for
+ *  the greyed-out inactive rows (region still shown, just de-emphasised). */
+function PaintedName({
+  name,
+  map,
+  faint
+}: {
+  name: string
+  map: (Field | null)[]
+  faint?: boolean
+}): ReactNode {
+  const alpha = faint ? '2b' : '59'
   return (
     <>
-      {fieldRuns(name, fieldMap(name, rules)).map((r, i) =>
+      {fieldRuns(name, map).map((r, i) =>
         r.field ? (
           <mark
             key={i}
-            style={{ background: `${FIELD_COLORS[r.field]}59`, color: 'inherit', padding: 0 }}
+            style={{ background: `${FIELD_COLORS[r.field]}${alpha}`, color: 'inherit', padding: 0 }}
           >
             {r.text}
           </mark>
@@ -117,10 +274,10 @@ function HighlightedName({ name, rules }: { name: string; rules: Rules }): React
 /** Ruler for the strip above the table: the first sample's text is hidden (reserving identical
  *  monospace widths) and each annotated region gets a centred, visible field label — so labels
  *  live above the table region, aligned to the substring in the first row below. */
-function RulerName({ name, rules }: { name: string; rules: Rules }): ReactNode {
+function RulerName({ name, map }: { name: string; map: (Field | null)[] }): ReactNode {
   return (
     <>
-      {fieldRuns(name, fieldMap(name, rules)).map((r, i) =>
+      {fieldRuns(name, map).map((r, i) =>
         r.field ? (
           <span key={i} style={{ position: 'relative', visibility: 'hidden' }}>
             {r.text}
@@ -159,14 +316,16 @@ const rulerLabel: CSSProperties = {
  *  regions show in their field colour; hover/drag previews in the active field's colour. */
 function TeacherRow({
   name,
-  rules,
+  map,
   armed,
   onAnnotate
 }: {
   name: string
-  rules: Rules
+  /** char→field of this row's ALREADY-APPLIED regions (per-row, so painting one subset never
+   *  changes another row's highlight). */
+  map: (Field | null)[]
   armed: Field | null
-  onAnnotate: (charStart: number, charEnd: number) => void
+  onAnnotate: (tokStart: number, tokEnd: number) => void
 }): ReactNode {
   const [drag, setDrag] = useState<{ a: number; f: number } | null>(null)
   const [hover, setHover] = useState<number | null>(null)
@@ -177,12 +336,11 @@ function TeacherRow({
     starts.push(p)
     p += t.length + DELIM.length
   }
-  const map = fieldMap(name, rules)
   const lo = drag ? Math.min(drag.a, drag.f) : -1
   const hi = drag ? Math.max(drag.a, drag.f) : -1
 
   const finish = (): void => {
-    if (drag && armed) onAnnotate(starts[lo], starts[hi] + tokens[hi].length)
+    if (drag && armed) onAnnotate(lo, hi + 1)
     setDrag(null)
   }
   // `fallback` is the idle background: a faint chip for tokens (so token boundaries read as
@@ -240,7 +398,7 @@ const CHIP_BG = 'rgba(128,128,128,0.16)'
 
 /** A scroll box (with a max height) that shows a soft shadow on any edge where content is
  *  scrolled out of view — so it's clear when the table extends past the visible area. */
-function ScrollFade({ children }: { children: ReactNode }): ReactNode {
+function ScrollFade({ children, fill = true }: { children: ReactNode; fill?: boolean }): ReactNode {
   const scrollRef = useRef<HTMLDivElement>(null)
   const contentRef = useRef<HTMLDivElement>(null)
   const [edges, setEdges] = useState({ top: false, bottom: false, left: false, right: false })
@@ -277,7 +435,9 @@ function ScrollFade({ children }: { children: ReactNode }): ReactNode {
     return () => ro.disconnect()
   }, [update])
   return (
-    <div style={styles.fadeWrap}>
+    // fill=false: take natural height (no flex cap) so the surrounding page scrolls as one, instead
+    // of this box shrinking to a nested scroll region.
+    <div style={{ ...styles.fadeWrap, ...(fill ? null : { flex: '0 0 auto' }) }}>
       <div ref={scrollRef} onScroll={update} style={styles.fadeScroll}>
         <div ref={contentRef}>{children}</div>
       </div>
@@ -514,9 +674,9 @@ export function InteractiveImportDialog({ id, onClose }: { id: string; onClose: 
   const metaCols = columns.filter((c) => roles[c] === 'meta')
   const filterCols = columns.filter((c) => roles[c] === 'filter')
   const filters = interactive?.filters ?? {}
-  // Learned condition-name regions (Conditions step). Persisted in config like column roles, so
-  // reopening the wizard restores the highlights and the applied conditions read back together.
-  const rules: Rules = (interactive?.rules as Rules | undefined) ?? {}
+  // Per-sample applied token spans (Conditions step). Persisted in config like column roles, so
+  // reopening restores the highlights; the value, highlight and "original" all derive from these.
+  const spans: Record<string, RowSpans> = (interactive?.spans as Record<string, RowSpans>) ?? {}
   // Bulk commit — the Filtering step edits a local draft and writes it all at once on Apply/Reset.
   const setFilters = (next: Record<string, FilterSpec>): void => {
     setInteractive(id, { filters: next })
@@ -564,27 +724,51 @@ export function InteractiveImportDialog({ id, onClose }: { id: string; onClose: 
     setInteractive(id, { conditions: next })
   }
 
-  // Tag the active field from a token/char range on the FIRST sample header, apply to every
-  // sample. Re-tagging the same range clears the field.
-  const annotate = (charStart: number, charEnd: number): void => {
+  // Tag the active field from a token range painted on `refName` (any active row). The region is
+  // anchored relative to that row's already-painted neighbours (see deriveAnchor) and re-placed on
+  // each ACTIVE row against ITS OWN layout — so rows with internal underscores on only some names
+  // (cellA vs cell_typeA) are tagged correctly without disturbing an existing paint. Each row keeps
+  // its own span; nothing is applied globally. Re-tagging a field's exact region clears it.
+  const annotate = (
+    refName: string,
+    tokStart: number,
+    tokEnd: number,
+    activeSamples: string[]
+  ): void => {
     const field = armed
-    if (!field || sampleCols.length === 0) return
-    const rule = deriveFieldRule(sampleCols[0], charStart, charEnd)
-    if (!rule) return
-    const cur = rules[field]
-    const same = cur ? JSON.stringify(cur) === JSON.stringify(rule) : false
+    if (!field || activeSamples.length === 0) return
+    const refSpans = spans[refName] ?? {}
+    // Re-painting a field's own current region (on the row it was derived from) clears it.
+    const existing = refSpans[field]
+    const same = !!existing && existing[0] === tokStart && existing[1] === tokEnd
+    const desc = deriveAnchor(refName, tokStart, tokEnd, refSpans, field)
     const nextConditions: Record<string, InteractiveSampleCond> = { ...conditions }
-    for (const sc of sampleCols) {
+    const nextSpans: Record<string, RowSpans> = { ...spans }
+    let hit = 0
+    for (const sc of activeSamples) {
       const base = nextConditions[sc] ?? blank(sc)
-      nextConditions[sc] = { ...base, [field]: same ? '' : applyFieldRule(sc, rule) }
+      const rowSpans: RowSpans = { ...(nextSpans[sc] ?? {}) }
+      if (same) {
+        delete rowSpans[field]
+        nextConditions[sc] = { ...base, [field]: '' }
+      } else {
+        const span = applyAnchor(sc, rowSpans, desc, field)
+        if (!span) continue
+        rowSpans[field] = span
+        nextConditions[sc] = { ...base, [field]: spanValue(sc, span) }
+        hit++
+      }
+      nextSpans[sc] = rowSpans
     }
-    // Persist the learned region alongside the applied conditions in one patch, so both are
-    // remembered together (re-tagging the same region clears the field's rule).
-    const nextRules: Rules = { ...rules }
-    if (same) delete nextRules[field]
-    else nextRules[field] = rule
-    setInteractive(id, { conditions: nextConditions, rules: nextRules as Record<string, FieldRule> })
-    setMsg(same ? `Cleared ${field}` : `Applied ${field} to ${sampleCols.length} samples`)
+    setInteractive(id, {
+      conditions: nextConditions,
+      spans: nextSpans as Record<string, Partial<Record<string, [number, number]>>>
+    })
+    setMsg(
+      same
+        ? `Cleared ${field} on ${activeSamples.length} sample${activeSamples.length > 1 ? 's' : ''}`
+        : `Applied ${field} to ${hit} sample${hit === 1 ? '' : 's'}`
+    )
   }
 
   // Read the current matrix and (re)seed the column classification using a preset.
@@ -873,7 +1057,7 @@ export function InteractiveImportDialog({ id, onClose }: { id: string; onClose: 
             (sampleCols.length > 0 ? (
               <Stage1
                 samples={samples}
-                rules={rules}
+                spans={spans}
                 armed={armed}
                 setArmed={setArmed}
                 onAnnotate={annotate}
@@ -884,7 +1068,7 @@ export function InteractiveImportDialog({ id, onClose }: { id: string; onClose: 
           {stage === 4 && (
             <Stage2
               samples={samples}
-              rules={rules}
+              spans={spans}
               setCell={setCell}
               onRenameValue={renameConditionValue}
             />
@@ -926,6 +1110,8 @@ export function InteractiveImportDialog({ id, onClose }: { id: string; onClose: 
           )}
           {stage < 5 ? (
             <>
+              {/* On the Conditions step, preview what Next leads to (the manual samplesheet page). */}
+              {stage === 3 && <span style={styles.nextPreview}>Next: {SHEET_TITLE}</span>}
               {nextBlock && <span style={styles.nextBlock}>{nextBlock}</span>}
               <button
                 style={{ ...styles.btnPrimary, opacity: canNext ? 1 : 0.5 }}
@@ -1499,31 +1685,65 @@ function Step4Metadata({
  *  point the user at where to highlight. */
 function Stage1({
   samples,
-  rules,
+  spans,
   armed,
   setArmed,
   onAnnotate
 }: {
   samples: InteractiveSampleCond[]
-  rules: Rules
+  spans: Record<string, RowSpans>
   armed: Field | null
   setArmed: (f: Field | null) => void
-  onAnnotate: (charStart: number, charEnd: number) => void
+  onAnnotate: (refName: string, tokStart: number, tokEnd: number, activeSamples: string[]) => void
 }): ReactNode {
+  // Rows the paint action applies to (and that are editable). Tracked as the INACTIVE set so a
+  // freshly-appearing sample defaults to active — empty set = all active = the original behaviour.
+  // Uncheck rows whose names follow a different token layout to tag them independently.
+  const [inactive, setInactive] = useState<Set<string>>(() => new Set())
+  // Anchor for shift-click range selection: the last row toggled by a plain click.
+  const anchorRef = useRef<number | null>(null)
+  // Toggle one row, or — with Shift held — apply the clicked row's resulting state to every row
+  // between the anchor and this one (inclusive), like a typical list multi-select.
+  const clickRow = (index: number, shift: boolean): void => {
+    const name = samples[index].sample
+    const willActivate = inactive.has(name) // currently inactive ⇒ this click activates it
+    if (shift && anchorRef.current != null) {
+      const [a, b] = [anchorRef.current, index].sort((x, y) => x - y)
+      setInactive((prev) => {
+        const next = new Set(prev)
+        for (let i = a; i <= b; i++) {
+          const nm = samples[i].sample
+          if (willActivate) next.delete(nm)
+          else next.add(nm)
+        }
+        return next
+      })
+    } else {
+      setInactive((prev) => {
+        const next = new Set(prev)
+        if (next.has(name)) next.delete(name)
+        else next.add(name)
+        return next
+      })
+    }
+    anchorRef.current = index
+  }
+  const activeSamples = samples.filter((s) => !inactive.has(s.sample)).map((s) => s.sample)
   return (
     <>
+      <div style={styles.stageTitle}>{COND_TITLE}</div>
       <div style={styles.hint}>
-        Click a field to activate it, then click a token in the first (bright) row to tag it — or
-        drag across tokens for a multi-part value. Click it again to clear. The region is read from
-        every row; fix exceptions in the next step.
+        Click a field to activate it, then click/drag tokens on a row to tag it. A tag is applied to
+        every <b>checked</b> row — uncheck rows whose names use a different layout (their existing
+        tags are kept) and tag them separately. Click a tag again to clear it.
       </div>
       <div style={styles.chips}>
         {FIELDS.map((f) => {
           const on = armed === f
-          // `applied` = this condition has a learned region (it's been tagged). An applied chip is
-          // tinted in the field colour; the currently-armed chip is the SAME colour but a stronger
-          // opacity, so the current selection stands out from the merely-applied ones.
-          const applied = !!rules[f]
+          // `applied` = at least one sample has this field tagged. An applied chip is tinted in the
+          // field colour; the currently-armed chip is the SAME colour but a stronger opacity, so the
+          // current selection stands out from the merely-applied ones.
+          const applied = samples.some((s) => spans[s.sample]?.[f] != null)
           return (
             <button
               key={f}
@@ -1547,25 +1767,77 @@ function Stage1({
         <table style={styles.nameTable}>
           <thead>
             <tr>
+              <td style={{ ...styles.checkCell, ...styles.rulerCheckCell }}>
+                {/* Select / deselect all rows (indeterminate when only some are active). */}
+                <input
+                  type="checkbox"
+                  ref={(el) => {
+                    if (el) el.indeterminate = activeSamples.length > 0 && activeSamples.length < samples.length
+                  }}
+                  checked={activeSamples.length === samples.length}
+                  onChange={() =>
+                    setInactive(
+                      activeSamples.length === samples.length
+                        ? new Set(samples.map((s) => s.sample)) // all active → deselect all
+                        : new Set() // some/none active → select all
+                    )
+                  }
+                  title="Select / deselect all rows"
+                  style={{ accentColor: UI.accent, cursor: 'pointer' }}
+                />
+              </td>
               <td style={styles.rulerCell}>
-                <RulerName name={samples[0].sample} rules={rules} />
+                <RulerName
+                  name={samples[0].sample}
+                  map={fieldMapFromSpans(samples[0].sample, spans[samples[0].sample] ?? {})}
+                />
               </td>
             </tr>
           </thead>
           <tbody>
-            {samples.map((s, i) =>
-              i === 0 ? (
+            {samples.map((s, index) => {
+              const active = !inactive.has(s.sample)
+              return (
                 <tr key={s.sample}>
-                  <TeacherRow name={s.sample} rules={rules} armed={armed} onAnnotate={onAnnotate} />
-                </tr>
-              ) : (
-                <tr key={s.sample}>
-                  <td style={{ ...styles.nameCell, ...styles.dimCell }}>
-                    <HighlightedName name={s.sample} rules={rules} />
+                  <td style={styles.checkCell}>
+                    <input
+                      type="checkbox"
+                      checked={active}
+                      // Handle in onClick (carries shiftKey); onChange is a no-op to keep it a
+                      // controlled input. Space-toggling fires a click too, so keyboard still works.
+                      onChange={() => {}}
+                      onClick={(e) => clickRow(index, e.shiftKey)}
+                      title={
+                        active
+                          ? 'Active — a paint applies to this row (Shift-click to select a range)'
+                          : 'Inactive — excluded from a paint (Shift-click to select a range)'
+                      }
+                      style={{ accentColor: UI.accent, cursor: 'pointer' }}
+                    />
                   </td>
+                  {active ? (
+                    // Active: editable, highlighted by its OWN applied spans. Painting derives the
+                    // region from this row and re-places it on every active row.
+                    <TeacherRow
+                      name={s.sample}
+                      map={fieldMapFromSpans(s.sample, spans[s.sample] ?? {})}
+                      armed={armed}
+                      onAnnotate={(st, en) => onAnnotate(s.sample, st, en, activeSamples)}
+                    />
+                  ) : (
+                    // Inactive: greyed-out, non-editable, but still shows its ALREADY-painted spans
+                    // (faint) — excluded from the paint, its existing tags are left untouched.
+                    <td style={{ ...styles.nameCell, ...styles.dimCell }}>
+                      <PaintedName
+                        name={s.sample}
+                        map={fieldMapFromSpans(s.sample, spans[s.sample] ?? {})}
+                        faint
+                      />
+                    </td>
+                  )}
                 </tr>
               )
-            )}
+            })}
           </tbody>
         </table>
       </div>
@@ -1615,7 +1887,12 @@ function ValueRefactor({
               }}
             />
             {changed && (
-              <span style={styles.refactorWas} title={`Original: ${orig || '(empty)'}`}>
+              // Cap the width to the chip's character count so the original never runs wider than
+              // the input above it (a smaller font, so it stays visually within the chip).
+              <span
+                style={{ ...styles.refactorWas, maxWidth: `${Math.max(v.length + 1, 4)}ch` }}
+                title={`Original: ${orig || '(empty)'}`}
+              >
                 {orig === '' ? '(empty)' : orig}
               </span>
             )}
@@ -1630,12 +1907,13 @@ function ValueRefactor({
  *  refactor panel to bulk-rename a condition value across every sample at once. */
 function Stage2({
   samples,
-  rules,
+  spans,
   setCell,
   onRenameValue
 }: {
   samples: InteractiveSampleCond[]
-  rules: Rules
+  /** sample header → field → applied token span (the source of the raw "original" value) */
+  spans: Record<string, RowSpans>
   setCell: (i: number, key: keyof InteractiveSampleCond, value: string | boolean) => void
   onRenameValue: (field: Field, oldVal: string, newVal: string) => void
 }): ReactNode {
@@ -1651,18 +1929,18 @@ function Stage2({
       (a, b) => a.localeCompare(b, undefined, { numeric: true })
     )
   }))
-  // The ORIGINAL value behind each current value, derived from the persisted region rules by
-  // re-parsing every sample name (applyFieldRule) — independent of any refactor. So a changed
-  // value's original is shown even after reopening a completed import. Per field: current → the
-  // distinct original(s) that differ from it (joined when a rename merged several).
+  // The ORIGINAL value behind each current value — the raw token(s) the field's span extracts from
+  // the sample name. It comes from the same per-row span the highlight uses, so it's exact for every
+  // layout and unaffected by a rename (which changes the value, not the span). Per field: current →
+  // the distinct original(s) that differ from it.
   const origByField: Record<string, Record<string, string | undefined>> = {}
   for (const f of activeFields) {
-    const rule = rules[f]
     const bucket: Record<string, Set<string>> = {}
     for (const s of samples) {
       const cur = String(s[f] ?? '').trim()
       if (cur === '') continue
-      const orig = rule ? applyFieldRule(s.sample, rule) : cur
+      const span = spans[s.sample]?.[f]
+      const orig = span ? spanValue(s.sample, span) : cur
       ;(bucket[cur] ??= new Set()).add(orig)
     }
     const resolved: Record<string, string | undefined> = {}
@@ -1711,6 +1989,7 @@ function Stage2({
 
   return (
     <>
+      <div style={styles.stageTitle}>{SHEET_TITLE}</div>
       <div style={styles.hint}>
         Review the parsed conditions and correct any cell. Drag a column border to resize; uncheck a
         row to drop it.
@@ -1736,7 +2015,9 @@ function Stage2({
         </>
       )}
       <div style={styles.tableTitle}>Condition samplesheet</div>
-      <ScrollFade>
+      {/* fill=false so the table takes its natural height and the whole dialog body scrolls as one —
+          the refactor panel growing then scrolls the page rather than shrinking this table. */}
+      <ScrollFade fill={false}>
         {/* minWidth:0 (not the shared grid's 100%) so columns fit their content — the sample
             column sizes to the longest sample name instead of stretching to fill the modal. */}
         <table style={{ ...styles.grid, tableLayout: fixed ? 'fixed' : 'auto', minWidth: 0 }}>
@@ -2313,6 +2594,8 @@ const styles: Record<string, CSSProperties> = {
   filterDirty: { fontSize: 11, color: '#e2b93b', fontStyle: 'italic' },
   // Reason the Next button is disabled, shown just to its left.
   nextBlock: { fontSize: 11, color: '#e2b93b', alignSelf: 'center', textAlign: 'right', maxWidth: 320 },
+  nextPreview: { fontSize: 12, color: UI.textMuted, alignSelf: 'center', textAlign: 'right' },
+  stageTitle: { fontSize: 15, fontWeight: 700, color: UI.text, marginBottom: 2 },
   filterTools: { display: 'flex', gap: 10 },
   filterLink: {
     background: 'transparent',
@@ -2537,9 +2820,20 @@ const styles: Record<string, CSSProperties> = {
     borderBottom: `1px solid ${UI.border}`
   },
   nameCell: { padding: '3px 10px', whiteSpace: 'nowrap', borderBottom: `1px solid ${UI.border}` },
-  // First row: light/raised; tokens are clicked (not text-selected).
+  // Narrow leading column holding each row's active-checkbox (content-sized).
+  checkCell: {
+    width: 1,
+    padding: '3px 6px 3px 4px',
+    textAlign: 'center',
+    verticalAlign: 'middle',
+    borderBottom: `1px solid ${UI.border}`
+  },
+  // Header cell for the select-all checkbox: sticky like the ruler, checkbox at the bottom so it
+  // sits by the sample-name baseline rather than up in the angled-label headroom.
+  rulerCheckCell: { position: 'sticky', top: 0, background: UI.panel, verticalAlign: 'bottom', paddingBottom: 3 },
+  // Active sample row: light/raised; tokens are clicked to tag (not text-selected).
   teachCell: { userSelect: 'none', background: UI.panelRaised },
-  // Remaining rows: dimmer background + muted text, inert — just showing the applied highlights.
+  // Inactive row: greyed background + muted text, non-editable — shows its faint existing tags only.
   dimCell: { userSelect: 'none', background: UI.panelAlt, color: UI.textMuted },
   confirm: {
     display: 'inline-flex',

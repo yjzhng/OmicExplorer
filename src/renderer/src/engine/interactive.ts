@@ -410,7 +410,9 @@ export function colsWithRole(
 }
 
 /** Build the three standard inputs from the user's column roles + per-sample conditions.
- *  Sample IDs are the raw column headers; the `label` column becomes the DB `gene` column. */
+ *  Sample IDs are the raw column headers; the `label` column becomes the DB `gene` (display name)
+ *  column — or, when no Name column was assigned, the UniProt-fetched gene name if annotations
+ *  were fetched. */
 export function buildStandardInputs(
   matrixText: string,
   spec: {
@@ -459,12 +461,13 @@ export function buildStandardInputs(
   const dbCols = ['uniqID', 'gene', ...metaCols, ...annFields, ...(annTaxon ? ['taxon'] : [])]
   const dbRows = rows.map((r) => {
     const uniqID = (r[idCol] ?? '').trim()
-    const out: Row = {
-      uniqID,
-      gene: labelCol ? (r[labelCol] ?? '').trim() : ''
-    }
-    for (const c of metaCols) out[c] = (r[c] ?? '').trim()
     const ann = annById[uniqID]
+    // Display name (DB `gene`) priority: the user's Name column value, else — when no Name column
+    // was assigned, or the cell is blank — the UniProt-fetched gene name (annotation `geneName`).
+    // Still empty ⇒ ingest falls back to locus_tag, then the ID.
+    const labelVal = labelCol ? (r[labelCol] ?? '').trim() : ''
+    const out: Row = { uniqID, gene: labelVal || (ann?.geneName ?? '').trim() }
+    for (const c of metaCols) out[c] = (r[c] ?? '').trim()
     for (const f of annFields) out[f] = ann?.[f] ?? ''
     if (annTaxon) out.taxon = String(annTaxon)
     return out

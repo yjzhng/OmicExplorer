@@ -29,7 +29,7 @@ export function DumbbellView({
   const hoverId = useSelection((s) => s.hoverId)
   const pinnedIds = useSelection((s) => s.pinnedIds)
 
-  const { data, layout } = useMemo(() => {
+  const { data, layout, boldTicks } = useMemo(() => {
     const p = PALETTES[mode]
     // `#rrggbb` → `rgba` so the connector can be a softened (lighter) grey.
     const rgba = (hex: string, a: number): string => {
@@ -40,6 +40,9 @@ export function DumbbellView({
     if (hoverId) extra.add(hoverId)
     const dumbbell = buildDumbbell(rows, { topGenes, displayMap, focus, extra: [...extra] })
     const genes = dumbbell.rows.map((r) => r.label)
+    // uniqIDs parallel to `genes` — what the selection store keys on, so the bold restyle can
+    // match a hovered/pinned gene to its tick.
+    const geneUniq = dumbbell.rows.map((r) => r.uniqID)
     // Numerator (FC1) dot is orange; the denominator (FC2) dot is grey — the reference side.
     const [c1, c2] = [CATEGORICAL[1], p.textMuted]
     const landscape = orient === 'landscape'
@@ -87,6 +90,11 @@ export function DumbbellView({
       categoryorder: 'array',
       // y runs bottom-up, so reverse in portrait to keep the top gene at the top.
       categoryarray: landscape ? genes : [...genes].reverse(),
+      // Tick infrastructure (array mode with explicit vals/text) so a hovered/pinned gene's label
+      // can be bolded by a ticktext restyle — see boldTicks below, matching the bubble plot.
+      tickmode: 'array',
+      tickvals: genes,
+      ticktext: genes,
       showgrid: true, // grid helps track each gene
       tickangle: landscape ? -45 : 0,
       automargin: true
@@ -104,11 +112,20 @@ export function DumbbellView({
         : { orientation: 'h', yanchor: 'bottom', y: 1.02, xanchor: 'center', x: 0.5 },
       annotations: arrows
     }
+    // Bold the gene-axis tick label of a hovered/pinned gene (x in landscape, y in portrait),
+    // applied imperatively by PlotlyChart via a ticktext restyle — same mechanism as the bubble plot.
+    const boldTicks = {
+      genesByTick: geneUniq.map((u) => [u]),
+      tickLabel: (i: number, active: boolean): string =>
+        active ? `<b>${genes[i]}</b>` : genes[i],
+      axis: (landscape ? 'x' : 'y') as 'x' | 'y'
+    }
     return {
       data: [dots('fc1', dumbbell.xLabel1, c1), dots('fc2', dumbbell.xLabel2, c2)],
-      layout: lay
+      layout: lay,
+      boldTicks
     }
   }, [rows, topGenes, displayMap, focus, orient, hoverId, pinnedIds, title, mode])
 
-  return <PlotlyChart data={data} layout={layout} />
+  return <PlotlyChart data={data} layout={layout} boldTicks={boldTicks} />
 }

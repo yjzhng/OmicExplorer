@@ -3,7 +3,15 @@ import { Fragment, useEffect, useMemo, useRef, useState, type CSSProperties } fr
 
 import { UI } from '../ui/theme'
 import { NodeConfigPanel } from './NodeConfigPanel'
-import { accentOf, categoryOf, CATEGORIES, hasSourceHandle, NODE_SPECS, plotLabel } from './registry'
+import {
+  accentOf,
+  axisAvailFromResult,
+  categoryOf,
+  CATEGORIES,
+  hasSourceHandle,
+  NODE_SPECS,
+  plotLabel
+} from './registry'
 import { useGraph } from './store'
 import { TilePicker } from './TilePicker'
 import { isCompareConfigured, isStep, normalizeCompareConfig, resolveLoadMode } from './types'
@@ -245,7 +253,7 @@ export function GraphNode({ id, data, selected: rfSelected }: NodeProps<Node<Nod
   const typeText =
     data.kind === 'plotGroup'
       ? `${spec.label} · ${(data.config as PlotGroupConfig).children.length}`
-      : spec.label
+      : plotLabel(data.kind, data.config) // dr → axis-specific (Dose-/Time-response)
   const startRename = (): void => {
     setDraft(data.name ?? '')
     setEditing(true)
@@ -339,7 +347,7 @@ export function GraphNode({ id, data, selected: rfSelected }: NodeProps<Node<Nod
           )}
           {/* Type label as a subtitle whenever there's a name, and always while editing (so the
               type stays visible as you name the tile). */}
-          {(data.name || editing) && <span style={typeSub}>{spec.label}</span>}
+          {(data.name || editing) && <span style={typeSub}>{plotLabel(data.kind, data.config)}</span>}
         </span>
         <div style={headerRight}>
           {spec.hasRun && (hovered || selected) && (
@@ -479,10 +487,18 @@ function NodeSummary({
  *  so there is a single surface at the drop point (not a separate floating menu). */
 export function PlaceholderNode({ id, data }: NodeProps<Node<PlaceholderData>>) {
   const resolvePlaceholder = useGraph((s) => s.resolvePlaceholder)
+  // Gate dose/time-response options by what the upstream data actually carries (see TilePicker).
+  const upstream = useGraph((s) => (data.source ? s.results[data.source] : undefined))
+  const axes = data.source ? axisAvailFromResult(upstream) : undefined
   return (
     <div style={{ position: 'relative' }}>
       <Handle type="target" position={Position.Left} style={handleStyle} />
-      <TilePicker ops={data.ops} header="New step" onPick={(ops) => resolvePlaceholder(id, ops)} />
+      <TilePicker
+        ops={data.ops}
+        header="New step"
+        axes={axes}
+        onPick={(picks) => resolvePlaceholder(id, picks)}
+      />
     </div>
   )
 }

@@ -274,6 +274,9 @@ export interface WelchResult {
   sd2: number
   log2FC: number
   pVal: number
+  /** Standard error of log2FC on the log2 scale — the fold-change's uncertainty. NaN when a side
+   *  has < 2 replicates. */
+  fcSE: number
 }
 
 /**
@@ -341,6 +344,16 @@ export function welchTTest(
 
     const hasNum = n1 >= 1
     const hasDen = n2 >= 1
+    // SE of log2FC on the log2 scale. In log2 space it's √(v1/n1 + v2/n2); in raw space log2FC =
+    // log2(m1/m2), so propagate via the delta method (÷ ln2 per mean).
+    let fcSE = NaN
+    if (n1 >= 2 && n2 >= 2 && Number.isFinite(v1) && Number.isFinite(v2)) {
+      fcSE = transformed
+        ? Math.sqrt(v1 / n1 + v2 / n2)
+        : m1 > 0 && m2 > 0
+          ? Math.sqrt(v1 / (n1 * m1 * m1) + v2 / (n2 * m2 * m2)) / LN2
+          : NaN
+    }
     out.push({
       uniqID,
       mean1: hasNum ? mean1 : NaN,
@@ -348,7 +361,8 @@ export function welchTTest(
       sd1: hasNum && n1 >= 2 ? sd1 : NaN,
       sd2: hasDen && n2 >= 2 ? sd2 : NaN,
       log2FC: hasNum && hasDen ? log2FC : NaN,
-      pVal
+      pVal,
+      fcSE
     })
   }
   return out

@@ -16,6 +16,7 @@ import type {
   NodeCategory,
   NodeConfig,
   NodeKind,
+  NodeResult,
   ClusterConfig,
   CorrConfig,
   PlotGroupConfig,
@@ -102,10 +103,9 @@ export const NODE_SPECS: Record<NodeKind, NodeSpec> = {
     hasRun: true,
     defaultConfig: (): ContrastConfig => ({
       relationship: 'correlated',
-      source: 'split',
-      condition: 'cmpd',
-      pairNum: '',
-      pairDen: '',
+      source: 'select',
+      num: {},
+      den: {},
       match: []
     })
   },
@@ -360,6 +360,57 @@ export function plotLabel(kind: NodeKind, config?: unknown): string {
     return axis === 'time' ? 'Time-response' : 'Dose-response'
   }
   return NODE_SPECS[kind].label
+}
+
+/** One selectable entry in a plot picker. Usually one per plotting kind, but a kind with a
+ *  meaningful config variant appears as several — the `dr` plot is offered as separate
+ *  Dose-response and Time-response entries, each seeding its `axis` via `override`. Shared by the
+ *  new-step TilePicker and the add-plot menu (NodeConfigPanel) so the two stay in sync. */
+export interface PlotMenuEntry {
+  kind: NodeKind
+  label: string
+  override?: Record<string, unknown>
+}
+/** Fan one plotting kind out into its menu entries: `dr` splits into dose/time, all else is 1:1. */
+export function plotEntriesFor(kind: NodeKind): PlotMenuEntry[] {
+  return kind === 'dr'
+    ? [
+        { kind: 'dr', label: 'Dose-response', override: { axis: 'dose' } },
+        { kind: 'dr', label: 'Time-response', override: { axis: 'time' } }
+      ]
+    : [{ kind, label: NODE_SPECS[kind].label }]
+}
+/** A stable key per entry (kind + any override), so React keys and "already added" checks are
+ *  unambiguous when one kind yields several entries. */
+export function entryKey(e: PlotMenuEntry): string {
+  return e.override
+    ? `${e.kind}:${Object.entries(e.override).map(([k, v]) => `${k}=${v}`).join(',')}`
+    : e.kind
+}
+
+/** Which response axes the upstream data actually carries — for gating dose/time plot options. */
+export type AxisAvail = { dose: boolean; time: boolean }
+/** Derive it from the plot's upstream result: a Standardize's `activeConditions` is authoritative;
+ *  Compare/Contrast are read from their rows. Unknown upstream (not yet run) ⇒ allow both, so we
+ *  never hide an option we can't rule out. */
+export function axisAvailFromResult(r: NodeResult | undefined): AxisAvail {
+  if (!r) return { dose: true, time: true }
+  if (r.kind === 'standardize') {
+    const ac = r.std.activeConditions ?? []
+    return { dose: ac.includes('dose'), time: ac.includes('time') }
+  }
+  const rows = r.kind === 'compare' ? r.cmp.rows : r.kind === 'contrast' ? r.ctr.rows : null
+  if (!rows) return { dose: true, time: true }
+  return { dose: rows.some((x) => x.dose != null), time: rows.some((x) => x.time != null) }
+}
+/** Drop plot entries the upstream can't support: a `dr` axis needs that axis active; `tdr`
+ *  (Time & Dose-response) needs BOTH. Every other entry passes through. */
+export function gatePlotEntries(entries: PlotMenuEntry[], avail: AxisAvail): PlotMenuEntry[] {
+  return entries.filter((e) => {
+    if (e.kind === 'dr') return (e.override?.axis === 'time' ? avail.time : avail.dose)
+    if (e.kind === 'tdr') return avail.dose && avail.time
+    return true
+  })
 }
 /** True if an edge from `source` op into `target` op is allowed. */
 export function canConnect(source: NodeKind, target: NodeKind): boolean {

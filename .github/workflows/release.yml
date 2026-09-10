@@ -1,6 +1,6 @@
 # Builds the installers on native runners (no Wine) and attaches them to the
 # GitHub release for the tag:
-#   • macOS  — arm64 + x64 .dmg   (macos-latest)
+#   • macOS  — arm64 + x64 .dmg        (macos-latest)
 #   • Windows — x64 NSIS .exe      (windows-latest)
 # Runs automatically when a v* tag is pushed, or manually (workflow_dispatch)
 # against an existing tag — use the manual run to add Windows to v0.1.0.
@@ -23,19 +23,53 @@ env:
 
 jobs:
   # Make sure a release exists for the tag before the build jobs upload to it,
-  # so the two OS jobs don't race to create it. Existing releases (e.g. the
-  # hand-written v0.1.0 notes) are left untouched.
+  # so the two OS jobs don't race to create it. The release body is assembled from
+  # version-controlled files (the canonical source — the repo, not the web UI, owns it):
+  #   releases/instruction.md  — the shared general section (intro + install), reused verbatim
+  #                              at the TOP of every release.
+  #   releases/<tag>.md        — that version's notes only (features / fixes / known issues),
+  #                              appended UNDER the general section.
+  # Full body = instruction.md + a blank line + the <tag>.md notes wrapped in a <details> block
+  # (collapsed by default — so the shared install section stays visible and the per-version
+  # changelog is one click away, matching the v0.2.0 style). With no <tag>.md the tag falls
+  # back to auto-generated notes (from commits) so it still ships.
   ensure-release:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ env.TAG }}
-      - name: Ensure the release exists
+      - name: Ensure the release exists (body = instruction.md + releases/<tag>.md)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          if ! gh release view "$TAG" >/dev/null 2>&1; then
+          notes="releases/${TAG}.md"
+          instr="releases/instruction.md"
+          exists=$(gh release view "$TAG" >/dev/null 2>&1 && echo yes || echo no)
+          if [ -f "$notes" ]; then
+            # Assemble the full body: shared general section first, then this version's notes
+            # inside a default-collapsed <details> (blank lines around the content so GitHub
+            # renders the Markdown inside the disclosure).
+            body="$(mktemp)"
+            if [ -f "$instr" ]; then
+              cat "$instr" >> "$body"
+              printf '\n\n' >> "$body"
+            fi
+            printf '<details>\n<summary><b>What'"'"'s new in %s</b></summary>\n\n' "${TAG#v}" >> "$body"
+            cat "$notes" >> "$body"
+            printf '\n</details>\n' >> "$body"
+            # instruction.md stamps the version-specific asset filenames with a {{VERSION}} token
+            # (it's shared across releases) — fill it with this tag's version.
+            sed -i "s/{{VERSION}}/${TAG#v}/g" "$body"
+            # Repo files are the source of truth: create with the body, or sync an existing
+            # release's body from it (overwrites any web edits for this tag).
+            if [ "$exists" = no ]; then
+              gh release create "$TAG" --title "OmicExplorer ${TAG#v}" --notes-file "$body"
+            else
+              gh release edit "$TAG" --notes-file "$body"
+            fi
+          elif [ "$exists" = no ]; then
+            # No version notes file → auto-generated notes so the tag still ships.
             gh release create "$TAG" --title "OmicExplorer ${TAG#v}" --generate-notes
           fi
 

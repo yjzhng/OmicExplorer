@@ -18,13 +18,16 @@ import {
   parseMatrix,
   type MatrixPreset
 } from '../engine/interactive'
-import { applyThreshold, combineStandardize, crossPairs, thresholdLabel } from '../engine'
+import { applyThreshold, combineStandardize, crossPairs, thresholdLabel, VALID_CONDITIONS } from '../engine'
 import type {
+  CompareResultRow,
   CompareTableResult,
+  CondSelector,
   ConditionKey,
   ContrastResult,
   ContrastSideRow,
   Pair,
+  StandardRow,
   ThresholdConfig
 } from '../engine'
 import { EXAMPLE_LOAD_CONFIG } from './example'
@@ -41,8 +44,10 @@ import { childPanelId } from './groups'
 import { loadRecents, pushRecent, removeRecent, saveRecents, type RecentProject } from './recents'
 import { canConnect, categoryOf, maxInputsFor, NODE_SPECS } from './registry'
 import {
+  isContrastConfigured,
   isStep,
   normalizeCompareConfig,
+  resolveContrastSource,
   resolveLoadMode,
   type CompareConfig,
   type ContrastConfig,
@@ -118,7 +123,10 @@ interface GraphState {
   ) => string
   /** Materialize a placeholder into a real step (undoable). One op → a single node; two
    *  or more plotting ops → one `plotGroup` tile holding them as subcards. */
-  resolvePlaceholder: (id: string, ops: NodeKind[]) => void
+  resolvePlaceholder: (
+    id: string,
+    picks: { kind: NodeKind; override?: Record<string, unknown> }[]
+  ) => void
   /** Discard a placeholder and its pending edge (no history entry). */
   cancelPlaceholder: (id: string) => void
   deleteNode: (id: string) => void
@@ -650,10 +658,10 @@ export const useGraph = create<GraphState>()((set, get) => ({
     return id
   },
 
-  resolvePlaceholder: (id, ops) => {
+  resolvePlaceholder: (id, picks) => {
     const { nodes, edges, nextId, past } = get()
     const ph = nodes.find((n) => n.id === id)
-    if (!ph || ph.type !== 'placeholder' || ops.length === 0) return
+    if (!ph || ph.type !== 'placeholder' || picks.length === 0) return
     // Snapshot the graph as if the placeholder never existed → one clean undo step
     // that removes the finished step and its edge together.
     const baseNodes = nodes.filter((n) => n.id !== id)
@@ -666,23 +674,31 @@ export const useGraph = create<GraphState>()((set, get) => ({
       future: [],
       dirty: true
     })
-    // One op → a plain node. Multiple (all plotting) → a group tile with a subcard per op.
-    // Either way keep the placeholder's id, position, and incoming edge.
-    if (ops.length === 1) {
+    // One pick → a plain node. Multiple (all plotting) → a group tile with a subcard per pick.
+    // Either way keep the placeholder's id, position, and incoming edge. A pick's `override` seeds
+    // its config (e.g. a dr pick's axis = dose/time), on top of the kind's defaults.
+    const configFor = (pick: { kind: NodeKind; override?: Record<string, unknown> }): NodeConfig =>
+      ({ ...NODE_SPECS[pick.kind].defaultConfig(), ...(pick.override ?? {}) }) as NodeConfig
+    if (picks.length === 1) {
+      const pick = picks[0]
       set((s) => ({
-        nodes: s.nodes.map((n) => (n.id === id ? makeNode(id, ops[0], n.position) : n)),
+        nodes: s.nodes.map((n) => {
+          if (n.id !== id) return n
+          const node = makeNode(id, pick.kind, n.position)
+          return { ...node, data: { ...node.data, config: configFor(pick) } }
+        }),
         selectedId: id,
         selectedSub: null
       }))
       return
     }
     const children = toChildren(
-      ops.map((kind) => ({ kind, config: NODE_SPECS[kind].defaultConfig() })),
+      picks.map((pick) => ({ kind: pick.kind, config: configFor(pick) })),
       nextId
     )
     set((s) => ({
       nodes: s.nodes.map((n) => (n.id === id ? makeGroupNode(id, n.position, children) : n)),
-      nextId: s.nextId + ops.length,
+      nextId: s.nextId + picks.length,
       selectedId: id,
       selectedSub: children[0]?.id ?? null
     }))
@@ -1340,7 +1356,7 @@ export const useGraph = create<GraphState>()((set, get) => ({
         const ups = state.upstreamIds(id)
         let ctr: ContrastResult
         let displayMap: Record<string, string>
-        if (cfg.source === 'pair') {
+        if (resolveContrastSource(cfg) === 'pair') {
           // Pair mode: two same-kind inputs joined side-by-side by uniqID + matched context —
           // two Compares → FC-vs-FC, two Standardizes → mean-log2-abundance-vs-abundance.
           if (ups.length < 2) {
@@ -1368,7 +1384,8 @@ export const useGraph = create<GraphState>()((set, get) => ({
                   signf: row.signf,
                   effect: row.effect,
                   pP: row.pP,
-                  pQ: row.pQ
+                  pQ: row.pQ,
+                  se: row.fcSE ?? null
                 }))
               : r.kind === 'standardize'
                 ? r.std.rows.map((row) => ({
@@ -1397,33 +1414,128 @@ export const useGraph = create<GraphState>()((set, get) => ({
           })
           displayMap =
             ra.kind === 'compare' ? ra.displayMap : ra.kind === 'standardize' ? ra.std.displayMap : {}
+          // Standardize sides carry log2 abundance; Compare sides carry log2 fold-change.
+          ctr = { ...ctr, valueKind: ra.kind === 'standardize' ? 'abundance' : 'fc' }
         } else {
-          // Split mode (omicViz): pool every upstream comparison's rows, then split them by two
-          // levels of `condition` (FC1 = pairNum slice, FC2 = pairDen slice).
-          const cmps = ups
-            .map((u) => state.results[u])
-            .filter((r): r is Extract<NodeResult, { kind: 'compare' }> => r?.kind === 'compare')
-          if (!cmps.length) {
-            setStatus('error', 'Connect a Compare tile and run it first.')
+          // Select mode: pool the single upstream's rows, then split them into the two EXPLICIT
+          // selections (num → FC1, den → FC2). Works on a Compare (each row's value is its log2FC)
+          // OR a Standardize (value is log2 abundance) — both become a per-row `log2FC`, so a
+          // Standardize contrast compares two abundance selections.
+          const upResults = ups.map((u) => state.results[u]).filter((r): r is NodeResult => !!r)
+          const compares = upResults.filter(
+            (r): r is Extract<NodeResult, { kind: 'compare' }> => r.kind === 'compare'
+          )
+          const stds = upResults.filter(
+            (r): r is Extract<NodeResult, { kind: 'standardize' }> => r.kind === 'standardize'
+          )
+          if (!compares.length && !stds.length) {
+            setStatus('error', 'Connect a Compare or Standardize tile and run it first.')
             return
           }
-          const pooled = cmps.flatMap((r) => r.cmp.rows)
+          const isAbundance = !compares.length // all-Standardize input → abundance split
+          // Standardize → pseudo primary rows. Replicates are aggregated per (gene × conditions) to
+          // mean log2 abundance, with the replicate SD carried as fcSE (the DR error band). This
+          // both collapses replicates cleanly and gives an honest per-condition abundance spread.
+          const pooled: CompareResultRow[] = isAbundance
+            ? (() => {
+                const groups = new Map<string, { row: StandardRow; logs: number[] }>()
+                for (const row of stds.flatMap((r) => r.std.rows)) {
+                  if (row.value == null || !(row.value > 0)) continue
+                  const key = `${row.uniqID}¦${row.strain ?? ''}¦${row.cmpd ?? ''}¦${row.dose ?? ''}¦${row.time ?? ''}`
+                  let g = groups.get(key)
+                  if (!g) groups.set(key, (g = { row, logs: [] }))
+                  g.logs.push(Math.log2(row.value))
+                }
+                return [...groups.values()].map(({ row, logs }): CompareResultRow => {
+                  const mean = logs.reduce((s, v) => s + v, 0) / logs.length
+                  // SE of the mean abundance = SD / √n (matches the fold-change SE convention).
+                  const sd =
+                    logs.length >= 2
+                      ? Math.sqrt(logs.reduce((s, v) => s + (v - mean) ** 2, 0) / (logs.length - 1)) /
+                        Math.sqrt(logs.length)
+                      : null
+                  return {
+                    uniqID: row.uniqID,
+                    cmpd: row.cmpd,
+                    dose: row.dose,
+                    time: row.time,
+                    strain: row.strain,
+                    cmp_cond: '',
+                    comparison: '',
+                    mean1: null,
+                    mean2: null,
+                    sd1: null,
+                    sd2: null,
+                    log2FC: mean,
+                    fcSE: sd,
+                    pP: null,
+                    pQ: null,
+                    thrsh: '',
+                    signf: false,
+                    effect: 'none'
+                  }
+                })
+              })()
+            : compares.flatMap((r) => r.cmp.rows)
           if (!pooled.length) {
-            setStatus('error', 'The upstream comparison has no results.')
+            setStatus('error', 'The upstream tile has no results.')
             return
           }
-          if (!cfg.pairNum || !cfg.pairDen) {
-            setStatus('error', `Choose two ${cfg.condition} levels to contrast.`)
+          if (!isContrastConfigured(cfg)) {
+            setStatus('error', 'Configure the two contrast sides (FC1/FC2) in the selector.')
+            return
+          }
+          // Each side is an EXPLICIT cond-value selection. A pooled row belongs to a side when it
+          // matches every pinned condition of that side's selector (others are free). FC1 = num side,
+          // FC2 = den side; the two are then joined on the chosen match context (runContrastPair
+          // aggregates replicates + unmatched dims), so nothing about the context is inferred.
+          const matchesSel = (row: CompareResultRow, sel: CondSelector): boolean =>
+            VALID_CONDITIONS.every((c) => {
+              const want = sel[c]
+              if (!want || want.length === 0) return true
+              const v = (row as unknown as Record<string, unknown>)[c]
+              return v != null && v !== '' && want.map(String).includes(String(v))
+            })
+          const toSideRow = (row: CompareResultRow): ContrastSideRow => ({
+            uniqID: row.uniqID,
+            strain: row.strain ?? null,
+            cmpd: row.cmpd,
+            dose: row.dose,
+            time: row.time,
+            value: row.log2FC,
+            signf: row.signf,
+            effect: row.effect,
+            pP: row.pP,
+            pQ: row.pQ,
+            se: row.fcSE ?? null
+          })
+          const selLabel = (sel: CondSelector): string => {
+            const parts = VALID_CONDITIONS.filter((c) => (sel[c]?.length ?? 0) > 0).map((c) =>
+              (sel[c] as string[]).join('/')
+            )
+            return parts.length ? parts.join(' · ') : 'all'
+          }
+          const num = cfg.num ?? {}
+          const den = cfg.den ?? {}
+          const sideA = pooled.filter((r) => matchesSel(r, num)).map(toSideRow)
+          const sideB = pooled.filter((r) => matchesSel(r, den)).map(toSideRow)
+          if (!sideA.length || !sideB.length) {
+            setStatus('error', 'One contrast side matched no rows — adjust the FC1/FC2 selections.')
             return
           }
           setStatus('running')
-          ctr = await engine.contrast({
-            rows: pooled,
-            condition: cfg.condition,
-            pair: [cfg.pairNum, cfg.pairDen],
-            relationship: cfg.relationship
+          ctr = await engine.contrastPair({
+            sideA,
+            sideB,
+            match: cfg.match ?? [],
+            relationship: cfg.relationship,
+            labelA: selLabel(num),
+            labelB: selLabel(den),
+            // Abundance slices carry no per-side significance, so the band is the only divergence call.
+            driverMask: !isAbundance
           })
-          displayMap = cmps[0].displayMap
+          displayMap = isAbundance ? stds[0].std.displayMap : compares[0].displayMap
+          ctr = { ...ctr, valueKind: isAbundance ? 'abundance' : 'fc' }
         }
         if (get().nodes.find((n) => n.id === id)?.data.status !== 'running') return // cancelled
         // Mask hidden-geneset genes non-significant (covers pair mode with no per-side driver signf).
@@ -1814,9 +1926,18 @@ export const useGraph = create<GraphState>()((set, get) => ({
   },
   deleteFolder: (id) => {
     const list = get().folders
-    if (list.length <= 1) return // a project always keeps at least one folder
-    const remaining = list.filter((f) => f.id !== id)
     const wasActive = get().activeFolderId === id
+    // A project always keeps at least one folder: deleting the only one resets it to a fresh,
+    // empty folder (no path) rather than leaving none — so the "select a data folder" guide shows.
+    if (list.length <= 1) {
+      if (!list.some((f) => f.id === id)) return
+      const fresh = newFolder('', 'Folder 1')
+      set({ folders: [fresh], dirty: true })
+      loadSlot(get, set, fresh.id)
+      void get().refreshDataFiles()
+      return
+    }
+    const remaining = list.filter((f) => f.id !== id)
     set({ folders: remaining, dirty: true })
     if (wasActive) {
       loadSlot(get, set, remaining[0].id)

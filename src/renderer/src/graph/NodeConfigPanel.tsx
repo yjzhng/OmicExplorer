@@ -19,7 +19,8 @@ import {
   previewTwoWay,
   type ConditionKey,
   type Pair,
-  type StandardizeResult
+  type StandardizeResult,
+  type StandardRow
 } from '../engine'
 import { PALETTES, UI } from '../ui/theme'
 import { useUiTheme } from '../ui/useUiTheme'
@@ -28,18 +29,26 @@ import { InteractiveImportDialog } from './InteractiveImportDialog'
 import { DEFAULT_FOCUS } from './focus'
 import {
   accentOf,
+  type AxisAvail,
+  axisAvailFromResult,
   canConnect,
   categoryOf,
   CATEGORIES,
+  entryKey,
+  gatePlotEntries,
   NODE_SPECS,
+  plotEntriesFor,
   plotLabel,
-  PLOT_SECTIONS
+  PLOT_SECTIONS,
+  type PlotMenuEntry
 } from './registry'
 import { useGraph } from './store'
 import {
   isCompareConfigured,
+  isContrastConfigured,
   isStep,
   normalizeCompareConfig,
+  resolveContrastSource,
   resolveLoadMode,
   type BarConfig,
   type BubbleConfig,
@@ -97,27 +106,9 @@ const CONDS: ConditionKey[] = ['strain', 'cmpd', 'dose', 'time']
  *  the group container itself — groups don't nest). */
 const GROUP_CHILD_OPS: NodeKind[] = CATEGORIES.plotting.ops
 
-/** One selectable entry in the add-plot menu. Usually one per plotting kind, but a kind with a
- *  meaningful config variant can appear as several — e.g. the `dr` plot is offered as separate
- *  Dose-response and Time-response entries, each seeding its `axis` via `override`. */
-interface PlotMenuEntry {
-  kind: NodeKind
-  label: string
-  override?: Record<string, unknown>
-}
-/** Ops fanned out into menu entries (in GROUP_CHILD_OPS order): `dr` splits into dose/time. */
-const PLOT_ENTRIES: PlotMenuEntry[] = GROUP_CHILD_OPS.flatMap((k): PlotMenuEntry[] =>
-  k === 'dr'
-    ? [
-        { kind: 'dr', label: 'Dose-response', override: { axis: 'dose' } },
-        { kind: 'dr', label: 'Time-response', override: { axis: 'time' } }
-      ]
-    : [{ kind: k, label: NODE_SPECS[k].label }]
-)
-/** A stable key per entry (kind + any override), so React keys and "already added" checks are
- *  unambiguous when one kind yields several entries. */
-const entryKey = (e: PlotMenuEntry): string =>
-  e.override ? `${e.kind}:${Object.entries(e.override).map(([k, v]) => `${k}=${v}`).join(',')}` : e.kind
+/** Ops fanned out into menu entries (in GROUP_CHILD_OPS order): `dr` splits into dose/time.
+ *  PlotMenuEntry / plotEntriesFor / entryKey are shared with the new-step TilePicker (see registry). */
+const PLOT_ENTRIES: PlotMenuEntry[] = GROUP_CHILD_OPS.flatMap(plotEntriesFor)
 
 /** Sub-groups for the add-plot menu, so the flat plotting list reads as labelled sections by what
  *  each plot shows. Derived from the shared PLOT_SECTIONS (single source of truth, also used by the
@@ -299,7 +290,8 @@ function AddPlotMenu({
   children,
   onAdd,
   onRemove,
-  upstreamKind
+  upstreamKind,
+  axes
 }: {
   children: PlotChild[]
   /** append one or more plot subcards (each a kind + optional config override) */
@@ -308,18 +300,24 @@ function AddPlotMenu({
   onRemove: (childIds: string[]) => void
   /** the group's upstream node kind — hides plots that can't consume it (invalid data→plot combos) */
   upstreamKind?: NodeKind
+  /** response axes the upstream data supports — gates the dose/time-response options */
+  axes?: AxisAvail
 }) {
   const { open, toggle, rect, z, p, btnRef, menuRef } = useZoomDropdown()
-  // Only offer plots the upstream can actually feed; an unwired group (no upstream) offers all.
+  const avail: AxisAvail = axes ?? { dose: true, time: true }
+  // Only offer plots the upstream can actually feed (an unwired group offers all), and gate the
+  // dose/time-response options by which response axes the upstream data actually carries.
   const menuGroups = useMemo(
     () =>
-      upstreamKind
-        ? PLOT_MENU_GROUPS.map((g) => ({
-            ...g,
-            entries: g.entries.filter((e) => canConnect(upstreamKind, e.kind))
-          })).filter((g) => g.entries.length > 0)
-        : PLOT_MENU_GROUPS,
-    [upstreamKind]
+      PLOT_MENU_GROUPS.map((g) => ({
+        ...g,
+        entries: gatePlotEntries(
+          upstreamKind ? g.entries.filter((e) => canConnect(upstreamKind, e.kind)) : g.entries,
+          avail
+        )
+      })).filter((g) => g.entries.length > 0),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [upstreamKind, avail.dose, avail.time]
   )
   const plotAccent = accentOf('plotting') // the plot-tile accent, for highlighting selected entries
   // Categories the user has collapsed (labels). All start expanded.
@@ -506,6 +504,12 @@ function GroupChildManager({ groupId, activeId }: { groupId: string; activeId: s
     const up = upId ? s.nodes.find((n) => n.id === upId) : undefined
     return up && isStep(up) ? up.data.kind : undefined
   })
+  // Response axes the upstream data carries — gates dose/time-response options in the add-plot menu.
+  const upstreamResult = useGraph((s) => {
+    const upId = s.edges.find((e) => e.target === groupId)?.source
+    return upId ? s.results[upId] : undefined
+  })
+  const axes: AxisAvail = axisAvailFromResult(upstreamResult)
   const selectChildCard = useGraph((s) => s.selectChildCard)
   const addGroupChildren = useGraph((s) => s.addGroupChildren)
   const removeGroupChildren = useGraph((s) => s.removeGroupChildren)
@@ -535,6 +539,7 @@ function GroupChildManager({ groupId, activeId }: { groupId: string; activeId: s
         <AddPlotMenu
           children={children}
           upstreamKind={upstreamKind}
+          axes={axes}
           onAdd={(specs) => addGroupChildren(groupId, specs)}
           onRemove={(ids) => removeGroupChildren(groupId, ids)}
         />
@@ -810,8 +815,11 @@ function LoadPanel({ id, config }: { id: string; config: LoadConfig }) {
             <div style={styles.hint}>
               Choose the data matrix from the data folder, or <b>Browse…</b> for a file elsewhere.
             </div>
-            <Field label="raw data">
-              <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+            {/* Stacked: the header on its own line, then the file dropdown + Browse below, so a long
+                filename gets the full panel width instead of sharing the row with the label. */}
+            <div style={styles.fieldCol}>
+              <label style={styles.fieldColLabel}>raw data</label>
+              <div style={{ display: 'flex', gap: 6, alignItems: 'center', minWidth: 0 }}>
                 <Select
                   value={config.matrix ?? ''}
                   onChange={(v) => update(id, { matrix: v || null })}
@@ -825,7 +833,7 @@ function LoadPanel({ id, config }: { id: string; config: LoadConfig }) {
                   Browse…
                 </button>
               </div>
-            </Field>
+            </div>
             <div
               style={{
                 ...styles.hint,
@@ -1069,7 +1077,13 @@ function ComparePanel({ id, config: rawConfig }: { id: string; config: CompareCo
           {configured ? readyMsg : '⚠ Not configured — pipeline blocked'}
         </div>
         {dialogOpen && std && (
-          <ComparisonDialog id={id} config={config} std={std} onClose={() => setDialogOpen(false)} />
+          <ComparisonDialog
+            id={id}
+            rows={std.rows}
+            active={std.activeConditions}
+            initial={{ num: config.num, den: config.den, match: config.match, analysis: config.analysis }}
+            onClose={() => setDialogOpen(false)}
+          />
         )}
         <Checkbox
           label="log2-transform before testing"
@@ -1140,7 +1154,8 @@ function ContrastPanel({ id, config }: { id: string; config: ContrastConfig }) {
   const edges = useGraph((s) => s.edges)
   const results = useGraph((s) => s.results)
   const nodes = useGraph((s) => s.nodes)
-  const source = config.source ?? 'split'
+  const source = resolveContrastSource(config)
+  const [dialogOpen, setDialogOpen] = useState(false)
 
   // Conditions an input actually carries (compare rows or standardize rows).
   const condsIn = (r: NodeResult | undefined): Set<ConditionKey> => {
@@ -1153,32 +1168,35 @@ function ContrastPanel({ id, config }: { id: string; config: ContrastConfig }) {
     return new Set(CONDS.filter((c) => rows.some((row) => row[c] !== '' && row[c] != null)))
   }
 
-  // ── split mode: pool the upstream comparison rows, offer each condition's levels ──
-  const { conds, levels } = useMemo(() => {
-    const rows: Array<Record<string, unknown>> = edges
+  // ── select mode: pool the single upstream's rows (conditions + uniqID) to drive the selector
+  //    window, and the conditions actually present (selectable on each side). ──
+  const { selRows, present } = useMemo(() => {
+    const raw: Array<Record<string, unknown>> = edges
       .filter((e) => e.target === id)
       .map((e) => results[e.source])
       .flatMap((r) =>
-        r?.kind === 'compare' ? (r.cmp.rows as unknown as Array<Record<string, unknown>>) : []
+        r?.kind === 'compare'
+          ? r.cmp.rows.map((x) => ({
+              uniqID: x.uniqID,
+              strain: x.strain ?? '',
+              cmpd: x.cmpd,
+              dose: x.dose,
+              time: x.time
+            }))
+          : r?.kind === 'standardize'
+            ? r.std.rows.map((x) => ({
+                uniqID: x.uniqID,
+                strain: x.strain,
+                cmpd: x.cmpd,
+                dose: x.dose,
+                time: x.time
+              }))
+            : []
       )
-    const m = {} as Record<ConditionKey, string[]>
-    for (const c of CONDS) {
-      const seen = new Set<string>()
-      for (const row of rows) {
-        const v = row[c]
-        if (v === '' || v == null) continue
-        seen.add(String(v))
-      }
-      m[c] = [...seen].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))
-    }
-    // Only conditions with ≥2 levels can be contrasted.
-    return { conds: CONDS.filter((c) => m[c].length >= 2), levels: m }
+    const present = CONDS.filter((c) => raw.some((row) => row[c] !== '' && row[c] != null))
+    return { selRows: raw as unknown as StandardRow[], present }
   }, [edges, results, id])
-
-  useEffect(() => {
-    if (source === 'split' && conds.length > 0 && !conds.includes(config.condition))
-      update(id, { condition: conds[0], pairNum: '', pairDen: '' })
-  }, [source, conds, config.condition, id, update])
+  const configured = isContrastConfigured(config)
 
   // ── pair mode: the two upstream inputs (labels + kinds) and their shared conditions ──
   const pair = useMemo(() => {
@@ -1199,7 +1217,6 @@ function ContrastPanel({ id, config }: { id: string; config: ContrastConfig }) {
     return { two, sameKind, shared, kind: k0 }
   }, [edges, results, nodes, id])
 
-  const opts = (levels[config.condition] ?? []).map((v) => ({ value: v, label: v }))
   const match = config.match ?? []
   const toggleMatch = (c: ConditionKey): void =>
     update(id, { match: match.includes(c) ? match.filter((x) => x !== c) : [...match, c] })
@@ -1207,7 +1224,7 @@ function ContrastPanel({ id, config }: { id: string; config: ContrastConfig }) {
   return (
     <Section title="Contrast">
       <div style={styles.subTabs}>
-        {(['split', 'pair'] as const).map((m) => {
+        {(['select', 'pair'] as const).map((m) => {
           const on = m === source
           return (
             <button
@@ -1220,31 +1237,40 @@ function ContrastPanel({ id, config }: { id: string; config: ContrastConfig }) {
                 borderColor: on ? UI.accent : UI.border
               }}
             >
-              {m === 'split' ? 'Split one input' : 'Pair two inputs'}
+              {m === 'select' ? 'One input' : 'Pair two inputs'}
             </button>
           )
         })}
       </div>
 
-      {source === 'split' ? (
+      {source === 'select' ? (
         <>
           <div style={{ fontSize: 11, color: UI.textMuted, lineHeight: 1.4, margin: '6px 0' }}>
-            Pools the upstream comparison rows, then contrasts two levels of one condition — e.g.
-            strain clpP vs WT within one vehicle normalisation.
+            Split one upstream input (Compare → fold-change, or Standardize → abundance) into two
+            EXPLICIT selections — FC1 vs FC2 — in the same selector window as Compare, aligned on the
+            context you choose. Nothing about the context is inferred.
           </div>
-          <Field label="condition">
-            <Select
-              value={config.condition}
-              onChange={(v) => update(id, { condition: v as ConditionKey, pairNum: '', pairDen: '' })}
-              options={(conds.length ? conds : CONDS).map((c) => ({ value: c, label: c }))}
+          <button
+            style={styles.configBtn}
+            disabled={!selRows.length}
+            title={selRows.length ? undefined : 'Connect and run an upstream Compare or Standardize first'}
+            onClick={() => setDialogOpen(true)}
+          >
+            Configure contrast…
+          </button>
+          <div style={{ ...styles.compareSummary, color: configured ? '#3fae5a' : '#e2b93b' }}>
+            {configured ? '✓ Ready, FC1/FC2 configured interactively' : '⚠ Not configured — pipeline blocked'}
+          </div>
+          {dialogOpen && selRows.length > 0 && (
+            <ComparisonDialog
+              variant="contrast"
+              id={id}
+              rows={selRows}
+              active={present}
+              initial={{ num: config.num ?? {}, den: config.den ?? {}, match: config.match ?? [] }}
+              onClose={() => setDialogOpen(false)}
             />
-          </Field>
-          <Field label="FC1 (numerator)">
-            <Select value={config.pairNum} onChange={(v) => update(id, { pairNum: v })} options={opts} />
-          </Field>
-          <Field label="FC2 (denominator)">
-            <Select value={config.pairDen} onChange={(v) => update(id, { pairDen: v })} options={opts} />
-          </Field>
+          )}
         </>
       ) : (
         <>
@@ -1699,7 +1725,9 @@ function Field({ label, children }: { label: string; children: ReactNode }) {
   return (
     <div style={styles.field}>
       <label style={styles.fieldLabel}>{label}</label>
-      <div style={{ flex: 1 }}>{children}</div>
+      {/* minWidth:0 lets a flex child (e.g. the raw-data Select) shrink and ellipsis-truncate a long
+          filename instead of growing past the fixed-width panel and being clipped by its border. */}
+      <div style={{ flex: 1, minWidth: 0 }}>{children}</div>
     </div>
   )
 }
@@ -2118,6 +2146,9 @@ const styles: Record<string, CSSProperties> = {
   subActions: { display: 'flex', alignItems: 'center', gap: 6 },
   field: { display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 },
   fieldLabel: { color: UI.textMuted, fontSize: 11, width: 90, flex: '0 0 90px' },
+  // Vertical field: header line, then its controls on the line below (full-width).
+  fieldCol: { display: 'flex', flexDirection: 'column', gap: 4, marginBottom: 8, minWidth: 0 },
+  fieldColLabel: { color: UI.textMuted, fontSize: 11 },
   input: {
     width: '100%',
     background: UI.panelAlt,

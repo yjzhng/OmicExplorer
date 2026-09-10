@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useRef,
   useState,
   type CSSProperties,
@@ -214,6 +215,36 @@ function Canvas() {
   const cascadeNodes = useGraph((s) => s.cascadeNodes)
   const duplicateNodes = useGraph((s) => s.duplicateNodes)
   const deleteNode = useGraph((s) => s.deleteNode)
+  // No data folder yet ⇒ guide the user to set one (via the folder chip) before adding steps.
+  const dataDir = useGraph((s) => s.dataDir)
+  const needsFolder = !dataDir
+  // Align the folder hint's left edge (and its ↑ arrow) to the folder chip in the top bar, whose x
+  // depends on the chips before it. Measured relative to the canvas container so the hint stays an
+  // in-canvas element (not a floating layer).
+  const canvasRef = useRef<HTMLDivElement>(null)
+  const [hintLeft, setHintLeft] = useState<number | null>(null)
+  useLayoutEffect(() => {
+    if (!needsFolder) return
+    const measure = (): void => {
+      const chip = document.getElementById('oe-folder-chip')
+      const box = canvasRef.current
+      if (!chip || !box) return
+      const c = chip.getBoundingClientRect()
+      // Align to the chip's horizontal CENTRE (the arrow is centred on this x below).
+      setHintLeft(c.left + c.width / 2 - box.getBoundingClientRect().left)
+    }
+    measure()
+    // Re-measure on anything that can shift the chip's x: window resize, and any layout change in
+    // the top bar (project/workflow name width, chip label) via a ResizeObserver on the header.
+    window.addEventListener('resize', measure)
+    const header = document.getElementById('oe-folder-chip')?.closest('header')
+    const ro = header ? new ResizeObserver(measure) : null
+    if (header && ro) ro.observe(header)
+    return () => {
+      window.removeEventListener('resize', measure)
+      ro?.disconnect()
+    }
+  }, [needsFolder])
   const { screenToFlowPosition, getViewport, setViewport } = useReactFlow()
   // Nudge the viewport for users without scroll input (the direction pad, below).
   const panBy = useCallback(
@@ -357,6 +388,7 @@ function Canvas() {
 
   return (
     <div
+      ref={canvasRef}
       style={{ ...styles.canvas, cursor: placing ? 'copy' : undefined }}
       onMouseMove={onCanvasMouseMove}
     >
@@ -407,7 +439,13 @@ function Canvas() {
         selectionKeyCode={null}
         zoomOnScroll={false}
         zoomOnPinch
-        fitView
+        // Frame existing nodes when a saved workflow is opened (Canvas mounts per project open), but
+        // do NOT auto-fit an empty canvas — the bare `fitView` prop defers and fires on the first
+        // dropped tile, recentring it instead of leaving it where it was placed. maxZoom caps a
+        // single small node from blowing up to the default 2×.
+        onInit={(instance) => {
+          if (useGraph.getState().nodes.length > 0) instance.fitView({ maxZoom: 1, padding: 0.2 })
+        }}
         proOptions={{ hideAttribution: true }}
       >
         <Background
@@ -416,18 +454,32 @@ function Canvas() {
           size={1.4}
           color={PALETTES[mode].axis}
         />
-        {/* Empty canvas: a centred prompt to add the first step. */}
-        {nodes.length === 0 && !placing && (
-          <div style={styles.emptyHint}>
-            <div style={styles.emptyTitle}>Empty workflow</div>
-            <div style={styles.emptyText}>Add your first step to start building the pipeline.</div>
-            <button style={styles.emptyBtn} onClick={togglePlacing}>
-              + Add first step
-            </button>
+        {/* No data folder yet: an in-canvas hint anchored top-left, its ↑ arrow pointing up toward
+            the folder selector in the top bar, before any step can be added. */}
+        {needsFolder && (
+          <div style={{ ...styles.folderHint, left: hintLeft ?? 18 }}>
+            <div style={styles.folderHintArrow}>↑</div>
+            <div style={styles.emptyTitle}>Select a data folder</div>
+            <div style={styles.emptyText}>
+              Choose the folder where this project&apos;s data is saved (the folder selector above)
+              to start building.
+            </div>
           </div>
         )}
-        {/* Bottom-centre; hidden while the selection action bar occupies that spot. */}
-        {selectedIds.length === 0 && <NewStep placing={placing} onToggle={togglePlacing} />}
+        {/* Empty canvas (folder set): a bottom-centre prompt whose ↓ arrow points to the
+            "+ New step" button just below it. */}
+        {!needsFolder && nodes.length === 0 && !placing && (
+          <div style={styles.stepHint}>
+            <div style={styles.emptyTitle}>Empty workflow</div>
+            <div style={styles.emptyText}>Add your first step to start building the pipeline.</div>
+            <div style={styles.stepHintArrow}>↓</div>
+          </div>
+        )}
+        {/* Bottom-centre; hidden while the selection action bar occupies that spot, and until a data
+            folder is set (so steps can't be added before there's data). */}
+        {!needsFolder && selectedIds.length === 0 && (
+          <NewStep placing={placing} onToggle={togglePlacing} />
+        )}
         {selectedIds.length > 0 && (
           <SelectionActions
             count={selectedIds.length}
@@ -625,6 +677,7 @@ function FolderChip() {
   return (
     <div style={{ position: 'relative' }}>
       <button
+        id="oe-folder-chip"
         style={{ ...styles.chipSeg, ...(dataDirMissing ? styles.chipSegWarn : null) }}
         title={dataDirMissing ? `Folder not found: ${active?.path}` : active?.path || 'folder'}
         onClick={() => setOpen((o) => !o)}
@@ -638,6 +691,9 @@ function FolderChip() {
           <div style={styles.folderMenu}>
             {folders.map((f) => {
               const missing = f.id === activeFolderId && dataDirMissing
+              // A path-less folder is an unset placeholder: show a plain call-to-action to pick a
+              // folder, not a dummy "(no path)" tile (and nothing to delete).
+              const noPath = !f.path && !missing
               return (
                 <div
                   key={f.id}
@@ -648,7 +704,7 @@ function FolderChip() {
                 >
                   <button
                     style={styles.folderPick}
-                    title={f.path || 'no path set'}
+                    title={f.path || 'Select a data folder'}
                     onClick={() => {
                       // A missing OR path-less folder needs a folder picked for it; otherwise just
                       // switch to it.
@@ -657,25 +713,28 @@ function FolderChip() {
                       setOpen(false)
                     }}
                   >
-                    <span style={styles.folderName}>
-                      {missing
-                        ? `⚠ ${f.name} — not found`
-                        : f.path
-                          ? f.name
-                          : `${f.name} (no path)`}
-                    </span>
-                    <span style={{ ...styles.folderPath, ...(missing ? styles.pathWarn : null) }}>
-                      {f.path || '—'}
-                    </span>
-                    {missing && <span style={styles.repathHint}>Click to re-select folder…</span>}
+                    {noPath ? (
+                      <span style={styles.folderName}>Select folder where project data is saved to</span>
+                    ) : (
+                      <>
+                        <span style={styles.folderName}>
+                          {missing ? `⚠ ${f.name} — not found` : f.name}
+                        </span>
+                        <span style={{ ...styles.folderPath, ...(missing ? styles.pathWarn : null) }}>
+                          {f.path || '—'}
+                        </span>
+                        {missing && <span style={styles.repathHint}>Click to re-select folder…</span>}
+                      </>
+                    )}
                   </button>
-                  {folders.length > 1 && (
+                  {!noPath && (
                     <button
-                      style={styles.folderDel}
-                      title="Delete folder"
+                      style={{ ...styles.rowIconBtn, color: '#e15759' }}
+                      title={folders.length > 1 ? 'Delete folder' : 'Delete folder (resets to an empty folder)'}
+                      aria-label="Delete folder"
                       onClick={() => deleteFolder(f.id)}
                     >
-                      🗑
+                      <IconTrash />
                     </button>
                   )}
                 </div>
@@ -1513,14 +1572,6 @@ const styles: Record<string, CSSProperties> = {
     textOverflow: 'ellipsis',
     whiteSpace: 'nowrap'
   },
-  folderDel: {
-    background: 'transparent',
-    border: 'none',
-    color: UI.textMuted,
-    cursor: 'pointer',
-    padding: '0 10px',
-    fontSize: 13
-  },
   rowIconBtn: {
     background: 'transparent',
     border: 'none',
@@ -1984,19 +2035,41 @@ const styles: Record<string, CSSProperties> = {
   canvas: { flex: 1, minWidth: 0, minHeight: 0 },
   // Centred empty-canvas prompt. The wrapper ignores pointer events (so the pane stays clickable);
   // only the button re-enables them.
-  emptyHint: {
+  // Empty-workflow hint: anchored bottom-centre, just above the "+ New step" button, so its ↓ arrow
+  // points down to it.
+  stepHint: {
     position: 'absolute',
-    top: '50%',
+    bottom: 58,
     left: '50%',
-    transform: 'translate(-50%, -50%)',
+    transform: 'translateX(-50%)',
+    display: 'flex',
+    flexDirection: 'column',
+    alignItems: 'center',
+    gap: 6,
+    textAlign: 'center',
+    maxWidth: 300,
+    pointerEvents: 'none',
+    zIndex: 5
+  },
+  stepHintArrow: { fontSize: 20, lineHeight: 1, color: UI.accent, fontWeight: 700 },
+  // Data-folder hint: in-canvas (like the empty-workflow guide) but anchored top-left so its ↑
+  // arrow points up toward the folder selector in the top bar, rather than sitting centred.
+  // Box centred on the chip's centre x (left = that x, translateX(-50%)), content centred like the
+  // new-step guide, so the ↑ arrow and text sit under the middle of the folder selector.
+  folderHint: {
+    position: 'absolute',
+    top: 14,
+    transform: 'translateX(-50%)',
     display: 'flex',
     flexDirection: 'column',
     alignItems: 'center',
     gap: 8,
     textAlign: 'center',
+    width: 240,
     pointerEvents: 'none',
     zIndex: 5
   },
+  folderHintArrow: { fontSize: 20, lineHeight: 1, color: UI.accent, fontWeight: 700 },
   emptyTitle: { fontSize: 15, fontWeight: 700, color: UI.text },
   emptyText: { fontSize: 12, color: UI.textMuted, maxWidth: 260, lineHeight: 1.5 },
   emptyBtn: {
@@ -2010,5 +2083,5 @@ const styles: Record<string, CSSProperties> = {
     fontSize: 12,
     fontWeight: 600,
     cursor: 'pointer'
-  }
+  },
 }

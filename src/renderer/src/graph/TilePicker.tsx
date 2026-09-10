@@ -1,8 +1,22 @@
 import { useState, type CSSProperties, type ReactNode } from 'react'
 
 import { UI } from '../ui/theme'
-import { accentOf, categoryOf, CATEGORIES, NODE_SPECS, PLOT_SECTIONS } from './registry'
+import {
+  accentOf,
+  type AxisAvail,
+  categoryOf,
+  CATEGORIES,
+  entryKey,
+  gatePlotEntries,
+  NODE_SPECS,
+  plotEntriesFor,
+  PLOT_SECTIONS,
+  type PlotMenuEntry
+} from './registry'
 import type { NodeCategory, NodeKind } from './types'
+
+/** What the picker commits: a kind plus any config override (e.g. dr's axis). */
+export type TilePick = { kind: NodeKind; override?: Record<string, unknown> }
 
 const CATS: NodeCategory[] = ['data', 'processing', 'plotting']
 
@@ -15,14 +29,20 @@ export function TilePicker({
   ops,
   onPick,
   header = 'New step',
+  axes,
   style
 }: {
   ops: NodeKind[]
-  /** Chosen ops. One → a single node; two or more plotting ops → a group tile. */
-  onPick: (ops: NodeKind[]) => void
+  /** Chosen picks. One → a single node; two or more plotting picks → a group tile. Each pick may
+   *  carry a config override (e.g. a dr pick seeds its axis) — see TilePick. */
+  onPick: (picks: TilePick[]) => void
   header?: string
+  /** Response axes the upstream data supports — gates the dose/time-response options. Omitted
+   *  (or unknown upstream) ⇒ show all. */
+  axes?: AxisAvail
   style?: CSSProperties
 }) {
+  const avail: AxisAvail = axes ?? { dose: true, time: true }
   // `plotGroup` is never user-pickable — checking several plots in the plotting list
   // is what creates a group, so it must not appear as an option here.
   const byCat = CATS.map((cat) => ({
@@ -32,13 +52,14 @@ export function TilePicker({
   // If only one category is offered, drop straight to its operations.
   const [cat, setCat] = useState<NodeCategory | null>(byCat.length === 1 ? byCat[0].cat : null)
   const [hovered, setHovered] = useState<string | null>(null)
-  // Multi-select is offered only in the plotting category (to build a group tile).
-  const [chosen, setChosen] = useState<Set<NodeKind>>(new Set())
-  const toggle = (op: NodeKind): void =>
+  // Multi-select is offered only in the plotting category (to build a group tile). Keyed by
+  // entryKey (not kind), so dr's Dose-response and Time-response can be checked independently.
+  const [chosen, setChosen] = useState<Set<string>>(new Set())
+  const toggle = (key: string): void =>
     setChosen((prev) => {
       const next = new Set(prev)
-      if (next.has(op)) next.delete(op)
-      else next.add(op)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
       return next
     })
 
@@ -65,11 +86,12 @@ export function TilePicker({
     </button>
   )
 
-  // A checkbox op row for the plotting category — toggles into `chosen` instead of
-  // committing, so several plots can be batched into one group.
-  const optRow = (op: NodeKind, accent: string): ReactNode => {
-    const checked = chosen.has(op)
-    const key = `opt-${op}`
+  // A checkbox row for a plotting entry — toggles into `chosen` instead of committing, so several
+  // plots can be batched into one group. An entry may be a config variant of a kind (dr's axes).
+  const optRow = (entry: PlotMenuEntry, accent: string): ReactNode => {
+    const ek = entryKey(entry)
+    const checked = chosen.has(ek)
+    const key = `opt-${ek}`
     return (
       <button
         key={key}
@@ -77,7 +99,7 @@ export function TilePicker({
         onMouseLeave={() => setHovered((h) => (h === key ? null : h))}
         onClick={(e) => {
           e.stopPropagation()
-          toggle(op)
+          toggle(ek)
         }}
         style={{ ...item, background: hovered === key || checked ? UI.panelAlt : 'transparent' }}
       >
@@ -90,7 +112,7 @@ export function TilePicker({
         >
           {checked ? '✓' : ''}
         </span>
-        <span style={opLabel}>{NODE_SPECS[op].label}</span>
+        <span style={opLabel}>{entry.label}</span>
       </button>
     )
   }
@@ -100,20 +122,25 @@ export function TilePicker({
   const canGoBack = cat != null && byCat.length > 1
 
   // The visualisation list is grouped into the SAME sections as the plot-selector menu (shared
-  // PLOT_SECTIONS), with any uncategorised op falling into a trailing "Other" section.
-  const plotSections = ((): { label: string; kinds: NodeKind[] }[] => {
+  // PLOT_SECTIONS), with any uncategorised op falling into a trailing "Other" section. Each kind is
+  // fanned into its menu entries (dr → Dose-response / Time-response) via the shared plotEntriesFor.
+  const plotSections = ((): { label: string; entries: PlotMenuEntry[] }[] => {
     if (!plotting || !current) return []
     const present = new Set(current.ops)
     const used = new Set<NodeKind>()
     const secs = PLOT_SECTIONS.map((s) => {
       const kinds = s.kinds.filter((k) => present.has(k))
       kinds.forEach((k) => used.add(k))
-      return { label: s.label, kinds }
-    }).filter((s) => s.kinds.length > 0)
+      return { label: s.label, entries: gatePlotEntries(kinds.flatMap(plotEntriesFor), avail) }
+    }).filter((s) => s.entries.length > 0)
     const rest = current.ops.filter((k) => !used.has(k))
-    if (rest.length) secs.push({ label: 'Other', kinds: rest })
-    return secs
+    if (rest.length)
+      secs.push({ label: 'Other', entries: gatePlotEntries(rest.flatMap(plotEntriesFor), avail) })
+    return secs.filter((s) => s.entries.length > 0)
   })()
+  // All present plotting entries in declared order (gated) — to resolve the checked keys on commit.
+  const allEntries =
+    plotting && current ? gatePlotEntries(current.ops.flatMap(plotEntriesFor), avail) : []
 
   return (
     <div className="nodrag" style={{ ...card, ...style }}>
@@ -141,15 +168,15 @@ export function TilePicker({
             ? plotSections.map((s) => (
                 <div key={s.label}>
                   <div style={sectionHead}>{s.label}</div>
-                  {s.kinds.map((op) => optRow(op, accentOf(current.cat)))}
+                  {s.entries.map((e) => optRow(e, accentOf(current.cat)))}
                 </div>
               ))
             : current.ops.map((op) =>
-                row(op, accentOf(current.cat), NODE_SPECS[op].label, '', () => onPick([op]))
+                row(op, accentOf(current.cat), NODE_SPECS[op].label, '', () => onPick([{ kind: op }]))
               )
           : byCat.map((g) =>
               row(g.cat, accentOf(g.cat), CATEGORIES[g.cat].label, g.ops.length, () => {
-                if (g.ops.length === 1) onPick([g.ops[0]])
+                if (g.ops.length === 1) onPick([{ kind: g.ops[0] }])
                 else setCat(g.cat)
               })
             )}
@@ -160,8 +187,8 @@ export function TilePicker({
             disabled={chosen.size === 0}
             onClick={(e) => {
               e.stopPropagation()
-              // Preserve the category's declared order so subcards read predictably.
-              onPick(current!.ops.filter((o) => chosen.has(o)))
+              // Preserve the declared entry order so subcards read predictably.
+              onPick(allEntries.filter((en) => chosen.has(entryKey(en))))
             }}
             style={{ ...addBtn, opacity: chosen.size === 0 ? 0.45 : 1 }}
           >
