@@ -23,14 +23,18 @@ export interface WorkflowEntry {
   path: string
 }
 
-/** One rendered plot handed to the main process to write (see plots:export). */
+/** One rendered plot handed to the main process to write (see plots:export). `base64` holds
+ *  the PNG bytes, or for `svg` the markup. */
 export interface ExportItem {
   relPath: string
-  format: 'png' | 'pdf'
+  format: 'png' | 'pdf' | 'svg'
   base64: string
   widthIn: number
   heightIn: number
 }
+
+/** One plot to put on the OS clipboard (see plots:copy). */
+export type CopyPayload = { format: 'png'; base64: string } | { format: 'svg'; svg: string }
 export interface ExportResult {
   dir: string
   written: number
@@ -87,6 +91,30 @@ const api = {
     ipcRenderer.invoke('proj:pickSavePath', suggestedName),
   /** Pick a data folder (null if cancelled). */
   pickDataDir: (): Promise<string | null> => ipcRenderer.invoke('proj:pickDataDir'),
+  /** Native save-as for one file: returns the chosen absolute path with `ext` enforced, or null. */
+  pickSavePath: (opts: {
+    defaultPath: string
+    ext: string
+    typeName: string
+  }): Promise<string | null> => ipcRenderer.invoke('file:pickSave', opts),
+  /** Tell main whether the in-memory project has unsaved changes (drives the close prompt). */
+  setProjectDirty: (dirty: boolean, name: string): void =>
+    ipcRenderer.send('proj:dirty', dirty, name),
+  /** Native Save / Don't Save / Cancel prompt; `action` completes "before …?" (e.g. "closing"). */
+  askSaveChanges: (action: string): Promise<'save' | 'discard' | 'cancel'> =>
+    ipcRenderer.invoke('proj:askSave', action),
+  /** Main asks the renderer to save (on close → Save). The handler resolves true once written,
+   *  false if it couldn't (save-as cancelled). Returns an unsubscribe. */
+  onSaveRequest: (handler: () => Promise<boolean>): (() => void) => {
+    const listener = (_e: Electron.IpcRendererEvent, token: number): void => {
+      handler().then(
+        (ok) => ipcRenderer.send('proj:saveResult', token, ok),
+        () => ipcRenderer.send('proj:saveResult', token, false)
+      )
+    }
+    ipcRenderer.on('proj:saveRequest', listener)
+    return () => ipcRenderer.removeListener('proj:saveRequest', listener)
+  },
   /** Whether a path exists on disk (`dir` = exists and is a directory). */
   pathExists: (p: string): Promise<{ exists: boolean; dir: boolean }> =>
     ipcRenderer.invoke('fs:exists', p),
@@ -111,6 +139,8 @@ const api = {
     format: 'csv' | 'xlsx'
     items: TableItem[]
   }): Promise<ExportResult> => ipcRenderer.invoke('tables:export', payload),
+  /** Put one rendered plot on the clipboard: PNG as an image, SVG as markup text. */
+  copyPlot: (payload: CopyPayload): Promise<void> => ipcRenderer.invoke('plots:copy', payload),
   /** Reveal a folder in the OS file manager. */
   revealFolder: (dir: string): Promise<void> => ipcRenderer.invoke('plots:reveal', dir),
 
@@ -153,17 +183,17 @@ const api = {
 
   /** Download an organism's STRING interactome + canonical gene-name map into the app cache
    *  (idempotent). */
-  ensureStringOrg: (
-    taxon: number
-  ): Promise<{ cached: boolean; version: string; error?: string }> =>
+  ensureStringOrg: (taxon: number): Promise<{ cached: boolean; version: string; error?: string }> =>
     ipcRenderer.invoke('string:ensureOrg', taxon),
 
   /** Subscribe to STRING download progress events; returns an unsubscribe fn. */
   onStringProgress: (
     cb: (p: { taxon: number; stage: string; loaded: number; total: number }) => void
   ): (() => void) => {
-    const listener = (_e: unknown, p: { taxon: number; stage: string; loaded: number; total: number }): void =>
-      cb(p)
+    const listener = (
+      _e: unknown,
+      p: { taxon: number; stage: string; loaded: number; total: number }
+    ): void => cb(p)
     ipcRenderer.on('string:progress', listener)
     return () => ipcRenderer.removeListener('string:progress', listener)
   }

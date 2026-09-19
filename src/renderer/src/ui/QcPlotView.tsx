@@ -42,7 +42,9 @@ export function QcPlotView({
       trace = {
         type: 'bar',
         x: labels,
-        y: data.groups.map((g) => (data.summary === 'count' ? g.values[0] ?? 0 : median(g.values))),
+        y: data.groups.map((g) =>
+          data.summary === 'count' ? (g.values[0] ?? 0) : median(g.values)
+        ),
         marker: { color: QC_FILL, opacity: 0.85 },
         hovertemplate: `%{x}<br>${data.yLabel}=%{y:.3g}<extra></extra>`
       }

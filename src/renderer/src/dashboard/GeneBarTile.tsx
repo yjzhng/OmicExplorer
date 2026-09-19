@@ -1,5 +1,5 @@
 /** Gene-bar panel body: ONE gene's standardized value across every condition, with a
- *  gene switch-tab (like TDR). Focus genes get tabs, genes pinned elsewhere are appended,
+ *  gene switch-tab (like TDR). Selected genes get tabs,
  *  and a hovered gene transiently drives the bars. */
 import { useMemo } from 'react'
 

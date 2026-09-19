@@ -196,3 +196,23 @@
   border-right-width: 3px;
   border-bottom-right-radius: 5px;
 }
+
+/* Tile header buttons (copy / download / settings). Hover: the icon brightens to the text colour on
+   a raised ground (skipped while the copy feedback tint is showing — `data-tint`). Never the UA
+   focus outline (mouse clicks don't focus them at all — see PanelTile `noFocus`); keyboard focus
+   shows an accent ring. Inline styles set the resting colours, so hover needs !important. No colour
+   transition: the copy feedback tint must snap with its icon swap. */
+.oe-tilebtn:not([data-tint]):not(:disabled):hover {
+  color: var(--text) !important;
+  background: var(--panel-raised) !important;
+  border-color: var(--text-muted) !important;
+}
+.oe-tilebtn:not([data-tint]):not(:disabled):active {
+  transform: translateY(1px);
+}
+.oe-tilebtn:focus {
+  outline: none;
+}
+.oe-tilebtn:focus-visible {
+  box-shadow: 0 0 0 2px var(--accent);
+}

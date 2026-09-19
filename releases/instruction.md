@@ -2,10 +2,10 @@ Desktop app for exploring omic data — load sample × gene/protein matrices, bu
 
 ## Highlights
 
-- **Flow-based pipeline editor** — chain **Standardize → Compare / Contrast → plots** on a canvas.
+- **Flow-based pipeline editor** — chain **Clean data → Compare / Contrast → plots** on a canvas.
 - **Analysis engine** — standardization with clean-up (drop genes seen in <n% of samples), vehicle normalization, direct comparisons, two-way ANOVA, and correlated contrasts.
 - **Interactive plots** — volcano, MA, heatmap, bubble, dumbbell, dose/time-response, and cluster (PCA/UMAP/t-SNE), with linked hover/selection across every panel.
-- **Reconfigurable dashboard** — drag/resize tiles, shared facet context (strain / dose / time), landscape ⇄ portrait per plot.
+- **Reconfigurable dashboard** — drag/resize tiles, shared facet context (cell / dose / time), landscape ⇄ portrait per plot.
 - **Export** any panel to PNG/PDF and any table to CSV/XLSX.
 - Pure-TypeScript in-memory engine — no Python or external services at runtime.
 

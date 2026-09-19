@@ -23,3 +23,59 @@
   background: #3fae5a !important;
   border-color: #3fae5a !important;
 }
+
+/* Data table (DataTableView): hover feedback for its interactive parts. Resting colours are inline,
+   so the hover rules need !important. Data rows are tinted by the table's own selection painter. */
+.oe-dt-th:hover {
+  background: var(--panel-raised) !important;
+}
+.oe-dt-btn:not(:disabled):hover {
+  background: var(--panel-raised) !important;
+  border-color: var(--text-muted) !important;
+}
+.oe-dt-link:hover {
+  text-decoration: underline;
+}
+.oe-dt-opt {
+  border-radius: 4px;
+  padding: 2px 4px;
+  margin: 0 -4px;
+}
+.oe-dt-opt:hover {
+  background: var(--panel-raised);
+}
+
+/* Config-panel range sliders (NodeConfigPanel's Slider): the native control paints a near-black
+   track on the dark theme, so draw our own — a thin border-toned track with an accent thumb.
+   Chromium (Electron) only needs the -webkit- pseudo-elements. */
+.oe-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 16px;
+  background: transparent;
+}
+.oe-slider::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--border);
+}
+.oe-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  margin-top: -4px; /* centre the thumb on the 4px track */
+  border-radius: 50%;
+  background: var(--accent);
+  border: 2px solid var(--panel);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
+}
+.oe-slider:hover::-webkit-slider-runnable-track {
+  background: var(--text-muted);
+}
+.oe-slider:focus-visible {
+  outline: none;
+}
+.oe-slider:focus-visible::-webkit-slider-thumb {
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 35%, transparent);
+}

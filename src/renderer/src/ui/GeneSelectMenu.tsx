@@ -50,7 +50,16 @@ function Eye({ off }: { off: boolean }): ReactNode {
 
 /** Minimalist 13px line icons for the per-geneset row actions (match App.tsx's icon set). */
 function iconProps(): Record<string, string | number> {
-  return { width: 13, height: 13, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 1.8, strokeLinecap: 'round', strokeLinejoin: 'round' }
+  return {
+    width: 13,
+    height: 13,
+    viewBox: '0 0 24 24',
+    fill: 'none',
+    stroke: 'currentColor',
+    strokeWidth: 1.8,
+    strokeLinecap: 'round',
+    strokeLinejoin: 'round'
+  }
 }
 function IconRename(): ReactNode {
   return (
@@ -138,6 +147,7 @@ export function GeneSelectMenu({ tabs }: { tabs: GeneGroupTab[] }): ReactNode {
   const updateGeneSetGenes = useGraph((s) => s.updateGeneSetGenes)
   const deleteGeneSet = useGraph((s) => s.deleteGeneSet)
   const toggleGeneSetHidden = useGraph((s) => s.toggleGeneSetHidden)
+  const setGeneSetColor = useGraph((s) => s.setGeneSetColor)
   const mode = useUiTheme((s) => s.mode)
   const p = PALETTES[mode]
   const [open, setOpen] = useState(false)
@@ -165,7 +175,9 @@ export function GeneSelectMenu({ tabs }: { tabs: GeneGroupTab[] }): ReactNode {
   // Portal-rendered action tooltip (so the scrollable list can't crop it). Anchored to the hovered
   // icon's screen rect; the text is derived at render time so it flips to "Confirm…" once armed.
   type TipKind = 'rename' | 'add' | 'rewrite' | 'delete'
-  const [tip, setTip] = useState<{ id: string; kind: TipKind; cx: number; top: number } | null>(null)
+  const [tip, setTip] = useState<{ id: string; kind: TipKind; cx: number; top: number } | null>(
+    null
+  )
   const showTip = (e: ReactMouseEvent, id: string, kind: TipKind): void => {
     const r = e.currentTarget.getBoundingClientRect()
     setTip({ id, kind, cx: r.left + r.width / 2, top: r.bottom + 4 })
@@ -337,11 +349,21 @@ export function GeneSelectMenu({ tabs }: { tabs: GeneGroupTab[] }): ReactNode {
         return (
           <label
             key={g.id}
-            style={{ ...styles.geneRow, paddingLeft: indent, color: p.text, ...(on ? { background: `${p.accent}22` } : {}) }}
+            style={{
+              ...styles.geneRow,
+              paddingLeft: indent,
+              color: p.text,
+              ...(on ? { background: `${p.accent}22` } : {})
+            }}
             onMouseEnter={() => useSelection.getState().setHover(g.id)}
             onMouseLeave={() => useSelection.getState().clearHover()}
           >
-            <input type="checkbox" checked={on} onChange={() => togglePin(g.id)} style={{ accentColor: p.accent }} />
+            <input
+              type="checkbox"
+              checked={on}
+              onChange={() => togglePin(g.id)}
+              style={{ accentColor: p.accent }}
+            />
             <span style={styles.geneName}>{g.label}</span>
             {g.desc && (
               <span style={{ ...styles.geneDesc, color: p.textMuted }} title={g.desc}>
@@ -370,14 +392,26 @@ export function GeneSelectMenu({ tabs }: { tabs: GeneGroupTab[] }): ReactNode {
         createPortal(
           <div
             ref={menuRef}
-            style={{ ...styles.menu, left: menuLeft, top: rect.bottom + 4, width: MENU_W, background: p.panel, border: `1px solid ${p.border}` }}
+            style={{
+              ...styles.menu,
+              left: menuLeft,
+              top: rect.bottom + 4,
+              width: MENU_W,
+              background: p.panel,
+              border: `1px solid ${p.border}`
+            }}
           >
             <input
               autoFocus
               value={q}
               onChange={(e) => setQ(e.target.value)}
               placeholder="Search genes / pathways…"
-              style={{ ...styles.search, background: p.panelAlt, color: p.text, border: `1px solid ${p.border}` }}
+              style={{
+                ...styles.search,
+                background: p.panelAlt,
+                color: p.text,
+                border: `1px solid ${p.border}`
+              }}
             />
             {/* Custom genesets — saved gene selections. Click a name to load it (replacing the current
                 selection); per-row Rename / Rewrite (overwrite with current selection) / Delete. */}
@@ -391,8 +425,14 @@ export function GeneSelectMenu({ tabs }: { tabs: GeneGroupTab[] }): ReactNode {
                     setCreating(true)
                   }}
                   disabled={n === 0}
-                  title={n === 0 ? 'Select genes first' : 'Save the current selection as a new geneset'}
-                  style={{ ...styles.gsNew, color: n === 0 ? p.textMuted : p.accent, cursor: n === 0 ? 'default' : 'pointer' }}
+                  title={
+                    n === 0 ? 'Select genes first' : 'Save the current selection as a new geneset'
+                  }
+                  style={{
+                    ...styles.gsNew,
+                    color: n === 0 ? p.textMuted : p.accent,
+                    cursor: n === 0 ? 'default' : 'pointer'
+                  }}
                 >
                   + New from selection
                 </button>
@@ -408,12 +448,25 @@ export function GeneSelectMenu({ tabs }: { tabs: GeneGroupTab[] }): ReactNode {
                       else if (e.key === 'Escape') setCreating(false)
                     }}
                     placeholder={`Name (${n} gene${n > 1 ? 's' : ''})…`}
-                    style={{ ...styles.gsInput, background: p.panelAlt, color: p.text, border: `1px solid ${p.border}` }}
+                    style={{
+                      ...styles.gsInput,
+                      background: p.panelAlt,
+                      color: p.text,
+                      border: `1px solid ${p.border}`
+                    }}
                   />
-                  <button onClick={commitCreate} style={{ ...styles.gsIcon, color: p.accent }} title="Save">
+                  <button
+                    onClick={commitCreate}
+                    style={{ ...styles.gsIcon, color: p.accent }}
+                    title="Save"
+                  >
                     ✓
                   </button>
-                  <button onClick={() => setCreating(false)} style={{ ...styles.gsIcon, color: p.textMuted }} title="Cancel">
+                  <button
+                    onClick={() => setCreating(false)}
+                    style={{ ...styles.gsIcon, color: p.textMuted }}
+                    title="Cancel"
+                  >
                     ✕
                   </button>
                 </div>
@@ -423,7 +476,9 @@ export function GeneSelectMenu({ tabs }: { tabs: GeneGroupTab[] }): ReactNode {
                 {geneSets.map((gs) => {
                   const ids = gs.genes.map((g) => g.id)
                   const active =
-                    ids.length > 0 && ids.length === pinnedIds.size && ids.every((id) => pinnedIds.has(id))
+                    ids.length > 0 &&
+                    ids.length === pinnedIds.size &&
+                    ids.every((id) => pinnedIds.has(id))
                   if (renameId === gs.id)
                     return (
                       <div key={gs.id} style={styles.gsRow}>
@@ -435,12 +490,25 @@ export function GeneSelectMenu({ tabs }: { tabs: GeneGroupTab[] }): ReactNode {
                             if (e.key === 'Enter') commitRename(gs.id)
                             else if (e.key === 'Escape') setRenameId(null)
                           }}
-                          style={{ ...styles.gsInput, background: p.panelAlt, color: p.text, border: `1px solid ${p.border}` }}
+                          style={{
+                            ...styles.gsInput,
+                            background: p.panelAlt,
+                            color: p.text,
+                            border: `1px solid ${p.border}`
+                          }}
                         />
-                        <button onClick={() => commitRename(gs.id)} style={{ ...styles.gsIcon, color: p.accent }} title="Save">
+                        <button
+                          onClick={() => commitRename(gs.id)}
+                          style={{ ...styles.gsIcon, color: p.accent }}
+                          title="Save"
+                        >
                           ✓
                         </button>
-                        <button onClick={() => setRenameId(null)} style={{ ...styles.gsIcon, color: p.textMuted }} title="Cancel">
+                        <button
+                          onClick={() => setRenameId(null)}
+                          style={{ ...styles.gsIcon, color: p.textMuted }}
+                          title="Cancel"
+                        >
                           ✕
                         </button>
                       </div>
@@ -450,7 +518,10 @@ export function GeneSelectMenu({ tabs }: { tabs: GeneGroupTab[] }): ReactNode {
                     <div key={gs.id}>
                       <div
                         className="oe-gs-row"
-                        style={{ ...styles.gsRow, ...(active ? { background: `${p.accent}22` } : {}) }}
+                        style={{
+                          ...styles.gsRow,
+                          ...(active ? { background: `${p.accent}22` } : {})
+                        }}
                         onMouseLeave={() => setConfirm((c) => (c?.id === gs.id ? null : c))}
                       >
                         <button
@@ -471,20 +542,55 @@ export function GeneSelectMenu({ tabs }: { tabs: GeneGroupTab[] }): ReactNode {
                         >
                           <Eye off={!!gs.hidden} />
                         </button>
+                        {/* Colour swatch: the set's point colour on volcano/MA/scatter while it's the
+                            selection. A native colour input sits invisibly over it; unset shows as a
+                            dashed ring. Right-click clears. */}
+                        <label
+                          style={{
+                            ...styles.gsSwatch,
+                            background: gs.color ?? 'transparent',
+                            border: gs.color ? `1px solid ${p.border}` : `1px dashed ${p.textMuted}`
+                          }}
+                          title={
+                            gs.color
+                              ? 'Point colour on volcano / MA / scatter — click to change, right-click to clear'
+                              : 'Set a point colour for this geneset on volcano / MA / scatter'
+                          }
+                          onContextMenu={(e) => {
+                            e.preventDefault()
+                            setGeneSetColor(gs.id, undefined)
+                          }}
+                        >
+                          <input
+                            type="color"
+                            value={gs.color ?? '#ff2d95'}
+                            aria-label={`${gs.name} colour`}
+                            style={styles.gsSwatchInput}
+                            onChange={(e) => setGeneSetColor(gs.id, e.target.value)}
+                          />
+                        </label>
                         <button
                           onClick={() => setPins(ids)}
                           title={`Load ${gs.genes.length} gene${gs.genes.length > 1 ? 's' : ''}`}
-                          style={{ ...styles.gsLoad, color: p.text, fontWeight: active ? 700 : 500 }}
+                          style={{
+                            ...styles.gsLoad,
+                            color: p.text,
+                            fontWeight: active ? 700 : 500
+                          }}
                         >
                           <span
                             style={{
                               ...styles.label,
-                              ...(gs.hidden ? { textDecoration: 'line-through', opacity: 0.55 } : {})
+                              ...(gs.hidden
+                                ? { textDecoration: 'line-through', opacity: 0.55 }
+                                : {})
                             }}
                           >
                             {gs.name}
                           </span>
-                          <span style={{ ...styles.gsCount, color: p.textMuted }}>{gs.genes.length}</span>
+                          <span style={{ ...styles.gsCount, color: p.textMuted }}>
+                            {gs.genes.length}
+                          </span>
                         </button>
                         <span className="oe-gs-actions" style={styles.gsActions}>
                           <button
@@ -510,7 +616,11 @@ export function GeneSelectMenu({ tabs }: { tabs: GeneGroupTab[] }): ReactNode {
                               ])
                             }}
                             disabled={n === 0}
-                            style={{ ...styles.gsAct, color: n === 0 ? p.border : p.accent, cursor: n === 0 ? 'default' : 'pointer' }}
+                            style={{
+                              ...styles.gsAct,
+                              color: n === 0 ? p.border : p.accent,
+                              cursor: n === 0 ? 'default' : 'pointer'
+                            }}
                           >
                             <IconAdd />
                           </button>
@@ -527,7 +637,12 @@ export function GeneSelectMenu({ tabs }: { tabs: GeneGroupTab[] }): ReactNode {
                             disabled={n === 0}
                             style={{
                               ...styles.gsAct,
-                              color: n === 0 ? p.border : isArmed(gs.id, 'rewrite') ? DANGER : p.textMuted,
+                              color:
+                                n === 0
+                                  ? p.border
+                                  : isArmed(gs.id, 'rewrite')
+                                    ? DANGER
+                                    : p.textMuted,
                               background: isArmed(gs.id, 'rewrite') ? `${DANGER}22` : undefined,
                               cursor: n === 0 ? 'default' : 'pointer'
                             }}
@@ -558,7 +673,9 @@ export function GeneSelectMenu({ tabs }: { tabs: GeneGroupTab[] }): ReactNode {
                       {expanded && (
                         <div style={styles.gsMembers}>
                           {gs.genes.length === 0 && (
-                            <div style={{ ...styles.gsEmpty, color: p.textMuted, paddingLeft: 34 }}>Empty geneset</div>
+                            <div style={{ ...styles.gsEmpty, color: p.textMuted, paddingLeft: 34 }}>
+                              Empty geneset
+                            </div>
                           )}
                           {gs.genes.slice(0, CAP).map((g) => {
                             const desc = descById.get(g.id)
@@ -573,13 +690,19 @@ export function GeneSelectMenu({ tabs }: { tabs: GeneGroupTab[] }): ReactNode {
                                   type="checkbox"
                                   checked
                                   onChange={() =>
-                                    updateGeneSetGenes(gs.id, gs.genes.filter((x) => x.id !== g.id))
+                                    updateGeneSetGenes(
+                                      gs.id,
+                                      gs.genes.filter((x) => x.id !== g.id)
+                                    )
                                   }
                                   style={{ accentColor: p.accent }}
                                 />
                                 <span style={styles.geneName}>{g.label}</span>
                                 {desc && (
-                                  <span style={{ ...styles.geneDesc, color: p.textMuted }} title={desc}>
+                                  <span
+                                    style={{ ...styles.geneDesc, color: p.textMuted }}
+                                    title={desc}
+                                  >
                                     {desc}
                                   </span>
                                 )}
@@ -604,7 +727,13 @@ export function GeneSelectMenu({ tabs }: { tabs: GeneGroupTab[] }): ReactNode {
               )}
             </div>
             {tabs.length > 1 && (
-              <div style={{ ...styles.tabPill, border: `1px solid ${p.border}`, background: p.panelAlt }}>
+              <div
+                style={{
+                  ...styles.tabPill,
+                  border: `1px solid ${p.border}`,
+                  background: p.panelAlt
+                }}
+              >
                 {tabs.map((t) => {
                   const on = t.key === activeTab?.key
                   return (
@@ -633,8 +762,22 @@ export function GeneSelectMenu({ tabs }: { tabs: GeneGroupTab[] }): ReactNode {
                 return (
                   <div key={c.name}>
                     <div style={styles.catHead}>
-                      {box(cat.sel, cat.ids.length, () => togglePins(cat.ids), 'Select all in category')}
-                      <button onClick={() => toggleIn(openCat, setOpenCat, c.name)} style={{ ...styles.headBtn, color: p.text, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.3 }}>
+                      {box(
+                        cat.sel,
+                        cat.ids.length,
+                        () => togglePins(cat.ids),
+                        'Select all in category'
+                      )}
+                      <button
+                        onClick={() => toggleIn(openCat, setOpenCat, c.name)}
+                        style={{
+                          ...styles.headBtn,
+                          color: p.text,
+                          fontWeight: 700,
+                          textTransform: 'uppercase',
+                          letterSpacing: 0.3
+                        }}
+                      >
                         <Chevron deg={catOpen ? 90 : 0} size={9} color={p.textMuted} />
                         <span style={styles.label}>{c.name}</span>
                       </button>
@@ -652,7 +795,10 @@ export function GeneSelectMenu({ tabs }: { tabs: GeneGroupTab[] }): ReactNode {
                           <div key={key}>
                             <div style={styles.pathHead}>
                               {box(sel, ids.length, () => togglePins(ids), 'Select all in pathway')}
-                              <button onClick={() => toggleIn(openPath, setOpenPath, key)} style={{ ...styles.headBtn, color: p.text, fontWeight: 600 }}>
+                              <button
+                                onClick={() => toggleIn(openPath, setOpenPath, key)}
+                                style={{ ...styles.headBtn, color: p.text, fontWeight: 600 }}
+                              >
                                 <Chevron deg={pwOpen ? 90 : 0} size={9} color={p.textMuted} />
                                 <span style={styles.label}>{pw.name}</span>
                               </button>
@@ -666,7 +812,9 @@ export function GeneSelectMenu({ tabs }: { tabs: GeneGroupTab[] }): ReactNode {
                 )
               })}
               {shown.length === 0 && (
-                <div style={{ ...styles.more, color: p.textMuted, paddingLeft: 6 }}>No matching genes</div>
+                <div style={{ ...styles.more, color: p.textMuted, paddingLeft: 6 }}>
+                  No matching genes
+                </div>
               )}
             </div>
             {n > 0 && (
@@ -706,10 +854,30 @@ export function GeneSelectMenu({ tabs }: { tabs: GeneGroupTab[] }): ReactNode {
   )
 }
 
-function Chevron({ deg, size = 11, color = UI.textMuted }: { deg: number; size?: number; color?: string }): ReactNode {
+function Chevron({
+  deg,
+  size = 11,
+  color = UI.textMuted
+}: {
+  deg: number
+  size?: number
+  color?: string
+}): ReactNode {
   return (
-    <svg width={size} height={size} viewBox="0 0 10 10" style={{ flex: '0 0 auto', color, transform: `rotate(${deg}deg)` }}>
-      <polyline points="3.5,1.5 7,5 3.5,8.5" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 10 10"
+      style={{ flex: '0 0 auto', color, transform: `rotate(${deg}deg)` }}
+    >
+      <polyline
+        points="3.5,1.5 7,5 3.5,8.5"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
     </svg>
   )
 }
@@ -752,9 +920,26 @@ const styles: Record<string, CSSProperties> = {
     flexDirection: 'column',
     gap: 6
   },
-  search: { width: '100%', boxSizing: 'border-box', borderRadius: 5, padding: '5px 8px', fontSize: 12 },
-  gsSection: { display: 'flex', flexDirection: 'column', gap: 1, paddingBottom: 4, borderBottom: '1px solid transparent' },
-  gsHead: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '2px 4px' },
+  search: {
+    width: '100%',
+    boxSizing: 'border-box',
+    borderRadius: 5,
+    padding: '5px 8px',
+    fontSize: 12
+  },
+  gsSection: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 1,
+    paddingBottom: 4,
+    borderBottom: '1px solid transparent'
+  },
+  gsHead: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    padding: '2px 4px'
+  },
   gsTitle: { fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5 },
   gsNew: { border: 'none', background: 'transparent', fontSize: 11, fontWeight: 600, padding: 0 },
   gsRow: { display: 'flex', alignItems: 'center', gap: 4, padding: '1px 4px', borderRadius: 4 },
@@ -770,13 +955,46 @@ const styles: Record<string, CSSProperties> = {
     cursor: 'pointer',
     padding: 0
   },
-  gsLoad: { display: 'flex', alignItems: 'center', gap: 6, flex: 1, minWidth: 0, border: 'none', background: 'transparent', cursor: 'pointer', padding: '3px 2px', textAlign: 'left', fontSize: 12 },
+  gsLoad: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 6,
+    flex: 1,
+    minWidth: 0,
+    border: 'none',
+    background: 'transparent',
+    cursor: 'pointer',
+    padding: '3px 2px',
+    textAlign: 'left',
+    fontSize: 12
+  },
   gsCount: { flex: '0 0 auto', fontSize: 10, fontWeight: 600 },
   // display is controlled by the injected hover CSS (oe-gs-actions) — do NOT set it inline, or the
   // inline value would override the CSS `display:none` and the actions would always take up width.
   gsActions: { gap: 1, flex: '0 0 auto' },
   // Scrollable geneset list: ~8 rows tall, then scrolls (rows are ~24px each).
   gsList: { maxHeight: 192, overflowY: 'auto', display: 'flex', flexDirection: 'column' },
+  /** the geneset colour swatch (a small circle the colour input hides behind) */
+  gsSwatch: {
+    position: 'relative',
+    flex: '0 0 auto',
+    width: 11,
+    height: 11,
+    borderRadius: '50%',
+    boxSizing: 'border-box',
+    overflow: 'hidden',
+    cursor: 'pointer'
+  },
+  gsSwatchInput: {
+    position: 'absolute',
+    inset: 0,
+    width: '100%',
+    height: '100%',
+    opacity: 0,
+    padding: 0,
+    border: 'none',
+    cursor: 'pointer'
+  },
   gsCaret: {
     display: 'inline-flex',
     alignItems: 'center',
@@ -790,8 +1008,23 @@ const styles: Record<string, CSSProperties> = {
     padding: 0
   },
   gsMembers: { display: 'flex', flexDirection: 'column', paddingBottom: 2 },
-  gsMemberRow: { display: 'flex', alignItems: 'center', gap: 8, padding: '2px 6px 2px 34px', borderRadius: 4, fontSize: 12, cursor: 'pointer' },
-  gsIcon: { border: 'none', background: 'transparent', cursor: 'pointer', fontSize: 12, lineHeight: 1, padding: '2px 3px' },
+  gsMemberRow: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 8,
+    padding: '2px 6px 2px 34px',
+    borderRadius: 4,
+    fontSize: 12,
+    cursor: 'pointer'
+  },
+  gsIcon: {
+    border: 'none',
+    background: 'transparent',
+    cursor: 'pointer',
+    fontSize: 12,
+    lineHeight: 1,
+    padding: '2px 3px'
+  },
   // Square icon button for the per-row actions (rename / add / rewrite / delete).
   gsAct: {
     display: 'inline-flex',
@@ -806,7 +1039,14 @@ const styles: Record<string, CSSProperties> = {
     padding: 0,
     lineHeight: 1
   },
-  gsInput: { flex: 1, minWidth: 0, boxSizing: 'border-box', borderRadius: 5, padding: '4px 7px', fontSize: 12 },
+  gsInput: {
+    flex: 1,
+    minWidth: 0,
+    boxSizing: 'border-box',
+    borderRadius: 5,
+    padding: '4px 7px',
+    fontSize: 12
+  },
   gsEmpty: { fontSize: 11, padding: '2px 6px 4px' },
   tabPill: { display: 'flex', gap: 2, borderRadius: 999, padding: 2 },
   tabBtn: {
@@ -849,11 +1089,40 @@ const styles: Record<string, CSSProperties> = {
     fontWeight: 700,
     lineHeight: 1
   },
-  geneRow: { display: 'flex', alignItems: 'center', gap: 8, padding: '3px 6px 3px 40px', borderRadius: 4, fontSize: 12, cursor: 'pointer' },
+  geneRow: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 8,
+    padding: '3px 6px 3px 40px',
+    borderRadius: 4,
+    fontSize: 12,
+    cursor: 'pointer'
+  },
   label: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
   // Gene name is capped so a long name can't hide the description; the description fills the rest.
-  geneName: { flex: '0 1 auto', maxWidth: '55%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
-  geneDesc: { flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 11 },
+  geneName: {
+    flex: '0 1 auto',
+    maxWidth: '55%',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap'
+  },
+  geneDesc: {
+    flex: 1,
+    minWidth: 0,
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+    fontSize: 11
+  },
   more: { padding: '3px 6px 3px 40px', fontSize: 11 },
-  clear: { border: 'none', background: 'transparent', cursor: 'pointer', fontSize: 11, textAlign: 'left', padding: '2px 6px', textDecoration: 'underline' }
+  clear: {
+    border: 'none',
+    background: 'transparent',
+    cursor: 'pointer',
+    fontSize: 11,
+    textAlign: 'left',
+    padding: '2px 6px',
+    textDecoration: 'underline'
+  }
 }

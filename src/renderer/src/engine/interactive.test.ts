@@ -114,7 +114,7 @@ describe('deriveFieldRule / applyFieldRule', () => {
   const n1 = 'B_M_SA_90_drugA_1_w1_9' // 8 tokens
   const n2 = 'B_M_SA_90_KRAS_PROTAC_1_w2_9' // 9 tokens
 
-  it('a leading field (strain) stays start-anchored across both names', () => {
+  it('a leading field (cell) stays start-anchored across both names', () => {
     const at = n1.indexOf('SA')
     const rule = deriveFieldRule(n1, at, at + 2)!
     expect(applyFieldRule(n1, rule)).toBe('SA')
@@ -160,7 +160,7 @@ describe('buildStandardInputs', () => {
 
   it('drops a sample marked include:false', () => {
     const conditions: Record<string, InteractiveSampleCond> = {
-      [RX2]: { sample: RX2, include: false, strain: '', cmpd: '', dose: '', time: '', rep: '' }
+      [RX2]: { sample: RX2, include: false, cell: '', cmpd: '', dose: '', time: '', rep: '' }
     }
     const a = buildStandardInputs(MATRIX, { roles, conditions })
     expect(a.dataText).not.toContain('run_x2.d')
@@ -170,7 +170,7 @@ describe('buildStandardInputs', () => {
   it('output feeds the unchanged standardize() end-to-end', () => {
     const cond = (h: string, cmpd: string): InteractiveSampleCond => ({
       sample: h,
-      strain: '',
+      cell: '',
       cmpd,
       dose: '',
       time: '',
@@ -199,7 +199,7 @@ describe('buildStandardInputs', () => {
     const noLabel = { ...roles, Genes: 'ignore' as const }
     const cond = (h: string): InteractiveSampleCond => ({
       sample: h,
-      strain: '',
+      cell: '',
       cmpd: 'drugA',
       dose: '',
       time: '',

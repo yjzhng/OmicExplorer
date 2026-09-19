@@ -31,20 +31,20 @@ function rows(nGenes: number, doses = [2.5, 5, 10]): CompareResultRow[] {
 }
 
 describe('per-gene plot render caps (freeze fix)', () => {
-  it('DR keeps every gene and highlights the top 10 by default (one merged trace)', () => {
+  it('DR keeps every gene and, uncapped, marks them all for colouring (one merged trace)', () => {
     const dr = buildDR(rows(500), { axis: 'dose', topGenes: 0 })
     expect(dr.series.length).toBe(500) // all genes present (drawn as faint background)
     expect(dr.total).toBe(500)
-    expect(dr.highlight).toBe(10) // unset ⇒ colour the top 10 most differential
+    expect(dr.highlight).toBe(500) // unset (cap off) ⇒ all; the view safety-caps the foreground
   })
 
   it('DR highlight count follows explicit topGenes', () => {
     expect(buildDR(rows(500), { axis: 'dose', topGenes: 12 }).highlight).toBe(12)
   })
 
-  it('bubble shows the top 20 genes when topGenes=0, and the explicit N overrides', () => {
+  it('bubble shows all genes up to the safety cap when topGenes=0, and the explicit N overrides', () => {
     const capped = buildBubble(rows(500), { axis: 'dose', topGenes: 0 })
-    expect(capped.genes.length).toBe(20) // unset ⇒ top 20
+    expect(capped.genes.length).toBe(100) // unset ⇒ all, safety-capped for the renderer
     expect(capped.total).toBe(500)
     expect(buildBubble(rows(500), { axis: 'dose', topGenes: 250 }).genes.length).toBe(250)
   })

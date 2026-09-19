@@ -75,9 +75,9 @@ describe('collectSpecs', () => {
     expect(specs.map((s) => s.key).sort()).toEqual(['grp-4_c1', 'grp-4_c2'])
   })
 
-  it('tags each spec with its analysis root and no GOI when there are no focus genes', () => {
+  it('tags each spec with its analysis root and no selected-only variant when nothing is selected', () => {
     const specs = collectSpecs(nodes, edges, {})
     expect(specs.every((s) => s.rootId === 'std-2')).toBe(true)
-    expect(specs.every((s) => s.hasGoi === false)).toBe(true)
+    expect(specs.every((s) => s.hasSelection === false)).toBe(true)
   })
 })

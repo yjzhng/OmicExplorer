@@ -1,4 +1,4 @@
-uniqID,strain,cmpd,dose,time,rep,value,peptides
+uniqID,cell,cmpd,dose,time,rep,value,peptides
 g0001,WT,drugA,1.25,0,1,122.7753,
 g0001,WT,drugA,1.25,0,2,121.3937,
 g0001,WT,drugA,1.25,0,3,114.7167,

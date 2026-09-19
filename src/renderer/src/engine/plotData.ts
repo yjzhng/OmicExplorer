@@ -8,12 +8,7 @@ import type { ContrastResultRow } from './contrast'
 import { embed2D, type ClusterMethod } from './embed'
 import { benjaminiHochberg, madNormal, median, normalSf, studentTppf, type Effect } from './stats'
 import { VALID_CONDITIONS } from './types'
-import type {
-  CompareResultRow,
-  ConditionKey,
-  StandardizeResult,
-  StandardRow
-} from './types'
+import type { CompareResultRow, ConditionKey, StandardizeResult, StandardRow } from './types'
 
 // ── volcano ────────────────────────────────────────────────────────────────────
 
@@ -31,6 +26,8 @@ export interface VolcanoData {
   fcHigh: number
   statMin: number
   statType: 'pP' | 'pQ'
+  /** the rows' single comparison label ("A | B"), for the fold-change axis title */
+  comparison?: string
 }
 
 export interface VolcanoOptions {
@@ -39,6 +36,19 @@ export interface VolcanoOptions {
   fcHigh: number
   statMin: number
   displayMap?: Record<string, string>
+}
+
+/** The one `comparison` label ("A | B") these rows share, for axis titles — undefined when the
+ *  rows are unlabelled or span several comparisons (then the title stays generic). */
+export function comparisonOf(rows: Array<{ comparison?: string }>): string | undefined {
+  let found: string | undefined
+  for (const r of rows) {
+    const c = r.comparison?.trim()
+    if (!c) continue
+    if (found === undefined) found = c
+    else if (c !== found) return undefined
+  }
+  return found
 }
 
 /** Build volcano points (log2FC vs significance) from comparison rows. */
@@ -60,7 +70,8 @@ export function buildVolcano(rows: CompareResultRow[], opts: VolcanoOptions): Vo
     fcLow: opts.fcLow,
     fcHigh: opts.fcHigh,
     statMin: opts.statMin,
-    statType: opts.statType
+    statType: opts.statType,
+    comparison: comparisonOf(rows)
   }
 }
 
@@ -69,20 +80,44 @@ export function buildVolcano(rows: CompareResultRow[], opts: VolcanoOptions): Vo
 // a comparison table is split into one plot per context = the active conditions that
 // carry values, MINUS the dimension(s) the comparison itself consumes. Those consumed
 // dims are read from `cmp_cond` (not hardcoded): 'cmpd' for veh_norm, the compared
-// condition for a direct comparison ('strain', 'dose', …), or a colon-joined factor
+// condition for a direct comparison ('cell', 'dose', …), or a colon-joined factor
 // pair for a two-way ANOVA ('cmpd:dose'). Excluding them is what stops a clpP-vs-WT
-// strain comparison from offering a meaningless single-level "strain" facet, and a
-// veh_norm over strain × dose from collapsing into one merged cloud.
+// cell comparison from offering a meaningless single-level "cell" facet, and a
+// veh_norm over cell × dose from collapsing into one merged cloud.
 
 /** Minimal shape the faceting helpers need — satisfied by both compare and contrast
  *  result rows (they carry `cmp_cond` plus the condition columns). */
 export interface ContextRow {
   cmp_cond?: string
   comparison?: string
-  strain?: string | null
+  cell?: string | null
   cmpd?: string | null
   dose?: number | null
   time?: number | null
+  /** Contrast rows only: the two sides' values and labels. The paired contrast is a FULL OUTER
+   *  join, so a context tuple measured on one side only has FC1 or FC2 null on every row. */
+  FC1?: number | null
+  FC2?: number | null
+  cmp1?: string
+  cmp2?: string
+}
+
+/** Whether a facet's rows hold data on BOTH sides. Compare rows (no FC1/FC2) always do; contrast
+ *  rows only where at least one gene pairs — a one-sided outer-join tuple (a dose measured on one
+ *  dataset only) never does, and the switch-tabs grey it out rather than show an empty plot. */
+export function facetPaired(rows: ContextRow[]): boolean {
+  return rows.some((r) => !('FC1' in r) || (r.FC1 != null && r.FC2 != null))
+}
+
+/** For an unpaired facet, the label(s) of the side(s) that do carry data (cmp1 ↔ FC1, cmp2 ↔ FC2),
+ *  in first-seen order — what the greyed tab's tooltip names. */
+export function facetSides(rows: ContextRow[]): string[] {
+  const sides = new Set<string>()
+  for (const r of rows) {
+    if (r.FC1 != null) sides.add(r.cmp1 ?? 'A')
+    if (r.FC2 != null) sides.add(r.cmp2 ?? 'B')
+  }
+  return [...sides]
 }
 
 /** A tab-bar facet dimension: a condition, or the `comparison` label itself (used to split a
@@ -90,7 +125,7 @@ export interface ContextRow {
 export type FacetKey = ConditionKey | 'comparison'
 
 function condPresentInRows(rows: ContextRow[], c: ConditionKey): boolean {
-  if (c === 'strain' || c === 'cmpd')
+  if (c === 'cell' || c === 'cmpd')
     return rows.some((r) => {
       const v = (r as unknown as Record<string, unknown>)[c]
       return v != null && v !== ''
@@ -143,7 +178,7 @@ export function facetDims(rows: ContextRow[], exclude?: ConditionKey[]): FacetKe
 }
 
 export interface FacetGroup<T = ContextRow> {
-  /** stable key, e.g. "strain=WT · dose=10" */
+  /** stable key, e.g. "cell=WT · dose=10" */
   key: string
   /** the faceting value(s) for this group, in dim order */
   values: Array<{ dim: FacetKey; value: string | number }>
@@ -235,10 +270,30 @@ export interface ScatterData {
 
 export interface ScatterOptions {
   displayMap?: Record<string, string>
+  /** what the two sides hold (from ContrastResult.valueKind): fold changes (default) or log₂
+   *  abundances from a raw-data contrast — drives the axis titles */
+  valueKind?: 'abundance' | 'fc'
 }
 
-/** Must match contrast.ts's marginal cutoff so the drawn box matches the colouring. */
-const SCATTER_Q = 0.01
+/** The statistic's cutoffs, read back off the rows' `thrsh` label (written by contrast.ts) so the
+ *  drawn boundary matches the colouring: "ols prediction, 95%" / "… per-axis q < 0.05". */
+function statFromLabel(thrsh: string): {
+  confUp: number
+  confDown: number
+  q: { aUp: number; aDown: number; bUp: number; bDown: number }
+} {
+  const pct = /(\d+(?:\.\d+)?)%(?:\/(\d+(?:\.\d+)?)%)?/.exec(thrsh)
+  const confUp = pct ? Number(pct[1]) / 100 : 0.99
+  const confDown = pct?.[2] ? Number(pct[2]) / 100 : confUp
+  // "q < 0.01" (all tails) or "q < A 0.01/0.05, B 0.02/0.02" (A up/down, B up/down).
+  const per = /q < A (\d*\.?\d+)\/(\d*\.?\d+), B (\d*\.?\d+)\/(\d*\.?\d+)/.exec(thrsh)
+  const one = /q < (\d*\.?\d+)/.exec(thrsh)
+  const q0 = one ? Number(one[1]) : 0.01
+  const q = per
+    ? { aUp: Number(per[1]), aDown: Number(per[2]), bUp: Number(per[3]), bDown: Number(per[4]) }
+    : { aUp: q0, aDown: q0, bUp: q0, bDown: q0 }
+  return { confUp, confDown, q }
+}
 
 const avg = (a: number[]): number => a.reduce((s, v) => s + v, 0) / a.length
 const stdev = (a: number[]): number => {
@@ -248,11 +303,12 @@ const stdev = (a: number[]): number => {
 
 /** Effective BH threshold |z| — the least-extreme gene that still passes, so the drawn
  *  boundary lands exactly where the significance calls flip (omicViz `_bh_z_thresh`). */
-function bhZThresh(vals: number[], mu: number, s: number): number {
+function bhZThresh(vals: number[], mu: number, s: number, qCut: number): number {
   const z = vals.map((v) => (v - mu) / s)
   const q = benjaminiHochberg(z.map((v) => 2 * normalSf(Math.abs(v))))
-  const sig = z.map((v) => Math.abs(v)).filter((_, i) => q[i] < SCATTER_Q)
-  return sig.length ? Math.min(...sig) : studentTppf(1 - SCATTER_Q / 2, 1e6)
+  const sig = z.map((v) => Math.abs(v)).filter((_, i) => q[i] < qCut)
+  // studentTppf takes a TWO-SIDED p: the nominal |z| for qCut when nothing passes.
+  return sig.length ? Math.min(...sig) : studentTppf(qCut, 1e6)
 }
 
 /** Build the guide for the contrast's relationship, read off the rows' `thrsh` label. */
@@ -260,6 +316,7 @@ function scatterGuide(pts: ScatterPoint[], thrsh: string): ScatterGuide | undefi
   if (pts.length < 3) return undefined
   const x = pts.map((p) => p.x) // FC2
   const y = pts.map((p) => p.y) // FC1
+  const stat = statFromLabel(thrsh)
 
   if (thrsh.startsWith('ols')) {
     const n = x.length
@@ -275,7 +332,10 @@ function scatterGuide(pts: ScatterPoint[], thrsh: string): ScatterGuide | undefi
     }, 0)
     const sErr = Math.sqrt(sse / (n - 2))
     if (!(sErr > 0)) return undefined
-    const tCrit = studentTppf(0.995, n - 2)
+    // studentTppf takes a TWO-SIDED p, so the band's critical t is ppf(1 − conf), matching
+    // contrast.ts (a one-sided 0.995 here drew a near-zero-width band).
+    const tUp = studentTppf(1 - stat.confUp, n - 2)
+    const tDown = studentTppf(1 - stat.confDown, n - 2)
     // Span the guide over the SHARED square the view plots (both axes, and always
     // including the origin) so the line of identity runs corner-to-corner through (0,0)
     // instead of starting wherever the x data happens to begin.
@@ -297,11 +357,11 @@ function scatterGuide(pts: ScatterPoint[], thrsh: string): ScatterGuide | undefi
       // reference rather than the fitted line. The half-width is still the OLS 99%
       // prediction band, so the envelope's width reflects the observed scatter.
       const yi = xi
-      const hw = tCrit * sErr * Math.sqrt(1 + 1 / n + ((xi - xMean) * (xi - xMean)) / Sxx)
+      const lever = sErr * Math.sqrt(1 + 1 / n + ((xi - xMean) * (xi - xMean)) / Sxx)
       xs.push(xi)
       fit.push(yi)
-      up.push(yi + hw)
-      dn.push(yi - hw)
+      up.push(yi + tUp * lever)
+      dn.push(yi - tDown * lever)
     }
     return {
       kind: 'ols',
@@ -316,14 +376,13 @@ function scatterGuide(pts: ScatterPoint[], thrsh: string): ScatterGuide | undefi
   const muY = median(y)
   const sX = madNormal(x) || stdev(x) || 1
   const sY = madNormal(y) || stdev(y) || 1
-  const zX = bhZThresh(x, muX, sX)
-  const zY = bhZThresh(y, muY, sY)
+  // Each tail has its own boundary when the cutoffs differ (x = B, y = A).
   return {
     kind: 'marginal',
-    xLo: muX - zX * sX,
-    xHi: muX + zX * sX,
-    yLo: muY - zY * sY,
-    yHi: muY + zY * sY
+    xLo: muX - bhZThresh(x, muX, sX, stat.q.bDown) * sX,
+    xHi: muX + bhZThresh(x, muX, sX, stat.q.bUp) * sX,
+    yLo: muY - bhZThresh(y, muY, sY, stat.q.aDown) * sY,
+    yHi: muY + bhZThresh(y, muY, sY, stat.q.aUp) * sY
   }
 }
 
@@ -344,10 +403,12 @@ export function buildScatter(rows: ContrastResultRow[], opts: ScatterOptions = {
     })
   }
   const thrsh = rows.find((r) => r.thrsh)?.thrsh ?? ''
+  // Group A (FC1) on y, group B (FC2) on x.
+  const unit = opts.valueKind === 'abundance' ? 'log₁₀ abundance' : 'log₂FC'
   return {
     points,
-    xLabel: `log₂FC · ${rows[0]?.cmp2 ?? 'FC2'}`,
-    yLabel: `log₂FC · ${rows[0]?.cmp1 ?? 'FC1'}`,
+    xLabel: `${unit} · ${rows[0]?.cmp2 ?? 'group B'}`,
+    yLabel: `${unit} · ${rows[0]?.cmp1 ?? 'group A'}`,
     guide: scatterGuide(points, thrsh)
   }
 }
@@ -356,7 +417,7 @@ export function buildScatter(rows: ContrastResultRow[], opts: ScatterOptions = {
  * Intensity scatter from a COMPARISON's group means — the two sides' raw abundances
  * plotted against each other (log10), e.g. basal clpP vs WT from a direct `clpP | WT`
  * comparison restricted to vehicle. Mirrors omicViz, where this comes from a
- * `type: direct` entry (`filter: {cmpd: H2O}`, `strain: [[clpP, WT]]`): the direct output
+ * `type: direct` entry (`filter: {cmpd: H2O}`, `cell: [[clpP, WT]]`): the direct output
  * already carries mean1/mean2, so no extra statistics are needed — the comparison's own
  * signf/effect colours the divergent genes and the line of identity is the reference.
  */
@@ -384,15 +445,16 @@ export function buildIntensityScatter(
   const [num, den] = (rows[0]?.comparison ?? '').split(' | ').map((v) => v.trim())
   return {
     points,
-    xLabel: `log₁₀ intensity · ${den || 'denominator'}`,
-    yLabel: `log₁₀ intensity · ${num || 'numerator'}`
+    // "abundance" (with its log base) — the same word the MA plot and contrast scatter use.
+    xLabel: `log abundance · ${den || 'denominator'}`,
+    yLabel: `log abundance · ${num || 'numerator'}`
   }
 }
 
 // ── MA (compare) ────────────────────────────────────────────────────────────────
 
 export interface MAPoint {
-  x: number // mean log2 abundance A
+  x: number // mean log10 abundance A
   y: number // log2FC (M)
   label: string
   effect: Effect
@@ -402,6 +464,8 @@ export interface MAData {
   points: MAPoint[]
   fcLow: number
   fcHigh: number
+  /** the rows' single comparison label ("A | B"), for the fold-change axis title */
+  comparison?: string
 }
 export interface MAOptions {
   fcLow: number
@@ -409,13 +473,15 @@ export interface MAOptions {
   displayMap?: Record<string, string>
 }
 
-/** MA plot: mean log2 abundance (A) vs log2 fold change (M). */
+/** MA plot: mean log10 abundance (A) vs log2 fold change (M). Abundance is shown in log10
+ *  everywhere in the app (heatmap, intensity scatter, abundance contrasts); only fold changes
+ *  are log2. */
 export function buildMA(rows: CompareResultRow[], opts: MAOptions): MAData {
   const points: MAPoint[] = []
   for (const r of rows) {
     if (r.log2FC == null || r.mean1 == null || r.mean2 == null || r.mean1 <= 0 || r.mean2 <= 0)
       continue
-    const a = 0.5 * (Math.log2(r.mean1) + Math.log2(r.mean2))
+    const a = 0.5 * (Math.log10(r.mean1) + Math.log10(r.mean2))
     if (!Number.isFinite(a) || !Number.isFinite(r.log2FC)) continue
     points.push({
       x: a,
@@ -425,7 +491,7 @@ export function buildMA(rows: CompareResultRow[], opts: MAOptions): MAData {
       uniqID: r.uniqID
     })
   }
-  return { points, fcLow: opts.fcLow, fcHigh: opts.fcHigh }
+  return { points, fcLow: opts.fcLow, fcHigh: opts.fcHigh, comparison: comparisonOf(rows) }
 }
 
 // ── dose/time-response (compare) ─────────────────────────────────────────────────
@@ -444,6 +510,8 @@ export interface DRData {
   highlight: number
   /** total genes available (for a "top N of M" note) */
   total: number
+  /** the rows' single comparison label ("A | B"), for the fold-change axis title */
+  comparison?: string
 }
 export interface DROptions {
   axis: 'dose' | 'time'
@@ -456,17 +524,18 @@ export interface DROptions {
 /**
  * Bubble/dumbbell put one gene per axis category, so they can't show thousands of
  * genes without Plotly choking (~2000 categories/shapes freezes the renderer). When
- * "all" is requested (topGenes ≤ 0) cap to a safe count; an explicit topGenes overrides
- * it. DR/TR instead show every gene as a faint background line and only color the top-N
- * (see buildDR/DRView), so they never need a cap.
+ * "all" is requested (topGenes ≤ 0, the Cap genes switch off) cap to a safe count; an explicit
+ * topGenes overrides it. DR/TR instead show every gene as a faint background line and only
+ * color the top-N (see buildDR/DRView), so they never need a cap.
  */
-const BUBBLE_DUMBBELL_CAP = 100
-const geneLimit = (topGenes: number, total: number, cap = BUBBLE_DUMBBELL_CAP): number =>
-  topGenes > 0 ? topGenes : Math.min(total, cap)
+export const BUBBLE_DUMBBELL_CAP = 100
+const geneLimit = (topGenes: number, total: number): number =>
+  topGenes > 0 ? topGenes : Math.min(total, BUBBLE_DUMBBELL_CAP)
 
 /** |log2FC| at the TOP dose/time (the highest axis value). Points are x-sorted ascending before
  *  this is used, so the last point is the top of the axis — genes most differential there rank first. */
-const topDoseMag = (pts: { y: number }[]): number => (pts.length ? Math.abs(pts[pts.length - 1].y) : 0)
+const topDoseMag = (pts: { y: number }[]): number =>
+  pts.length ? Math.abs(pts[pts.length - 1].y) : 0
 
 /** Response curves: log2FC vs dose (or time), one line per gene, top-N by |log2FC| at the top dose. */
 export function buildDR(rows: CompareResultRow[], opts: DROptions): DRData {
@@ -500,18 +569,19 @@ export function buildDR(rows: CompareResultRow[], opts: DROptions): DRData {
       series: [...inFocus, ...rest],
       axis: opts.axis,
       highlight: inFocus.length,
-      total: series.length
+      total: series.length,
+      comparison: comparisonOf(rows)
     }
   }
   // Show every gene (as faint background lines); topGenes controls only how many of the
   // most-differential are colored on top. All genes stay in one merged view trace. topGenes ≤ 0
-  // (unset) defaults to the leading 10 rather than colouring nothing — an all-grey plot is never
-  // what's wanted here.
+  // (Cap genes off) colours them all — DRView safety-caps the coloured foreground.
   return {
     series,
     axis: opts.axis,
-    highlight: opts.topGenes > 0 ? opts.topGenes : 10,
-    total: series.length
+    highlight: opts.topGenes > 0 ? opts.topGenes : series.length,
+    total: series.length,
+    comparison: comparisonOf(rows)
   }
 }
 
@@ -577,7 +647,7 @@ export function buildBubble(rows: CompareResultRow[], opts: BubbleOptions): Bubb
   const base =
     focus.length > 0
       ? focus.filter((id) => byGene.has(id))
-      : ranked.slice(0, geneLimit(opts.topGenes, ranked.length, 20)) // unset ⇒ top 20
+      : ranked.slice(0, geneLimit(opts.topGenes, ranked.length)) // unset ⇒ all (safety-capped)
   // Order the chosen genes by their top-level log2FC (descending) for the gene axis.
   base.sort((a, b) => (topSigned.get(b) ?? 0) - (topSigned.get(a) ?? 0))
   // Append linked-selection genes not already shown (kept in their own FC order), so a
@@ -650,7 +720,7 @@ export function buildDumbbell(rows: ContrastResultRow[], opts: DumbbellOptions):
   const base =
     focus.length > 0
       ? valid.filter((r) => focusSet.has(r.uniqID))
-      : sig.slice(0, geneLimit(opts.topGenes, sig.length, 20)) // significant only; unset ⇒ top 20
+      : sig.slice(0, geneLimit(opts.topGenes, sig.length)) // significant only; unset ⇒ all (safety-capped)
   // Append linked-selection genes not already shown (hover/pin highlight), preserving the
   // |FCdiff| order, so a selected gene appears at the end of the list instead of replacing.
   const baseIds = new Set(base.map((r) => r.uniqID))
@@ -683,6 +753,8 @@ export interface TdrData {
   uniqID: string
   /** one line per time level, x = dose, y = log2FC */
   series: TdrSeries[]
+  /** the rows' single comparison label ("A | B"), for the fold-change axis title */
+  comparison?: string
 }
 
 /** One gene's dose×time response: x = dose, a line per time level, y = log2FC. */
@@ -705,7 +777,7 @@ export function buildTdr(
   const series: TdrSeries[] = [...byTime.entries()]
     .sort((a, b) => a[0] - b[0])
     .map(([t, pts]) => ({ time: String(t), points: pts.sort((a, b) => a.x - b.x) }))
-  return { gene: displayMap?.[uniqID] ?? uniqID, uniqID, series }
+  return { gene: displayMap?.[uniqID] ?? uniqID, uniqID, series, comparison: comparisonOf(rows) }
 }
 
 // ── gene bar: one gene's standardized value across every condition ───────────────
@@ -787,9 +859,7 @@ export function buildGeneBar(
       const stat = log ? vals.map((v) => Math.log10(v)) : vals
       const m = stat.reduce((s, v) => s + v, 0) / stat.length
       const variance =
-        stat.length > 1
-          ? stat.reduce((s, v) => s + (v - m) * (v - m), 0) / (stat.length - 1)
-          : 0
+        stat.length > 1 ? stat.reduce((s, v) => s + (v - m) * (v - m), 0) / (stat.length - 1) : 0
       const sd = Math.sqrt(variance)
       if (log) {
         const center = Math.pow(10, m)
@@ -804,7 +874,16 @@ export function buildGeneBar(
           n: vals.length
         })
       } else {
-        bars.push({ cond, gene: label, uniqID, mean: m, sd, errUp: sd, errDown: sd, n: vals.length })
+        bars.push({
+          cond,
+          gene: label,
+          uniqID,
+          mean: m,
+          sd,
+          errUp: sd,
+          errDown: sd,
+          n: vals.length
+        })
       }
     }
   }
@@ -816,7 +895,7 @@ export function buildGeneBar(
 /** Per-point condition values, so the view can drive multi-condition (complex-legend)
  *  aesthetics — colour by a qualitative condition, shade/arrow by a quantitative one. */
 export interface ClusterMeta {
-  strain: string
+  cell: string
   cmpd: string
   dose: number | null
   time: number | null
@@ -884,13 +963,13 @@ export interface ClusterOptions {
 }
 
 /** Pull the four condition values off a standardized/compare row into a ClusterMeta. Numeric
- *  dose/time are coerced to numbers (null when absent); strain/cmpd stay strings. */
+ *  dose/time are coerced to numbers (null when absent); cell/cmpd stay strings. */
 function clusterMetaOf(row: Record<string, unknown> | object): ClusterMeta {
   const r = row as Record<string, unknown>
   const num = (v: unknown): number | null =>
     v == null || v === '' || !Number.isFinite(Number(v)) ? null : Number(v)
   return {
-    strain: r.strain != null ? String(r.strain) : '',
+    cell: r.cell != null ? String(r.cell) : '',
     cmpd: r.cmpd != null ? String(r.cmpd) : '',
     dose: num(r.dose),
     time: num(r.time)
@@ -1109,7 +1188,7 @@ function quantileAtGrid(grid: Float64Array, t: number): number {
  *  (a flat scree over individual replicates is a common symptom). */
 function collapseReplicates(rows: StandardRow[]): StandardRow[] {
   const key = (r: StandardRow): string =>
-    `${r.uniqID}${r.strain}${r.cmpd}${r.dose ?? ''}${r.time ?? ''}`
+    `${r.uniqID}${r.cell}${r.cmpd}${r.dose ?? ''}${r.time ?? ''}`
   const agg = new Map<string, { sum: number; n: number; proto: StandardRow }>()
   for (const r of rows) {
     if (r.value == null || !Number.isFinite(r.value)) continue
@@ -1252,7 +1331,7 @@ export function buildResponseCluster(rows: CompareResultRow[], opts: ClusterOpti
 
 /** Per-sample condition values, for the annotation tracks along the sample axis. */
 export interface SampleMeta {
-  strain: string
+  cell: string
   cmpd: string
   dose: number | null
   time: number | null
@@ -1274,8 +1353,6 @@ export interface HeatmapData {
 
 export interface HeatmapOptions {
   displayMap?: Record<string, string>
-  /** cap the number of genes shown (by variance); 0 = all */
-  maxGenes?: number
   /** log10-transform intensities for display (default true) */
   log10?: boolean
   /** cluster gene rows (average-linkage, euclidean) so similar genes are adjacent
@@ -1284,19 +1361,19 @@ export interface HeatmapOptions {
   /** when clustering, cut the dendrogram into this many groups and order the GROUPS by their mean
    *  (log10) value, high→low, keeping the clustering within each group (default 8). */
   clusterGroups?: number
-  /** focus genes (uniqIDs): when non-empty, show exactly these rows instead of top-by-variance */
+  /** focus genes (uniqIDs): when non-empty, show exactly these rows instead of all genes */
   focus?: string[]
 }
 
 function sampleLabel(r: StandardRow): string {
-  const parts = [r.strain, r.cmpd, r.dose ?? '', r.time ?? '', r.rep != null ? `r${r.rep}` : '']
+  const parts = [r.cell, r.cmpd, r.dose ?? '', r.time ?? '', r.rep != null ? `r${r.rep}` : '']
   return parts.filter((p) => p !== '').join('_')
 }
 
 /** Sample condition identity without the replicate — replicates of one condition
  *  share it, so the cluster can group them into a centroid. */
 function sampleCond(r: StandardRow): string {
-  return [r.strain, r.cmpd, r.dose ?? '', r.time ?? ''].filter((p) => p !== '').join('_')
+  return [r.cell, r.cmpd, r.dose ?? '', r.time ?? ''].filter((p) => p !== '').join('_')
 }
 
 /** Pivot the standardized long table into a genes × samples matrix for a heatmap. */
@@ -1314,7 +1391,7 @@ export function buildHeatmap(rows: StandardRow[], opts: HeatmapOptions = {}): He
     if (!sampleSeen.has(s)) {
       sampleSeen.add(s)
       sampleOrder.push(s)
-      sampleMeta.set(s, { strain: r.strain, cmpd: r.cmpd, dose: r.dose, time: r.time, rep: r.rep })
+      sampleMeta.set(s, { cell: r.cell, cmpd: r.cmpd, dose: r.dose, time: r.time, rep: r.rep })
     }
     if (!geneSeen.has(r.uniqID)) {
       geneSeen.add(r.uniqID)
@@ -1326,8 +1403,8 @@ export function buildHeatmap(rows: StandardRow[], opts: HeatmapOptions = {}): He
     cells.set(`${r.uniqID} ${s}`, v)
   }
 
-  // Order the sample columns by condition — strain, then cmpd, then dose, then time (then
-  // replicate) — so samples sharing a strain/compound/dose block together, rather than appearing
+  // Order the sample columns by condition — cell, then cmpd, then dose, then time (then
+  // replicate) — so samples sharing a cell/compound/dose block together, rather than appearing
   // in the raw data order.
   const strCmp = (a: string, b: string): number =>
     a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' })
@@ -1337,7 +1414,7 @@ export function buildHeatmap(rows: StandardRow[], opts: HeatmapOptions = {}): He
     const ma = sampleMeta.get(a) as SampleMeta
     const mb = sampleMeta.get(b) as SampleMeta
     return (
-      strCmp(ma.strain, mb.strain) ||
+      strCmp(ma.cell, mb.cell) ||
       strCmp(ma.cmpd, mb.cmpd) ||
       numCmp(ma.dose, mb.dose) ||
       numCmp(ma.time, mb.time) ||
@@ -1345,24 +1422,13 @@ export function buildHeatmap(rows: StandardRow[], opts: HeatmapOptions = {}): He
     )
   })
 
-  // Focus genes (when set) override the variance cap: show exactly those rows.
+  // The intensity heatmap shows the full proteome — no top-N cap (that's the FC heatmap's
+  // job). Focus genes (when set) narrow it to exactly those rows.
   const focus = opts.focus ?? []
   let genes = geneOrder
   if (focus.length > 0) {
     const present = new Set(geneOrder)
     genes = focus.filter((g) => present.has(g))
-  } else if (opts.maxGenes && opts.maxGenes > 0 && geneOrder.length > opts.maxGenes) {
-    const variance = (g: string): number => {
-      const vals: number[] = []
-      for (const s of sampleOrder) {
-        const v = cells.get(`${g} ${s}`)
-        if (v != null && Number.isFinite(v)) vals.push(v)
-      }
-      if (vals.length < 2) return -1
-      const mean = vals.reduce((a, b) => a + b, 0) / vals.length
-      return vals.reduce((a, b) => a + (b - mean) * (b - mean), 0) / (vals.length - 1)
-    }
-    genes = [...geneOrder].sort((a, b) => variance(b) - variance(a)).slice(0, opts.maxGenes)
   }
 
   let z = genes.map((g) => sampleOrder.map((s) => cells.get(`${g} ${s}`) ?? null))
@@ -1410,12 +1476,12 @@ export function buildHeatmap(rows: StandardRow[], opts: HeatmapOptions = {}): He
 
   const y = genes.map((g) => opts.displayMap?.[g] ?? g)
   const samples = sampleOrder.map(
-    (s) => sampleMeta.get(s) ?? { strain: '', cmpd: '', dose: null, time: null, rep: null }
+    (s) => sampleMeta.get(s) ?? { cell: '', cmpd: '', dose: null, time: null, rep: null }
   )
-  // Conditions that actually carry values become annotation tracks (strain/cmpd non-empty,
+  // Conditions that actually carry values become annotation tracks (cell/cmpd non-empty,
   // dose/time non-null across the samples); empty conditions are skipped.
   const conds = VALID_CONDITIONS.filter((c) =>
-    c === 'strain' || c === 'cmpd'
+    c === 'cell' || c === 'cmpd'
       ? samples.some((m) => m[c] !== '')
       : samples.some((m) => m[c] != null)
   )
@@ -1548,7 +1614,9 @@ export function buildFcHeatmap(
       }
       return cnt > 0 ? sum / cnt : 0
     })
-    let imputed = z.map((row) => row.map((v, ci) => (v != null && Number.isFinite(v) ? v : colMean[ci])))
+    let imputed = z.map((row) =>
+      row.map((v, ci) => (v != null && Number.isFinite(v) ? v : colMean[ci]))
+    )
     // Columns first: cluster on each column's gene-response profile (z-scored across genes).
     if (activeCols.length > 2 && genes.length > 1) {
       const colVecs = activeCols.map((_, ci) => zscore(imputed.map((row) => row[ci])))
@@ -1566,7 +1634,8 @@ export function buildFcHeatmap(
   }
 
   let absMax = 0
-  for (const row of z) for (const v of row) if (v != null && Number.isFinite(v)) absMax = Math.max(absMax, Math.abs(v))
+  for (const row of z)
+    for (const v of row) if (v != null && Number.isFinite(v)) absMax = Math.max(absMax, Math.abs(v))
 
   const dm = opts.displayMap ?? {}
   return {
@@ -1656,7 +1725,7 @@ export function buildQc(std: StandardizeResult, metric: QcMetric): QcData {
     const groups = [...map]
       .map(([label, vals]) => ({ label, values: log ? vals.map((v) => Math.log10(v)) : vals }))
       .sort((a, b) => qcLabelCmp(a.label, b.label))
-    return { groups, yLabel: log ? 'log₁₀ intensity' : 'intensity', metric, summary: 'median' }
+    return { groups, yLabel: log ? 'log intensity' : 'intensity', metric, summary: 'median' }
   }
 
   // cv: per condition group, the %CV of each protein across its replicates.
@@ -1802,8 +1871,25 @@ export type EnrichSource = 'go' | 'kegg'
  *  gene-label permutation). */
 export type EnrichMethod = 'ora' | 'gsea'
 
-/** DB annotation column each source reads (see engine/ingest annotationMap). */
-const ENRICH_COL: Record<EnrichSource, string> = { go: 'GO', kegg: 'keggPathway' }
+/** DB annotation columns each source reads (see engine/ingest annotationMap). GO is fetched per
+ *  aspect (BP / MF / CC) and pooled here; the plain `GO` column is the pre-split name, kept so
+ *  older projects still enrich. */
+export const ENRICH_COLS: Record<EnrichSource, string[]> = {
+  go: ['GO_BP', 'GO_MF', 'GO_CC', 'GO'],
+  kegg: ['keggPathway']
+}
+/** A gene's distinct terms for a source, pooled over that source's columns. */
+export function enrichTermsOf(
+  ann: Record<string, Record<string, string>>,
+  source: EnrichSource,
+  uid: string
+): string[] {
+  const rec = ann[uid]
+  if (!rec) return []
+  const out = new Set<string>()
+  for (const col of ENRICH_COLS[source]) for (const t of splitTerms(rec[col])) out.add(t)
+  return [...out]
+}
 
 export interface EnrichTerm {
   /** the GO term / KEGG pathway name */
@@ -1931,10 +2017,9 @@ export function buildEnrichment(rows: CompareResultRow[], opts: EnrichOptions): 
  *  the hypergeometric (Fisher) tail and BH-corrected independently. `rows` are one facet's Compare
  *  result; genes with no term of the chosen source are excluded from both query and background. */
 function runOra(rows: CompareResultRow[], opts: EnrichOptions): EnrichData {
-  const col = ENRICH_COL[opts.source]
   const ann = opts.annotationMap ?? {}
   const dm = opts.displayMap ?? {}
-  const termsOf = (uid: string): string[] => splitTerms(ann[uid]?.[col])
+  const termsOf = (uid: string): string[] => enrichTermsOf(ann, opts.source, uid)
   const push = (m: Map<string, string[]>, t: string, uid: string): void => {
     const arr = m.get(t)
     if (arr) arr.push(uid)
@@ -2078,10 +2163,9 @@ function runningEs(
  *  result. Gene-set (not phenotype) permutation is used since only per-gene fold changes are
  *  available; p-values are nominal and BH-adjusted within each direction. */
 function runGsea(rows: CompareResultRow[], opts: EnrichOptions): EnrichData {
-  const col = ENRICH_COL[opts.source]
   const ann = opts.annotationMap ?? {}
   const dm = opts.displayMap ?? {}
-  const termsOf = (uid: string): string[] => splitTerms(ann[uid]?.[col])
+  const termsOf = (uid: string): string[] => enrichTermsOf(ann, opts.source, uid)
   const minSet = Math.max(2, opts.minSet ?? 5)
   const maxSet = opts.maxSet ?? 500
   const nPerm = Math.max(100, opts.permutations ?? 1000)

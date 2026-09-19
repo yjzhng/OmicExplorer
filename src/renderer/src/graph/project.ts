@@ -37,6 +37,9 @@ export interface ProjectFile {
   view?: 'canvas' | 'results'
   /** the Results tab (analysis-group id) that was active, restored alongside `view`. */
   resultsTab?: string | null
+  /** where a per-tile download was last saved in this project; the next save-as opens there
+   *  instead of the data folder's `output/`. */
+  saveDir?: string | null
 }
 
 /** Counter-based ids (no Math.random — deterministic and test-stable). The counter is shared
@@ -112,9 +115,62 @@ function coerceWorkflows(
   return { workflows, activeWorkflowId: active }
 }
 
-/** Parse + validate a project file, migrating the v1 (flat) shape into a folder. */
+/** Object keys renamed by the strain → cell condition rename (v0.4). */
+const RENAMED_KEYS: Record<string, string> = { strain: 'cell' }
+/** The boolean "per strain/cell" clean-up flag became a list of grouping conditions (v0.4):
+ *  true → ['cell'], false → pooled (key dropped). Config key → new key, result key → new key. */
+const PER_CELL_FLAGS: Record<string, string> = {
+  minSamplePctPerStrain: 'minSamplePctBy',
+  minSamplePctPerCell: 'minSamplePctBy',
+  perStrain: 'by',
+  perCell: 'by'
+}
+/** Keys whose string value names one condition. */
+const COND_VALUE_KEYS = new Set(['condition', 'condition2', 'colorBy'])
+/** Keys whose array value lists conditions. */
+const COND_LIST_KEYS = new Set(['match', 'activeConditions'])
+
+/** The `strain` condition was renamed `cell` (v0.4). Rewrite every place a saved project names
+ *  it — row/selector/config keys, condition-valued fields, condition lists and `cmp_cond` labels
+ *  (`cmpd:strain`) — in place, so projects saved before the rename open unchanged. Walks node
+ *  configs and embedded results alike; a key already present under its new name wins. */
+export function migrateStrainToCell(v: unknown): void {
+  if (Array.isArray(v)) {
+    for (const x of v) migrateStrainToCell(x)
+    return
+  }
+  if (v === null || typeof v !== 'object') return
+  const o = v as Record<string, unknown>
+  for (const k of Object.keys(o)) {
+    const val = o[k]
+    if (typeof val === 'string') {
+      if (COND_VALUE_KEYS.has(k) && val === 'strain') o[k] = 'cell'
+      else if (k === 'cmp_cond' && val.includes('strain'))
+        o[k] = val
+          .split(':')
+          .map((c) => (c === 'strain' ? 'cell' : c))
+          .join(':')
+    } else if (Array.isArray(val) && COND_LIST_KEYS.has(k)) {
+      o[k] = val.map((c) => (c === 'strain' ? 'cell' : c))
+    } else migrateStrainToCell(val)
+    const to = RENAMED_KEYS[k]
+    if (to !== undefined) {
+      if (!(to in o)) o[to] = o[k]
+      delete o[k]
+    }
+    const flagTo = PER_CELL_FLAGS[k]
+    if (flagTo !== undefined) {
+      if (o[k] === true && !(flagTo in o)) o[flagTo] = ['cell']
+      delete o[k]
+    }
+  }
+}
+
+/** Parse + validate a project file, migrating the v1 (flat) shape into a folder and any
+ *  pre-rename `strain` condition into `cell`. */
 export function deserializeProject(text: string): ProjectFile {
   const raw = JSON.parse(text) as Partial<ProjectFile> & ProjectFileV1
+  migrateStrainToCell(raw)
   // Reserve every existing id so parse-time and later-minted ids can't collide with saved ones.
   reserveIds(raw)
   let folders: ProjectFolder[]
@@ -154,7 +210,8 @@ export function deserializeProject(text: string): ProjectFile {
     folders,
     activeFolderId,
     view: raw.view === 'results' ? 'results' : 'canvas',
-    resultsTab: typeof raw.resultsTab === 'string' ? raw.resultsTab : null
+    resultsTab: typeof raw.resultsTab === 'string' ? raw.resultsTab : null,
+    saveDir: typeof raw.saveDir === 'string' && raw.saveDir ? raw.saveDir : null
   }
 }
 

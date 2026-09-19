@@ -150,7 +150,7 @@ describe('workflow v2 serialization', () => {
 
   it('parses the workflow docs embedded in the example project', () => {
     // Use the committed synthetic project (real-data projects are gitignored).
-    const proj = JSON.parse(readFileSync('example_project/example.omicexplorer', 'utf8'))
+    const proj = JSON.parse(readFileSync('test_examples/dummy_data/example.omicexplorer', 'utf8'))
     const docs = proj.folders.flatMap((f: { workflows: { doc: unknown }[] }) =>
       f.workflows.map((w) => w.doc)
     )

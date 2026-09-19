@@ -2,6 +2,7 @@ import { join } from 'path'
 import { existsSync } from 'fs'
 import { BrowserWindow, shell } from 'electron'
 import { WINDOW_PRESETS, type WindowPresetName } from './window-presets'
+import { installCloseGuard } from './close-guard'
 
 // Single-source-of-truth master icon. Used for the dev window on Win/Linux
 // (macOS dev shows the default Electron dock icon; packaged apps use the .icns
@@ -45,6 +46,7 @@ export function createWindowFromPreset(
   }
 
   win.once('ready-to-show', () => win.show())
+  installCloseGuard(win) // Save / Don't Save / Cancel when closing with unsaved changes
 
   win.webContents.setWindowOpenHandler((details) => {
     shell.openExternal(details.url)

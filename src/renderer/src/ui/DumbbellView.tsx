@@ -7,7 +7,7 @@ import { useSelection } from './useSelection'
 import { useUiTheme } from './useUiTheme'
 
 /** Dumbbell: per gene, FC1 and FC2 dots joined by a line; sorted by |FCdiff|. The base
- *  set is top-N (or the GOI subset); hovered/pinned genes are appended so a linked
+ *  set is top-N (or the selected subset); hovered/pinned genes are appended so a linked
  *  selection shows up alongside rather than replacing the list. */
 export function DumbbellView({
   rows,
@@ -15,13 +15,16 @@ export function DumbbellView({
   displayMap,
   focus,
   title,
-  orient = 'portrait'
+  orient = 'portrait',
+  valueKind = 'fc'
 }: {
   rows: ContrastResultRow[]
   topGenes: number
   displayMap?: Record<string, string>
   focus?: string[]
   title?: string
+  /** what the two sides hold (ContrastResult.valueKind): the value axis title follows it */
+  valueKind?: 'abundance' | 'fc'
   /** portrait = genes down the y axis (tall list); landscape = genes across x. */
   orient?: 'landscape' | 'portrait'
 }) {
@@ -83,7 +86,11 @@ export function DumbbellView({
     })
 
     const heading = title ?? ''
-    const fcAxis = { ...axisBase(p), title: 'log₂ fold change', zeroline: false }
+    const fcAxis = {
+      ...axisBase(p),
+      title: valueKind === 'abundance' ? 'log abundance' : 'log₂FC',
+      zeroline: false
+    }
     const geneAxis = {
       ...axisBase(p),
       type: 'category',
@@ -116,8 +123,7 @@ export function DumbbellView({
     // applied imperatively by PlotlyChart via a ticktext restyle — same mechanism as the bubble plot.
     const boldTicks = {
       genesByTick: geneUniq.map((u) => [u]),
-      tickLabel: (i: number, active: boolean): string =>
-        active ? `<b>${genes[i]}</b>` : genes[i],
+      tickLabel: (i: number, active: boolean): string => (active ? `<b>${genes[i]}</b>` : genes[i]),
       axis: (landscape ? 'x' : 'y') as 'x' | 'y'
     }
     return {
@@ -125,7 +131,7 @@ export function DumbbellView({
       layout: lay,
       boldTicks
     }
-  }, [rows, topGenes, displayMap, focus, orient, hoverId, pinnedIds, title, mode])
+  }, [rows, topGenes, displayMap, focus, orient, valueKind, hoverId, pinnedIds, title, mode])
 
   return <PlotlyChart data={data} layout={layout} boldTicks={boldTicks} />
 }

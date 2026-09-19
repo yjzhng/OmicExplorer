@@ -394,6 +394,51 @@ export function benjaminiHochberg(pvals: number[]): number[] {
   return q
 }
 
+/** Bonferroni: p·m, capped at 1. */
+export function bonferroni(pvals: number[]): number[] {
+  const m = pvals.filter((p) => Number.isFinite(p)).length
+  return pvals.map((p) => (Number.isFinite(p) ? Math.min(1, p * m) : p))
+}
+
+/** Holm step-down (family-wise error rate, uniformly more powerful than Bonferroni). */
+export function holm(pvals: number[]): number[] {
+  const q = pvals.slice()
+  const idx = pvals.map((_, i) => i).filter((i) => Number.isFinite(pvals[i]))
+  const m = idx.length
+  if (m === 0) return q
+  const order = idx.slice().sort((i, j) => pvals[i] - pvals[j])
+  let prev = 0
+  for (let rank = 1; rank <= m; rank++) {
+    const i = order[rank - 1]
+    const val = Math.min(1, Math.max(prev, pvals[i] * (m - rank + 1)))
+    q[i] = val
+    prev = val
+  }
+  return q
+}
+
+/** Multiple-testing correction applied to a comparison's p-values. `none` = raw p drives calls. */
+export type FdrMethod = 'none' | 'bh' | 'bonferroni' | 'holm'
+export const FDR_LABEL: Record<FdrMethod, string> = {
+  none: '−log P-value',
+  bh: '−log Q-value (FDR)',
+  bonferroni: '−log Q-value (FWER)',
+  holm: '−log Q-value (Holm FWER)'
+}
+/** Adjusted p-values by method; `none` returns the raw p-values. */
+export function adjustPValues(pvals: number[], method: FdrMethod): number[] {
+  switch (method) {
+    case 'bh':
+      return benjaminiHochberg(pvals)
+    case 'bonferroni':
+      return bonferroni(pvals)
+    case 'holm':
+      return holm(pvals)
+    default:
+      return pvals.slice()
+  }
+}
+
 // ── thresholding ───────────────────────────────────────────────────────────────
 
 export interface ThresholdConfig {
@@ -403,17 +448,43 @@ export interface ThresholdConfig {
   statMin: number
   b: number
   s0: number
-  /** which significance column drives calls: raw −log10 p ('pP') or FDR −log10 q ('pQ') */
+  /** hyperbolic only: the DOWN side's FC asymptote (stored as −FC_lim like `s0`); absent = same
+   *  as `s0` (mirrored). Only differs while `asymmetric`. */
+  s0Down?: number
+  /** independent up/down effect-size cutoffs. Off (default): fcLow = −fcHigh and s0Down = s0 are
+   *  kept in lock-step by the store, so the engine can read the raw fields either way. */
+  asymmetric?: boolean
+  /** which significance column drives calls: raw −log10 p ('pP') or adjusted −log10 q ('pQ') */
   statType: 'pP' | 'pQ'
+  /** how q is computed when statType is 'pQ' (absent = Benjamini–Hochberg, the historical default) */
+  fdrMethod?: Exclude<FdrMethod, 'none'>
 }
+
+/** Round a p/q value the way the UI shows it: 3 decimals, but never collapse a small value to 0 —
+ *  below 0.001 keep 2 significant digits (0.0001, 0.00032). */
+export function roundP(p: number): number {
+  if (!(p > 0)) return p
+  return p >= 0.001 ? Math.round(p * 1000) / 1000 : Number(p.toPrecision(2))
+}
+/** A stat cutoff (−log10 p) snapped so the p it stands for is a round number (see roundP) — so a
+ *  dragged volcano guide lands on p = 0.05, not 0.0498. */
+export const snapStatMin = (statMin: number): number =>
+  statMin > 0 ? -Math.log10(roundP(Math.pow(10, -statMin))) : statMin
+
+/** The correction a threshold config uses, as one value: 'none' when raw p drives the calls. */
+export const fdrMethodOf = (t: ThresholdConfig): FdrMethod =>
+  t.statType === 'pP' ? 'none' : (t.fdrMethod ?? 'bh')
+
+/** Default significance cutoff in linear scale; the stored −log10 form is derived from it. */
+export const DEFAULT_P_CUTOFF = 0.05
 
 export const DEFAULT_THRESHOLD: ThresholdConfig = {
   type: 'linear',
   fcLow: -1.0,
   fcHigh: 1.0,
-  statMin: 1.3,
+  statMin: -Math.log10(DEFAULT_P_CUTOFF),
   // SAM curve, stored as a hyperbola with a positive FC asymptote FC_lim = −s0 (see applyThreshold).
-  // Defaults: P_lim (statMin) = 1.3, FC_lim = 0.5 (s0 = −0.5), b = 1.
+  // Defaults: P_lim (statMin) = −log10(0.05), FC_lim = 0.5 (s0 = −0.5), b = 1.
   b: 1,
   s0: -0.5,
   statType: 'pQ'
@@ -426,12 +497,15 @@ function pyFloat(x: number): string {
 
 /** Human-readable threshold description — matches omicViz ThresholdConfig.label(). */
 export function thresholdLabel(cfg: ThresholdConfig): string {
-  const sc = cfg.statType
+  const m = fdrMethodOf(cfg)
+  const sc = m === 'none' ? 'pP' : m === 'bh' ? 'pQ' : `pQ[${m}]`
   if (cfg.type === 'linear') {
     return `linear, log2FC ∉ (${pyFloat(cfg.fcLow)}, ${pyFloat(cfg.fcHigh)}) and ${sc} > ${pyFloat(cfg.statMin)}`
   }
   // SAM hyperbola with a positive FC asymptote FC_lim = −s0 and P asymptote P_lim = statMin.
-  return `non-linear (SAM), ${sc} > P_lim + b/(|FC| − FC_lim)  [P_lim=${pyFloat(cfg.statMin)}, FC_lim=${pyFloat(-cfg.s0)}, b=${pyFloat(cfg.b)}]`
+  // An asymmetric down-side asymptote is spelled out only when it differs (keeps legacy labels).
+  const down = cfg.s0Down != null && cfg.s0Down !== cfg.s0 ? `, FC_lim_down=${pyFloat(-cfg.s0Down)}` : ''
+  return `non-linear (SAM), ${sc} > P_lim + b/(|FC| − FC_lim)  [P_lim=${pyFloat(cfg.statMin)}, FC_lim=${pyFloat(-cfg.s0)}${down}, b=${pyFloat(cfg.b)}]`
 }
 
 export type Effect = 'up' | 'down' | 'none'
@@ -452,7 +526,9 @@ export function applyThreshold(log2FC: number, stat: number, cfg: ThresholdConfi
       // stored with s0 = −FC_lim. Genes at/inside the FC floor (|FC| ≤ FC_lim ⇒ denom ≤ 0) are never
       // significant, however significant — the required stat there is infinite. (For the legacy
       // s0 ≥ 0 form the denominator is always positive, so this is unchanged.)
-      const denom = Math.abs(log2FC) + cfg.s0
+      // The down side may carry its own asymptote (asymmetric mode); otherwise it mirrors s0.
+      const s0 = log2FC < 0 && cfg.s0Down != null ? cfg.s0Down : cfg.s0
+      const denom = Math.abs(log2FC) + s0
       signf = denom > 0 && stat >= cfg.statMin + cfg.b / denom
     }
   }

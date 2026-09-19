@@ -179,6 +179,26 @@ export function registerFileIo(): void {
     }
   )
 
+  /** Native "save as" for one file of a known type (a tile's plot/table download): the OS window
+   *  names the file and picks the folder in one go. Returns the absolute path, with the extension
+   *  enforced, or null if cancelled. */
+  ipcMain.handle(
+    'file:pickSave',
+    async (
+      _evt,
+      opts: { defaultPath: string; ext: string; typeName: string }
+    ): Promise<string | null> => {
+      const res = await dialog.showSaveDialog({
+        title: 'Save as',
+        defaultPath: opts.defaultPath,
+        filters: [{ name: opts.typeName, extensions: [opts.ext] }]
+      })
+      if (res.canceled || !res.filePath) return null
+      const want = `.${opts.ext}`
+      return res.filePath.toLowerCase().endsWith(want) ? res.filePath : `${res.filePath}${want}`
+    }
+  )
+
   ipcMain.handle('proj:pickDataDir', async (): Promise<string | null> => {
     const res = await dialog.showOpenDialog({
       title: 'Select data folder',

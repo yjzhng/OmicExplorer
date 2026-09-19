@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { jacobiEigenSymmetric } from './stats'
+import { adjustPValues, benjaminiHochberg, bonferroni, holm, jacobiEigenSymmetric } from './stats'
 
 /** Deterministic PRNG so the planted matrices are reproducible. */
 function rng(seed: number): () => number {
@@ -57,4 +57,30 @@ describe('jacobiEigenSymmetric', () => {
       expect(maxErr).toBeLessThan(1e-6)
     })
   }
+})
+
+describe('multiple-testing corrections', () => {
+  it('Bonferroni multiplies by m and caps at 1', () => {
+    const q = bonferroni([0.01, 0.2, 0.5])
+    expect(q[0]).toBeCloseTo(0.03, 12)
+    expect(q[1]).toBeCloseTo(0.6, 12)
+    expect(q[2]).toBe(1)
+  })
+  it('Holm is step-down: cumulative max of p·(m−rank+1), capped at 1', () => {
+    // sorted: 0.01·3 = 0.03; 0.02·2 = 0.04; 0.5·1 = 0.5
+    const h = holm([0.02, 0.5, 0.01])
+    expect(h[0]).toBeCloseTo(0.04, 12)
+    expect(h[1]).toBeCloseTo(0.5, 12)
+    expect(h[2]).toBeCloseTo(0.03, 12)
+    // monotone: a later small product can't drop below an earlier one
+    const m = holm([0.04, 0.05])
+    expect(m[0]).toBeCloseTo(0.08, 12)
+    expect(m[1]).toBeCloseTo(0.08, 12)
+  })
+  it('adjustPValues dispatches by method and passes raw p through for none', () => {
+    const p = [0.01, 0.2]
+    expect(adjustPValues(p, 'none')).toEqual(p)
+    expect(adjustPValues(p, 'bh')).toEqual(benjaminiHochberg(p))
+    expect(adjustPValues(p, 'bonferroni')).toEqual(bonferroni(p))
+  })
 })

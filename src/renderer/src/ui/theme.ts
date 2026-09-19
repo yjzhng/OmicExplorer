@@ -17,6 +17,12 @@ export interface Palette {
   /** chart gridlines / axis lines */
   grid: string
   axis: string
+  /** status TEXT colours (see ui/StatusNote): blue info/tip, amber warning, red error, green
+   *  result — tuned per theme so they stay legible on that theme's panels */
+  info: string
+  warn: string
+  err: string
+  ok: string
 }
 
 /** Minimal neutral-grey themes (no blue hues). */
@@ -32,7 +38,11 @@ export const PALETTES: Record<'dark' | 'light', Palette> = {
     accent: '#d8d8d8',
     accentText: '#1a1a1a',
     grid: '#2e2e2e',
-    axis: '#3a3a3a'
+    axis: '#3a3a3a',
+    info: '#6ea1d6',
+    warn: '#e2b93b',
+    err: '#e5484d',
+    ok: '#3fae5a'
   },
   light: {
     bg: '#ffffff',
@@ -45,7 +55,11 @@ export const PALETTES: Record<'dark' | 'light', Palette> = {
     accent: '#2b2b2b',
     accentText: '#ffffff',
     grid: '#ececec',
-    axis: '#cfcfcf'
+    axis: '#cfcfcf',
+    info: '#2f6fb0',
+    warn: '#9a6a00',
+    err: '#c8373d',
+    ok: '#1f8a3f'
   }
 }
 
@@ -63,7 +77,11 @@ export const UI = {
   text: 'var(--text)',
   textMuted: 'var(--text-muted)',
   accent: 'var(--accent)',
-  accentText: 'var(--accent-text)'
+  accentText: 'var(--accent-text)',
+  info: 'var(--info)',
+  warn: 'var(--warn)',
+  err: 'var(--err)',
+  ok: 'var(--ok)'
 }
 
 /** CSS custom properties for a palette — spread onto the app root's style. */
@@ -77,7 +95,11 @@ export function cssVars(p: Palette): CSSProperties {
     '--text': p.text,
     '--text-muted': p.textMuted,
     '--accent': p.accent,
-    '--accent-text': p.accentText
+    '--accent-text': p.accentText,
+    '--info': p.info,
+    '--warn': p.warn,
+    '--err': p.err,
+    '--ok': p.ok
   } as CSSProperties
 }
 
@@ -107,7 +129,7 @@ export const CATEGORICAL: string[] = [
 ]
 
 /** A second categorical palette (ColorBrewer Dark2) for a condition track that must read
- *  distinct from CATEGORICAL — e.g. cmpd colours must not be confused with strain colours. */
+ *  distinct from CATEGORICAL — e.g. cmpd colours must not be confused with cell colours. */
 export const CATEGORICAL_ALT: string[] = [
   '#1b9e77',
   '#d95f02',
@@ -129,7 +151,17 @@ export function plotBase(p: Palette): Record<string, unknown> {
     font: { color: p.textMuted, family: 'system-ui, sans-serif', size: 12 },
     // Vertical legend just outside the plot on the right. x > 1 places it outside the
     // axes; Plotly reserves margin for it so it never overlays the data.
-    legend: { orientation: 'v', x: 1.02, xanchor: 'left', y: 1, yanchor: 'top' }
+    legend: { orientation: 'v', x: 1.02, xanchor: 'left', y: 1, yanchor: 'top' },
+    // Tooltip styled like the app's own (the guide-drag tip): a raised panel surface with a hairline
+    // border and the theme's text, in the UI font, rather than Plotly's trace-coloured box. Views
+    // keep the trace-name side box off with `<extra></extra>` in their hovertemplates.
+    hoverlabel: {
+      bgcolor: p.panelRaised,
+      bordercolor: p.border,
+      font: { color: p.text, family: 'system-ui, sans-serif', size: 11 },
+      align: 'left',
+      namelength: -1
+    }
   }
 }
 

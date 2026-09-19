@@ -27,21 +27,21 @@ describe('buildFolderMap', () => {
 })
 
 describe('exportPath', () => {
-  it('subfolder: nests by analysis folder; GOI variants under a GOI subfolder', () => {
+  it('subfolder: nests by analysis folder; selected-only variants under a selected subfolder', () => {
     expect(exportPath('Amk_H2O2', 'Volcano_grp_c1', 'subfolder', 'png', false)).toBe(
       'Amk_H2O2/Volcano_grp_c1.png'
     )
     expect(exportPath('Amk_H2O2', 'Volcano_grp_c1', 'subfolder', 'png', true)).toBe(
-      'Amk_H2O2/GOI/Volcano_grp_c1.png'
+      'Amk_H2O2/selected/Volcano_grp_c1.png'
     )
   })
 
-  it('flat: joins with double underscore; GOI variants under a top-level GOI folder', () => {
+  it('flat: joins with double underscore; selected-only variants under a top-level selected folder', () => {
     expect(exportPath('Amk_H2O2', 'Comparison_cmp-6', 'flat', 'csv', false)).toBe(
       'Amk_H2O2__Comparison_cmp-6.csv'
     )
     expect(exportPath('Amk_H2O2', 'Volcano_grp_c1', 'flat', 'pdf', true)).toBe(
-      'GOI/Amk_H2O2__Volcano_grp_c1.pdf'
+      'selected/Amk_H2O2__Volcano_grp_c1.pdf'
     )
   })
 })

@@ -5,8 +5,11 @@ import type {
   CondSelector,
   ConditionKey,
   ContrastResult,
+  ContrastStat,
   FilterSpec,
+  ImputeMethod,
   InteractiveRole,
+  PairFix,
   InteractiveSampleCond,
   MatrixPreset,
   StandardizeResult,
@@ -43,16 +46,6 @@ export type StepStatus = 'idle' | 'running' | 'done' | 'error'
 /** Plot orientation for the tiles that support it (bubble/dumbbell/heatmap/bar): genes/
  *  categories across x (landscape) or down y (portrait). Undefined = the plot's default. */
 export type PlotOrient = 'landscape' | 'portrait'
-
-/** Focus genes a plot applies. `goi` = genes of interest (per-gene plots / emphasis),
- *  `panel` = a wider relevant-gene set. Both hold uniqIDs. `mode` decides where a plot
- *  gets its sets: `none` (ignore), `inherit` (the Standardize ancestor's sets), or
- *  `custom` (this plot's own `goi`/`panel`). */
-export interface FocusConfig {
-  mode: 'none' | 'inherit' | 'custom'
-  goi: string[]
-  panel: string[]
-}
 
 export interface FileEntry {
   name: string
@@ -110,6 +103,9 @@ export interface InteractiveImport {
    *  global rule) so a paint on one group of rows can't disturb another, and unaffected by a value
    *  rename. Persisted so reopening restores the highlights, mirroring how column roles are kept. */
   spans?: Record<string, Partial<Record<string, [number, number]>>>
+  /** token separator the Conditions step splits sample names on (default '_'); spans are token
+   *  indexes under it, so changing it clears them */
+  separator?: string
   /** last wizard stage the user was on (1–5) — reopens the wizard where they left off */
   step?: number
   /** last column-classification preset (Columns step) */
@@ -138,16 +134,34 @@ export interface AnnotationSet {
 export interface StandardizeConfig {
   /** null = auto-detect all present conditions */
   activeConditions: ConditionKey[] | null
-  /** master focus-gene sets (uniqIDs) that downstream plots can inherit */
-  goi: string[]
-  panel: string[]
-  /** clean-up: drop genes identified (non-null) in fewer than this % of samples.
-   *  0 = keep everything. */
+  /** clean-up on/off. Absent on older configs → on iff minSamplePct > 0. */
+  cleanupEnabled?: boolean
+  /** clean-up: drop genes identified (non-null) in fewer than this % of samples (applied only
+   *  while `cleanupEnabled`). */
   minSamplePct: number
-  /** apply the % threshold per strain (kept if it clears in any one strain) instead of across all
+  /** conditions to measure the % threshold within (e.g. ['cell'] = per cell, ['cell', 'dose'] =
+   *  per cell × dose); a gene is dropped only if it falls short in every group. Empty/absent = all
    *  samples pooled. */
-  minSamplePctPerStrain?: boolean
+  minSamplePctBy?: ConditionKey[]
+  /** imputation on/off (absent = off) */
+  imputeEnabled?: boolean
+  /** imputation method while enabled (absent = 'perseus') */
+  imputeMethod?: ImputeMethod
+  /** perseus: downshift in sample SDs (absent = 1.8) */
+  imputeShift?: number
+  /** perseus: width as a fraction of the sample SD (absent = 0.3) */
+  imputeWidth?: number
 }
+
+/** Whether a Standardize config's clean-up applies — the explicit switch, or (older configs
+ *  without one) a non-zero threshold. */
+export const cleanupOn = (c: StandardizeConfig): boolean =>
+  c.cleanupEnabled ?? (c.minSamplePct ?? 0) > 0
+
+/** Whether imputation applies: its own switch, AND clean-up — without a coverage threshold a gene
+ *  seen once would be mostly imputed and could come out as a confident call, so imputation is
+ *  gated on clean-up being on. */
+export const imputeOn = (c: StandardizeConfig): boolean => !!c.imputeEnabled && cleanupOn(c)
 
 export interface CompareConfig {
   /** which comparison analysis to run — a config choice, not a distinct node kind.
@@ -168,11 +182,41 @@ export interface CompareConfig {
   pair2Num: string
   pair2Den: string
   threshold: ThresholdConfig
+  /** display names for the two effect classes (legends, tables); absent = "down" / "up".
+   *  Display-only — never stales the result (see setCompareEffectLabels). */
+  effectLabels?: EffectLabels
 }
+
+export interface EffectLabels {
+  down: string
+  up: string
+}
+export const DEFAULT_EFFECT_LABELS: EffectLabels = { down: 'down', up: 'up' }
+/** A Compare's effect names with defaults filled in (blank entries fall back too). */
+export const effectLabelsOf = (
+  c: Pick<CompareConfig, 'effectLabels'> | undefined
+): EffectLabels => ({
+  down: c?.effectLabels?.down?.trim() || DEFAULT_EFFECT_LABELS.down,
+  up: c?.effectLabels?.up?.trim() || DEFAULT_EFFECT_LABELS.up
+})
 
 /** Migrate any stored Compare config (incl. legacy veh_norm/direct) to the explicit model.
  *  Pure — safe to call on every read; returns the input unchanged when already migrated. */
 export function normalizeCompareConfig(c: CompareConfig): CompareConfig {
+  const n = normalizeAnalysis(c)
+  // Threshold: configs saved before the asymmetric switch existed could hold hand-typed unequal
+  // FC cutoffs. Flag those asymmetric so the switch reflects (and the store preserves) them,
+  // instead of silently mirroring the down cutoff off the up one.
+  const t = n.threshold
+  if (t && t.asymmetric === undefined) {
+    const unequal =
+      t.type === 'linear' ? t.fcLow !== -t.fcHigh : t.s0Down != null && t.s0Down !== t.s0
+    if (unequal) return { ...n, threshold: { ...t, asymmetric: true } }
+  }
+  return n
+}
+
+function normalizeAnalysis(c: CompareConfig): CompareConfig {
   const analysis = c.analysis as string
   // Legacy veh_norm: treatment vs vehicle compound, vehicle matched on everything but dose.
   if (analysis === 'veh_norm') {
@@ -221,14 +265,18 @@ export function normalizeCompareConfig(c: CompareConfig): CompareConfig {
  *  factor pairs for a legacy two-way). Drives the tile's ready/blocked state. */
 export function isCompareConfigured(config: CompareConfig): boolean {
   const cfg = normalizeCompareConfig(config)
-  const pinned = (s: CondSelector): boolean => Object.values(s).some((v) => v != null && v.length > 0)
+  const pinned = (s: CondSelector): boolean =>
+    Object.values(s).some((v) => v != null && v.length > 0)
   if (cfg.analysis === 'compare') return pinned(cfg.num) && pinned(cfg.den)
   return !!(cfg.pairNum && cfg.pairDen && cfg.pair2Num && cfg.pair2Den)
 }
 
 /** Contrast forms two sides (FC1/FC2) and scores per-gene divergence between them. */
 export interface ContrastConfig {
+  /** correlated (OLS prediction band around the trend) vs independent (linear cutoff per axis) */
   relationship: 'correlated' | 'independent'
+  /** the statistic's cutoffs: band confidence (correlated), q + |value| floor (linear cutoff) */
+  stat?: ContrastStat
   /** how the two sides (FC1/FC2) are formed:
    *   - 'select' (default): ONE upstream input, split into two EXPLICIT cond-value selections
    *     (num → FC1, den → FC2) aligned on the chosen match context — the same interactive selector
@@ -243,11 +291,24 @@ export interface ContrastConfig {
   /** context dims to align the two sides on (joined with uniqID); unmatched dims are averaged.
    *  Empty = join on uniqID alone (one point per gene). Used by both 'select' and 'pair'. */
   match?: ConditionKey[]
+  /** 'pair' mode: which wired inputs are dataset A (y) and B (x), by node id. A tile may have
+   *  more than two inputs wired; absent/stale ids fall back to the first two edges. */
+  pairA?: string
+  pairB?: string
+  /** 'select' mode with several inputs wired: which one the two groups are selected from, by
+   *  node id; absent/stale falls back to the first edge. */
+  selectFrom?: string
+  /** 'pair' mode: the slice each UNMATCHED condition is fixed to, per dataset — nothing is pooled
+   *  across a condition (see engine PairFix). */
+  pairFix?: PairFix
 }
 
 /** Effective contrast source, tolerating older saved values (the pre-rename 'split' → 'select'). */
-export function resolveContrastSource(c: ContrastConfig): 'select' | 'pair' {
-  return c.source === 'pair' ? 'pair' : 'select'
+/** The contrast's mode: with one input only intra-dataset (select two groups) is possible; with
+ *  two or more the config chooses, defaulting to inter-dataset (pair two of them). */
+export function resolveContrastSource(c: ContrastConfig, inputCount: number): 'select' | 'pair' {
+  if (inputCount < 2) return 'select'
+  return c.source === 'select' ? 'select' : 'pair'
 }
 
 /** Whether a 'select'-mode contrast has both sides pinned (so it can run). */
@@ -257,74 +318,209 @@ export function isContrastConfigured(c: ContrastConfig): boolean {
   return pinned(c.num) && pinned(c.den)
 }
 
+/** Whether an optional top-N cap applies — the explicit switch, or (older configs without one)
+ *  a non-zero N. Shared by every plot with a "Cap genes"/"Cap labels" switch. */
+export const capOn = (enabled: boolean | undefined, n: number | undefined): boolean =>
+  enabled ?? (n ?? 0) > 0
+
+/** Per-axis overrides for a Plotly plot's x or y axis. Every field is optional — unset keeps the
+ *  view's own layout (title text, auto range, theme grid/line colours). */
+export interface AxisStyle {
+  /** axis title text; blank/unset = the view's own */
+  title?: string
+  /** title font size (px) */
+  titleSize?: number
+  /** tick label font size (px) */
+  tickSize?: number
+  /** fixed range bounds; a missing side falls back to the view's range (or the data extent) */
+  min?: number
+  max?: number
+  /** tick mark placement */
+  ticks?: 'outside' | 'inside' | 'none'
+  /** approximate number of ticks (0/unset = auto) */
+  nticks?: number
+  /** show gridlines */
+  grid?: boolean
+  /** axis line thickness (px); 0 hides the line */
+  lineWidth?: number
+  /** mirror the axis line (and ticks) on the opposite side — a framed plot */
+  mirror?: boolean
+  /** draw the zero line */
+  zeroline?: boolean
+}
+/** A plot's axis overrides, per axis. */
+export interface PlotAxes {
+  x?: AxisStyle
+  y?: AxisStyle
+}
+
+/** Volcano (compare). The y-axis stat (−log10 p vs q) follows the upstream Compare's threshold
+ *  `statType`, so the drawn guide matches the calls — it isn't a per-tile choice. */
 export interface VolcanoConfig {
-  statType: 'pP' | 'pQ'
+  /** cap labels: explicit switch (undefined on older configs → inferred from labelTop > 0) */
+  capEnabled?: boolean
+  /** cap labels: label only the top-N most significant genes (applied only while `capEnabled`);
+   *  otherwise the placement layer labels as many significant genes as fit. */
   labelTop: number
-  /** focus genes highlighted over a greyed background */
-  focus: FocusConfig
+  /** marker/legend/highlight look; unset fields fall back to the plot's defaults */
+  style?: PointStyle
+  /** x / y axis overrides (title, fonts, range, ticks, grid, line); unset = the view's layout */
+  axes?: PlotAxes
+}
+
+/** One point group's marker look on a point plot (volcano / MA / scatter). Every field is
+ *  optional: unset falls back to the plot's built-in default for that group (ui/pointStyle.ts). */
+export interface GroupStyle {
+  /** legend name for this group on this plot; unset/blank = the upstream tile's class name */
+  name?: string
+  /** marker diameter (px) */
+  size?: number
+  /** resting marker opacity (0–1) */
+  opacity?: number
+  /** marker colour (CSS) */
+  color?: string
+  /** whether this group's genes are offered to the collision-managed label layer */
+  label?: boolean
+  /** whether this group has a legend entry (default on; moot while the legend is hidden) */
+  legend?: boolean
+}
+
+/** Look of the emphasised (selected / hovered) points, and of the rest of the cloud while a
+ *  selection is active. Unset fields fall back to the shared defaults (ui/pointStyle.ts). */
+export interface HighlightStyle {
+  /** px added to the marker's own diameter for the emphasised copy */
+  bump?: number
+  /** ring width (px) around the emphasised marker; 0 = none */
+  ring?: number
+  /** ring colour; unset = the theme's text colour */
+  ringColor?: string
+  /** opacity of every non-selected point while something is selected (0–1) */
+  dim?: number
+  /** name the emphasised point in bold at its marker */
+  label?: boolean
+  /** font size (px) of that name */
+  labelSize?: number
+}
+
+/** Per-tile styling for the point plots: a look per point group, the highlight look, and the
+ *  legend switch. Group keys are the effect classes ('up' | 'down' | 'none') or, for an
+ *  independent-contrast scatter, the quadrant keys ('up, up', 'down, —', …). */
+export interface PointStyle {
+  groups?: Record<string, GroupStyle>
+  highlight?: HighlightStyle
+  /** show the legend (default on) */
+  legend?: boolean
 }
 
 /** Heatmap: genes × samples log10 intensity (from Standardize) OR genes × comparisons log2FC
  *  (from Compare) — the tile picks the rendering from its upstream. */
 export interface HeatmapConfig {
+  /** cap genes: explicit switch (undefined on older configs → inferred from maxGenes > 0) */
+  capEnabled?: boolean
+  /** cap genes: top-N differential genes by |log2FC| (applied only while `capEnabled`). Only
+   *  applies to a Compare-fed heatmap; the Standardize-fed intensity heatmap always shows the
+   *  full proteome. */
   maxGenes: number
   /** log10 intensities — only applies to a Standardize-fed heatmap (ignored for log2FC). */
   log10: boolean
-  /** when focus genes resolve, show exactly those rows instead of top-by-variance */
-  focus: FocusConfig
   /** tile orientation (persisted); undefined = portrait default */
   orient?: PlotOrient
+  /** x / y axis overrides (title, fonts, range, ticks, grid, line); unset = the view's layout */
+  axes?: PlotAxes
 }
+
+export const heatmapCapOn = (c: HeatmapConfig): boolean => capOn(c.capEnabled, c.maxGenes)
 
 /** Contrast scatter (FC1 vs FC2); labels the top-N most divergent genes. */
 export interface ScatterConfig {
+  /** cap labels: explicit switch (undefined on older configs → inferred from labelTop > 0) */
+  capEnabled?: boolean
+  /** cap labels: label only the top-N most divergent genes (applied only while `capEnabled`) */
   labelTop: number
+  /** marker/legend/highlight look; unset fields fall back to the plot's defaults */
+  style?: PointStyle
+  /** x / y axis overrides (title, fonts, range, ticks, grid, line); unset = the view's layout */
+  axes?: PlotAxes
 }
+export const labelCapOn = (c: VolcanoConfig | ScatterConfig): boolean =>
+  capOn(c.capEnabled, c.labelTop)
 
 /** MA plot (compare): mean abundance vs log2FC, with fold-change guide lines. */
 export interface MAConfig {
   fcLow: number
   fcHigh: number
-  /** focus genes highlighted over a greyed background */
-  focus: FocusConfig
+  /** marker/legend/highlight look; unset fields fall back to the plot's defaults */
+  style?: PointStyle
+  /** x / y axis overrides (title, fonts, range, ticks, grid, line); unset = the view's layout */
+  axes?: PlotAxes
 }
 
-/** Response curves / bubble grid (compare) over dose or time, top-N genes. */
+/** Response curves (compare) over dose or time: every gene drawn, the top-N coloured. */
+/** Per-field switch for a plot's quick-access switch bars in its tile: `quick[field] === false`
+ *  hides that field's bar (the gear still has it). Unset fields are surfaced. */
+export type QuickAccess = Record<string, boolean>
+/** Whether a setting is surfaced in the tile as a quick-access switch bar. */
+export const quickOn = (cfg: { quick?: QuickAccess } | undefined, field: string): boolean =>
+  cfg?.quick?.[field] !== false
+
 export interface DRConfig {
   axis: 'dose' | 'time'
+  /** cap genes: explicit switch (undefined on older configs → inferred from topGenes > 0) */
+  capEnabled?: boolean
+  /** cap genes: colour only the top-N most-differential genes (applied only while `capEnabled`;
+   *  otherwise all are coloured, up to the renderer's safety cap) */
   topGenes: number
-  /** when focus genes resolve, colour exactly those curves instead of top-N */
-  focus: FocusConfig
+  /** which of this plot's settings the tile surfaces as quick-access switch bars (unset = all;
+   *  the gear always carries every setting). Keyed by config field. */
+  quick?: QuickAccess
+  /** x / y axis overrides (title, fonts, range, ticks, grid, line); unset = the view's layout */
+  axes?: PlotAxes
 }
+/** Bubble grid (compare) over dose or time, one gene per row. */
 export interface BubbleConfig {
   axis: 'dose' | 'time'
+  /** cap genes: explicit switch (undefined on older configs → inferred from topGenes > 0) */
+  capEnabled?: boolean
+  /** cap genes: top-N by |log2FC| (applied only while `capEnabled`; otherwise all, up to the
+   *  renderer's safety cap) */
   topGenes: number
-  /** when focus genes resolve, show exactly those genes instead of top-N */
-  focus: FocusConfig
   /** tile orientation (persisted); undefined = landscape default */
   orient?: PlotOrient
+  /** which of this plot's settings the tile surfaces as quick-access switch bars (unset = all;
+   *  the gear always carries every setting). Keyed by config field. */
+  quick?: QuickAccess
+  /** x / y axis overrides (title, fonts, range, ticks, grid, line); unset = the view's layout */
+  axes?: PlotAxes
 }
 
 /** Dumbbell (contrast): FC1↔FC2 per gene, top-N by |FCdiff|. */
 export interface DumbbellConfig {
+  /** cap genes: explicit switch (undefined on older configs → inferred from topGenes > 0) */
+  capEnabled?: boolean
+  /** cap genes: top-N significant genes by |FCdiff| (applied only while `capEnabled`; otherwise
+   *  all significant, up to the renderer's safety cap) */
   topGenes: number
-  /** when focus genes resolve, show exactly those genes instead of top-N */
-  focus: FocusConfig
   /** tile orientation (persisted); undefined = portrait default */
   orient?: PlotOrient
+  /** x / y axis overrides (title, fonts, range, ticks, grid, line); unset = the view's layout */
+  axes?: PlotAxes
 }
+export const geneCapOn = (c: BubbleConfig | DumbbellConfig | DRConfig): boolean =>
+  capOn(c.capEnabled, c.topGenes)
 
 /** TDR (compare, dose×time): per-gene time-series dose-response, one gene per figure.
- *  Renders the resolved focus genes (goi first). */
+ *  Renders the selected genes (linked gene selection). */
 export interface TdrConfig {
-  focus: FocusConfig
+  /** x / y axis overrides (title, fonts, range, ticks, grid, line); unset = the view's layout */
+  axes?: PlotAxes
 }
 
-/** Gene bar (standardize): one focus gene's value across every condition. */
+/** Gene bar (standardize): each selected gene's value across every condition. */
 export interface BarConfig {
-  focus: FocusConfig
   /** tile orientation (persisted); undefined = landscape default */
   orient?: PlotOrient
+  /** x / y axis overrides (title, fonts, range, ticks, grid, line); unset = the view's layout */
+  axes?: PlotAxes
 }
 
 /** Enrichment (compare): over-representation of GO terms / KEGG pathways in the significant
@@ -338,6 +534,11 @@ export interface EnrichConfig {
   style: 'dot' | 'bar' | 'ridge'
   /** how many top terms to show */
   topTerms: number
+  /** which of this plot's settings the tile surfaces as quick-access switch bars (unset = all;
+   *  the gear always carries every setting). Keyed by config field. */
+  quick?: QuickAccess
+  /** x / y axis overrides (title, fonts, range, ticks, grid, line); unset = the view's layout */
+  axes?: PlotAxes
 }
 
 /** STRING network (compare): PPI network among the top differential genes, fetched from STRING-DB.
@@ -353,6 +554,9 @@ export interface StringConfig {
   addInteractors?: boolean
   /** manual NCBI taxon override; 0/undefined = use the species from the annotation fetch */
   species?: number
+  /** which of this plot's settings the tile surfaces as quick-access switch bars (unset = all;
+   *  the gear always carries every setting). Keyed by config field. */
+  quick?: QuickAccess
 }
 
 /** Sample QC plot (standardize): a per-sample distribution of one quality metric, drawn as
@@ -360,18 +564,26 @@ export interface StringConfig {
 export interface QcConfig {
   metric: 'intensity' | 'cv' | 'proteins'
   plot: 'violin' | 'box' | 'bar'
+  /** which of this plot's settings the tile surfaces as quick-access switch bars (unset = all;
+   *  the gear always carries every setting). Keyed by config field. */
+  quick?: QuickAccess
+  /** x / y axis overrides (title, fonts, range, ticks, grid, line); unset = the view's layout */
+  axes?: PlotAxes
 }
 
 /** Sample correlation matrix (standardize): all-samples × all-samples Pearson r heatmap. */
 export interface CorrConfig {
   /** cluster samples by correlation profile so replicate groups block on the diagonal */
   cluster: boolean
+  /** x / y axis overrides (title, fonts, range, ticks, grid, line); unset = the view's layout */
+  axes?: PlotAxes
 }
 
 /** Data-table tile (plotting): shows the upstream step's results table interactively in the
  *  dashboard. The upstream step already computes the table; this node just opts a tile in. */
 export interface TableConfig {
-  /** initial view for tables that offer a Long ⇆ Matrix toggle (standardize/compare). */
+  /** initial view for tables that offer a Long ⇆ Matrix toggle (standardize/compare/contrast);
+   *  absent = matrix. */
   view?: 'long' | 'matrix'
 }
 
@@ -422,6 +634,11 @@ export interface ClusterConfig {
   /** Replicate handling: 'individual' embeds every replicate; 'mean' averages to condition means
    *  first (cuts noise, lifts a real group axis). Defaults to 'individual'. */
   replicates?: 'individual' | 'mean'
+  /** which of this plot's settings the tile surfaces as quick-access switch bars (unset = all;
+   *  the gear always carries every setting). Keyed by config field. */
+  quick?: QuickAccess
+  /** x / y axis overrides (title, fonts, range, ticks, grid, line); unset = the view's layout */
+  axes?: PlotAxes
 }
 
 export type NodeConfig =
@@ -520,6 +737,9 @@ export interface GeneSet {
   id: string
   name: string
   genes: FavGene[]
+  /** marker colour for this set's genes on the point plots (volcano / MA / scatter) while the
+   *  selection IS this set; unset = the points keep their effect colours */
+  color?: string
   /** when true, this set's genes are MASKED — forced non-significant across every comparison /
    *  contrast result in the project (e.g. to drop inherently-variable genes). */
   hidden?: boolean

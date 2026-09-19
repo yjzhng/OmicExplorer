@@ -8,9 +8,9 @@ import { describe, expect, it } from 'vitest'
 import { runDirect } from './direct'
 import type { StandardRow } from './types'
 
-/** Minimal standardized row with only strain + dose active. */
-function row(uniqID: string, strain: string, dose: number, rep: number, value: number): StandardRow {
-  return { uniqID, strain, cmpd: '', dose, time: null, rep, value }
+/** Minimal standardized row with only cell + dose active. */
+function row(uniqID: string, cell: string, dose: number, rep: number, value: number): StandardRow {
+  return { uniqID, cell, cmpd: '', dose, time: null, rep, value }
 }
 
 describe('runDirect (symmetric two-level comparison)', () => {
@@ -30,9 +30,9 @@ describe('runDirect (symmetric two-level comparison)', () => {
 
   const res = runDirect({
     rows,
-    condition: 'strain',
+    condition: 'cell',
     pairs: [['M', 'W']],
-    activeConditions: ['strain', 'dose']
+    activeConditions: ['cell', 'dose']
   })
 
   it('labels the comparison as "M | W"', () => {
@@ -41,8 +41,8 @@ describe('runDirect (symmetric two-level comparison)', () => {
 
   it('produces one row per like-to-like context group (per dose)', () => {
     expect(res.rows).toHaveLength(2)
-    expect(res.rows.every((r) => r.cmp_cond === 'strain')).toBe(true)
-    expect(res.rows.every((r) => r.strain === 'M')).toBe(true)
+    expect(res.rows.every((r) => r.cmp_cond === 'cell')).toBe(true)
+    expect(res.rows.every((r) => r.cell === 'M')).toBe(true)
     expect(new Set(res.rows.map((r) => r.dose))).toEqual(new Set([1, 2]))
   })
 
@@ -59,9 +59,9 @@ describe('runDirect (symmetric two-level comparison)', () => {
   it('respects the optional condition filter', () => {
     const only1 = runDirect({
       rows,
-      condition: 'strain',
+      condition: 'cell',
       pairs: [['M', 'W']],
-      activeConditions: ['strain', 'dose'],
+      activeConditions: ['cell', 'dose'],
       filter: { dose: [1] }
     })
     expect(only1.rows).toHaveLength(1)

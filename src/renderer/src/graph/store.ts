@@ -18,7 +18,14 @@ import {
   parseMatrix,
   type MatrixPreset
 } from '../engine/interactive'
-import { applyThreshold, combineStandardize, crossPairs, thresholdLabel, VALID_CONDITIONS } from '../engine'
+import {
+  applyThreshold,
+  combineStandardize,
+  crossPairs,
+  snapStatMin,
+  thresholdLabel,
+  VALID_CONDITIONS
+} from '../engine'
 import type {
   CompareResultRow,
   CompareTableResult,
@@ -43,15 +50,20 @@ import {
 import { childPanelId } from './groups'
 import { loadRecents, pushRecent, removeRecent, saveRecents, type RecentProject } from './recents'
 import { canConnect, categoryOf, maxInputsFor, NODE_SPECS } from './registry'
+import { isPairable, pairSides, selectSource, toContrastSide } from './contrastPair'
 import {
+  DEFAULT_EFFECT_LABELS,
   isContrastConfigured,
   isStep,
   normalizeCompareConfig,
   resolveContrastSource,
   resolveLoadMode,
   type CompareConfig,
+  type EffectLabels,
   type ContrastConfig,
   type FavGene,
+  cleanupOn,
+  imputeOn,
   type GeneSet,
   type GraphNode,
   type GroupMeta,
@@ -75,6 +87,7 @@ import {
   type WorkflowDoc
 } from './workflowDoc'
 import { useAppView } from '../ui/useAppView'
+import { loadLastView, saveLastView } from './lastView'
 
 /** Minimal objects → CSV for writing processed data to <dir>/temp. */
 function rowsToCsv(rows: Array<Record<string, unknown>>): string {
@@ -88,7 +101,6 @@ function rowsToCsv(rows: Array<Record<string, unknown>>): string {
   const body = rows.map((r) => cols.map((c) => esc(r[c])).join(',')).join('\n')
   return `${head}\n${body}\n`
 }
-
 
 interface GraphState {
   nodes: GraphNode[]
@@ -142,6 +154,8 @@ interface GraphState {
    *  depend on the threshold, not the statistics. Keeps the Compare result; stales downstream
    *  COMPUTE nodes (e.g. contrast masks by the compare's per-gene call, so it needs a re-run). */
   setCompareThreshold: (id: string, partial: Partial<ThresholdConfig>) => void
+  /** Rename a Compare's effect classes (display-only: the result stays `done`; undoable). */
+  setCompareEffectLabels: (id: string, labels: Partial<EffectLabels>) => void
   /** Set (or clear, with '') a tile's user-given name. Label only — never invalidates results. */
   renameNode: (id: string, name: string) => void
   /** Patch one subcard's config inside a group tile (display-only keys don't invalidate). */
@@ -199,6 +213,10 @@ interface GraphState {
   projectOpen: boolean
   /** active folder's path, scanned for input files (kept in sync from folders) */
   dataDir: string | null
+  /** folder a per-tile download was last saved to in this project (null = none yet — the
+   *  save-as window then suggests `<dataDir>/output`). Persisted with the project. */
+  saveDir: string | null
+  setSaveDir: (dir: string) => void
   dirty: boolean
   /** input files available in the active data folder */
   inputFiles: string[]
@@ -217,7 +235,11 @@ interface GraphState {
   goHome: () => void
   /** Re-enter the in-memory project after goHome, preserving any unsaved changes (no disk reload). */
   resumeProject: () => void
-  newProject: () => void
+  /** Unsaved changes in the in-memory project? Ask Save / Don't Save / Cancel (saving if asked);
+   *  resolves true when it's fine to replace the project, false to abort. `action` completes the
+   *  prompt's "before …?". */
+  confirmDiscard: (action: string) => Promise<boolean>
+  newProject: () => Promise<void>
   openProject: (path?: string) => Promise<void>
   /** returns true if written (false if cancelled at the save-as dialog) */
   saveProject: () => Promise<boolean>
@@ -276,6 +298,8 @@ interface GraphState {
   renameGeneSet: (id: string, name: string) => void
   /** Replace a geneset's member genes (e.g. save the current selection into it). */
   updateGeneSetGenes: (id: string, genes: FavGene[]) => void
+  /** Set (or clear, with undefined) a geneset's point colour. */
+  setGeneSetColor: (id: string, color: string | undefined) => void
   /** Delete a geneset. */
   deleteGeneSet: (id: string) => void
   /** Toggle a geneset's HIDDEN flag — masking its genes non-significant across every comparison /
@@ -444,7 +468,7 @@ function reapplyGeneMask(get: Getter, set: Setter): void {
       const signf = cls.signf && !hidden.has(r.uniqID)
       return { ...r, thrsh: label, signf, effect: signf ? cls.effect : 'none' }
     })
-    results[n.id] = { ...res, cmp: { ...res.cmp, rows } }
+    results[n.id] = { ...res, cmp: { ...res.cmp, rows, threshold } }
   }
   set({ results })
   // Re-run every already-computed contrast so the mask propagates downstream automatically.
@@ -492,6 +516,11 @@ function loadSlot(get: Getter, set: Setter, folderId: string, workflowId?: strin
     groupMeta: loaded.groupMeta,
     geneSets: loaded.geneSets,
     results,
+    // Record the checked-out workflow on the folder too: that's what the saved file (and a
+    // later switchFolder) resume, so it must follow the user's last switch, not the last add.
+    folders: get().folders.map((f) =>
+      f.id === folderId && f.activeWorkflowId !== slot.id ? { ...f, activeWorkflowId: slot.id } : f
+    ),
     activeFolderId: folderId,
     activeWorkflowId: slot.id,
     dataDir: folder.path || null,
@@ -512,7 +541,8 @@ function buildProjectFile(get: Getter): ProjectFile {
     activeFolderId: s.activeFolderId ?? s.folders[0]?.id ?? '',
     // Persist which page the user was on so opening the project resumes it (see openProject).
     view: av.view,
-    resultsTab: av.resultsTab
+    resultsTab: av.resultsTab,
+    saveDir: s.saveDir
   }
 }
 
@@ -527,6 +557,9 @@ export const useGraph = create<GraphState>()((set, get) => ({
   runningAll: false,
 
   projectPath: null,
+  saveDir: null,
+  // A UI preference like view/resultsTab: remembered, written with the next save, never dirties.
+  setSaveDir: (dir) => set({ saveDir: dir }),
   projectName: 'Untitled project',
   projectOpen: false,
   dataDir: null,
@@ -768,7 +801,8 @@ export const useGraph = create<GraphState>()((set, get) => ({
     }))
   },
 
-  selectNode: (id) => set((s) => ({ selectedId: id, selectedSub: null, nodes: elevate(s.nodes, id) })),
+  selectNode: (id) =>
+    set((s) => ({ selectedId: id, selectedSub: null, nodes: elevate(s.nodes, id) })),
   selectChildCard: (groupId, childId) =>
     set((s) => ({ selectedId: groupId, selectedSub: childId, nodes: elevate(s.nodes, groupId) })),
   setCanvasSelection: (ids) => set({ canvasSelection: ids }),
@@ -782,15 +816,9 @@ export const useGraph = create<GraphState>()((set, get) => ({
           : n
       )
     }))
-    // compute nodes go stale on config change; plot nodes re-render live. Display-only
-    // keys (focus-gene sets) never affect the computed result, so editing them must not
-    // wipe the result or invalidate downstream — otherwise picking a focus gene on the
-    // Standardize tile would clear the very result its gene list is read from.
-    const displayOnly = Object.keys(partial).every(
-      (k) => k === 'goi' || k === 'panel' || k === 'focus'
-    )
+    // compute nodes go stale on config change; plot nodes re-render live.
     const kind = get().nodeKind(id)
-    if (kind && NODE_SPECS[kind].hasRun && !displayOnly) {
+    if (kind && NODE_SPECS[kind].hasRun) {
       set((s) => ({
         nodes: s.nodes.map((n) =>
           n.id === id && isStep(n)
@@ -805,11 +833,49 @@ export const useGraph = create<GraphState>()((set, get) => ({
     }
   },
 
+  setCompareEffectLabels: (id, labels) => {
+    const node = get().nodes.find((n) => n.id === id)
+    if (!node || !isStep(node) || node.data.kind !== 'compare') return
+    const cfg = node.data.config as CompareConfig
+    const effectLabels: EffectLabels = { ...DEFAULT_EFFECT_LABELS, ...cfg.effectLabels, ...labels }
+    get().commit()
+    // Display-only, so patch the config directly (updateConfig would stale the compare).
+    set((s) => ({
+      nodes: s.nodes.map((n) =>
+        n.id === id && isStep(n)
+          ? { ...n, data: { ...n.data, config: { ...cfg, effectLabels } as NodeConfig } }
+          : n
+      ),
+      dirty: true
+    }))
+  },
   setCompareThreshold: (id, partial) => {
     const node = get().nodes.find((n) => n.id === id)
     if (!node || !isStep(node) || node.data.kind !== 'compare') return
     const cur = (node.data.config as CompareConfig).threshold
-    const threshold: ThresholdConfig = { ...cur, ...partial }
+    // Snap dragged values to what the panel shows: fold changes to 2 decimals, the stat cutoff so
+    // its p-value is 3 decimals — the guide then reads as the number the user sees in the config.
+    const r2 = (v: number): number => Math.round(v * 100) / 100
+    const snapped: Partial<ThresholdConfig> = { ...partial }
+    if (snapped.fcLow != null) snapped.fcLow = r2(snapped.fcLow)
+    if (snapped.fcHigh != null) snapped.fcHigh = r2(snapped.fcHigh)
+    if (snapped.s0 != null) snapped.s0 = r2(snapped.s0)
+    if (snapped.s0Down != null) snapped.s0Down = r2(snapped.s0Down)
+    if (snapped.statMin != null) snapped.statMin = snapStatMin(snapped.statMin)
+    const threshold: ThresholdConfig = { ...cur, ...snapped }
+    // Symmetric mode: the down cutoff follows the up one (fcLow = −fcHigh, s0Down = s0), so the
+    // engine and every plot can read the raw fields without knowing about the switch. When the
+    // user moved the DOWN side (e.g. dragged the left line), take that as the magnitude instead.
+    if (!threshold.asymmetric) {
+      const mag =
+        snapped.fcLow != null && snapped.fcHigh == null
+          ? Math.abs(snapped.fcLow)
+          : Math.abs(threshold.fcHigh)
+      threshold.fcHigh = mag
+      threshold.fcLow = -mag
+      if (snapped.s0Down != null && snapped.s0 == null) threshold.s0 = snapped.s0Down
+      delete threshold.s0Down
+    }
     // No-op guard: dragging that lands back on the same value shouldn't spawn an undo step or
     // needlessly stale a downstream contrast.
     if (
@@ -819,7 +885,10 @@ export const useGraph = create<GraphState>()((set, get) => ({
       threshold.statMin === cur.statMin &&
       threshold.b === cur.b &&
       threshold.s0 === cur.s0 &&
-      threshold.statType === cur.statType
+      threshold.s0Down === cur.s0Down &&
+      threshold.asymmetric === cur.asymmetric &&
+      threshold.statType === cur.statType &&
+      threshold.fdrMethod === cur.fdrMethod
     )
       return
     get().commit()
@@ -851,7 +920,7 @@ export const useGraph = create<GraphState>()((set, get) => ({
         return { ...r, thrsh: label, signf, effect: signf ? cls.effect : 'none' }
       })
       set((s) => ({
-        results: { ...s.results, [id]: { ...res, cmp: { ...res.cmp, rows } } }
+        results: { ...s.results, [id]: { ...res, cmp: { ...res.cmp, rows, threshold } } }
       }))
     }
     // Downstream COMPUTE nodes (contrast) mask by the compare's per-gene call, so a threshold change
@@ -861,12 +930,12 @@ export const useGraph = create<GraphState>()((set, get) => ({
 
   renameNode: (id, name) => {
     get().commit()
-    const trimmed = name.trim()
+    // File-name-safe (the name leads downloaded files); the tile's input filters as you type, this
+    // is the backstop for any other caller.
+    const trimmed = name.replace(/[^A-Za-z0-9 ._-]+/g, '').trim()
     set((s) => ({
       nodes: s.nodes.map((n) =>
-        n.id === id && isStep(n)
-          ? { ...n, data: { ...n.data, name: trimmed || undefined } }
-          : n
+        n.id === id && isStep(n) ? { ...n, data: { ...n.data, name: trimmed || undefined } } : n
       )
     }))
   },
@@ -1246,8 +1315,15 @@ export const useGraph = create<GraphState>()((set, get) => ({
           samplesheetText,
           dbText: dbText ?? undefined,
           activeConditions: cfg.activeConditions ?? undefined,
-          minSamplePct: cfg.minSamplePct ?? 0,
-          minSamplePctPerStrain: cfg.minSamplePctPerStrain ?? false,
+          minSamplePct: cleanupOn(cfg) ? (cfg.minSamplePct ?? 0) : 0,
+          minSamplePctBy: cfg.minSamplePctBy ?? [],
+          impute: imputeOn(cfg)
+            ? {
+                method: cfg.imputeMethod ?? 'perseus',
+                shift: cfg.imputeShift,
+                width: cfg.imputeWidth
+              }
+            : undefined,
           // Global (non-per-row) map from the interactive import — passed straight through so
           // enrichment can group KEGG pathways by category.
           keggCategories: load.interactive?.annotations?.keggCategories
@@ -1269,10 +1345,12 @@ export const useGraph = create<GraphState>()((set, get) => ({
         const stds = state
           .upstreamIds(id)
           .map((u) => state.results[u])
-          .filter((r): r is Extract<NodeResult, { kind: 'standardize' }> => r?.kind === 'standardize')
+          .filter(
+            (r): r is Extract<NodeResult, { kind: 'standardize' }> => r?.kind === 'standardize'
+          )
           .map((r) => r.std)
         if (stds.length === 0) {
-          setStatus('error', 'Connect a Standardize node upstream.')
+          setStatus('error', 'Connect a Clean data tile upstream.')
           return
         }
         const std = combineStandardize(stds)
@@ -1312,7 +1390,10 @@ export const useGraph = create<GraphState>()((set, get) => ({
           const p1 = factorPairs(cfg.condition, cfg.pairNum, cfg.pairDen)
           const p2 = factorPairs(cfg.condition2, cfg.pair2Num, cfg.pair2Den)
           if (p1.length === 0 || p2.length === 0) {
-            setStatus('error', 'Choose numerator and denominator level(s) for each of the two factors.')
+            setStatus(
+              'error',
+              'Choose numerator and denominator level(s) for each of the two factors.'
+            )
             return
           }
           setStatus('running')
@@ -1323,7 +1404,10 @@ export const useGraph = create<GraphState>()((set, get) => ({
               { condition: cfg.condition2, pairs: p2 }
             ],
             activeConditions: std.activeConditions,
-            threshold: cfg.threshold
+            threshold: cfg.threshold,
+            // Context inclusion filters (non-factor conditions narrowed in the dialog).
+            num: cfg.num,
+            den: cfg.den
           })
         }
         if (get().nodes.find((n) => n.id === id)?.data.status !== 'running') return // cancelled
@@ -1356,72 +1440,63 @@ export const useGraph = create<GraphState>()((set, get) => ({
         const ups = state.upstreamIds(id)
         let ctr: ContrastResult
         let displayMap: Record<string, string>
-        if (resolveContrastSource(cfg) === 'pair') {
+        if (resolveContrastSource(cfg, ups.length) === 'pair') {
           // Pair mode: two same-kind inputs joined side-by-side by uniqID + matched context —
-          // two Compares → FC-vs-FC, two Standardizes → mean-log2-abundance-vs-abundance.
-          if (ups.length < 2) {
-            setStatus('error', 'Pair mode needs two inputs — connect two Compare or two Standardize tiles.')
+          // two Compares → FC-vs-FC, two Standardizes → mean-log10-abundance-vs-abundance.
+          const sides = pairSides(cfg, ups)
+          if (!sides) {
+            setStatus(
+              'error',
+              'Pair mode needs two inputs — connect two Compare or two Clean data tiles.'
+            )
             return
           }
-          const ra = state.results[ups[0]]
-          const rb = state.results[ups[1]]
-          const okKind = (k?: string): boolean => k === 'compare' || k === 'standardize'
-          if (!ra || !rb || !okKind(ra.kind) || rb.kind !== ra.kind) {
-            setStatus('error', 'Pair mode needs two run inputs of the SAME kind (two Compares, or two Standardizes).')
+          const [idA, idB] = sides
+          const ra = state.results[idA]
+          const rb = state.results[idB]
+          if (!isPairable(ra) || !isPairable(rb) || rb!.kind !== ra!.kind) {
+            setStatus(
+              'error',
+              'Pair mode needs two run inputs of the SAME kind (two Compares, or two Standardizes).'
+            )
             return
           }
-          // Compare → log2FC (+ significance); Standardize → per-sample log2 abundance (the engine
-          // averages replicates + unmatched dims to the matched context).
-          const toSide = (r: NodeResult): ContrastSideRow[] =>
-            r.kind === 'compare'
-              ? r.cmp.rows.map((row) => ({
-                  uniqID: row.uniqID,
-                  strain: row.strain ?? null,
-                  cmpd: row.cmpd,
-                  dose: row.dose,
-                  time: row.time,
-                  value: row.log2FC,
-                  signf: row.signf,
-                  effect: row.effect,
-                  pP: row.pP,
-                  pQ: row.pQ,
-                  se: row.fcSE ?? null
-                }))
-              : r.kind === 'standardize'
-                ? r.std.rows.map((row) => ({
-                    uniqID: row.uniqID,
-                    strain: row.strain,
-                    cmpd: row.cmpd,
-                    dose: row.dose,
-                    time: row.time,
-                    value: row.value != null && row.value > 0 ? Math.log2(row.value) : null
-                  }))
-                : []
           const label = (nid: string, fb: string): string => {
             const n = state.nodes.find((x) => x.id === nid)
             return (n && isStep(n) && n.data.name?.trim()) || fb
           }
           setStatus('running')
           ctr = await engine.contrastPair({
-            sideA: toSide(ra),
-            sideB: toSide(rb),
+            sideA: toContrastSide(ra),
+            sideB: toContrastSide(rb),
             match: cfg.match ?? [],
+            fix: cfg.pairFix,
             relationship: cfg.relationship,
-            labelA: label(ups[0], 'A'),
-            labelB: label(ups[1], 'B'),
+            stat: cfg.stat,
+            labelA: label(idA, 'A'),
+            labelB: label(idB, 'B'),
             // No per-side significance for abundance pairs → the band is the only divergence call.
             driverMask: ra.kind === 'compare'
           })
           displayMap =
-            ra.kind === 'compare' ? ra.displayMap : ra.kind === 'standardize' ? ra.std.displayMap : {}
-          // Standardize sides carry log2 abundance; Compare sides carry log2 fold-change.
+            ra.kind === 'compare'
+              ? ra.displayMap
+              : ra.kind === 'standardize'
+                ? ra.std.displayMap
+                : {}
+          // Standardize sides carry log10 abundance; Compare sides carry log2 fold-change.
           ctr = { ...ctr, valueKind: ra.kind === 'standardize' ? 'abundance' : 'fc' }
         } else {
           // Select mode: pool the single upstream's rows, then split them into the two EXPLICIT
           // selections (num → FC1, den → FC2). Works on a Compare (each row's value is its log2FC)
-          // OR a Standardize (value is log2 abundance) — both become a per-row `log2FC`, so a
+          // OR a Standardize (value is log10 abundance) — both become a per-row `log2FC`, so a
           // Standardize contrast compares two abundance selections.
-          const upResults = ups.map((u) => state.results[u]).filter((r): r is NodeResult => !!r)
+          // Several inputs wired: the groups come from the ONE the config picks (the others are
+          // idle for this tile). A single input needs no pick.
+          const from = selectSource(cfg, ups)
+          const upResults = (from ? [from] : ups)
+            .map((u) => state.results[u])
+            .filter((r): r is NodeResult => !!r)
           const compares = upResults.filter(
             (r): r is Extract<NodeResult, { kind: 'compare' }> => r.kind === 'compare'
           )
@@ -1429,37 +1504,38 @@ export const useGraph = create<GraphState>()((set, get) => ({
             (r): r is Extract<NodeResult, { kind: 'standardize' }> => r.kind === 'standardize'
           )
           if (!compares.length && !stds.length) {
-            setStatus('error', 'Connect a Compare or Standardize tile and run it first.')
+            setStatus('error', 'Connect a Compare or Clean data tile and run it first.')
             return
           }
           const isAbundance = !compares.length // all-Standardize input → abundance split
           // Standardize → pseudo primary rows. Replicates are aggregated per (gene × conditions) to
-          // mean log2 abundance, with the replicate SD carried as fcSE (the DR error band). This
+          // mean log10 abundance, with the replicate SD carried as fcSE (the DR error band). This
           // both collapses replicates cleanly and gives an honest per-condition abundance spread.
           const pooled: CompareResultRow[] = isAbundance
             ? (() => {
                 const groups = new Map<string, { row: StandardRow; logs: number[] }>()
                 for (const row of stds.flatMap((r) => r.std.rows)) {
                   if (row.value == null || !(row.value > 0)) continue
-                  const key = `${row.uniqID}¦${row.strain ?? ''}¦${row.cmpd ?? ''}¦${row.dose ?? ''}¦${row.time ?? ''}`
+                  const key = `${row.uniqID}¦${row.cell ?? ''}¦${row.cmpd ?? ''}¦${row.dose ?? ''}¦${row.time ?? ''}`
                   let g = groups.get(key)
                   if (!g) groups.set(key, (g = { row, logs: [] }))
-                  g.logs.push(Math.log2(row.value))
+                  g.logs.push(Math.log10(row.value))
                 }
                 return [...groups.values()].map(({ row, logs }): CompareResultRow => {
                   const mean = logs.reduce((s, v) => s + v, 0) / logs.length
                   // SE of the mean abundance = SD / √n (matches the fold-change SE convention).
                   const sd =
                     logs.length >= 2
-                      ? Math.sqrt(logs.reduce((s, v) => s + (v - mean) ** 2, 0) / (logs.length - 1)) /
-                        Math.sqrt(logs.length)
+                      ? Math.sqrt(
+                          logs.reduce((s, v) => s + (v - mean) ** 2, 0) / (logs.length - 1)
+                        ) / Math.sqrt(logs.length)
                       : null
                   return {
                     uniqID: row.uniqID,
                     cmpd: row.cmpd,
                     dose: row.dose,
                     time: row.time,
-                    strain: row.strain,
+                    cell: row.cell,
                     cmp_cond: '',
                     comparison: '',
                     mean1: null,
@@ -1498,7 +1574,7 @@ export const useGraph = create<GraphState>()((set, get) => ({
             })
           const toSideRow = (row: CompareResultRow): ContrastSideRow => ({
             uniqID: row.uniqID,
-            strain: row.strain ?? null,
+            cell: row.cell ?? null,
             cmpd: row.cmpd,
             dose: row.dose,
             time: row.time,
@@ -1529,6 +1605,7 @@ export const useGraph = create<GraphState>()((set, get) => ({
             sideB,
             match: cfg.match ?? [],
             relationship: cfg.relationship,
+            stat: cfg.stat,
             labelA: selLabel(num),
             labelB: selLabel(den),
             // Abundance slices carry no per-side significance, so the band is the only divergence call.
@@ -1685,7 +1762,16 @@ export const useGraph = create<GraphState>()((set, get) => ({
     // is a no-op on a fresh launch with no in-memory project.
     if (get().folders.length > 0) set({ projectOpen: true })
   },
-  newProject: () => {
+  confirmDiscard: async (action) => {
+    // goHome keeps the project in memory, so "dirty" applies even from the Home screen.
+    if (!get().dirty || get().folders.length === 0) return true
+    const choice = await window.api.askSaveChanges(action)
+    if (choice === 'cancel') return false
+    if (choice === 'save') return get().saveProject()
+    return true
+  },
+  newProject: async () => {
+    if (!(await get().confirmDiscard('starting a new project'))) return
     const proj = newProjectFile()
     set({
       projectPath: null,
@@ -1693,6 +1779,7 @@ export const useGraph = create<GraphState>()((set, get) => ({
       projectOpen: true,
       folders: proj.folders,
       activeFolderId: proj.activeFolderId,
+      saveDir: null,
       dirty: false,
       inputFiles: []
     })
@@ -1701,6 +1788,7 @@ export const useGraph = create<GraphState>()((set, get) => ({
     useAppView.getState().setView('canvas')
   },
   openProject: async (path) => {
+    if (!(await get().confirmDiscard('opening another project'))) return
     set({ openError: null })
     let p = path ?? null
     try {
@@ -1724,23 +1812,34 @@ export const useGraph = create<GraphState>()((set, get) => ({
       // selector as "(no path) —" rows. Always keep at least one folder.
       const hasReal = proj.folders.some((f) => f.path)
       const folders = hasReal ? proj.folders.filter((f) => f.path) : proj.folders
-      const activeFolderId = folders.some((f) => f.id === proj.activeFolderId)
-        ? proj.activeFolderId
-        : folders[0].id
+      // Resume where the user left off: the position remembered locally as they navigated (which
+      // needs no save) wins over the one written into the file at its last save. Read it before
+      // any set() below, since the position tracker starts overwriting it as state changes.
+      const last = p ? loadLastView(p) : null
+      const wantFolder = last?.folderId ?? proj.activeFolderId
+      const activeFolderId = folders.some((f) => f.id === wantFolder) ? wantFolder : folders[0].id
+      const folder = folders.find((f) => f.id === activeFolderId)
+      const workflowId =
+        last?.folderId === activeFolderId && folder?.workflows.some((w) => w.id === last.workflowId)
+          ? (last.workflowId ?? undefined)
+          : undefined
       set({
         projectPath: p,
         projectName,
         projectOpen: true,
         folders,
         activeFolderId,
+        saveDir: proj.saveDir ?? null,
         dirty: false,
         recentProjects: pushRecent(get().recentProjects, { path: p as string, name: projectName })
       })
-      loadSlot(get, set, activeFolderId)
-      // Resume the page the user was last on (Workflow canvas vs Results dashboard) and its tab,
-      // instead of always dropping onto the canvas.
-      useAppView.getState().setView(proj.view ?? 'canvas')
-      if (proj.resultsTab) useAppView.getState().setResultsTab(proj.resultsTab)
+      loadSlot(get, set, activeFolderId, workflowId)
+      // …and the page (Workflow canvas vs Results dashboard) and its tab, instead of always
+      // dropping onto the canvas.
+      const av = useAppView.getState()
+      av.setView(last?.view ?? proj.view ?? 'canvas')
+      const tab = last ? last.resultsTab : proj.resultsTab
+      if (tab) av.setResultsTab(tab)
       await get().refreshDataFiles()
     } catch (e) {
       // Surface the failure instead of a silent no-op (missing file, bad JSON, etc.).
@@ -2074,6 +2173,21 @@ export const useGraph = create<GraphState>()((set, get) => ({
       }
     })
   },
+  setGeneSetColor: (id, color) => {
+    set((s) => {
+      if (!s.geneSets.some((g) => g.id === id)) return {}
+      return {
+        geneSets: s.geneSets.map((g) => {
+          if (g.id !== id) return g
+          const next = { ...g }
+          if (color) next.color = color
+          else delete next.color
+          return next
+        }),
+        dirty: true
+      }
+    })
+  },
   deleteGeneSet: (id) => {
     set((s) => {
       if (!s.geneSets.some((g) => g.id === id)) return {}
@@ -2136,3 +2250,40 @@ export const useGraph = create<GraphState>()((set, get) => ({
     })
   }
 }))
+
+// ── last-view tracker ─────────────────────────────────────────────────────────
+// Remember where the user is in the open project (folder, workflow, page, Results tab) whenever
+// any of it changes, keyed by project path — see lastView.ts. Only a project that has a path can
+// be reopened, so an unsaved new project is skipped, as is the Home screen.
+function rememberLastView(): void {
+  const s = useGraph.getState()
+  if (!s.projectOpen || !s.projectPath) return
+  const av = useAppView.getState()
+  saveLastView(s.projectPath, {
+    folderId: s.activeFolderId,
+    workflowId: s.activeWorkflowId,
+    view: av.view,
+    resultsTab: av.resultsTab
+  })
+}
+useGraph.subscribe((s, prev) => {
+  if (
+    s.projectOpen !== prev.projectOpen ||
+    s.projectPath !== prev.projectPath ||
+    s.activeFolderId !== prev.activeFolderId ||
+    s.activeWorkflowId !== prev.activeWorkflowId
+  )
+    rememberLastView()
+})
+useAppView.subscribe((s, prev) => {
+  if (s.view !== prev.view || s.resultsTab !== prev.resultsTab) rememberLastView()
+})
+
+// ── unsaved-changes guard (main-process close prompt) ────────────────────────
+// Keep main informed whether the in-memory project is dirty so closing the window can prompt
+// (see src/main/close-guard.ts); when the user picks Save there, main asks us to write it.
+useGraph.subscribe((s, prev) => {
+  if (s.dirty !== prev.dirty || s.projectName !== prev.projectName)
+    window.api.setProjectDirty(s.dirty && s.folders.length > 0, s.projectName)
+})
+window.api.onSaveRequest(() => useGraph.getState().saveProject())

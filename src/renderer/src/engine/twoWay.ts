@@ -8,9 +8,11 @@
  * (see [[omicviz-conceptual-reuse]]). Values are analysed in log2 space, so the
  * interaction term is itself a log2 fold-change of fold-changes.
  *
- * If cmpd is one of the two factors, vehicle-norm asymmetric dose-exclusion is
- * applied: the treatment side is grouped by (dose, …) while the vehicle side is
- * matched on (…) with dose excluded (vehicle is always at dose 0).
+ * Context (every other present condition) is matched like-for-like across the four cells — except
+ * that a cell is never matched on a condition it is invariant on (a vehicle that only exists at
+ * dose 0 has no dose to match; its single slice serves every treated dose). That is the general
+ * form of the classic vehicle-norm "dose excluded on the vehicle side"; nothing is keyed on the
+ * compound's name or on dose specifically.
  */
 import type { CompareTableResult } from './direct'
 import {
@@ -24,7 +26,7 @@ import {
   type RawStatRow
 } from './compare'
 import { aggregatePerGene, DEFAULT_THRESHOLD, studentTTwoSided, type ThresholdConfig } from './stats'
-import type { ConditionKey, Pair, StandardRow } from './types'
+import type { CondSelector, ConditionKey, Pair, StandardRow } from './types'
 
 export interface TwoWayFactor {
   condition: ConditionKey
@@ -47,6 +49,91 @@ export interface TwoWayInput {
   factors: [TwoWayFactor, TwoWayFactor]
   activeConditions: ConditionKey[]
   threshold?: ThresholdConfig
+  /** the dialog's side selectors: a NON-factor condition pinned (to the same values) on both is
+   *  an inclusion filter on the context — only those values take part */
+  num?: CondSelector
+  den?: CondSelector
+}
+
+/** One 2×2 to test: the four cells for a (pair₁, pair₂) at one matched context. */
+interface TwoWayCell {
+  pair1: Pair
+  pair2: Pair
+  c11: StandardRow[]
+  c10: StandardRow[]
+  c01: StandardRow[]
+  c00: StandardRow[]
+  /** context condition → value (from the c11 representative) */
+  context: Array<[ConditionKey, string | number | null]>
+}
+
+/** Rows restricted to the context inclusion filters (a non-factor condition pinned on both sides). */
+function applyInclusion(input: TwoWayInput): StandardRow[] {
+  const { num, den, factors, activeConditions } = input
+  if (!num || !den) return input.rows
+  const factorConds = new Set(factors.map((f) => f.condition))
+  const filters = activeConditions.filter(
+    (c) => !factorConds.has(c) && (num[c]?.length ?? 0) > 0 && (den[c]?.length ?? 0) > 0
+  )
+  if (filters.length === 0) return input.rows
+  return input.rows.filter((r) =>
+    filters.every((c) => (num[c] as string[]).some((v) => valEq(condValue(r, c), v)))
+  )
+}
+
+/** Enumerate every 2×2 the design yields, and which context conditions ended up not matched on
+ *  some cell because that cell is invariant on them (reported so the preview can say so). */
+function twoWayCells(input: TwoWayInput): { cells: TwoWayCell[]; context: ConditionKey[]; fixed: ConditionKey[] } {
+  const rows = applyInclusion(input)
+  const { factors, activeConditions } = input
+  const [f1, f2] = factors
+  const cond1 = f1.condition
+  const cond2 = f2.condition
+  const ctxDims = activeConditions.filter(
+    (c) => c !== cond1 && c !== cond2 && condPresent(rows, c)
+  )
+  const fixed = new Set<ConditionKey>()
+  const cells: TwoWayCell[] = []
+  // The context dims a set of rows actually varies on — a cell is matched only on those.
+  const varying = (cellRows: StandardRow[]): ConditionKey[] =>
+    ctxDims.filter((d) => new Set(cellRows.map((r) => String(condValue(r, d) ?? ''))).size > 1)
+  for (const pair1 of f1.pairs) {
+    for (const pair2 of f2.pairs) {
+      const [n1, d1] = pair1
+      const [n2, d2] = pair2
+      const is = (r: StandardRow, c: ConditionKey, v: string): boolean => valEq(condValue(r, c), v)
+      const all11 = rows.filter((r) => is(r, cond1, n1) && is(r, cond2, n2))
+      const all10 = rows.filter((r) => is(r, cond1, n1) && is(r, cond2, d2))
+      const all01 = rows.filter((r) => is(r, cond1, d1) && is(r, cond2, n2))
+      const all00 = rows.filter((r) => is(r, cond1, d1) && is(r, cond2, d2))
+      const dims = [all11, all10, all01, all00].map(varying)
+      for (const cellRows of [all10, all01, all00])
+        for (const d of ctxDims) if (!varying(cellRows).includes(d) && dims[0].includes(d)) fixed.add(d)
+      // Contexts are driven by the c11 cell (the "treated × level 1" corner), grouped on every
+      // context dim it varies on; each other cell is sliced to that context on the dims IT varies on.
+      const slice = (cellRows: StandardRow[], onDims: ConditionKey[], rep: StandardRow): StandardRow[] =>
+        cellRows.filter((r) =>
+          onDims.every((d) => valEq(condValue(r, d), condValue(rep, d) as string | number))
+        )
+      for (const c11 of groupRowsBy(all11, dims[0]).values()) {
+        const rep = c11[0]
+        const c10 = slice(all10, dims[1], rep)
+        const c01 = slice(all01, dims[2], rep)
+        const c00 = slice(all00, dims[3], rep)
+        if (!c11.length || !c10.length || !c01.length || !c00.length) continue
+        cells.push({
+          pair1,
+          pair2,
+          c11,
+          c10,
+          c01,
+          c00,
+          context: ctxDims.map((d) => [d, condValue(rep, d)] as [ConditionKey, string | number | null])
+        })
+      }
+    }
+  }
+  return { cells, context: ctxDims, fixed: ctxDims.filter((d) => fixed.has(d)) }
 }
 
 interface InteractionRow {
@@ -130,101 +217,27 @@ function rawFrom(
 }
 
 export function runTwoWayAnova(input: TwoWayInput): CompareTableResult {
-  const { rows, factors, activeConditions } = input
+  const { factors } = input
   const threshold: ThresholdConfig = input.threshold ?? { ...DEFAULT_THRESHOLD, statType: 'pQ' }
   const [f1, f2] = factors
-
-  const cmpdFactor = factors.find((f) => f.condition === 'cmpd')
-  const otherFactor = factors.find((f) => f.condition !== 'cmpd')
-
   const raw: RawStatRow[] = []
   const comparisons: string[] = []
-  const note = (label: string): void => {
-    if (!comparisons.includes(label)) comparisons.push(label)
-  }
-
-  if (cmpdFactor && otherFactor) {
-    // ── Asymmetric: cmpd factor uses vehicle-norm dose-exclusion ──────────────
-    const otherCond = otherFactor.condition
-    const trtDims = activeConditions.filter(
-      (c) => c !== 'cmpd' && c !== otherCond && condPresent(rows, c)
-    )
-    const vehDims = trtDims.filter((c) => c !== 'dose')
-
-    for (const [numC, denC] of cmpdFactor.pairs) {
-      const dfTrt = rows.filter((r) => valEq(condValue(r, 'cmpd'), numC))
-      const dfVeh = rows.filter((r) => valEq(condValue(r, 'cmpd'), denC))
-
-      for (const [numS, denS] of otherFactor.pairs) {
-        const cmpStr = `${numC}|${denC} × ${numS}|${denS}`
-        note(cmpStr)
-
-        for (const ctxTrt of groupRowsBy(dfTrt, trtDims).values()) {
-          const rep = ctxTrt[0]
-          const c11 = ctxTrt.filter((r) => valEq(condValue(r, otherCond), numS))
-          const c10 = ctxTrt.filter((r) => valEq(condValue(r, otherCond), denS))
-
-          // vehicle slice matched on veh dims (dose excluded) of this context
-          const vehSlice = dfVeh.filter((r) =>
-            vehDims.every((d) => valEq(condValue(r, d), condValue(rep, d) as string | number))
-          )
-          const c01 = vehSlice.filter((r) => valEq(condValue(r, otherCond), numS))
-          const c00 = vehSlice.filter((r) => valEq(condValue(r, otherCond), denS))
-          if (!c11.length || !c10.length || !c01.length || !c00.length) continue
-
-          const ctx: Array<[ConditionKey, string | number | null]> = [
-            ['cmpd', numC],
-            [otherCond, numS],
-            ...trtDims.map((d) => [d, condValue(rep, d)] as [ConditionKey, string | number | null])
-          ]
-          for (const w of interactionTTest(c11, c10, c01, c00)) {
-            raw.push(rawFrom(w, `cmpd:${otherCond}`, cmpStr, ctx))
-          }
-        }
-      }
-    }
-  } else {
-    // ── Symmetric: neither factor is cmpd ─────────────────────────────────────
-    const cond1 = f1.condition
-    const cond2 = f2.condition
-    const groupConds = activeConditions.filter(
-      (c) => c !== cond1 && c !== cond2 && condPresent(rows, c)
-    )
-
-    for (const [num1, den1] of f1.pairs) {
-      for (const [num2, den2] of f2.pairs) {
-        const cmpStr = `${num1}|${den1} × ${num2}|${den2}`
-        note(cmpStr)
-
-        for (const grp of groupRowsBy(rows, groupConds).values()) {
-          const rep = grp[0]
-          const m1n = (r: StandardRow): boolean => valEq(condValue(r, cond1), num1)
-          const m1d = (r: StandardRow): boolean => valEq(condValue(r, cond1), den1)
-          const m2n = (r: StandardRow): boolean => valEq(condValue(r, cond2), num2)
-          const m2d = (r: StandardRow): boolean => valEq(condValue(r, cond2), den2)
-
-          const c11 = grp.filter((r) => m1n(r) && m2n(r))
-          const c10 = grp.filter((r) => m1n(r) && m2d(r))
-          const c01 = grp.filter((r) => m1d(r) && m2n(r))
-          const c00 = grp.filter((r) => m1d(r) && m2d(r))
-          if (!c11.length || !c10.length || !c01.length || !c00.length) continue
-
-          const ctx: Array<[ConditionKey, string | number | null]> = [
-            [cond1, num1],
-            [cond2, num2],
-            ...groupConds.map(
-              (d) => [d, condValue(rep, d)] as [ConditionKey, string | number | null]
-            )
-          ]
-          for (const w of interactionTTest(c11, c10, c01, c00)) {
-            raw.push(rawFrom(w, `${cond1}:${cond2}`, cmpStr, ctx))
-          }
-        }
-      }
+  const { cells } = twoWayCells(input)
+  for (const cell of cells) {
+    const [n1, d1] = cell.pair1
+    const [n2, d2] = cell.pair2
+    const cmpStr = `${n1}|${d1} × ${n2}|${d2}`
+    if (!comparisons.includes(cmpStr)) comparisons.push(cmpStr)
+    const ctx: Array<[ConditionKey, string | number | null]> = [
+      [f1.condition, n1],
+      [f2.condition, n2],
+      ...cell.context
+    ]
+    for (const w of interactionTTest(cell.c11, cell.c10, cell.c01, cell.c00)) {
+      raw.push(rawFrom(w, `${f1.condition}:${f2.condition}`, cmpStr, ctx))
     }
   }
-
-  return { rows: finaliseCompare(raw, threshold), comparisons }
+  return { rows: finaliseCompare(raw, threshold), comparisons, threshold }
 }
 
 /** A dry-run of the two-way grouping for the config dialog: the interaction is computed once per
@@ -240,91 +253,30 @@ export interface TwoWayPreview {
   /** table body, one row per context combo with a full 2×2 (aligned to `columns`) */
   rows: string[][]
   groups: number
-  /** true when cmpd is a factor and dose is context → vehicle side matched with dose excluded */
-  doseExcluded: boolean
+  /** context conditions some cell is invariant on (so not matched there — its single slice serves
+   *  every level of the others), e.g. dose on a vehicle that only exists at 0 */
+  fixed: ConditionKey[]
   warnings: string[]
 }
 
 export function previewTwoWay(input: TwoWayInput): TwoWayPreview {
-  const { rows, factors, activeConditions } = input
-  const [f1, f2] = factors
-  const cmpdFactor = factors.find((f) => f.condition === 'cmpd')
-  const otherFactor = factors.find((f) => f.condition !== 'cmpd')
+  const [f1, f2] = input.factors
+  const { cells, context, fixed } = twoWayCells(input)
+  const tableRows: string[][] = cells.map((cell) => {
+    const p1 = `${cell.pair1[0]}|${cell.pair1[1]}`
+    const p2 = `${cell.pair2[0]}|${cell.pair2[1]}`
+    return [`${p1} × ${p2}`, p1, p2, ...cell.context.map(([, v]) => String(v ?? ''))]
+  })
   const warnings: string[] = []
-  const factorsLabel = `${f1.condition} × ${f2.condition}`
-  const ctxVals = (rep: StandardRow, dims: ConditionKey[]): string[] =>
-    dims.map((d) => String(condValue(rep, d) ?? ''))
-
-  let context: ConditionKey[]
-  let doseExcluded = false
-  const tableRows: string[][] = []
-
-  if (cmpdFactor && otherFactor) {
-    const otherCond = otherFactor.condition
-    const trtDims = activeConditions.filter(
-      (c) => c !== 'cmpd' && c !== otherCond && condPresent(rows, c)
-    )
-    const vehDims = trtDims.filter((c) => c !== 'dose')
-    context = trtDims
-    doseExcluded = trtDims.includes('dose')
-    for (const [numC, denC] of cmpdFactor.pairs) {
-      const dfTrt = rows.filter((r) => valEq(condValue(r, 'cmpd'), numC))
-      const dfVeh = rows.filter((r) => valEq(condValue(r, 'cmpd'), denC))
-      for (const [numS, denS] of otherFactor.pairs) {
-        for (const ctxTrt of groupRowsBy(dfTrt, trtDims).values()) {
-          const rep = ctxTrt[0]
-          const c11 = ctxTrt.filter((r) => valEq(condValue(r, otherCond), numS))
-          const c10 = ctxTrt.filter((r) => valEq(condValue(r, otherCond), denS))
-          const vehSlice = dfVeh.filter((r) =>
-            vehDims.every((d) => valEq(condValue(r, d), condValue(rep, d) as string | number))
-          )
-          const c01 = vehSlice.filter((r) => valEq(condValue(r, otherCond), numS))
-          const c00 = vehSlice.filter((r) => valEq(condValue(r, otherCond), denS))
-          if (c11.length && c10.length && c01.length && c00.length) {
-            const cmpdPair = `${numC}|${denC}`
-            const otherPair = `${numS}|${denS}`
-            const p1 = f1.condition === 'cmpd' ? cmpdPair : otherPair
-            const p2 = f2.condition === 'cmpd' ? cmpdPair : otherPair
-            tableRows.push([`${p1} × ${p2}`, p1, p2, ...ctxVals(rep, trtDims)])
-          }
-        }
-      }
-    }
-  } else {
-    const cond1 = f1.condition
-    const cond2 = f2.condition
-    const groupConds = activeConditions.filter(
-      (c) => c !== cond1 && c !== cond2 && condPresent(rows, c)
-    )
-    context = groupConds
-    for (const [num1, den1] of f1.pairs) {
-      for (const [num2, den2] of f2.pairs) {
-        for (const grp of groupRowsBy(rows, groupConds).values()) {
-          const rep = grp[0]
-          const c11 = grp.filter((r) => valEq(condValue(r, cond1), num1) && valEq(condValue(r, cond2), num2))
-          const c10 = grp.filter((r) => valEq(condValue(r, cond1), num1) && valEq(condValue(r, cond2), den2))
-          const c01 = grp.filter((r) => valEq(condValue(r, cond1), den1) && valEq(condValue(r, cond2), num2))
-          const c00 = grp.filter((r) => valEq(condValue(r, cond1), den1) && valEq(condValue(r, cond2), den2))
-          if (c11.length && c10.length && c01.length && c00.length) {
-            const p1 = `${num1}|${den1}`
-            const p2 = `${num2}|${den2}`
-            tableRows.push([`${p1} × ${p2}`, p1, p2, ...ctxVals(rep, groupConds)])
-          }
-        }
-      }
-    }
-  }
-
   if (tableRows.length === 0)
     warnings.push('No context has a complete 2×2 — some cell (factor-level combination) has no rows.')
-
   return {
-    factors: factorsLabel,
+    factors: `${f1.condition} × ${f2.condition}`,
     context,
     columns: ['comparison', f1.condition, f2.condition, ...context],
     rows: tableRows,
     groups: tableRows.length,
-    doseExcluded,
+    fixed,
     warnings
   }
 }

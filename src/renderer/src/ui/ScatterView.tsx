@@ -1,35 +1,22 @@
 import { useMemo } from 'react'
 
 import type { ScatterData, ScatterPoint } from '../engine'
+import { DEFAULT_EFFECT_LABELS, type EffectLabels, type PointStyle } from '../graph/types'
+import { useGraph } from '../graph/store'
 import { PlotlyChart } from './PlotlyChart'
-import { axisBase, CATEGORICAL, EFFECT_COLOR, guideLine, PALETTES, plotBase } from './theme'
+import {
+  legendOn,
+  QUAD_ORDER,
+  resolveGroups,
+  resolveHighlight,
+  type ResolvedGroup
+} from './pointStyle'
+import { axisBase, CATEGORICAL, guideLine, PALETTES, plotBase } from './theme'
+import { matchingGeneSet, useSelection } from './useSelection'
 import { useUiTheme } from './useUiTheme'
 
 type Eff = 'up' | 'down' | 'none'
 const EFF_ORDER: Eff[] = ['none', 'down', 'up']
-
-// Marginal (independent) contrasts label each significant gene by which quadrant it falls in —
-// the composite "<FC1 dir>, <FC2 dir>" effect, where an em-dash means that axis wasn't itself
-// significant. This is the order the quadrant legend groups are listed in.
-const QUAD_ORDER = ['up, up', 'down, down', 'up, down', 'down, up', 'up, —', 'down, —', '—, up', '—, down']
-
-// Quadrant palette as an 8-hue wheel: the four CORNERS are a tetrad, rotated so the main diagonal
-// runs RED (up, up — top-right) ↔ BLUE (down, down — bottom-left) with magenta (up, down — top-left)
-// ↔ green (down, up — bottom-right) on the other diagonal. Each single-axis EDGE sits between two
-// corners on the plane and takes the TETRADIC INTERMEDIATE hue of those two corners:
-//   up, — (top)    = red↔magenta   → rose      —, up (right) = red↔green    → yellow
-//   down, — (bot)  = blue↔green    → teal      —, down (left)= magenta↔blue → violet
-// Edges are a touch lighter so the both-axes corners still read as the strongest. Fixed hexes.
-const QUAD_COLORS: Record<string, string> = {
-  'up, up': '#d1495b', // red      (top-right)
-  'down, down': '#3b7fb5', // blue     (bottom-left)
-  'up, down': '#b45fae', // magenta  (top-left)
-  'down, up': '#4fa05a', // green    (bottom-right)
-  'up, —': '#d2798f', // rose   (between red & magenta, pushed toward red to clear magenta)
-  '—, up': '#caca73', // yellow (between red & green)
-  'down, —': '#73cab7', // teal   (between blue & green)
-  '—, down': '#7f70cd' // violet (between magenta & blue, pushed toward blue to clear magenta)
-}
 
 /**
  * Contrast scatter: FC1 (y) vs FC2 (x). The significance boundary follows the contrast's
@@ -40,75 +27,112 @@ const QUAD_COLORS: Record<string, string> = {
 export function ScatterView({
   scatter,
   title,
-  labelTop = 0
+  labelTop = 0,
+  effectLabels = DEFAULT_EFFECT_LABELS,
+  style
 }: {
   scatter: ScatterData
   title?: string
   labelTop?: number
+  /** per-tile marker / highlight / legend look (unset fields use the scatter defaults) */
+  style?: PointStyle
+  /** display names for the down/up classes (from the upstream Compare/Contrast config) */
+  effectLabels?: EffectLabels
 }) {
   const mode = useUiTheme((s) => s.mode)
+  // Pinned (linked-selection) genes become their own trace, as on volcano/MA: kept fully opaque,
+  // with a legend entry (and the set's own colour) only when they form a saved geneset. Subscribe
+  // to pinnedIds only (not hoverId), so the plot rebuilds on a click-select, not on every hover.
+  const pinnedIds = useSelection((s) => s.pinnedIds)
+  const geneSets = useGraph((s) => s.geneSets)
+  const selSet = matchingGeneSet(pinnedIds, geneSets)
+  const selName = selSet?.name ?? null
+  const selColor = selSet?.color ?? null
+  // Point groups depend on the relationship. A correlated (OLS) contrast colours genes by
+  // whether they sit above/below the line of identity — up (red) / down (blue) / none (grey),
+  // matching volcano/MA. An independent (marginal) contrast instead colours by QUADRANT: the
+  // composite "<FC1 dir>, <FC2 dir>" effect, so each significant corner reads as its own group.
+  const marginal = scatter.guide?.kind === 'marginal'
+  // Resolved once per config change (stable objects, so PlotlyChart doesn't re-render per hover).
+  // Memo inputs kept primitive (the parent hands a fresh `effectLabels` object per render).
+  const upName = effectLabels.up
+  const downName = effectLabels.down
+  const groups = useMemo(
+    () =>
+      resolveGroups(style, marginal ? 'scatterQuad' : 'scatter', { up: upName, down: downName }),
+    [style, marginal, upName, downName]
+  )
+  const emphasis = useMemo(() => resolveHighlight(style), [style])
+  const showLegend = legendOn(style)
 
   const { data, layout, labels } = useMemo(() => {
     const p = PALETTES[mode]
 
-    const hover = `%{text}<br>${scatter.xLabel}=%{x:.3f}<br>${scatter.yLabel}=%{y:.3f}<extra></extra>`
-    const trace = (pts: ScatterPoint[], name: string, color: string, size: number) => ({
+    // The tooltip names the gene only when the highlight's own label is off (else it's a duplicate).
+    const hover = `${emphasis.label ? '' : '%{text}<br>'}${scatter.xLabel}=%{x:.3f}<br>${scatter.yLabel}=%{y:.3f}<extra></extra>`
+    const trace = (pts: ScatterPoint[], g: ResolvedGroup) => ({
       type: 'scatter',
       mode: 'markers',
-      name: `${name} (${pts.length})`,
+      name: `${g.name} (${pts.length})`,
+      showlegend: g.legend,
       x: pts.map((pt) => pt.x),
       y: pts.map((pt) => pt.y),
       text: pts.map((pt) => pt.label),
       customdata: pts.map((pt) => pt.uniqID),
       hovertemplate: hover,
-      marker: { color, size, opacity: 0.85 }
+      marker: { color: g.color, size: g.size, opacity: g.opacity }
     })
-
-    // Point groups depend on the relationship. A correlated (OLS) contrast colours genes by
-    // whether they sit above/below the line of identity — up (red) / down (blue) / none (grey),
-    // matching volcano/MA. An independent (marginal) contrast instead colours by QUADRANT: the
-    // composite "<FC1 dir>, <FC2 dir>" effect, so each significant corner reads as its own group.
-    const marginal = scatter.guide?.kind === 'marginal'
-    let pointTraces: object[]
-    let sig: ScatterPoint[]
-    if (marginal) {
-      const groups = new Map<string, ScatterPoint[]>()
-      for (const pt of scatter.points) {
-        const key = pt.effect && pt.effect !== 'none' ? pt.effect : 'none'
-        const arr = groups.get(key)
-        if (arr) arr.push(pt)
-        else groups.set(key, [pt])
+    // A point's group key: its quadrant (marginal) or effect class; anything unknown is 'none'.
+    const keyOf = (pt: ScatterPoint): string =>
+      marginal
+        ? pt.effect && pt.effect !== 'none'
+          ? pt.effect
+          : 'none'
+        : pt.effect === 'up' || pt.effect === 'down'
+          ? pt.effect
+          : 'none'
+    // Unknown quadrant keys (extras beyond QUAD_ORDER) get a categorical fallback colour.
+    const look = (key: string, fallbackIdx = 0): ResolvedGroup =>
+      groups.get(key) ?? {
+        ...groups.get('none')!,
+        key,
+        name: key,
+        size: 8,
+        color: CATEGORICAL[fallbackIdx % CATEGORICAL.length],
+        label: true
       }
-      sig = scatter.points.filter((pt) => !!pt.effect && pt.effect !== 'none')
+
+    let pointTraces: object[]
+    if (marginal) {
+      const byQuad = new Map<string, ScatterPoint[]>()
+      for (const pt of scatter.points) {
+        const key = keyOf(pt)
+        const arr = byQuad.get(key)
+        if (arr) arr.push(pt)
+        else byQuad.set(key, [pt])
+      }
       // Known quadrants in QUAD_ORDER first (stable colours), then any unexpected extras.
-      const keys = [...groups.keys()].filter((k) => k !== 'none')
+      const keys = [...byQuad.keys()].filter((k) => k !== 'none')
       keys.sort((a, b) => {
         const ia = QUAD_ORDER.indexOf(a)
         const ib = QUAD_ORDER.indexOf(b)
         return (ia < 0 ? QUAD_ORDER.length + 1 : ia) - (ib < 0 ? QUAD_ORDER.length + 1 : ib)
       })
-      const noneGrp = groups.get('none')
-      // Colour each quadrant by its FIXED identity (the tetradic QUAD_COLORS map), not by its
+      const noneGrp = byQuad.get('none')
+      // Each quadrant is styled by its FIXED identity (the resolved group for its key), not by its
       // position among the quadrants that happen to have points — so a given quadrant always reads
-      // as the same colour regardless of which others are populated. Unknown extras fall back to the
-      // categorical palette.
-      const colorForQuad = (k: string): string =>
-        QUAD_COLORS[k] ?? CATEGORICAL[keys.indexOf(k) % CATEGORICAL.length]
+      // the same regardless of which others are populated.
       pointTraces = [
-        ...(noneGrp ? [trace(noneGrp, 'none', EFFECT_COLOR.none, 6)] : []),
-        ...keys.map((k) => trace(groups.get(k)!, k, colorForQuad(k), 8))
+        ...(noneGrp ? [trace(noneGrp, look('none'))] : []),
+        ...keys.map((k) => trace(byQuad.get(k)!, look(k, keys.indexOf(k))))
       ]
     } else {
       const byEffect: Record<Eff, ScatterPoint[]> = { up: [], down: [], none: [] }
-      for (const pt of scatter.points) {
-        const e: Eff = pt.effect === 'up' || pt.effect === 'down' ? pt.effect : 'none'
-        byEffect[e].push(pt)
-      }
-      sig = [...byEffect.down, ...byEffect.up]
+      for (const pt of scatter.points) byEffect[keyOf(pt) as Eff].push(pt)
       // One trace per effect group (none/down/up). Empty groups are dropped so the legend
       // doesn't show "(0)" entries (e.g. a value scatter is all `none`).
       pointTraces = EFF_ORDER.filter((e) => byEffect[e].length > 0).map((e) =>
-        trace(byEffect[e], e, EFFECT_COLOR[e], e === 'none' ? 6 : 8)
+        trace(byEffect[e], look(e))
       )
     }
 
@@ -177,10 +201,13 @@ export function ScatterView({
           ? []
           : [identity] // no guide (e.g. too few points) — fall back to the line of identity
 
-    // Collision-managed labels for the significant (divergent) genes, most divergent first.
-    // labelTop > 0 caps the candidate pool; 0 (the default) offers them all and lets the
-    // placement layer keep as many as fit — more appear as you zoom in.
-    const ranked = [...sig].sort((a, b) => Math.abs(b.fcdiff) - Math.abs(a.fcdiff))
+    // Collision-managed labels for the genes of every group whose label switch is on (by default
+    // the significant / divergent ones), most divergent first. labelTop > 0 caps the candidate
+    // pool; 0 (the default) offers them all and lets the placement layer keep as many as fit —
+    // more appear as you zoom in.
+    const ranked = scatter.points
+      .filter((pt) => look(keyOf(pt)).label)
+      .sort((a, b) => Math.abs(b.fcdiff) - Math.abs(a.fcdiff))
     const labels = (labelTop > 0 ? ranked.slice(0, labelTop) : ranked).map((pt) => ({
       x: pt.x,
       y: pt.y,
@@ -206,15 +233,56 @@ export function ScatterView({
       },
       shapes: guideShapes,
       // Legend centered ABOVE the plot (horizontal), matching volcano/MA — a right-side legend
-      // would steal plot width and shift as group names change. Forced always-on so it never
-      // appears/disappears and reflows the layout.
-      showlegend: true,
+      // would steal plot width and shift as group names change. Fixed per config (never toggled
+      // by the data) so it doesn't appear/disappear and reflow the layout.
+      showlegend: showLegend,
       legend: { orientation: 'h', yanchor: 'bottom', y: 1.02, xanchor: 'center', x: 0.5 }
     }
-    return { data: [...guideTraces, ...pointTraces], layout: lay, labels }
-  }, [scatter, title, labelTop, mode])
+    // Pinned genes on top: markers only (the overlay names them), sized/coloured per their group
+    // unless the selection is a geneset with a colour of its own.
+    const sel = scatter.points.filter((pt) => pinnedIds.has(pt.uniqID))
+    const selTrace = sel.length
+      ? [
+          {
+            type: 'scatter',
+            mode: 'markers',
+            name: selName ? `${selName} (${sel.length})` : `Selected (${sel.length})`,
+            showlegend: selName !== null,
+            x: sel.map((pt) => pt.x),
+            y: sel.map((pt) => pt.y),
+            text: sel.map((pt) => pt.label),
+            customdata: sel.map((pt) => pt.uniqID),
+            hovertemplate: hover,
+            marker: {
+              color: selColor ?? sel.map((pt) => look(keyOf(pt)).color),
+              size: sel.map((pt) => look(keyOf(pt)).size),
+              opacity: 1
+            }
+          }
+        ]
+      : []
+    return { data: [...guideTraces, ...pointTraces, ...selTrace], layout: lay, labels }
+  }, [
+    scatter,
+    title,
+    labelTop,
+    mode,
+    marginal,
+    groups,
+    showLegend,
+    emphasis.label,
+    pinnedIds,
+    selName,
+    selColor
+  ])
 
   return (
-    <PlotlyChart data={data} layout={layout} labels={labels} labelColor={PALETTES[mode].text} />
+    <PlotlyChart
+      data={data}
+      layout={layout}
+      labels={labels}
+      labelColor={PALETTES[mode].text}
+      emphasis={emphasis}
+    />
   )
 }

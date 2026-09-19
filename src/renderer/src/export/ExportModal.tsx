@@ -5,6 +5,7 @@ import { useMemo, useState, type CSSProperties, type ReactNode } from 'react'
 
 import { useGraph } from '../graph/store'
 import { UI } from '../ui/theme'
+import { useSelection } from '../ui/useSelection'
 import {
   collectSpecs,
   collectTableExports,
@@ -27,16 +28,20 @@ export function ExportModal({ onClose }: { onClose: () => void }): ReactNode {
   const canvasSelection = useGraph((s) => s.canvasSelection)
   const sel = useMemo(() => new Set(canvasSelection), [canvasSelection])
 
-  // Plot chips count plots; the Export button counts files (a GOI-capable plot with focus
-  // genes yields two files: all-genes + a GOI-subset variant).
-  const specsAll = useMemo(() => collectSpecs(nodes, edges, results), [nodes, edges, results])
+  // Plot chips count plots; the Export button counts files (a subset-capable plot yields two
+  // files while genes are selected: all-genes + a selected-only variant).
+  const hasSelection = useSelection((s) => s.pinnedIds.size > 0)
+  const specsAll = useMemo(
+    () => collectSpecs(nodes, edges, results, undefined, hasSelection),
+    [nodes, edges, results, hasSelection]
+  )
   const specsSel = useMemo(
-    () => collectSpecs(nodes, edges, results, sel),
-    [nodes, edges, results, sel]
+    () => collectSpecs(nodes, edges, results, sel, hasSelection),
+    [nodes, edges, results, sel, hasSelection]
   )
   const plotAll = specsAll.length
   const plotSel = specsSel.length
-  // File counts fan out over facets + GOI variants (the same jobs the export renders).
+  // File counts fan out over facets + selected variants (the same jobs the export renders).
   const plotFilesAll = useMemo(
     () => planPlotJobs(specsAll, edges, results).length,
     [specsAll, edges, results]

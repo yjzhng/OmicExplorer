@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type RefObject } from 'react'
 import { createPortal } from 'react-dom'
 
 import { cssVars, PALETTES, UI } from './theme'
@@ -58,12 +58,7 @@ function inferType(key: string, rows: Array<Record<string, unknown>>): ColType {
 }
 
 /** Scrollable table with global search, per-column sort + filter, and a reset. */
-export function DataTableView({
-  columns,
-  rows,
-  maxRows = 500,
-  idKey = 'uniqID'
-}: DataTableProps) {
+export function DataTableView({ columns, rows, maxRows = 500, idKey = 'uniqID' }: DataTableProps) {
   const [query, setQuery] = useState('')
   const [sort, setSort] = useState<SortState | null>(null)
   const [filters, setFilters] = useState<Record<string, Filter>>({})
@@ -95,14 +90,16 @@ export function DataTableView({
 
   const fmt = (c: Column, v: unknown): string => (c.format ? c.format(v) : strKey(v))
 
-  const processed = useMemo(() => {
+  // Whether a row survives the search, the selected-only switch and every column filter — except
+  // `skipKey`'s own, so a column's menu can list the values still available given everything ELSE.
+  const passes = useMemo(() => {
     const q = query.trim().toLowerCase()
-    let out = rows.filter((r) => {
+    return (r: Record<string, unknown>, skipKey?: string): boolean => {
       if (selectedOnly && pinnedIds.size > 0 && !pinnedIds.has(idKey ? strKey(r[idKey]) : ''))
         return false
       for (const c of columns) {
         const f = filters[c.key]
-        if (!f) continue
+        if (!f || c.key === skipKey) continue
         const v = r[c.key]
         if (f.type === 'categorical') {
           if (f.selected.length && !f.selected.includes(strKey(v))) return false
@@ -124,7 +121,11 @@ export function DataTableView({
         if (!hit) return false
       }
       return true
-    })
+    }
+  }, [columns, filters, query, selectedOnly, pinnedIds, idKey])
+
+  const processed = useMemo(() => {
+    let out = rows.filter((r) => passes(r))
     if (sort) {
       const { key, dir } = sort
       const numeric = colType[key] === 'numeric'
@@ -145,13 +146,42 @@ export function DataTableView({
       })
     }
     return out
-  }, [rows, columns, filters, query, sort, colType, selectedOnly, pinnedIds, idKey])
+  }, [rows, passes, sort, colType])
+
+  // The rows a column's menu draws its value list from: everything that passes the search and the
+  // OTHER columns' filters (not this column's own, or unticked values would disappear from the
+  // list and could never be re-ticked).
+  const menuRows = useMemo(
+    () => (menu ? rows.filter((r) => passes(r, menu.key)) : rows),
+    [rows, passes, menu]
+  )
 
   const shown = processed.slice(0, maxRows)
   const active =
     query.trim() !== '' || sort != null || Object.keys(filters).length > 0 || selectedOnly
 
-  const rowEls = useRef(new Map<string, { el: HTMLTableRowElement; alt: boolean }>())
+  // A row's React key must be unique, but a long table has MANY rows per gene (one per sample /
+  // context), so the id alone collided and rows mis-rendered under search/filter/sort. Key by
+  // id + the row's position in the ORIGINAL array (stable across filtering, unlike the shown index).
+  const rowIndex = useMemo(() => new Map(rows.map((r, i) => [r, i])), [rows])
+
+  // Row elements by gene id — a Map per id because a gene can span several rows (long views),
+  // and every one of them must light up. `alt` = zebra stripe.
+  const rowEls = useRef(new Map<string, Map<HTMLTableRowElement, boolean>>())
+  const trackRow = (id: string, el: HTMLTableRowElement | null, alt: boolean): void => {
+    if (!id) return
+    if (el) {
+      let set = rowEls.current.get(id)
+      if (!set) rowEls.current.set(id, (set = new Map()))
+      set.set(el, alt)
+    }
+  }
+  const untrackRow = (id: string, el: HTMLTableRowElement): void => {
+    const set = rowEls.current.get(id)
+    if (!set) return
+    set.delete(el)
+    if (set.size === 0) rowEls.current.delete(id)
+  }
   // Paint the current selection onto the rows, and re-paint whenever it changes.
   // No dep array: it must also re-run after a sort/filter/search re-render, since
   // those recycle the row elements under different ids.
@@ -159,13 +189,15 @@ export function DataTableView({
     let lastHover: string | null = null
     const paint = (): void => {
       const { hoverId, pinnedIds } = useSelection.getState()
-      for (const [id, { el, alt }] of rowEls.current) {
+      for (const [id, els] of rowEls.current) {
         const hovered = id === hoverId
         const pinned = pinnedIds.has(id)
-        const bg = hovered ? HOVER_BG : pinned ? PIN_BG : alt ? ALT_BG : 'transparent'
-        if (el.style.background !== bg) el.style.background = bg
         const bar = pinned ? PIN_BAR : ''
-        if (el.style.boxShadow !== bar) el.style.boxShadow = bar
+        for (const [el, alt] of els) {
+          const bg = hovered ? HOVER_BG : pinned ? PIN_BG : alt ? ALT_BG : 'transparent'
+          if (el.style.background !== bg) el.style.background = bg
+          if (el.style.boxShadow !== bar) el.style.boxShadow = bar
+        }
       }
       // When the hover comes from another panel, bring the matching row into view —
       // a linked highlight is useless if it lands 400 rows below the fold. Scroll the
@@ -173,7 +205,8 @@ export function DataTableView({
       // and scrolls every ancestor too — that yanked the whole dashboard to the table.
       if (hoverId && hoverId !== lastHover && !localHover.current) {
         const sc = scrollRef.current
-        const el = rowEls.current.get(hoverId)?.el
+        // A gene with several rows: bring its first (topmost) one into view.
+        const el = rowEls.current.get(hoverId)?.keys().next().value
         if (sc && el) {
           const row = el.getBoundingClientRect()
           const box = sc.getBoundingClientRect()
@@ -215,6 +248,7 @@ export function DataTableView({
         {pinnedIds.size > 0 && (
           <>
             <button
+              className="oe-dt-btn"
               style={{ ...styles.selBtn, ...(selectedOnly ? styles.selBtnOn : null) }}
               onClick={() => setSelectedOnly((v) => !v)}
               title="Show only the selected (pinned) genes"
@@ -222,6 +256,7 @@ export function DataTableView({
               ★ {pinnedIds.size} selected
             </button>
             <button
+              className="oe-dt-btn"
               style={styles.reset}
               onClick={() => {
                 clearPins()
@@ -234,6 +269,7 @@ export function DataTableView({
           </>
         )}
         <button
+          className="oe-dt-btn"
           style={{ ...styles.reset, opacity: active ? 1 : 0.45 }}
           onClick={reset}
           disabled={!active}
@@ -262,6 +298,8 @@ export function DataTableView({
                 return (
                   <th
                     key={c.key}
+                    className="oe-dt-th"
+                    data-col-menu
                     onClick={(e) => openMenu(c.key, e.currentTarget)}
                     style={{
                       ...styles.th,
@@ -284,16 +322,22 @@ export function DataTableView({
           <tbody>
             {shown.map((r, i) => {
               const id = idKey ? strKey(r[idKey]) : ''
+              const alt = i % 2 === 1
               return (
                 <tr
-                  key={id || i}
+                  key={`${id}\u0000${rowIndex.get(r) ?? i}`}
                   ref={(el) => {
-                    if (!id) return
-                    if (el) rowEls.current.set(id, { el, alt: i % 2 === 1 })
-                    else rowEls.current.delete(id)
+                    // React 19 ref callbacks may return a cleanup; this one tracks the element
+                    // explicitly so the map never holds a stale row.
+                    trackRow(id, el, alt)
+                    return () => {
+                      if (el) untrackRow(id, el)
+                    }
                   }}
                   onMouseEnter={id ? () => useSelection.getState().setHover(id) : undefined}
-                  onClick={id ? () => useSelection.getState().selectOnly(id) : undefined}
+                  // Click toggles the gene's pin — the same gesture as clicking a point in a plot —
+                  // so selecting a second row adds to the selection instead of replacing it.
+                  onClick={id ? () => useSelection.getState().togglePin(id) : undefined}
                   // Background is owned by the imperative painter above (which also
                   // draws the zebra stripe), so React must not set it here and fight it.
                   style={{ cursor: id ? 'pointer' : undefined }}
@@ -325,10 +369,11 @@ export function DataTableView({
         menuCol &&
         createPortal(
           <ColumnMenu
-            rows={rows}
+            rows={menuRows}
             column={menuCol}
             type={colType[menu.key]}
             rect={menu.rect}
+            tableScroller={scrollRef}
             filter={filters[menu.key]}
             sortDir={sort?.key === menu.key ? sort.dir : null}
             onSort={(dir) => setSort(dir ? { key: menu.key, dir } : null)}
@@ -355,6 +400,7 @@ function ColumnMenu({
   column,
   type,
   rect,
+  tableScroller,
   filter,
   sortDir,
   onSort,
@@ -365,6 +411,8 @@ function ColumnMenu({
   column: Column
   type: ColType
   rect: DOMRect
+  /** the table body's scroll container — its scrolling never detaches the (sticky) header */
+  tableScroller: RefObject<HTMLElement | null>
   filter?: Filter
   sortDir: 'asc' | 'desc' | null
   onSort: (dir: 'asc' | 'desc' | null) => void
@@ -377,22 +425,36 @@ function ColumnMenu({
 
   useEffect(() => {
     const onDown = (e: MouseEvent): void => {
-      if (ref.current && !ref.current.contains(e.target as Node)) onClose()
+      const t = e.target as Element
+      // A header cell toggles the menu itself on click; treating its mousedown as "outside" closed
+      // the menu first, so the click then re-opened it and the header could never close it.
+      if (ref.current && !ref.current.contains(t) && !t.closest?.('[data-col-menu]')) onClose()
     }
     const onKey = (e: KeyboardEvent): void => {
       if (e.key === 'Escape') onClose()
     }
+    // The menu is fixed to the header cell, so an ancestor scroll would detach it → close. But
+    // NOT for scrolls inside the menu (its own value list scrolls) or of the table body (the header
+    // is sticky; and applying a filter shrinks the body, clamping its scrollTop and firing a scroll
+    // — which closed the menu on the first tick of any checkbox or keystroke in a range box).
+    const onScroll = (e: Event): void => {
+      const t = e.target as Node
+      if (ref.current?.contains(t)) return
+      const sc = tableScroller.current
+      if (sc && (t === sc || sc.contains(t))) return
+      onClose()
+    }
     document.addEventListener('mousedown', onDown)
     document.addEventListener('keydown', onKey)
-    window.addEventListener('scroll', onClose, true)
+    window.addEventListener('scroll', onScroll, true)
     window.addEventListener('resize', onClose)
     return () => {
       document.removeEventListener('mousedown', onDown)
       document.removeEventListener('keydown', onKey)
-      window.removeEventListener('scroll', onClose, true)
+      window.removeEventListener('scroll', onScroll, true)
       window.removeEventListener('resize', onClose)
     }
-  }, [onClose])
+  }, [onClose, tableScroller])
 
   const distinct = useMemo(() => {
     if (type !== 'categorical') return []
@@ -431,12 +493,14 @@ function ColumnMenu({
     >
       <div style={styles.menuRow}>
         <button
+          className="oe-dt-btn"
           style={{ ...styles.sortBtn, ...(sortDir === 'asc' ? styles.sortActive : null) }}
           onClick={() => onSort(sortDir === 'asc' ? null : 'asc')}
         >
           ▲ Ascending
         </button>
         <button
+          className="oe-dt-btn"
           style={{ ...styles.sortBtn, ...(sortDir === 'desc' ? styles.sortActive : null) }}
           onClick={() => onSort(sortDir === 'desc' ? null : 'desc')}
         >
@@ -469,7 +533,7 @@ function ColumnMenu({
             />
           </div>
           {filter && (
-            <button style={styles.clearBtn} onClick={() => onFilter(null)}>
+            <button className="oe-dt-btn" style={styles.clearBtn} onClick={() => onFilter(null)}>
               Clear filter
             </button>
           )}
@@ -478,15 +542,23 @@ function ColumnMenu({
         <div style={styles.menuBody}>
           <input
             style={styles.menuSearch}
-            placeholder="Filter values…"
+            placeholder="Filter values… (Enter applies)"
             value={find}
+            autoFocus
             onChange={(e) => setFind(e.target.value)}
+            // Enter confirms: keep exactly the values matching the typed text ("Only shown").
+            onKeyDown={(e) => {
+              if (e.key !== 'Enter') return
+              e.preventDefault()
+              onFilter(filtered.length ? { type: 'categorical', selected: [...filtered] } : null)
+            }}
           />
           <div style={styles.menuActions}>
-            <button style={styles.linkBtn} onClick={() => onFilter(null)}>
+            <button className="oe-dt-link" style={styles.linkBtn} onClick={() => onFilter(null)}>
               All
             </button>
             <button
+              className="oe-dt-link"
               style={styles.linkBtn}
               onClick={() => onFilter({ type: 'categorical', selected: [...filtered] })}
             >
@@ -495,7 +567,7 @@ function ColumnMenu({
           </div>
           <div style={styles.options}>
             {filtered.slice(0, CAP).map((v) => (
-              <label key={v} style={styles.optRow}>
+              <label key={v} className="oe-dt-opt" style={styles.optRow}>
                 <input
                   type="checkbox"
                   checked={selected.length === 0 || selected.includes(v)}

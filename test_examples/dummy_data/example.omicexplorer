@@ -1,12 +1,12 @@
 {
   "format": "omicexplorer-project",
   "version": 2,
-  "name": "example",
+  "name": "dummy_data",
   "folders": [
     {
       "id": "fd-1",
-      "name": "example_project",
-      "path": "/Users/zhangy1/git_repo/OmicExplorer/example_project",
+      "name": "dummy_data",
+      "path": "/Users/zhangy1/git_repo/OmicExplorer/test_examples/dummy_data",
       "workflows": [
         {
           "id": "wf-1",
@@ -89,7 +89,7 @@
                       ]
                     },
                     "match": [
-                      "strain",
+                      "cell",
                       "time"
                     ]
                   },
@@ -107,11 +107,11 @@
                   "kind": "contrast",
                   "config": {
                     "relationship": "correlated",
-                    "condition": "strain",
+                    "condition": "cell",
                     "pairNum": "mutant",
                     "pairDen": "WT"
                   },
-                  "name": "strain"
+                  "name": "cell"
                 }
               },
               {
@@ -334,7 +334,7 @@
                         "kind": "pca",
                         "config": {
                           "method": "umap",
-                          "colorBy": "strain",
+                          "colorBy": "cell",
                           "display": "centroid"
                         }
                       },

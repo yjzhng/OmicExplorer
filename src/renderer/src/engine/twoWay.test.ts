@@ -11,17 +11,17 @@ import type { StandardRow } from './types'
 
 function r(
   uniqID: string,
-  strain: string,
+  cell: string,
   cmpd: string,
   dose: number | null,
   time: number | null,
   rep: number,
   value: number
 ): StandardRow {
-  return { uniqID, strain, cmpd, dose, time, rep, value }
+  return { uniqID, cell, cmpd, dose, time, rep, value }
 }
 
-describe('runTwoWayAnova — symmetric (strain × time)', () => {
+describe('runTwoWayAnova — symmetric (cell × time)', () => {
   // interaction = mean(M,t1) − mean(M,t2) − mean(W,t1) + mean(W,t2), in log2.
   // M,t1: log2{3,4} mean 3.5 (var 0.5) ; the other three cells are flat at log2 2.
   // ⇒ interaction = 3.5 − 2 − 2 + 2 = 1.5 ; se = sqrt(0.5/2) = 0.5 ; df = 1 ; t = 3.
@@ -39,16 +39,16 @@ describe('runTwoWayAnova — symmetric (strain × time)', () => {
   const res = runTwoWayAnova({
     rows,
     factors: [
-      { condition: 'strain', pairs: [['M', 'W']] },
+      { condition: 'cell', pairs: [['M', 'W']] },
       { condition: 'time', pairs: [['1', '2']] }
     ],
-    activeConditions: ['strain', 'time']
+    activeConditions: ['cell', 'time']
   })
 
   it('labels the comparison and cmp_cond', () => {
     expect(res.comparisons).toEqual(['M|W × 1|2'])
     expect(res.rows).toHaveLength(1)
-    expect(res.rows[0].cmp_cond).toBe('strain:time')
+    expect(res.rows[0].cmp_cond).toBe('cell:time')
   })
 
   it('computes the interaction log2FC', () => {
@@ -63,7 +63,7 @@ describe('runTwoWayAnova — symmetric (strain × time)', () => {
   })
 })
 
-describe('runTwoWayAnova — asymmetric (cmpd × strain, vehicle dose-excluded)', () => {
+describe('runTwoWayAnova — asymmetric (cmpd × cell, vehicle dose-excluded)', () => {
   // Treatment A at dose 1; vehicle DMSO at dose 0 (matched with dose excluded).
   // interaction = mean(A,M) − mean(A,W) − mean(DMSO,M) + mean(DMSO,W), log2.
   // = 4 − 2 − 2 + 2 = 2.
@@ -82,16 +82,16 @@ describe('runTwoWayAnova — asymmetric (cmpd × strain, vehicle dose-excluded)'
     rows,
     factors: [
       { condition: 'cmpd', pairs: [['A', 'DMSO']] },
-      { condition: 'strain', pairs: [['M', 'W']] }
+      { condition: 'cell', pairs: [['M', 'W']] }
     ],
-    activeConditions: ['cmpd', 'strain', 'dose']
+    activeConditions: ['cmpd', 'cell', 'dose']
   })
 
   it('assembles cells with vehicle dose-exclusion and reports the interaction', () => {
     expect(res.comparisons).toEqual(['A|DMSO × M|W'])
     expect(res.rows).toHaveLength(1)
     const row = res.rows[0]
-    expect(row.cmp_cond).toBe('cmpd:strain')
+    expect(row.cmp_cond).toBe('cmpd:cell')
     expect(row.dose).toBe(1) // treatment-side dose context preserved
     expect(Math.abs((row.log2FC as number) - 2)).toBeLessThan(1e-9)
   })

@@ -2,8 +2,7 @@
  *  Kept free of React/Plotly imports so it is trivially testable and cheap to import. */
 import type { Edge } from '@xyflow/react'
 
-import { GOI_TOGGLE_KINDS } from '../dashboard/goi'
-import { focusIds, resolveChildFocus, resolveFocus } from '../graph/focus'
+import { SUBSET_TOGGLE_KINDS } from '../dashboard/subset'
 import { deriveGroups } from '../graph/groups'
 import { categoryOf, NODE_SPECS } from '../graph/registry'
 import {
@@ -27,8 +26,8 @@ export interface ExportSpec {
   plot: string
   /** unique component of the filename (node id, plus child id for a group subcard) */
   key: string
-  /** the plot draws all genes but has ≥1 focus gene, so a GOI-subset variant is worth exporting */
-  hasGoi: boolean
+  /** the plot draws all genes and genes are selected, so a selected-only variant is worth exporting */
+  hasSelection: boolean
 }
 
 /** Prefer the concrete comparison names for the folder/label, matching the Results tabs. */
@@ -47,15 +46,16 @@ function analysisLabel(
  * Enumerate exportable plots, grouped by analysis (so folder/label match the Results
  * dashboard). Group tiles are expanded into one spec per subcard. When `only` is given,
  * restrict to members whose node id is in the set (a selected group contributes all its
- * subcards).
+ * subcards). `hasSelection` says whether any genes are selected (the linked selection is
+ * global), which decides whether subset-capable plots also get a selected-only variant.
  */
 export function collectSpecs(
   nodes: GraphNode[],
   edges: Edge[],
   results: Record<string, NodeResult>,
-  only?: Set<string>
+  only?: Set<string>,
+  hasSelection = false
 ): ExportSpec[] {
-  const steps = nodes.filter(isStep)
   const specs: ExportSpec[] = []
   for (const g of deriveGroups(nodes, edges)) {
     const analysis = analysisLabel(g.rootId, g.label, results)
@@ -65,7 +65,6 @@ export function collectSpecs(
       if (!node || !isStep(node) || categoryOf(node.data.kind) !== 'plotting') continue
       if (node.data.kind === 'plotGroup') {
         for (const c of (node.data.config as PlotGroupConfig).children) {
-          const genes = focusIds(resolveChildFocus(c, node.id, steps, edges))
           specs.push({
             node,
             child: c,
@@ -73,18 +72,17 @@ export function collectSpecs(
             analysis,
             plot: NODE_SPECS[c.kind].label,
             key: `${node.id}_${c.id}`,
-            hasGoi: GOI_TOGGLE_KINDS.has(c.kind) && genes.length > 0
+            hasSelection: hasSelection && SUBSET_TOGGLE_KINDS.has(c.kind)
           })
         }
       } else {
-        const genes = focusIds(resolveFocus(node.id, steps, edges))
         specs.push({
           node,
           rootId: g.rootId,
           analysis,
           plot: NODE_SPECS[node.data.kind].label,
           key: node.id,
-          hasGoi: GOI_TOGGLE_KINDS.has(node.data.kind) && genes.length > 0
+          hasSelection: hasSelection && SUBSET_TOGGLE_KINDS.has(node.data.kind)
         })
       }
     }

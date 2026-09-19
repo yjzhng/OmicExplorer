@@ -3,16 +3,15 @@ import { useState, type CSSProperties, type ReactNode } from 'react'
 import { UI } from '../ui/theme'
 import {
   accentOf,
-  type AxisAvail,
   categoryOf,
   CATEGORIES,
   entryKey,
-  gatePlotEntries,
   NODE_SPECS,
   plotEntriesFor,
   PLOT_SECTIONS,
   type PlotMenuEntry
 } from './registry'
+import { gatePlotEntries, UNWIRED, type UpstreamFacts } from './requirements'
 import type { NodeCategory, NodeKind } from './types'
 
 /** What the picker commits: a kind plus any config override (e.g. dr's axis). */
@@ -29,7 +28,7 @@ export function TilePicker({
   ops,
   onPick,
   header = 'New step',
-  axes,
+  upstream,
   style
 }: {
   ops: NodeKind[]
@@ -37,12 +36,12 @@ export function TilePicker({
    *  carry a config override (e.g. a dr pick seeds its axis) — see TilePick. */
   onPick: (picks: TilePick[]) => void
   header?: string
-  /** Response axes the upstream data supports — gates the dose/time-response options. Omitted
-   *  (or unknown upstream) ⇒ show all. */
-  axes?: AxisAvail
+  /** What the upstream data carries — hides plots whose requirement it can't meet (see
+   *  requirements.ts). Omitted (no upstream) ⇒ show all. */
+  upstream?: UpstreamFacts
   style?: CSSProperties
 }) {
-  const avail: AxisAvail = axes ?? { dose: true, time: true }
+  const avail = upstream ?? UNWIRED
   // `plotGroup` is never user-pickable — checking several plots in the plotting list
   // is what creates a group, so it must not appear as an option here.
   const byCat = CATS.map((cat) => ({
@@ -68,7 +67,8 @@ export function TilePicker({
     accent: string,
     label: string,
     tag: string | number,
-    onClick: () => void
+    onClick: () => void,
+    subtitle?: string
   ) => (
     <button
       key={key}
@@ -82,6 +82,7 @@ export function TilePicker({
     >
       <span style={{ ...dot, background: accent }} />
       <span style={opLabel}>{label}</span>
+      {subtitle && <span style={opSubtitle}>{subtitle}</span>}
       <span style={{ ...catName, color: accent }}>{tag}</span>
     </button>
   )
@@ -172,7 +173,14 @@ export function TilePicker({
                 </div>
               ))
             : current.ops.map((op) =>
-                row(op, accentOf(current.cat), NODE_SPECS[op].label, '', () => onPick([{ kind: op }]))
+                row(
+                  op,
+                  accentOf(current.cat),
+                  NODE_SPECS[op].label,
+                  '',
+                  () => onPick([{ kind: op }]),
+                  NODE_SPECS[op].subtitle
+                )
               )
           : byCat.map((g) =>
               row(g.cat, accentOf(g.cat), CATEGORIES[g.cat].label, g.ops.length, () => {
@@ -293,6 +301,8 @@ const addBtn: CSSProperties = {
   cursor: 'pointer'
 }
 const opLabel: CSSProperties = { fontWeight: 600 }
+// Optional gloss to the right of the label.
+const opSubtitle: CSSProperties = { fontSize: 11, fontWeight: 400, color: UI.textMuted, whiteSpace: 'nowrap' }
 const catName: CSSProperties = {
   marginLeft: 'auto',
   fontSize: 9,

@@ -8,8 +8,8 @@ import { useUiTheme } from './useUiTheme'
 
 type Mode = 'replicate' | 'centroid'
 type Legend = 'simple' | 'complex'
-type Cond = 'strain' | 'cmpd' | 'dose' | 'time'
-const CONDS: Cond[] = ['strain', 'cmpd', 'dose', 'time']
+type Cond = 'cell' | 'cmpd' | 'dose' | 'time'
+const CONDS: Cond[] = ['cell', 'cmpd', 'dose', 'time']
 
 /** `#rrggbb` → `rgba(r,g,b,a)` for translucent territory fills. */
 function rgba(hex: string, a: number): string {
@@ -22,12 +22,12 @@ function rgba(hex: string, a: number): string {
 
 /**
  * Complex-legend aesthetic plan: which condition drives colour, which drives light→dark
- * shade, and which is connected by low→high arrows. Qualitative conditions (strain, cmpd)
+ * shade, and which is connected by low→high arrows. Qualitative conditions (cell, cmpd)
  * take colour; quantitative ones (dose, time) take shade then arrow. Channel hierarchy is
- * colour → shade → arrow; condition hierarchy is strain → cmpd → dose → time.
+ * colour → shade → arrow; condition hierarchy is cell → cmpd → dose → time.
  */
 interface Plan {
-  grouped: boolean // two qualitatives → strain hue-family, cmpd within it
+  grouped: boolean // two qualitatives → cell hue-family, cmpd within it
   colorKey: Cond | null // single-qualitative colour, or (colorRamp) the quantitative ramp key
   colorRamp: boolean // colorKey is a quantitative used as a sequential ramp (no qualitative present)
   shadeKey: Cond | null
@@ -35,7 +35,7 @@ interface Plan {
 }
 
 function planAesthetics(varying: Set<Cond>): Plan {
-  const Q = (['strain', 'cmpd'] as Cond[]).filter((c) => varying.has(c))
+  const Q = (['cell', 'cmpd'] as Cond[]).filter((c) => varying.has(c))
   const N = (['dose', 'time'] as Cond[]).filter((c) => varying.has(c))
   let grouped = false
   let colorKey: Cond | null = null
@@ -187,7 +187,8 @@ export function ClusterView({
             textAlign: 'right'
           }}
         >
-          {d.items} items · {d.features.toLocaleString()} features · {d.missingPct.toFixed(1)}% missing
+          {d.items} items · {d.features.toLocaleString()} features · {d.missingPct.toFixed(1)}%
+          missing
           {d.transform && (
             <>
               {' '}
@@ -201,7 +202,15 @@ export function ClusterView({
             </>
           )}
           {d.scree && d.scree.length > 0 && (
-            <> · scree {d.scree.slice(0, 5).map((v) => `${(v * 100).toFixed(1)}`).join(' · ')}%</>
+            <>
+              {' '}
+              · scree{' '}
+              {d.scree
+                .slice(0, 5)
+                .map((v) => `${(v * 100).toFixed(1)}`)
+                .join(' · ')}
+              %
+            </>
           )}
         </div>
       )}
@@ -310,24 +319,24 @@ function buildComplex(
     return numeric ? arr.sort((a, b) => Number(a) - Number(b)) : arr.sort()
   }
 
-  // Grouped colour: each strain gets a hue family; cmpds spread across a window within it.
-  const strainList = sortedVals('strain', false)
-  const cmpdByStrain = new Map<string, string[]>()
+  // Grouped colour: each cell gets a hue family; cmpds spread across a window within it.
+  const cellList = sortedVals('cell', false)
+  const cmpdByCell = new Map<string, string[]>()
   if (plan.grouped) {
     const tmp = new Map<string, Set<string>>()
     for (const cond of condOrder) {
       const m = metaOf(cond)
-      const s = String(m.strain)
+      const s = String(m.cell)
       if (!tmp.has(s)) tmp.set(s, new Set())
       tmp.get(s)!.add(String(m.cmpd))
     }
-    for (const [s, set] of tmp) cmpdByStrain.set(s, [...set].sort())
+    for (const [s, set] of tmp) cmpdByCell.set(s, [...set].sort())
   }
   const FAMILY_SPAN = 60
-  const groupedHue = (strain: string, cmpd: string): number => {
-    const si = Math.max(0, strainList.indexOf(strain))
-    const center = (360 * si) / Math.max(1, strainList.length)
-    const cmpds = cmpdByStrain.get(strain) ?? [cmpd]
+  const groupedHue = (cell: string, cmpd: string): number => {
+    const si = Math.max(0, cellList.indexOf(cell))
+    const center = (360 * si) / Math.max(1, cellList.length)
+    const cmpds = cmpdByCell.get(cell) ?? [cmpd]
     const ci = Math.max(0, cmpds.indexOf(cmpd))
     const off = cmpds.length > 1 ? (ci / (cmpds.length - 1) - 0.5) * FAMILY_SPAN : 0
     return center + off
@@ -353,7 +362,7 @@ function buildComplex(
     v == null || shi <= slo ? 0.5 : (v - slo) / (shi - slo)
 
   const baseColor = (m: ClusterMeta): string => {
-    if (plan.grouped) return hslHex(groupedHue(String(m.strain), String(m.cmpd)), 0.62, 0.5)
+    if (plan.grouped) return hslHex(groupedHue(String(m.cell), String(m.cmpd)), 0.62, 0.5)
     if (plan.colorKey && !plan.colorRamp) {
       const i = qualIdx.get(String(m[plan.colorKey])) ?? 0
       return CATEGORICAL[i % CATEGORICAL.length]
@@ -372,14 +381,14 @@ function buildComplex(
   }
 
   const groupName = (m: ClusterMeta): string => {
-    if (plan.grouped) return `${m.strain} | ${m.cmpd}`
+    if (plan.grouped) return `${m.cell} | ${m.cmpd}`
     if (plan.colorKey) return String(m[plan.colorKey]) || '(none)'
     return '(all)'
   }
   const groupSort = (m: ClusterMeta): number => {
     if (plan.grouped) {
-      const si = strainList.indexOf(String(m.strain))
-      const cmpds = cmpdByStrain.get(String(m.strain)) ?? []
+      const si = cellList.indexOf(String(m.cell))
+      const cmpds = cmpdByCell.get(String(m.cell)) ?? []
       return si * 1000 + cmpds.indexOf(String(m.cmpd))
     }
     if (plan.colorKey && !plan.colorRamp) return qualIdx.get(String(m[plan.colorKey])) ?? 0
@@ -484,7 +493,7 @@ function buildComplex(
 
   // Legend title summarises the encoding so the reader can decode colour/shade/arrow.
   const enc: string[] = []
-  enc.push(plan.grouped ? 'colour: strain × cmpd' : `colour: ${plan.colorKey}`)
+  enc.push(plan.grouped ? 'colour: cell × cmpd' : `colour: ${plan.colorKey}`)
   if (shadeKey) enc.push(`shade: ${shadeKey} (light→dark)`)
   if (plan.arrowKey) enc.push(`arrow: ${plan.arrowKey} (low→high)`)
   const legendCfg = { title: { text: enc.join('  ·  '), font: { size: 10 } } }

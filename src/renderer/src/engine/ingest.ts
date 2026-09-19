@@ -9,6 +9,7 @@ import Papa from 'papaparse'
 
 import type { StandardizeInput, StandardizeResult, StandardRow } from './types'
 import { VALID_CONDITIONS } from './types'
+import { imputeMissing } from './impute'
 
 type Row = Record<string, string>
 
@@ -43,12 +44,15 @@ function num(v: string | undefined | null): number | null {
   return Number.isFinite(n) ? n : null
 }
 
-/** Read the samplesheet: lowercase headers, synthesize `sample` from well/position/plate. */
+/** Read the samplesheet: lowercase headers, synthesize `sample` from well/position/plate.
+ *  `strain` (the pre-rename name of the `cell` condition) is accepted as an alias so older
+ *  samplesheets keep working; `cell` wins when both are present. */
 function readSamplesheet(text: string): Row[] {
   const { rows } = parseCsv(text)
   return rows.map((r) => {
     const lower: Row = {}
     for (const [k, v] of Object.entries(r)) lower[k.trim().toLowerCase()] = v
+    if (lower.cell == null && lower.strain != null) lower.cell = lower.strain
     if (lower.sample == null || lower.sample === '') {
       if (lower.position != null && lower.position !== '') lower.sample = String(lower.position)
       else if (lower.plate != null && lower.well != null)
@@ -66,7 +70,7 @@ function detectIdColumn(fields: string[], dbFields: string[]): string | null {
     'value',
     'sample',
     'rep',
-    'strain',
+    'cell',
     'cmpd',
     'dose',
     'time',
@@ -190,7 +194,7 @@ export function standardize(input: StandardizeInput): StandardizeResult {
     id: string
     sample: string
     value: number | null
-    strain: string
+    cell: string
     cmpd: string
     dose: number | null
     time: number | null
@@ -206,7 +210,7 @@ export function standardize(input: StandardizeInput): StandardizeResult {
       id: String(r[idColData] ?? '').trim(),
       sample,
       value: num(r.value),
-      strain: meta.strain ?? '',
+      cell: meta.cell ?? '',
       cmpd: meta.cmpd ?? '',
       dose: num(meta.dose),
       time: num(meta.time),
@@ -227,7 +231,7 @@ export function standardize(input: StandardizeInput): StandardizeResult {
     for (const m of merged) {
       if (seen.has(m.sample)) continue
       seen.add(m.sample)
-      const condKey = [m.strain, m.cmpd, m.dose ?? '', m.time ?? ''].join('')
+      const condKey = [m.cell, m.cmpd, m.dose ?? '', m.time ?? ''].join('')
       const n = (perCond.get(condKey) ?? 0) + 1
       perCond.set(condKey, n)
       repOf.set(m.sample, m.rep != null ? m.rep : n)
@@ -253,11 +257,15 @@ export function standardize(input: StandardizeInput): StandardizeResult {
   // Used by the optional low-coverage clean-up below.
   const presence = new Map<string, Set<string>>()
   const allSamples = new Set<string>()
-  // sample → strain, so per-strain coverage can be computed from `presence` in the clean-up below.
-  const sampleStrain = new Map<string, string>()
+  // sample → its clean-up group (the tuple of the `minSamplePctBy` conditions), so within-group
+  // coverage can be computed from `presence` in the clean-up below. '' when pooling everything.
+  const groupBy = (input.minSamplePctBy ?? []).filter((c) => VALID_CONDITIONS.includes(c))
+  const groupOf = (m: { cell: string; cmpd: string; dose: number | null; time: number | null }): string =>
+    groupBy.map((c) => String(m[c] ?? '')).join('¦')
+  const sampleGroup = new Map<string, string>()
   for (const m of merged) {
     allSamples.add(m.sample)
-    if (!sampleStrain.has(m.sample)) sampleStrain.set(m.sample, m.strain)
+    if (!sampleGroup.has(m.sample)) sampleGroup.set(m.sample, groupOf(m))
     // Expand ';'-concatenated IDs, then map each through the DB (unmapped kept as-is).
     const ids = m.id.includes(';')
       ? m.id
@@ -274,7 +282,7 @@ export function standardize(input: StandardizeInput): StandardizeResult {
       }
       rows.push({
         uniqID,
-        strain: m.strain,
+        cell: m.cell,
         cmpd: m.cmpd,
         dose: m.dose,
         time: m.time,
@@ -286,44 +294,44 @@ export function standardize(input: StandardizeInput): StandardizeResult {
   }
 
   // ── clean-up: drop low-coverage genes (identified in < minSamplePct of samples) ──
-  // Across-all mode measures coverage over every sample pooled and drops the whole gene when it's
-  // below threshold. Per-strain mode measures coverage WITHIN each strain and DELETES the gene's
-  // values in every strain where it falls short (nulling those cells) — so a gene is kept only in
-  // the strains where it clears the bar; a gene that fails in all strains is removed entirely.
+  // Pooled mode (no grouping conditions) measures coverage over every sample and drops the gene
+  // when it's below threshold. Grouped mode measures coverage WITHIN each group — samples sharing
+  // the chosen conditions' values (e.g. per cell, or per cell × dose) — and drops the gene only
+  // when it falls short in EVERY group. A gene that clears the bar in any one group is kept whole,
+  // values in the other groups included: absent there may just mean below the detection limit
+  // (a real biological difference), not a bad identification.
   const sampleCount = allSamples.size
   const minSamplePct = Math.min(100, Math.max(0, input.minSamplePct ?? 0))
-  const perStrain = !!input.minSamplePctPerStrain
+  const grouped = groupBy.length > 0
   let droppedGenes = 0
   if (minSamplePct > 0 && sampleCount > 0) {
     const dropped = new Set<string>()
-    if (perStrain) {
-      // Distinct samples per strain (the per-strain denominators), and per-(gene, strain) hit counts.
-      const strainTotal = new Map<string, number>()
-      for (const strain of sampleStrain.values())
-        strainTotal.set(strain, (strainTotal.get(strain) ?? 0) + 1)
+    if (grouped) {
+      // Distinct samples per group (the denominators), and per-(gene, group) hit counts.
+      const groupTotal = new Map<string, number>()
+      for (const g of sampleGroup.values()) groupTotal.set(g, (groupTotal.get(g) ?? 0) + 1)
       const hitsByGene = new Map<string, Map<string, number>>()
       for (const [uniqID, samples] of presence) {
-        const perStrainHits = new Map<string, number>()
+        const perGroupHits = new Map<string, number>()
         for (const s of samples) {
-          const st = sampleStrain.get(s) ?? ''
-          perStrainHits.set(st, (perStrainHits.get(st) ?? 0) + 1)
+          const g = sampleGroup.get(s) ?? ''
+          perGroupHits.set(g, (perGroupHits.get(g) ?? 0) + 1)
         }
-        hitsByGene.set(uniqID, perStrainHits)
+        hitsByGene.set(uniqID, perGroupHits)
       }
-      // A (gene, strain) fails when its coverage within that strain is below the threshold.
-      const fails = (uniqID: string, strain: string): boolean => {
-        const total = strainTotal.get(strain) ?? 0
-        const hits = hitsByGene.get(uniqID)?.get(strain) ?? 0
-        return total > 0 && (hits / total) * 100 < minSamplePct
+      // A (gene, group) clears when its coverage within that group reaches the threshold.
+      const clears = (uniqID: string, g: string): boolean => {
+        const total = groupTotal.get(g) ?? 0
+        const hits = hitsByGene.get(uniqID)?.get(g) ?? 0
+        return total > 0 && (hits / total) * 100 >= minSamplePct
       }
-      // Null out every value in a failing (gene, strain).
-      for (const r of rows) {
-        if (r.value != null && fails(r.uniqID, r.strain)) r.value = null
+      // Kept iff it clears in at least one group; a gene with no value anywhere isn't in
+      // `presence` and so is dropped.
+      const groups = [...groupTotal.keys()]
+      const geneIds = new Set(rows.map((r) => r.uniqID))
+      for (const uniqID of geneIds) {
+        if (!groups.some((g) => clears(uniqID, g))) dropped.add(uniqID)
       }
-      // Any gene left with no surviving value in any strain is removed outright.
-      const survives = new Set<string>()
-      for (const r of rows) if (r.value != null) survives.add(r.uniqID)
-      for (const r of rows) if (!survives.has(r.uniqID)) dropped.add(r.uniqID)
     } else {
       for (const [uniqID, samples] of presence) {
         if ((samples.size / sampleCount) * 100 < minSamplePct) dropped.add(uniqID)
@@ -337,10 +345,18 @@ export function standardize(input: StandardizeInput): StandardizeResult {
     }
   }
 
+  // ── imputation: fill what's still missing after clean-up ─────────────────────
+  let imputation: StandardizeResult['imputation']
+  if (input.impute) {
+    const res = imputeMissing(rows, input.impute)
+    rows = res.rows
+    imputation = res.summary
+  }
+
   // ── which conditions are active (present with any non-empty value) ──────────
   const requested = input.activeConditions ?? VALID_CONDITIONS
   const activeConditions = requested.filter((c) => {
-    if (c === 'strain' || c === 'cmpd') return rows.some((r) => (r[c] as string) !== '')
+    if (c === 'cell' || c === 'cmpd') return rows.some((r) => (r[c] as string) !== '')
     return rows.some((r) => r[c] != null)
   })
 
@@ -353,6 +369,7 @@ export function standardize(input: StandardizeInput): StandardizeResult {
     keggCategories: input.keggCategories ?? {},
     activeConditions,
     compounds,
-    cleanup: { droppedGenes, sampleCount, minSamplePct, ...(perStrain ? { perStrain: true } : {}) }
+    cleanup: { droppedGenes, sampleCount, minSamplePct, ...(grouped ? { by: groupBy } : {}) },
+    ...(imputation ? { imputation } : {})
   }
 }

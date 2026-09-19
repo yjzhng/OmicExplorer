@@ -36,18 +36,18 @@ const present = (rows: readonly unknown[], c: string): boolean =>
     return v !== '' && v != null
   })
 
-/** Standardized table → columns + rows (strain shown only when the data carries it). */
+/** Standardized table → columns + rows (cell shown only when the data carries it). */
 function standardizeTable(result: Extract<NodeResult, { kind: 'standardize' }>): {
   columns: string[]
   rows: Cell[][]
 } {
   const dm = result.std.displayMap
   const src = result.std.rows
-  const showStrain = present(src, 'strain')
+  const showCell = present(src, 'cell')
   const cols = [
     'uniqID',
     'gene',
-    ...(showStrain ? ['strain'] : []),
+    ...(showCell ? ['cell'] : []),
     'cmpd',
     'dose',
     'time',
@@ -76,7 +76,7 @@ function compareTable(
     'uniqID',
     'gene',
     ...(multiCmp ? ['comparison'] : []),
-    ...(present(src, 'strain') ? ['strain'] : []),
+    ...(present(src, 'cell') ? ['cell'] : []),
     ...(present(src, 'cmpd') ? ['cmpd'] : []),
     ...(present(src, 'dose') ? ['dose'] : []),
     ...(present(src, 'time') ? ['time'] : []),
@@ -109,7 +109,7 @@ function contrastTable(result: Extract<NodeResult, { kind: 'contrast' }>): {
   const cols = [
     'uniqID',
     'gene',
-    ...(present(src, 'strain') ? ['strain'] : []),
+    ...(present(src, 'cell') ? ['cell'] : []),
     ...(present(src, 'dose') ? ['dose'] : []),
     ...(present(src, 'time') ? ['time'] : []),
     'FC1',
@@ -133,7 +133,7 @@ function contrastTable(result: Extract<NodeResult, { kind: 'contrast' }>): {
 }
 
 const KIND_LABEL: Record<string, string> = {
-  standardize: 'Standardized',
+  standardize: 'Clean data',
   compare: 'Comparison',
   contrast: 'Contrast'
 }
@@ -142,7 +142,7 @@ const KIND_LABEL: Record<string, string> = {
 function analysisLabel(node: StepNode, result: NodeResult): string {
   if (result.kind === 'compare') return result.cmp.comparisons.join(', ')
   if (result.kind === 'contrast') return result.ctr.comparisons.join(', ')
-  return `Standardize ${node.id}`
+  return `Clean data ${node.id}`
 }
 
 /**

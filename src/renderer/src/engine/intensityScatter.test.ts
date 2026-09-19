@@ -2,7 +2,7 @@
  * Intensity scatter from a direct comparison's group means — the omicViz shape:
  *   - type: direct
  *     filter: { cmpd: H2O }
- *     strain: [[clpP, WT]]
+ *     cell: [[clpP, WT]]
  * The direct output already carries mean1/mean2, so the plot is just log10 of each side,
  * coloured by the comparison's own significance.
  */
@@ -16,8 +16,8 @@ const row = (uniqID: string, mean1: number, mean2: number, signf = false): Compa
   cmpd: 'H2O',
   dose: 0,
   time: null,
-  strain: '',
-  cmp_cond: 'strain',
+  cell: '',
+  cmp_cond: 'cell',
   comparison: 'clpP | WT',
   mean1, // clpP (numerator)
   mean2, // WT (denominator)
@@ -46,8 +46,8 @@ describe('buildIntensityScatter (basal clpP vs WT from a direct comparison)', ()
   })
 
   it('labels the axes by side and carries the comparison significance', () => {
-    expect(sc.xLabel).toBe('log₁₀ intensity · WT')
-    expect(sc.yLabel).toBe('log₁₀ intensity · clpP')
+    expect(sc.xLabel).toBe('log abundance · WT')
+    expect(sc.yLabel).toBe('log abundance · clpP')
     expect(sc.points.find((p) => p.uniqID === 'g2')!.signf).toBe(true)
     expect(sc.guide).toBeUndefined() // → the view draws the line of identity
   })

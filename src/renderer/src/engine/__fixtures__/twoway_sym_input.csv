@@ -1,4 +1,4 @@
-strain,time,uniqID,rep,value
+cell,time,uniqID,rep,value
 M,1,g00,1,1329.0496353945439
 M,1,g00,2,1052.7914580675733
 M,1,g00,3,1435.7738374573607

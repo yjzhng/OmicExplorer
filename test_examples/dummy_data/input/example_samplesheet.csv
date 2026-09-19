@@ -1,4 +1,4 @@
-well,strain,cmpd,dose,time,rep
+well,cell,cmpd,dose,time,rep
 P1_A1,WT,drugA,1.25,0,1
 P1_A2,WT,drugA,1.25,0,2
 P1_A3,WT,drugA,1.25,0,3

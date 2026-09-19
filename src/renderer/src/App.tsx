@@ -5,7 +5,8 @@ import {
   useRef,
   useState,
   type CSSProperties,
-  type MouseEvent as ReactMouseEvent
+  type MouseEvent as ReactMouseEvent,
+  type ReactNode
 } from 'react'
 import {
   applyNodeChanges,
@@ -34,8 +35,11 @@ import { nodeTypes } from './graph/GraphNode'
 import { useGraph } from './graph/store'
 import { accentOf, ALL_OPS, canConnect, categoryOf, NODE_SPECS } from './graph/registry'
 import { isStep, type GraphNode, type NodeData, type StepNode } from './graph/types'
+import { IconGear, IconTrash } from './ui/icons'
+import { StatusIcon, StatusNote } from './ui/StatusNote'
 import { cssVars, PALETTES, UI } from './ui/theme'
 import { useAppView, type AppView } from './ui/useAppView'
+import { DPI_CHOICES, useAppSettings } from './ui/useAppSettings'
 import { useUiTheme } from './ui/useUiTheme'
 
 /** Bottom-center "New step" button; toggles placement mode (becomes "Cancel" while placing). */
@@ -429,9 +433,10 @@ function Canvas() {
         onSelectionChange={onSelectionChange}
         onMoveStart={onMoveStart}
         onMoveEnd={onMoveEnd}
-        // Scroll (trackpad two-finger / wheel, both axes) pans the canvas; a drag on
-        // empty canvas always marquee-selects, and a drag on a node moves it. This makes
-        // a pan/select mode toggle unnecessary.
+        // Scroll (trackpad two-finger / wheel, both axes) pans the canvas like a scrolling page —
+        // so it follows the OS scroll-direction setting (natural vs classic) the same way any web
+        // page does; a drag on empty canvas always marquee-selects, and a drag on a node moves it.
+        // This makes a pan/select mode toggle unnecessary.
         panOnScroll
         panOnDrag={false}
         selectionOnDrag
@@ -536,7 +541,14 @@ function SettingsPopover({
 }) {
   const preference = useUiTheme((s) => s.preference)
   const setPreference = useUiTheme((s) => s.setPreference)
-  const [active, setActive] = useState<'appearance' | 'about'>('appearance')
+  const copyFormat = useAppSettings((s) => s.copyFormat)
+  const copyDpi = useAppSettings((s) => s.copyDpi)
+  const downloadFormat = useAppSettings((s) => s.downloadFormat)
+  const downloadDpi = useAppSettings((s) => s.downloadDpi)
+  const tableFormat = useAppSettings((s) => s.tableFormat)
+  const updateSettings = useAppSettings((s) => s.update)
+  const DPI_OPTS = DPI_CHOICES.map((d) => ({ v: String(d), label: `${d} dpi` }))
+  const [active, setActive] = useState<'appearance' | 'plots' | 'about'>('appearance')
   const showDot = update.updateAvailable && !silenced
   const APPEARANCE = [
     { v: 'auto', label: '◐ Auto' },
@@ -545,8 +557,32 @@ function SettingsPopover({
   ] as const
   const SECTIONS = [
     { id: 'appearance', title: 'Appearance', dot: false },
+    { id: 'plots', title: 'Plots', dot: false },
     { id: 'about', title: 'About', dot: showDot }
   ] as const
+  /** Segmented control in the settings modal's own style. */
+  const seg = <V extends string>(
+    value: V,
+    options: readonly { v: V; label: string }[],
+    onChange: (v: V) => void
+  ): ReactNode => (
+    <div style={{ ...styles.segmented, display: 'inline-flex' }}>
+      {options.map((o) => (
+        <button
+          key={o.v}
+          onClick={() => onChange(o.v)}
+          style={{
+            ...styles.segment,
+            padding: '5px 12px',
+            background: value === o.v ? UI.accent : 'transparent',
+            color: value === o.v ? UI.accentText : UI.text
+          }}
+        >
+          {o.label}
+        </button>
+      ))}
+    </div>
+  )
   return (
     <>
       <div style={styles.dialogScrim} onClick={onClose} />
@@ -597,6 +633,60 @@ function SettingsPopover({
                 {preference === 'auto' && (
                   <div style={styles.settingsHint}>Following your system colour scheme.</div>
                 )}
+              </>
+            ) : active === 'plots' ? (
+              <>
+                <h2 style={styles.settingsContentTitle}>Plots</h2>
+                {/* A tile's Copy and Download buttons act straight away (no window of their own):
+                    Copy in this format/DPI; Download opens the OS save window for this format. */}
+                <div style={styles.settingsSubTitle}>Copy to clipboard</div>
+                <div style={styles.settingsFieldLabel}>Format</div>
+                {seg(
+                  copyFormat,
+                  [
+                    { v: 'png', label: 'PNG' },
+                    { v: 'svg', label: 'SVG' }
+                  ] as const,
+                  (v) => updateSettings({ copyFormat: v })
+                )}
+                <div style={styles.settingsHint}>
+                  {copyFormat === 'svg'
+                    ? 'SVG is copied as markup text — paste into a vector editor.'
+                    : 'PNG is copied as an image — paste into slides, documents or chat.'}
+                </div>
+                <div style={{ ...styles.settingsFieldLabel, marginTop: 16 }}>Resolution</div>
+                {seg(String(copyDpi), DPI_OPTS, (v) => updateSettings({ copyDpi: Number(v) }))}
+                <div style={styles.settingsHint}>PNG only — SVG is vector.</div>
+
+                <div style={{ ...styles.settingsSubTitle, marginTop: 24 }}>Download</div>
+                <div style={styles.settingsFieldLabel}>Plot format</div>
+                {seg(
+                  downloadFormat,
+                  [
+                    { v: 'svg', label: 'SVG' },
+                    { v: 'png', label: 'PNG' },
+                    { v: 'pdf', label: 'PDF' }
+                  ] as const,
+                  (v) => updateSettings({ downloadFormat: v })
+                )}
+                <div style={{ ...styles.settingsFieldLabel, marginTop: 16 }}>Resolution</div>
+                {seg(String(downloadDpi), DPI_OPTS, (v) =>
+                  updateSettings({ downloadDpi: Number(v) })
+                )}
+                <div style={styles.settingsHint}>PNG and PDF — SVG is vector.</div>
+                <div style={{ ...styles.settingsFieldLabel, marginTop: 16 }}>Table format</div>
+                {seg(
+                  tableFormat,
+                  [
+                    { v: 'csv', label: 'CSV' },
+                    { v: 'xlsx', label: 'XLSX' }
+                  ] as const,
+                  (v) => updateSettings({ tableFormat: v })
+                )}
+                <div style={styles.settingsHint}>
+                  The download button opens the system save window in the folder you last saved to
+                  in this project (else the project&apos;s output folder).
+                </div>
               </>
             ) : (
               <>
@@ -682,7 +772,9 @@ function FolderChip() {
         title={dataDirMissing ? `Folder not found: ${active?.path}` : active?.path || 'folder'}
         onClick={() => setOpen((o) => !o)}
       >
-        <span style={styles.chipIcon}>{dataDirMissing ? '⚠' : <IconFolder />}</span>
+        <span style={{ ...styles.chipIcon, ...(dataDirMissing ? { color: UI.warn } : null) }}>
+          {dataDirMissing ? <StatusIcon kind="warn" /> : <IconFolder />}
+        </span>
         {label} ▾
       </button>
       {open && (
@@ -714,23 +806,39 @@ function FolderChip() {
                     }}
                   >
                     {noPath ? (
-                      <span style={styles.folderName}>Select folder where project data is saved to</span>
+                      <span style={styles.folderName}>
+                        Select folder where project data is saved to
+                      </span>
                     ) : (
                       <>
-                        <span style={styles.folderName}>
-                          {missing ? `⚠ ${f.name} — not found` : f.name}
-                        </span>
-                        <span style={{ ...styles.folderPath, ...(missing ? styles.pathWarn : null) }}>
+                        {missing ? (
+                          <StatusNote kind="warn" style={{ marginTop: 0, fontSize: 12 }}>
+                            {f.name} — not found
+                          </StatusNote>
+                        ) : (
+                          <span style={styles.folderName}>{f.name}</span>
+                        )}
+                        <span
+                          style={{ ...styles.folderPath, ...(missing ? styles.pathWarn : null) }}
+                        >
                           {f.path || '—'}
                         </span>
-                        {missing && <span style={styles.repathHint}>Click to re-select folder…</span>}
+                        {missing && (
+                          <StatusNote kind="warn" style={{ marginTop: 2, fontWeight: 600 }}>
+                            Click to re-select folder…
+                          </StatusNote>
+                        )}
                       </>
                     )}
                   </button>
                   {!noPath && (
                     <button
                       style={{ ...styles.rowIconBtn, color: '#e15759' }}
-                      title={folders.length > 1 ? 'Delete folder' : 'Delete folder (resets to an empty folder)'}
+                      title={
+                        folders.length > 1
+                          ? 'Delete folder'
+                          : 'Delete folder (resets to an empty folder)'
+                      }
                       aria-label="Delete folder"
                       onClick={() => deleteFolder(f.id)}
                     >
@@ -985,7 +1093,7 @@ function ProjectMenu() {
             <button
               style={styles.menuAction}
               onClick={() => {
-                newProject()
+                void newProject()
                 setOpen(false)
               }}
             >
@@ -1126,24 +1234,6 @@ function IconEdit() {
     </svg>
   )
 }
-/** Minimalist delete (trash) icon for menu rows. */
-function IconTrash() {
-  return (
-    <svg
-      width="13"
-      height="13"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.8"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    >
-      <path d="M4 7h16M9 7V5h6v2M6 7l1 13h10l1-13" />
-    </svg>
-  )
-}
-
 /** Control chip: save / save-as / undo / redo, one bordered group split by dividers. */
 function ControlChip() {
   const dirty = useGraph((s) => s.dirty)
@@ -1224,14 +1314,20 @@ function Home() {
         <h1 style={styles.homeTitle}>{__APP_NAME__}</h1>
         <p style={styles.homeSub}>Create or open a project to begin.</p>
         <div style={styles.homeActions}>
-          <button style={styles.homePrimary} onClick={() => newProject()}>
+          <button style={styles.homePrimary} onClick={() => void newProject()}>
             ＋ New project
           </button>
           <button style={styles.homeSecondary} onClick={() => void openProject()}>
             Open project…
           </button>
         </div>
-        {openError && <div style={styles.openError}>{openError}</div>}
+        {openError && (
+          <div style={styles.openError}>
+            <StatusNote kind="error" style={{ marginTop: 0, fontSize: 12 }}>
+              {openError}
+            </StatusNote>
+          </div>
+        )}
         {last && (
           <>
             <div style={styles.recentHead}>Last project</div>
@@ -1242,16 +1338,28 @@ function Home() {
                   title={
                     last.mode === 'resume'
                       ? 'Resume where you left off (keeps unsaved changes)'
-                      : last.path ?? ''
+                      : (last.path ?? '')
                   }
                   onClick={() =>
-                    last.mode === 'resume' ? resumeProject() : void openProject(last.path ?? undefined)
+                    last.mode === 'resume'
+                      ? resumeProject()
+                      : void openProject(last.path ?? undefined)
                   }
                 >
                   <span
-                    style={{ ...styles.recentName, display: 'inline-flex', alignItems: 'center', gap: 6 }}
+                    style={{
+                      ...styles.recentName,
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: 6
+                    }}
                   >
-                    <span style={{ ...styles.statusDot, background: last.dirty ? '#e2b93b' : '#3fb950' }} />
+                    <span
+                      style={{
+                        ...styles.statusDot,
+                        background: last.dirty ? '#e2b93b' : '#3fb950'
+                      }}
+                    />
                     {last.name}
                   </span>
                   <span style={styles.recentPath}>
@@ -1401,12 +1509,13 @@ export default function App() {
           <IconGuide />
         </button>
         <button
-          style={{ ...styles.navBtn, fontSize: 19, position: 'relative' }}
+          style={{ ...styles.navBtn, position: 'relative' }}
           onClick={() => setSettingsOpen((o) => !o)}
           title={showUpdateDot ? `Settings — v${update.latest} available` : 'Settings'}
           aria-label={showUpdateDot ? 'Settings (update available)' : 'Settings'}
         >
-          ⚙{showUpdateDot && <span style={styles.navDot} />}
+          <IconGear size={15} strokeWidth={1.7} />
+          {showUpdateDot && <span style={styles.navDot} />}
         </button>
         {settingsOpen && (
           <SettingsPopover
@@ -1516,7 +1625,7 @@ const styles: Record<string, CSSProperties> = {
     margin: '5px 0',
     background: 'rgba(128,128,128,0.22)'
   },
-  chipSegWarn: { color: '#e15759' },
+  chipSegWarn: { color: UI.warn },
   chipSeg: {
     display: 'inline-flex',
     alignItems: 'center',
@@ -1582,8 +1691,7 @@ const styles: Record<string, CSSProperties> = {
     alignItems: 'center',
     flex: '0 0 auto'
   },
-  pathWarn: { color: '#e15759' },
-  repathHint: { fontSize: 11, color: '#e15759', fontWeight: 600, marginTop: 2 },
+  pathWarn: { color: UI.warn },
   renameInput: {
     flex: 1,
     background: UI.panelAlt,
@@ -1652,7 +1760,7 @@ const styles: Record<string, CSSProperties> = {
     marginTop: 12,
     padding: '8px 12px',
     borderRadius: 6,
-    border: '1px solid #e15759',
+    border: `1px solid ${UI.err}`,
     background: 'rgba(225,87,89,0.12)',
     color: UI.text,
     fontSize: 12
@@ -1951,6 +2059,14 @@ const styles: Record<string, CSSProperties> = {
     fontWeight: 700
   },
   settingsHint: { marginTop: 8, fontSize: 11, color: UI.textMuted },
+  settingsSubTitle: { fontSize: 12, fontWeight: 700, color: UI.text, marginBottom: 10 },
+  settingsFieldLabel: {
+    fontSize: 11,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+    color: UI.textMuted,
+    marginBottom: 6
+  },
   // Pill-shaped Workflow/Results switch, centred in the nav bar.
   segmented: {
     display: 'flex',
@@ -2083,5 +2199,5 @@ const styles: Record<string, CSSProperties> = {
     fontSize: 12,
     fontWeight: 600,
     cursor: 'pointer'
-  },
+  }
 }

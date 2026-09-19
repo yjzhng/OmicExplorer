@@ -8,19 +8,19 @@ format as a real project. All values are synthetic (generated, not measured).
 | File | Columns | Role |
 |------|---------|------|
 | `example_long.csv` | `UniProtID,well,value` | tidy long-format intensities (stem ends `_long`) |
-| `example_samplesheet.csv` | `well,strain,cmpd,dose,time,rep` | sample metadata, keyed by `well` |
+| `example_samplesheet.csv` | `well,cell,cmpd,dose,time,rep` | sample metadata, keyed by `well` |
 | `example_DB.csv` | `uniqID,GeneID,locus_tag,UniProtID,type,gene,product` | ID map (`UniProtID` → `uniqID`) + gene labels |
 
 ## Design
 
 Four conditions so **every plot type** has real data:
-strain {`WT`, `mutant`} × cmpd {`drugA`, `drugB`, `DMSO` vehicle} × dose {1.25, 2.5, 5,
+cell {`WT`, `mutant`} × cmpd {`drugA`, `drugB`, `DMSO` vehicle} × dose {1.25, 2.5, 5,
 10, 20, 40, 80} (vehicle at 0) × time {0, 2, 4, 8, 16, 24 h}, 3 replicates =
 **540 samples** (laid out across six 96-well plates, `P1_A1`…`P6_E12`). 400 proteins,
 of which:
 
 - ~110 respond to `drugA` and/or `drugB`, dose- **and** time-dependently (with a `t=0`
-  untreated baseline of no effect), some with a strain-dependent interaction — so
+  untreated baseline of no effect), some with a cell-dependent interaction — so
   Dose/time-response, Bubble, TDR, two-way ANOVA, Contrast (WT vs mutant) and drug-vs-drug
   Compare all show real signal. Each drug carries its own per-gene effect, so `drugA` and
   `drugB` differ.
@@ -39,7 +39,7 @@ of which:
 | Contrast (`WT` vs `mutant`) | Scatter (FC1 vs FC2), Dumbbell |
 
 Dose/time-response and Bubble can switch their axis between **dose** and **time**;
-faceting tabs partition by the other conditions (strain / time / dose).
+faceting tabs partition by the other conditions (cell / time / dose).
 
 ## Using it
 
@@ -48,7 +48,7 @@ Standardize → Compare/Contrast → one of **every** plot type (see the table b
 hit **Run**. (The project stores an absolute path to this folder; if you moved the repo,
 the folder chip shows *not found* — click it to re-select.)
 
-Or from scratch: New project → point the folder at `example_project/` → add a **Load**
+Or from scratch: New project → point the folder at `test_examples/dummy_data/` → add a **Load**
 step and select the three files → **Standardize** → build plot steps downstream.
 
-Regenerate with `node example_project/generate.mjs` (deterministic; same seed → same files).
+Regenerate with `node test_examples/dummy_data/generate.mjs` (deterministic; same seed → same files).

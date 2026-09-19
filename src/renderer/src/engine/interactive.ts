@@ -31,7 +31,7 @@ export interface InteractiveSampleCond {
   sample: string
   /** false = the user excluded this column (e.g. a QC column); dropped on convert. */
   include?: boolean
-  strain: string
+  cell: string
   cmpd: string
   dose: string
   time: string
@@ -479,7 +479,7 @@ export function buildStandardInputs(
     const c = conditions[sc]
     return {
       sample: sc,
-      strain: c?.strain ?? '',
+      cell: c?.cell ?? '',
       cmpd: c?.cmpd ?? '',
       dose: c?.dose ?? '',
       time: c?.time ?? '',
@@ -487,7 +487,7 @@ export function buildStandardInputs(
     }
   })
   const samplesheetText = Papa.unparse(ssRows, {
-    columns: ['sample', 'strain', 'cmpd', 'dose', 'time', 'rep']
+    columns: ['sample', 'cell', 'cmpd', 'dose', 'time', 'rep']
   })
 
   return { dataText, dataFilename: 'interactive_wide.csv', samplesheetText, dbText }

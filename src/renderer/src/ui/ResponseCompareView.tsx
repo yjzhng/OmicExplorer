@@ -26,7 +26,7 @@ export function ResponseCompareView({
   axis,
   gene,
   title,
-  yLabel = 'value (log₂)'
+  yLabel = 'log₂FC'
 }: {
   rows: ContrastResultRow[]
   displayMap: Record<string, string>
@@ -34,7 +34,8 @@ export function ResponseCompareView({
   /** the uniqID to plot (the pager picks it) */
   gene: string
   title?: string
-  /** y-axis title reflecting what FC1/FC2 represent (log2 abundance vs log2 fold-change) */
+  /** y-axis title reflecting what FC1/FC2 represent (log10 abundance vs log2 fold-change); the
+   *  tooltip uses it too */
   yLabel?: string
 }): ReactNode {
   const mode = useUiTheme((s) => s.mode)
@@ -57,7 +58,8 @@ export function ResponseCompareView({
       if (r.FC2err != null && Number.isFinite(r.FC2err)) g.be.push(r.FC2err)
     }
     const xs = [...byX.keys()].sort((p, q) => p - q)
-    const mean = (v: number[]): number | null => (v.length ? v.reduce((s, x) => s + x, 0) / v.length : null)
+    const mean = (v: number[]): number | null =>
+      v.length ? v.reduce((s, x) => s + x, 0) / v.length : null
     return {
       xs,
       yA: xs.map((x) => mean(byX.get(x)!.a)),
@@ -102,37 +104,54 @@ export function ResponseCompareView({
       connectgaps: true,
       line: { color, width: 2 },
       marker: { color, size: 7 },
-      hovertemplate: `${name}<br>${axis}=%{x}<br>log₂=%{y:.3f}<extra></extra>`
+      hovertemplate: `${name}<br>${axis}=%{x}<br>${yLabel}=%{y:.3f}<extra></extra>`
     })
-    // Shaded ±error band as a lower/upper pair: the upper trace fills down to the immediately
+    // Shaded ±error band as lower/upper trace pairs: the upper trace fills down to the immediately
     // preceding (lower) trace via `tonexty` — the canonical Plotly band, which renders reliably on
     // a categorical axis (a single self-closing polygon does not). Drawn behind the line.
+    // One pair PER CONTIGUOUS RUN of points that have both a value and an error: Plotly closes a
+    // `tonexty` fill with the previous trace's path joined ACROSS its gaps, so a band with a null
+    // in it (a single-replicate dose with no SE, or a dose present on one side only) came out as
+    // a polygon cutting diagonally across the gap, no longer following the line.
     const band = (
       y: (number | null)[],
       e: (number | null)[],
       color: string
     ): Record<string, unknown>[] => {
-      const lo: (number | null)[] = []
-      const hi: (number | null)[] = []
-      let any = false
+      const common = {
+        type: 'scatter',
+        mode: 'lines',
+        __oeNoLabel: true,
+        hoverinfo: 'skip',
+        showlegend: false,
+        line: { width: 0 }
+      }
+      // Split into runs first (a null starts a new run), then shade each run of ≥2 points — a
+      // lone point has no area.
+      const runs: { x: string[]; lo: number[]; hi: number[] }[] = []
+      let open = false
       for (let i = 0; i < cats.length; i++) {
         const v = y[i]
         const err = e[i]
         if (v == null || err == null || !Number.isFinite(v) || !Number.isFinite(err)) {
-          lo.push(null)
-          hi.push(null)
-        } else {
-          lo.push(v - err)
-          hi.push(v + err)
-          any = true
+          open = false
+          continue
         }
+        if (!open) {
+          runs.push({ x: [], lo: [], hi: [] })
+          open = true
+        }
+        const run = runs[runs.length - 1]
+        run.x.push(cats[i])
+        run.lo.push(v - err)
+        run.hi.push(v + err)
       }
-      if (!any) return []
-      const common = { type: 'scatter', mode: 'lines', __oeNoLabel: true, x: cats, hoverinfo: 'skip', showlegend: false, line: { width: 0 }, connectgaps: false }
-      return [
-        { ...common, y: lo },
-        { ...common, y: hi, fill: 'tonexty', fillcolor: rgba(color, 0.2) }
-      ]
+      return runs
+        .filter((run) => run.x.length >= 2)
+        .flatMap((run) => [
+          { ...common, x: run.x, y: run.lo },
+          { ...common, x: run.x, y: run.hi, fill: 'tonexty', fillcolor: rgba(color, 0.2) }
+        ])
     }
     return {
       data: [
@@ -146,7 +165,11 @@ export function ResponseCompareView({
   }, [series, mode, axis, title, yLabel])
 
   if (!series)
-    return <Center>This gene has no {axis} values in the contrast — match the contrast on {axis}.</Center>
+    return (
+      <Center>
+        This gene has no {axis} values in the contrast — match the contrast on {axis}.
+      </Center>
+    )
 
   return <PlotlyChart data={data} layout={layout} />
 }

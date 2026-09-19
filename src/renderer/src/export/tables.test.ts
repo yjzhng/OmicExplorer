@@ -29,8 +29,8 @@ const results: Record<string, NodeResult> = {
     kind: 'standardize',
     std: {
       rows: [
-        { uniqID: 'g1', strain: 'WT', cmpd: 'A', dose: 5, time: null, rep: 1, value: 3.14 },
-        { uniqID: 'g2', strain: 'WT', cmpd: 'A', dose: 5, time: null, rep: 2, value: 2.71 }
+        { uniqID: 'g1', cell: 'WT', cmpd: 'A', dose: 5, time: null, rep: 1, value: 3.14 },
+        { uniqID: 'g2', cell: 'WT', cmpd: 'A', dose: 5, time: null, rep: 2, value: 2.71 }
       ],
       displayMap: { g1: 'argF', g2: 'arcA' },
       activeConditions: [],
@@ -66,12 +66,12 @@ describe('collectTableExports', () => {
     expect(tables.map((t) => t.key)).toEqual(['std-2', 'cmp-3'])
 
     const std = tables[0]
-    expect(std.label).toBe('Standardized')
-    // strain present → kept; standardized columns are fixed (time stays even when blank).
+    expect(std.label).toBe('Clean data')
+    // cell present → kept; standardized columns are fixed (time stays even when blank).
     expect(std.columns).toEqual([
       'uniqID',
       'gene',
-      'strain',
+      'cell',
       'cmpd',
       'dose',
       'time',

@@ -5,6 +5,7 @@ import { installAppMenu } from './dev-menu'
 import { initAutoUpdate } from './updater'
 import { getShootRequest, runScreenshot } from './screenshot'
 import { registerFileIo } from './file-io'
+import { registerCloseGuard } from './close-guard'
 import { registerPlotExport } from './plot-export'
 import { registerAnnotate } from './annotate'
 import { registerStringNet } from './string-net'
@@ -67,6 +68,7 @@ if (shoot) {
   app.whenReady().then(() => {
     assertRenamedFromTemplate()
     registerFileIo() // renderer ↔ main file picking/reading for the Load node
+    registerCloseGuard() // unsaved-changes prompt on close / open / new
     registerPlotExport() // renderer ↔ main plot-image writing (Export plots)
     registerAnnotate() // renderer ↔ main external-annotation fetch (UniProt)
     registerStringNet() // renderer ↔ main STRING network fetch

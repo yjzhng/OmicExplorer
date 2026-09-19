@@ -16,6 +16,9 @@ import Plotly from 'plotly.js-dist-min'
 import { PanelBody } from '../dashboard/PanelBody'
 import { useGraph } from '../graph/store'
 import type { NodeResult } from '../graph/types'
+import { PALETTES } from '../ui/theme'
+import { useSelection } from '../ui/useSelection'
+import { useUiTheme } from '../ui/useUiTheme'
 import { planPlotJobs } from './facets'
 import { buildFolderMap, exportPath } from './paths'
 import { collectSpecs, type ExportSpec } from './specs'
@@ -33,7 +36,7 @@ const DPI_BASE = 96
 
 interface ExportItem {
   relPath: string
-  format: 'png' | 'pdf'
+  format: 'png' | 'pdf' | 'svg'
   base64: string
   widthIn: number
   heightIn: number
@@ -91,14 +94,24 @@ const plotlyToImage = (
   }
 ).toImage
 
+/** The ground an exported plot sits on: the tile's panel colour in the current theme. Plots draw
+ *  on transparent paper over the panel, and their emphasis ring / labels are inked in the theme's
+ *  text colour — so a dark-theme export must keep the dark ground or those turn white-on-white. */
+const exportGround = (): string => PALETTES[useUiTheme.getState().mode].panel
+
 /**
- * Rasterise an SVG data URL to a PNG data URL at `w`×`h` device pixels, on a white
- * ground. We go via SVG (not Plotly's own PNG path) because the app's CSP allows `data:`
- * but not `blob:` images, and Plotly's PNG rasteriser loads the intermediate image from a
- * blob URL — which CSP blocks. A `data:` SVG drawn onto a canvas stays within CSP and,
- * being vector, scales to any DPI crisply.
+ * Rasterise an SVG data URL to a PNG data URL at `w`×`h` device pixels, on `ground` (default:
+ * the current theme's panel colour, see exportGround). We go via SVG (not Plotly's own PNG path)
+ * because the app's CSP allows `data:` but not `blob:` images, and Plotly's PNG rasteriser loads
+ * the intermediate image from a blob URL — which CSP blocks. A `data:` SVG drawn onto a canvas
+ * stays within CSP and, being vector, scales to any DPI crisply.
  */
-function svgUrlToPng(svgUrl: string, w: number, h: number): Promise<string> {
+function svgUrlToPng(
+  svgUrl: string,
+  w: number,
+  h: number,
+  ground: string = exportGround()
+): Promise<string> {
   return new Promise((resolve, reject) => {
     const img = new Image()
     img.onload = () => {
@@ -110,9 +123,9 @@ function svgUrlToPng(svgUrl: string, w: number, h: number): Promise<string> {
         reject(new Error('no 2d context'))
         return
       }
-      // A plot's own (opaque) paper colour paints over this; it only shows through where
-      // the plot is transparent, keeping exported figures on white rather than black.
-      ctx.fillStyle = '#ffffff'
+      // A plot's own (opaque) paper colour paints over this; it only shows through where the
+      // plot is transparent — which is everywhere for the app's plots, so this IS the background.
+      ctx.fillStyle = ground
       ctx.fillRect(0, 0, w, h)
       ctx.drawImage(img, 0, 0, w, h)
       resolve(canvas.toDataURL('image/png').replace(/^data:image\/png;base64,/, ''))
@@ -128,16 +141,115 @@ export interface PngResult {
   heightIn: number
 }
 
+/** The size a live graph div is drawn at right now (Plotly's full layout, falling back to the
+ *  element box). A per-tile copy/download snapshots at THIS size, not a fixed export layout, so
+ *  the image is exactly the view on screen: same aspect, axis ranges, zoom, legend state,
+ *  highlight/dim opacities, emphasis overlay and collision-placed labels (re-laying out at
+ *  another size would move labels and reflow the legend). */
+function liveSize(gd: Element): { w: number; h: number } {
+  const fl = (gd as { _fullLayout?: { width?: number; height?: number } })._fullLayout
+  const w = Math.round(fl?.width ?? (gd as HTMLElement).clientWidth) || BASE_W
+  const h = Math.round(fl?.height ?? (gd as HTMLElement).clientHeight) || BASE_H
+  return { w, h }
+}
+
+/** The SVG markup of a live graph div, as drawn (see liveSize). Plotly's toImage returns it as a
+ *  `data:image/svg+xml,<url-encoded>` URL, decoded here. */
+export async function gdToSvg(gd: Element): Promise<string> {
+  const { w, h } = liveSize(gd)
+  const url = await plotlyToImage(gd, { format: 'svg', width: w, height: h, scale: 1 })
+  const svg = decodeURIComponent(url.slice(url.indexOf(',') + 1))
+  // The paper is transparent; give the file the tile's ground (see exportGround) as a first
+  // rect, so it reads in a viewer the way it does on screen.
+  return svg.replace(
+    /<svg\b[^>]*>/,
+    (open) => `${open}<rect width="100%" height="100%" fill="${exportGround()}"/>`
+  )
+}
+
+/** base64 of a UTF-8 string (btoa alone chokes on non-Latin-1 glyphs such as ₂ or −). */
+export function utf8ToBase64(text: string): string {
+  const bytes = new TextEncoder().encode(text)
+  let bin = ''
+  for (let i = 0; i < bytes.length; i += 0x8000)
+    bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000))
+  return btoa(bin)
+}
+
+/** Build the export item for one live graph div in the chosen format: SVG markup (as base64, the
+ *  main process writes bytes verbatim) or a PNG raster at `dpi` (also what a PDF page wraps). The
+ *  physical size is the on-screen size at 96 dpi either way. */
+export async function gdToExportItem(
+  gd: Element,
+  relPath: string,
+  format: 'png' | 'pdf' | 'svg',
+  dpi: number
+): Promise<ExportItem> {
+  if (format === 'svg') {
+    const { w, h } = liveSize(gd)
+    return {
+      relPath,
+      format,
+      base64: utf8ToBase64(await gdToSvg(gd)),
+      widthIn: w / DPI_BASE,
+      heightIn: h / DPI_BASE
+    }
+  }
+  const png = await rasterizeGd(gd, dpi)
+  return { relPath, format, ...png }
+}
+
 /**
- * Rasterise an already-rendered Plotly graph div (a live dashboard tile) to PNG bytes at
- * the export layout size and the given DPI. Used by the per-panel download button, which
- * doesn't need the off-screen re-render path.
+ * Rasterise a live graph div (a dashboard tile) to PNG bytes, as drawn (see liveSize) and at the
+ * given DPI: pixels = on-screen px × dpi/96. Used by the per-panel copy/download, which doesn't
+ * need the off-screen re-render path.
  */
 export async function rasterizeGd(gd: Element, dpi = 300): Promise<PngResult> {
-  const svgUrl = await plotlyToImage(gd, { format: 'svg', width: BASE_W, height: BASE_H, scale: 1 })
+  const { w, h } = liveSize(gd)
+  const svgUrl = await plotlyToImage(gd, { format: 'svg', width: w, height: h, scale: 1 })
   const scale = dpi / DPI_BASE
-  const base64 = await svgUrlToPng(svgUrl, Math.round(BASE_W * scale), Math.round(BASE_H * scale))
-  return { base64, widthIn: BASE_W / DPI_BASE, heightIn: BASE_H / DPI_BASE }
+  const base64 = await svgUrlToPng(svgUrl, Math.round(w * scale), Math.round(h * scale))
+  return { base64, widthIn: w / DPI_BASE, heightIn: h / DPI_BASE }
+}
+
+/**
+ * Put one live graph div on the OS clipboard, as drawn: a PNG image at `dpi`, or the SVG markup as
+ * text (no OS clipboard has a cross-app SVG image type). Electron's clipboard (via IPC) is the
+ * primary path — it has none of the web Clipboard API's focus/permission rules. The web API is
+ * the fallback for a dev session whose preload is stale until restart (the IPC method is then
+ * absent), or if the IPC throws; when both fail the error carries both reasons.
+ */
+export async function copyGd(gd: Element, format: 'png' | 'svg', dpi: number): Promise<void> {
+  const payload =
+    format === 'svg'
+      ? ({ format, svg: await gdToSvg(gd) } as const)
+      : ({ format, base64: (await rasterizeGd(gd, dpi)).base64 } as const)
+  const why = (e: unknown): string => (e instanceof Error ? e.message : String(e))
+  let ipcErr = 'copyPlot IPC unavailable — restart the app to load the update'
+  if (typeof window.api.copyPlot === 'function') {
+    try {
+      await window.api.copyPlot(payload)
+      return
+    } catch (e) {
+      ipcErr = why(e)
+    }
+  }
+  try {
+    if (payload.format === 'svg') {
+      await navigator.clipboard.writeText(payload.svg)
+    } else {
+      const bin = atob(payload.base64)
+      const bytes = new Uint8Array(bin.length)
+      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i)
+      await navigator.clipboard.write([
+        new ClipboardItem({ 'image/png': new Blob([bytes], { type: 'image/png' }) })
+      ])
+    }
+  } catch (e) {
+    // The message carries both reasons (the lib target predates Error `cause`).
+    // eslint-disable-next-line preserve-caught-error
+    throw new Error(`${ipcErr}; clipboard API: ${why(e)}`)
+  }
 }
 
 /**
@@ -149,7 +261,7 @@ async function renderSpecToPng(
   edges: Edge[],
   results: Record<string, NodeResult>,
   dpi: number,
-  goiOnly = false,
+  selectedOnly = false,
   facetSel?: Record<string, string>
 ): Promise<string | null> {
   const container = document.createElement('div')
@@ -162,7 +274,7 @@ async function renderSpecToPng(
       edges,
       results,
       child: spec.child,
-      goiOnly,
+      selectedOnly,
       facetSel
     })
   )
@@ -196,10 +308,11 @@ export async function runExport(
 ): Promise<ExportSummary> {
   const { nodes, edges, results, canvasSelection } = useGraph.getState()
   const only = opts.scope === 'selection' ? new Set(canvasSelection) : undefined
-  const specs = opts.includePlots ? collectSpecs(nodes, edges, results, only) : []
+  const hasSelection = useSelection.getState().pinnedIds.size > 0
+  const specs = opts.includePlots ? collectSpecs(nodes, edges, results, only, hasSelection) : []
   const tables = opts.includeTables ? collectTableExports(nodes, edges, results, only) : []
-  // Fan out: one job per (facet tuple) × (all-genes, and a GOI-subset variant when the plot
-  // has focus genes). A faceted plot thus exports every facet, not just the first.
+  // Fan out: one job per (facet tuple) × (all-genes, and a selected-only variant when genes
+  // are selected). A faceted plot thus exports every facet, not just the first.
   const jobs = planPlotJobs(specs, edges, results)
   const total = jobs.length + tables.length
 
@@ -215,8 +328,8 @@ export async function runExport(
   let done = 0
   const dims = { widthIn: BASE_W / DPI_BASE, heightIn: BASE_H / DPI_BASE }
 
-  // Plots: render each job off-screen, then write in one batch. GOI variants are filed under
-  // a `GOI` subfolder; each facet tuple gets its own file (suffix names the facet).
+  // Plots: render each job off-screen, then write in one batch. Selected-only variants are filed
+  // under a `selected` subfolder; each facet tuple gets its own file (suffix names the facet).
   const plotItems: ExportItem[] = []
   for (const job of jobs) {
     const fold = folder.get(job.spec.rootId) ?? 'export'
@@ -227,13 +340,13 @@ export async function runExport(
       edges,
       results,
       opts.dpi,
-      job.goiOnly,
+      job.selectedOnly,
       job.facetSel
     )
     done++
     if (base64) {
       plotItems.push({
-        relPath: exportPath(fold, fileBase, opts.structure, opts.plotFormat, job.goiOnly),
+        relPath: exportPath(fold, fileBase, opts.structure, opts.plotFormat, job.selectedOnly),
         format: opts.plotFormat,
         base64,
         ...dims

@@ -34,7 +34,7 @@ export function combineStandardize(stds: StandardizeResult[]): StandardizeResult
     droppedGenes: stds.reduce((a, s) => a + (s.cleanup?.droppedGenes ?? 0), 0),
     sampleCount: stds.reduce((a, s) => a + (s.cleanup?.sampleCount ?? 0), 0),
     minSamplePct: stds[0]?.cleanup?.minSamplePct ?? 0,
-    perStrain: stds[0]?.cleanup?.perStrain
+    by: stds[0]?.cleanup?.by
   }
 
   return { rows, displayMap, annotationMap, keggCategories, activeConditions, compounds, cleanup }

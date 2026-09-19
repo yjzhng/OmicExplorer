@@ -23,24 +23,22 @@ const SECTIONS: Section[] = [
           the toggle in the top nav.
         </P>
         <P>A typical flow reads left to right:</P>
-        <Flow
-          steps={['Load data', 'Standardize', 'Compare / Contrast', 'Plots', 'Run → Results']}
-        />
+        <Flow steps={['Load data', 'Clean data', 'Compare / Contrast', 'Plots', 'Run → Results']} />
         <UL
           items={[
             <>
               <B>Load</B> points at your data + samplesheet (+ optional ID-mapping DB).
             </>,
             <>
-              <B>Standardize</B> ingests them into one tidy table (and is where you can set
-              genes-of-interest).
+              <B>Clean data</B> ingests them into one tidy per-sample table (with an optional
+              low-coverage gene filter).
             </>,
             <>
               <B>Compare</B> runs a comparison (e.g. treated vs vehicle); <B>Contrast</B> compares
               two comparisons.
             </>,
             <>
-              <B>Plots</B> (volcano, MA, heatmap, …) hang off a Standardize/Compare/Contrast step.
+              <B>Plots</B> (volcano, MA, heatmap, …) hang off a Clean data/Compare/Contrast step.
             </>,
             <>
               <B>Run</B> / <B>Re-run</B> computes everything; open <B>Results</B> to see tables and
@@ -138,14 +136,14 @@ P99999,1024.7,980.2,1102.5,1043.1`}</CodeBlock>
         <UL
           items={[
             <>
-              <Code>strain</Code>, <Code>cmpd</Code> (compound) — text
+              <Code>cell</Code> (cell line / strain / genotype), <Code>cmpd</Code> (compound) — text
             </>,
             <>
               <Code>dose</Code>, <Code>time</Code>, <Code>rep</Code> (replicate) — numeric
             </>
           ]}
         />
-        <CodeBlock>{`well,strain,cmpd,dose,rep
+        <CodeBlock>{`well,cell,cmpd,dose,rep
 A1,WT,Amk,10,1
 A2,WT,Amk,10,2
 B1,clpP,Amk,5,1`}</CodeBlock>
@@ -204,14 +202,16 @@ g0002,Q2G2H4,SAOUHSC_00002,,Beta sliding clamp`}</CodeBlock>
         <UL
           items={[
             <>
-              <B>Genes of interest:</B> set focus genes on Standardize (or per plot) to highlight
-              them everywhere; each plot tile has an <B>All / GOI</B> toggle to show all genes or
-              only the focus subset.
+              <B>Gene selection:</B> click genes in any plot or table, or pick them (and saved gene
+              sets) from the gene menu, to highlight them everywhere. Per-gene plots (TDR, bars)
+              draw the selected genes; dose-response, bubble and dumbbell tiles have an{' '}
+              <B>All / Selected</B> toggle to show all genes or only the selection.
             </>,
             <>
               <B>Export</B> (nav) batch-writes plots (PNG/PDF at a chosen DPI) and tables (CSV/XLSX)
-              into the project's <Code>output/</Code> folder. Faceted plots export every facet; a
-              GOI-subset variant of each is written under a <Code>GOI/</Code> subfolder.
+              into the project's <Code>output/</Code> folder. Faceted plots export every facet;
+              while genes are selected, a selected-only variant of each subset-capable plot is
+              written under a <Code>selected/</Code> subfolder.
             </>,
             <>
               Each Results panel has a <B>download</B> button (top-right) to save just that plot or

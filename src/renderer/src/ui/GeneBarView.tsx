@@ -6,7 +6,7 @@ import { PlotlyChart } from './PlotlyChart'
 import { axisBase, CATEGORICAL, PALETTES, plotBase } from './theme'
 import { useUiTheme } from './useUiTheme'
 
-/** Focus genes' standardized value across every condition — grouped bars (mean ± sd),
+/** Selected genes' standardized value across every condition — grouped bars (mean ± sd),
  *  one series per gene. Landscape draws vertical bars (conditions across x); portrait
  *  draws horizontal bars (conditions down y). When `range` is given, each bar is filled by
  *  its value on the shared viridis scale (matching the Heatmap tile and data table) and the

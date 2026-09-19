@@ -1,5 +1,5 @@
 /** One-gene pager shared by the single-gene tiles (TDR, gene bar, contrast DR/TR). The navigable
- *  set is the tile's focus genes plus any genes pinned elsewhere (present in the data); a header
+ *  set is the selected genes present in the data (`genes`, plus any pins not in it); a header
  *  shows "‹ n/m › gene_name", the arrows step through the set, and the gene-name button opens a
  *  searchable dropdown to jump straight to any gene. A gene hovered in another plot/table
  *  transiently drives the figure (linked selection) without moving the pager. Renders
@@ -26,7 +26,7 @@ export function GeneSwitch({
   const [pos, setPos] = useState(0)
   const hoverId = useSelection((s) => s.hoverId)
   const pinnedIds = useSelection((s) => s.pinnedIds)
-  // Navigable set = focus genes, with pinned (selected) genes present in the data appended.
+  // Navigable set = `genes`, with any other pinned genes present in the data appended.
   const set = useMemo(() => {
     const seen = new Set(genes)
     const extra = [...pinnedIds].filter((id) => !seen.has(id) && present.has(id))

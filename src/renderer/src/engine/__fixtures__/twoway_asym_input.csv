@@ -1,4 +1,4 @@
-cmpd,strain,dose,uniqID,rep,value
+cmpd,cell,dose,uniqID,rep,value
 E28,M,0.3,g00,1,873.1810002464342
 E28,M,0.3,g00,2,1116.130640651688
 E28,M,0.3,g00,3,1049.587286018988

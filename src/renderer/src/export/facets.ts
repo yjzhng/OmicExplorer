@@ -1,10 +1,10 @@
 /** Facet fan-out for batch export. A faceted plot (volcano/MA/DR/bubble/dumbbell/scatter)
  *  shows one context tuple at a time via tabs; export writes one file per tuple. This
  *  enumerates those tuples using the same engine helpers FacetedPlot uses, and turns the
- *  export into a flat list of render jobs (spec × facet × all/GOI). No React imports. */
+ *  export into a flat list of render jobs (spec × facet × all/selected). No React imports. */
 import type { Edge } from '@xyflow/react'
 
-import { facetCompareRows, facetDims } from '../engine'
+import { facetCompareRows, facetDims, facetPaired } from '../engine'
 import type { ConditionKey, ContextRow } from '../engine'
 import type { NodeKind, NodeResult } from '../graph/types'
 import type { ExportSpec } from './specs'
@@ -15,7 +15,7 @@ const FACETED_KINDS = new Set<NodeKind>(['volcano', 'ma', 'dr', 'bubble', 'dumbb
 export interface FacetView {
   /** forced FacetedPlot selection for this tuple ({} = the single, unfaceted view) */
   sel: Record<string, string>
-  /** filename component identifying the facet (e.g. "strain-WT_dose-2.5"); '' when single */
+  /** filename component identifying the facet (e.g. "cell-WT_dose-2.5"); '' when single */
   suffix: string
 }
 
@@ -41,7 +41,9 @@ export function facetViews(
     kind === 'dr' || kind === 'bubble' ? [(config as { axis: ConditionKey }).axis] : undefined
   const dims = facetDims(rows, exclude)
   if (dims.length === 0) return SINGLE
-  const groups = facetCompareRows(rows, dims)
+  // One-sided contrast tuples (outer-join rows with nothing to pair) are greyed out in the
+  // tabs, so they get no file either — the plot would be empty.
+  const groups = facetCompareRows(rows, dims).filter((g) => facetPaired(g.rows))
   if (groups.length <= 1) return SINGLE
   // Filename-safe token (the `comparison` value can hold spaces / "|").
   const safe = (v: string): string => v.replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/^-+|-+$/g, '')
@@ -56,17 +58,17 @@ export function facetViews(
   })
 }
 
-/** One rasterise job: a spec rendered at a specific facet, all-genes or GOI-subset. */
+/** One rasterise job: a spec rendered at a specific facet, all-genes or selected-only. */
 export interface PlotJob {
   spec: ExportSpec
-  goiOnly: boolean
+  selectedOnly: boolean
   facetSel: Record<string, string>
   suffix: string
 }
 
 /**
- * Flatten specs into render jobs: one per (facet tuple) × (all-genes, and a GOI-subset
- * variant when the plot has focus genes). This is the single source of truth for both the
+ * Flatten specs into render jobs: one per (facet tuple) × (all-genes, and a selected-only
+ * variant when genes are selected). This is the single source of truth for both the
  * exported files and the modal's file count.
  */
 export function planPlotJobs(
@@ -81,8 +83,9 @@ export function planPlotJobs(
     const kind = spec.child ? spec.child.kind : spec.node.data.kind
     const config = spec.child ? spec.child.config : spec.node.data.config
     for (const view of facetViews(kind, config, upstream)) {
-      jobs.push({ spec, goiOnly: false, facetSel: view.sel, suffix: view.suffix })
-      if (spec.hasGoi) jobs.push({ spec, goiOnly: true, facetSel: view.sel, suffix: view.suffix })
+      jobs.push({ spec, selectedOnly: false, facetSel: view.sel, suffix: view.suffix })
+      if (spec.hasSelection)
+        jobs.push({ spec, selectedOnly: true, facetSel: view.sel, suffix: view.suffix })
     }
   }
   return jobs

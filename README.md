@@ -8,14 +8,14 @@ from source in the browser.
 Features:
 
 - Flow-based pipeline editor ([React Flow](https://reactflow.dev)) — chain
-  **Standardize → Compare / Contrast → plots** on a canvas
+  **Clean data → Compare / Contrast → plots** on a canvas
 - Standardization with clean-up (drop genes seen in <n% of samples), vehicle
   normalization, direct comparisons, two-way ANOVA, and correlated contrasts
 - Live interactive plots ([Plotly](https://plotly.com/javascript/)) — volcano,
   MA, heatmap, bubble, dumbbell, dose/time-response, cluster (PCA/UMAP/t-SNE),
   and more, with linked hover/selection across every panel
 - Reconfigurable results dashboard — drag/resize tiles, shared facet context
-  (strain / dose / time), landscape ⇄ portrait per plot
+  (cell / dose / time), landscape ⇄ portrait per plot
 - Export any panel to PNG/PDF and any table to CSV/XLSX
 - Pure-TypeScript in-memory engine — no Python or external services at runtime
 
@@ -39,7 +39,7 @@ Features:
 
 A project is a folder with an `input/` directory holding three CSVs: a
 **long-format data** table (sample, gene, value), a **samplesheet** describing
-each sample's conditions (e.g. strain, compound, dose, time), and a **gene
+each sample's conditions (e.g. cell line/strain, compound, dose, time), and a **gene
 database** for annotation. Open a `.omicexplorer` project file, or point the app
 at a new data folder to start one. An included demo and example project show the
 expected layout.

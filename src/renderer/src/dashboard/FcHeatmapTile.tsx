@@ -15,7 +15,7 @@ export function FcHeatmapTile({
   rows: CompareResultRow[]
   displayMap: Record<string, string>
   maxGenes: number
-  /** focus genes (uniqIDs); when non-empty, show exactly these rows */
+  /** selected genes (uniqIDs); when non-empty, show exactly these rows */
   focus?: string[]
   orient?: 'landscape' | 'portrait'
 }) {
@@ -29,7 +29,7 @@ export function FcHeatmapTile({
   )
   const scope =
     focus.length > 0
-      ? `${data.geneIds.length} focus genes`
+      ? `${data.geneIds.length} selected genes`
       : maxGenes && maxGenes > 0
         ? `top ${Math.min(maxGenes, data.geneIds.length)} differential genes`
         : `${data.geneIds.length} differential genes`

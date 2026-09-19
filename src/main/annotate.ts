@@ -16,7 +16,10 @@ import { join } from 'path'
 const UNIPROT_FIELD: Record<string, { uni: string; col: string }> = {
   protein_name: { uni: 'protein_name', col: 'proteinName' },
   gene_names: { uni: 'gene_names', col: 'geneName' },
-  go: { uni: 'go', col: 'GO' },
+  // GO by aspect: biological process / molecular function / cellular component.
+  go_bp: { uni: 'go_p', col: 'GO_BP' },
+  go_mf: { uni: 'go_f', col: 'GO_MF' },
+  go_cc: { uni: 'go_c', col: 'GO_CC' },
   string: { uni: 'xref_string', col: 'stringId' }
 }
 const KEGG_COL = 'keggPathway'
@@ -62,7 +65,7 @@ function cleanValue(col: string, raw: string): string {
   if (!v) return v
   if (col === 'proteinName') return v.replace(/\s*[([].*$/, '').trim()
   if (col === 'geneName') return v.split(/\s+/)[0].trim()
-  if (col === 'GO') return v.replace(/\s*\[GO:\d+\]/g, '').trim()
+  if (col.startsWith('GO')) return v.replace(/\s*\[GO:\d+\]/g, '').trim()
   if (col === 'stringId') return v.split(';')[0].trim()
   return v
 }

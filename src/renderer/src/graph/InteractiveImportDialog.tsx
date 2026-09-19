@@ -1,7 +1,7 @@
 /** Modal for interactive import — a 4-step wizard that recreates the standard input format from
  *  a raw data matrix, fully interactively:
  *   1. Columns  — classify each column: ID / Sample / Label / Metadata / Ignore.
- *   2. Conditions — tag each sample's strain/cmpd/dose/time/rep by clicking tokens.
+ *   2. Conditions — tag each sample's cell/cmpd/dose/time/rep by clicking tokens.
  *   3. Samplesheet — review/correct the per-sample conditions.
  *   4. Metadata — review the DB (uniqID → gene + metadata) and convert.
  *  Portalled to <body> and flex-centred (crisp text). */
@@ -33,7 +33,7 @@ import { useUiTheme } from '../ui/useUiTheme'
 import { useGraph } from './store'
 import { isStep, type AnnotationSet, type LoadConfig } from './types'
 
-const FIELDS = ['strain', 'cmpd', 'dose', 'time', 'rep'] as const
+const FIELDS = ['cell', 'cmpd', 'dose', 'time', 'rep'] as const
 type Field = (typeof FIELDS)[number]
 /** A field's location in a sample name as a token-index range [start, end). This is the SINGLE
  *  source of truth for the Conditions step — the value, the highlight and the samplesheet
@@ -47,18 +47,19 @@ const MONO = 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace'
 
 /** One colour per condition field, shared by the chips and the highlighted regions. */
 const FIELD_COLORS: Record<Field, string> = {
-  strain: '#4e79a7',
+  cell: '#4e79a7',
   cmpd: '#59a14f',
   dose: '#c99700',
   time: '#b07aa1',
   rep: '#e15759'
 }
 
-const DELIM = '_'
+/** Default token separator for sample names (configurable per import — see `separator`). */
+const DEFAULT_DELIM = '_'
 
 /** Page titles for the two condition-assignment steps (also previewed beside Next on Conditions). */
 const COND_TITLE = 'Define experimental conditions systematically'
-const SHEET_TITLE = 'Define experimental conditions manually'
+const SHEET_TITLE = 'Review experimental conditions manually'
 
 /** How many feature rows the step-4 DB review renders (a preview — the full DB is written on
  *  convert). Rendering every row of a large matrix is slow and needless. */
@@ -69,41 +70,64 @@ type Col = 'include' | 'sample' | Field
 /** Extra px added to a measured content width so the input isn't cramped. */
 const COL_PAD = 12
 
-/** Tokens of a name plus each token's char-start offset (split on the delimiter). */
-function tokenBounds(name: string): { tokens: string[]; starts: number[] } {
-  const tokens = name.split(DELIM)
+/** Tokens of a name plus each token's char-start offset, split on ANY of the `delims` (longest
+ *  match wins where several could apply). `gaps[i]` is the separator found between tokens i and
+ *  i+1, so a span's value can be re-joined exactly as it appears in the name. */
+function tokenBounds(
+  name: string,
+  delims: string[]
+): { tokens: string[]; starts: number[]; gaps: string[] } {
+  const seps = [...delims].filter(Boolean).sort((a, b) => b.length - a.length)
+  const tokens: string[] = []
   const starts: number[] = []
-  let p = 0
-  for (const t of tokens) {
-    starts.push(p)
-    p += t.length + DELIM.length
+  const gaps: string[] = []
+  let cur = ''
+  let start = 0
+  let i = 0
+  while (i < name.length) {
+    const sep = seps.find((d) => name.startsWith(d, i))
+    if (sep) {
+      tokens.push(cur)
+      starts.push(start)
+      gaps.push(sep)
+      cur = ''
+      i += sep.length
+      start = i
+    } else cur += name[i++]
   }
-  return { tokens, starts }
+  tokens.push(cur)
+  starts.push(start)
+  return { tokens, starts, gaps }
 }
+/** Number of tokens a name splits into. */
+const tokenCount = (name: string, delims: string[]): number =>
+  tokenBounds(name, delims).tokens.length
 
 /** Char range [start, end) covered by a token-index span (null if out of range / empty). */
-function spanChars(name: string, [i, j]: Span): [number, number] | null {
-  const { tokens, starts } = tokenBounds(name)
+function spanChars(name: string, [i, j]: Span, delims: string[]): [number, number] | null {
+  const { tokens, starts } = tokenBounds(name, delims)
   if (i < 0 || j > tokens.length || i >= j) return null
   return [starts[i], starts[j - 1] + tokens[j - 1].length]
 }
 
-/** The value a span extracts from a name (its tokens joined by the delimiter). */
-function spanValue(name: string, span: Span): string {
-  const { tokens } = tokenBounds(name)
+/** The value a span extracts from a name (its tokens re-joined by the separators between them). */
+function spanValue(name: string, span: Span, delims: string[]): string {
+  const { tokens, gaps } = tokenBounds(name, delims)
   if (span[0] < 0 || span[1] > tokens.length || span[0] >= span[1]) return ''
-  return tokens.slice(span[0], span[1]).join(DELIM)
+  let out = tokens[span[0]]
+  for (let i = span[0] + 1; i < span[1]; i++) out += gaps[i - 1] + tokens[i]
+  return out
 }
 
 /** Char index → field, built directly from a row's applied token spans. Because the highlight and
  *  the extracted value come from the SAME spans, the highlight always faithfully reflects the
  *  condition applied (and survives a later value rename, which never touches the span). */
-function fieldMapFromSpans(name: string, rowSpans: RowSpans): (Field | null)[] {
+function fieldMapFromSpans(name: string, rowSpans: RowSpans, delims: string[]): (Field | null)[] {
   const m: (Field | null)[] = new Array(name.length).fill(null)
   for (const f of FIELDS) {
     const span = rowSpans[f]
     if (!span) continue
-    const cs = spanChars(name, span)
+    const cs = spanChars(name, span, delims)
     if (!cs) continue
     for (let k = cs[0]; k < cs[1] && k < name.length; k++) m[k] = f
   }
@@ -138,9 +162,10 @@ function deriveAnchor(
   tokStart: number,
   tokEnd: number,
   rowSpans: RowSpans,
-  field: Field
+  field: Field,
+  delims: string[]
 ): AnchorDesc {
-  const N = name.split(DELIM).length
+  const N = tokenCount(name, delims)
   const right: Field[] = []
   let leftEnd = 0 // nearest painted-cond end to the left of the selection (string start if none)
   let rightStart = N // nearest painted-cond start to the right (string end if none)
@@ -175,8 +200,14 @@ function deriveAnchor(
  *   • neither firm      → anchor from the closer landmark, fixed length.
  *  Finally trim to the contiguous run of tokens NOT already claimed by another field, so a paint can
  *  never overwrite an existing one. Returns null when no placeable tokens remain. */
-function applyAnchor(name: string, rowSpans: RowSpans, desc: AnchorDesc, field: Field): Span | null {
-  const N = name.split(DELIM).length
+function applyAnchor(
+  name: string,
+  rowSpans: RowSpans,
+  desc: AnchorDesc,
+  field: Field,
+  delims: string[]
+): Span | null {
+  const N = tokenCount(name, delims)
   const rightSet = new Set<Field>(desc.right)
   let leftBase = 0
   let rightBase = N
@@ -318,7 +349,9 @@ function TeacherRow({
   name,
   map,
   armed,
-  onAnnotate
+  onAnnotate,
+  hovered = false,
+  delims
 }: {
   name: string
   /** char→field of this row's ALREADY-APPLIED regions (per-row, so painting one subset never
@@ -326,21 +359,25 @@ function TeacherRow({
   map: (Field | null)[]
   armed: Field | null
   onAnnotate: (tokStart: number, tokEnd: number) => void
+  /** the row is under the mouse — tint the cell to match the rest of the row */
+  hovered?: boolean
+  /** token separators */
+  delims: string[]
 }): ReactNode {
   const [drag, setDrag] = useState<{ a: number; f: number } | null>(null)
   const [hover, setHover] = useState<number | null>(null)
-  const tokens = name.split(DELIM)
-  const starts: number[] = []
-  let p = 0
-  for (const t of tokens) {
-    starts.push(p)
-    p += t.length + DELIM.length
-  }
+  // A paint drag that ends on empty cell space still fires a click (on the drag's common
+  // ancestor). The row toggles on empty-space clicks, so that one click is swallowed.
+  const paintedRef = useRef(false)
+  const { tokens, starts, gaps } = tokenBounds(name, delims)
   const lo = drag ? Math.min(drag.a, drag.f) : -1
   const hi = drag ? Math.max(drag.a, drag.f) : -1
 
   const finish = (): void => {
-    if (drag && armed) onAnnotate(lo, hi + 1)
+    if (drag && armed) {
+      onAnnotate(lo, hi + 1)
+      paintedRef.current = true
+    }
     setDrag(null)
   }
   // `fallback` is the idle background: a faint chip for tokens (so token boundaries read as
@@ -350,11 +387,16 @@ function TeacherRow({
 
   return (
     <td
-      style={{ ...styles.nameCell, ...styles.teachCell }}
+      style={{ ...styles.nameCell, ...styles.teachCell, ...(hovered ? styles.hoverCell : null) }}
       onMouseUp={finish}
       onMouseLeave={() => {
         setHover(null)
         setDrag(null)
+      }}
+      onClickCapture={(e) => {
+        if (!paintedRef.current) return
+        paintedRef.current = false
+        e.stopPropagation()
       }}
     >
       {tokens.map((tok, i) => {
@@ -363,6 +405,7 @@ function TeacherRow({
         return (
           <Fragment key={i}>
             <span
+              data-token=""
               onMouseDown={armed ? () => setDrag({ a: i, f: i }) : undefined}
               onMouseEnter={() => {
                 setHover(i)
@@ -383,7 +426,7 @@ function TeacherRow({
                   background: bgFor(map[starts[i] + tok.length], delimActive, 'transparent')
                 }}
               >
-                {DELIM}
+                {gaps[i]}
               </span>
             )}
           </Fragment>
@@ -395,6 +438,23 @@ function TeacherRow({
 
 /** Faint idle background so each token reads as a discrete chip. */
 const CHIP_BG = 'rgba(128,128,128,0.16)'
+
+/** Live rendered height of an element (0 until mounted), tracked through resizes — used to stack
+ *  sticky strips whose heights vary (e.g. a chip row that wraps). */
+function useMeasuredHeight<T extends HTMLElement>(): [React.RefObject<T | null>, number] {
+  const ref = useRef<T>(null)
+  const [h, setH] = useState(0)
+  useLayoutEffect(() => {
+    const el = ref.current
+    if (!el) return
+    const measure = (): void => setH((prev) => (prev === el.offsetHeight ? prev : el.offsetHeight))
+    measure()
+    const ro = new ResizeObserver(measure)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [])
+  return [ref, h]
+}
 
 /** A scroll box (with a max height) that shows a soft shadow on any edge where content is
  *  scrolled out of view — so it's clear when the table extends past the visible area. */
@@ -527,7 +587,7 @@ function Roadmap({
               <span
                 style={{
                   ...styles.roadLabel,
-                  color: current ? UI.accent : done ? DONE_GREEN : UI.textMuted,
+                  color: current ? UI.accent : done ? UI.ok : UI.textMuted,
                   fontWeight: current ? 700 : 600
                 }}
               >
@@ -546,7 +606,9 @@ function Roadmap({
 const UNIPROT_FIELDS: { id: string; label: string; col: string }[] = [
   { id: 'protein_name', label: 'Protein name', col: 'proteinName' },
   { id: 'gene_names', label: 'Gene name', col: 'geneName' },
-  { id: 'go', label: 'GO terms', col: 'GO' },
+  { id: 'go_bp', label: 'GO: biological process', col: 'GO_BP' },
+  { id: 'go_mf', label: 'GO: molecular function', col: 'GO_MF' },
+  { id: 'go_cc', label: 'GO: cellular component', col: 'GO_CC' },
   { id: 'kegg', label: 'KEGG pathway', col: 'keggPathway' },
   { id: 'string', label: 'STRING', col: 'stringId' },
   // Local DEG (Database of Essential Genes) join by UniProt accession — no network.
@@ -554,6 +616,204 @@ const UNIPROT_FIELDS: { id: string; label: string; col: string }[] = [
 ]
 const colsForIds = (ids: string[]): string[] =>
   UNIPROT_FIELDS.filter((f) => ids.includes(f.id)).map((f) => f.col)
+
+/** The fetch options grouped by what they annotate. A member is either a fetchable field id from
+ *  UNIPROT_FIELDS or a placeholder (`soon`) for a source not wired up yet — listed so the category
+ *  structure is complete, but shown disabled. */
+interface AnnGroup {
+  id: string
+  label: string
+  members: { id: string; label: string; soon?: boolean }[]
+}
+const fieldLabel = (id: string): string => UNIPROT_FIELDS.find((f) => f.id === id)?.label ?? id
+const ANN_GROUPS: AnnGroup[] = [
+  {
+    id: 'identifiers',
+    label: 'Identifiers',
+    members: [
+      { id: 'protein_name', label: fieldLabel('protein_name') },
+      { id: 'gene_names', label: fieldLabel('gene_names') }
+    ]
+  },
+  {
+    id: 'function',
+    label: 'Function',
+    members: [
+      { id: 'go_bp', label: fieldLabel('go_bp') },
+      { id: 'go_mf', label: fieldLabel('go_mf') },
+      { id: 'go_cc', label: fieldLabel('go_cc') },
+      { id: 'cog', label: 'COG', soon: true },
+      { id: 'msigdb', label: 'MSigDB', soon: true }
+    ]
+  },
+  {
+    id: 'pathway',
+    label: 'Pathway',
+    members: [
+      { id: 'kegg', label: fieldLabel('kegg') },
+      { id: 'reactome', label: 'Reactome', soon: true }
+    ]
+  },
+  {
+    id: 'essentiality',
+    label: 'Essentiality',
+    members: [{ id: 'essentiality', label: fieldLabel('essentiality') }]
+  },
+  { id: 'interactions', label: 'Interactions', members: [{ id: 'string', label: fieldLabel('string') }] }
+]
+
+/** Open/close plumbing for a floating menu portalled next to a trigger button: positions it under
+ *  the button (right-aligned so it never spills past the dialog), and dismisses on outside click,
+ *  any scroll, resize or Escape. */
+function useFloatingMenu(
+  isOpen: boolean,
+  setOpen: (o: boolean) => void
+): {
+  btnRef: React.RefObject<HTMLElement | null>
+  menuRef: React.RefObject<HTMLDivElement | null>
+  rect: { right: number; top: number; width: number } | null
+} {
+  const [rect, setRect] = useState<{ right: number; top: number; width: number } | null>(null)
+  const btnRef = useRef<HTMLElement>(null)
+  const menuRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (!isOpen) return
+    const b = btnRef.current?.getBoundingClientRect()
+    if (b) setRect({ right: window.innerWidth - b.right, top: b.bottom + 4, width: b.width })
+    const onDown = (e: MouseEvent): void => {
+      const t = e.target as Node
+      if (menuRef.current?.contains(t) || btnRef.current?.contains(t)) return
+      setOpen(false)
+    }
+    const close = (): void => setOpen(false)
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key === 'Escape') setOpen(false)
+    }
+    document.addEventListener('mousedown', onDown)
+    window.addEventListener('scroll', close, true) // capture: any ancestor scroll dismisses
+    window.addEventListener('resize', close)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', onDown)
+      window.removeEventListener('scroll', close, true)
+      window.removeEventListener('resize', close)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [isOpen, setOpen])
+  return { btnRef, menuRef, rect }
+}
+
+/** One annotation category: a checkbox that (de)selects every fetchable member at once
+ *  (indeterminate when only some are picked) and a caret that opens the member list to pick
+ *  individually. Placeholder members are shown disabled. */
+function AnnCategory({
+  group,
+  picked,
+  disabled,
+  onChange
+}: {
+  group: AnnGroup
+  picked: Set<string>
+  disabled: boolean
+  onChange: (next: Set<string>) => void
+}): ReactNode {
+  const mode = useUiTheme((s) => s.mode)
+  const [open, setOpen] = useState(false)
+  const isOpen = open && !disabled
+  const { btnRef, menuRef, rect } = useFloatingMenu(isOpen, setOpen)
+  const available = group.members.filter((m) => !m.soon)
+  const on = available.filter((m) => picked.has(m.id)).length
+  const all = available.length > 0 && on === available.length
+  const toggleAll = (): void => {
+    const next = new Set(picked)
+    for (const m of available) {
+      if (all) next.delete(m.id)
+      else next.add(m.id)
+    }
+    onChange(next)
+  }
+  const toggleOne = (id: string): void => {
+    const next = new Set(picked)
+    if (next.has(id)) next.delete(id)
+    else next.add(id)
+    onChange(next)
+  }
+  return (
+    <>
+      {/* A button-styled chip holding the checkbox (a real <button> can't contain one): the box
+          toggles the whole category; the label/caret opens the member list. */}
+      <span
+        ref={btnRef}
+        style={{
+          ...styles.annCatBtn,
+          borderColor: isOpen ? UI.accent : UI.border,
+          opacity: disabled ? 0.6 : 1,
+          cursor: disabled ? 'default' : 'pointer'
+        }}
+      >
+        <input
+          type="checkbox"
+          ref={(el) => {
+            if (el) el.indeterminate = on > 0 && !all
+          }}
+          checked={all}
+          disabled={disabled}
+          onChange={toggleAll}
+          title={all ? `Deselect all ${group.label.toLowerCase()}` : `Select all ${group.label.toLowerCase()}`}
+          style={{ margin: 0, cursor: disabled ? 'default' : 'pointer' }}
+        />
+        <span
+          role="button"
+          aria-disabled={disabled}
+          aria-expanded={isOpen}
+          style={styles.annCatLabel}
+          onClick={() => {
+            if (!disabled) setOpen((o) => !o)
+          }}
+          title="Choose which to fetch"
+        >
+          {group.label}
+          {on > 0 && !all && <span style={styles.annCatCount}>{on}/{available.length}</span>}
+          <span style={styles.dropdownCaret}>{isOpen ? '▲' : '▼'}</span>
+        </span>
+      </span>
+      {isOpen &&
+        rect &&
+        createPortal(
+          <div
+            ref={menuRef}
+            style={{
+              ...cssVars(PALETTES[mode]),
+              ...styles.dropdownMenu,
+              right: rect.right,
+              top: rect.top,
+              minWidth: Math.max(rect.width, 160)
+            }}
+          >
+            <div style={styles.dropdownList}>
+              {group.members.map((m) => (
+                <label
+                  key={m.id}
+                  style={{ ...styles.dropdownItem, ...(m.soon ? { cursor: 'default' } : null) }}
+                  title={m.soon ? 'Not available yet' : undefined}
+                >
+                  <input
+                    type="checkbox"
+                    checked={!m.soon && picked.has(m.id)}
+                    disabled={!!m.soon}
+                    onChange={() => toggleOne(m.id)}
+                  />
+                  <span style={m.soon ? styles.dropdownItemOff : undefined}>{m.label}</span>
+                  {m.soon && <span style={styles.annSoon}>soon</span>}
+                </label>
+              ))}
+            </div>
+          </div>,
+          document.body
+        )}
+    </>
+  )
+}
 
 export function InteractiveImportDialog({ id, onClose }: { id: string; onClose: () => void }): ReactNode {
   const mode = useUiTheme((s) => s.mode)
@@ -677,6 +937,15 @@ export function InteractiveImportDialog({ id, onClose }: { id: string; onClose: 
   // Per-sample applied token spans (Conditions step). Persisted in config like column roles, so
   // reopening restores the highlights; the value, highlight and "original" all derive from these.
   const spans: Record<string, RowSpans> = (interactive?.spans as Record<string, RowSpans>) ?? {}
+  // Token separator for the Conditions step. Spans are token indexes under it, so a change of the
+  // EFFECTIVE separator drops every span (the extracted values stay; the user re-paints under the
+  // new tokenisation). A blank box falls back to the default.
+  const separator = interactive?.separator ?? DEFAULT_DELIM
+  const delims = [separator || DEFAULT_DELIM]
+  const setSeparator = (sep: string): void => {
+    const same = (sep || DEFAULT_DELIM) === delims[0]
+    setInteractive(id, same ? { separator: sep } : { separator: sep, spans: {} })
+  }
   // Bulk commit — the Filtering step edits a local draft and writes it all at once on Apply/Reset.
   const setFilters = (next: Record<string, FilterSpec>): void => {
     setInteractive(id, { filters: next })
@@ -684,7 +953,7 @@ export function InteractiveImportDialog({ id, onClose }: { id: string; onClose: 
   const blank = (h: string): InteractiveSampleCond => ({
     sample: h,
     include: true,
-    strain: '',
+    cell: '',
     cmpd: '',
     dose: '',
     time: '',
@@ -741,7 +1010,7 @@ export function InteractiveImportDialog({ id, onClose }: { id: string; onClose: 
     // Re-painting a field's own current region (on the row it was derived from) clears it.
     const existing = refSpans[field]
     const same = !!existing && existing[0] === tokStart && existing[1] === tokEnd
-    const desc = deriveAnchor(refName, tokStart, tokEnd, refSpans, field)
+    const desc = deriveAnchor(refName, tokStart, tokEnd, refSpans, field, delims)
     const nextConditions: Record<string, InteractiveSampleCond> = { ...conditions }
     const nextSpans: Record<string, RowSpans> = { ...spans }
     let hit = 0
@@ -752,10 +1021,10 @@ export function InteractiveImportDialog({ id, onClose }: { id: string; onClose: 
         delete rowSpans[field]
         nextConditions[sc] = { ...base, [field]: '' }
       } else {
-        const span = applyAnchor(sc, rowSpans, desc, field)
+        const span = applyAnchor(sc, rowSpans, desc, field, delims)
         if (!span) continue
         rowSpans[field] = span
-        nextConditions[sc] = { ...base, [field]: spanValue(sc, span) }
+        nextConditions[sc] = { ...base, [field]: spanValue(sc, span, delims) }
         hit++
       }
       nextSpans[sc] = rowSpans
@@ -1061,6 +1330,9 @@ export function InteractiveImportDialog({ id, onClose }: { id: string; onClose: 
                 armed={armed}
                 setArmed={setArmed}
                 onAnnotate={annotate}
+                delims={delims}
+                separator={separator}
+                onSeparator={setSeparator}
               />
             ) : (
               <div style={styles.hint}>Mark at least one Sample column in step 1.</div>
@@ -1069,6 +1341,7 @@ export function InteractiveImportDialog({ id, onClose }: { id: string; onClose: 
             <Stage2
               samples={samples}
               spans={spans}
+              delims={delims}
               setCell={setCell}
               onRenameValue={renameConditionValue}
             />
@@ -1582,27 +1855,19 @@ function Step4Metadata({
       <div style={styles.annPanel}>
         <span style={styles.annTitle}>Fetch annotations (UniProt)</span>
         <div style={styles.annFields}>
-          {UNIPROT_FIELDS.map((f) => {
-            const on = picked.has(f.id)
-            return (
-              <label key={f.id} style={styles.annField}>
-                <input
-                  type="checkbox"
-                  checked={on}
-                  disabled={annBusy}
-                  onChange={() => {
-                    const next = new Set(picked)
-                    if (next.has(f.id)) next.delete(f.id)
-                    else next.add(f.id)
-                    setPicked(next)
-                    // Already fetched → just re-slice the cached data, no network round-trip.
-                    if (annotations) onSelectFields([...next])
-                  }}
-                />
-                {f.label}
-              </label>
-            )
-          })}
+          {ANN_GROUPS.map((g) => (
+            <AnnCategory
+              key={g.id}
+              group={g}
+              picked={picked}
+              disabled={annBusy}
+              onChange={(next) => {
+                setPicked(next)
+                // Already fetched → just re-slice the cached data, no network round-trip.
+                if (annotations) onSelectFields([...next])
+              }}
+            />
+          ))}
         </div>
         <button
           style={{ ...styles.btnPrimary, opacity: annBusy || picked.size === 0 ? 0.5 : 1 }}
@@ -1688,13 +1953,21 @@ function Stage1({
   spans,
   armed,
   setArmed,
-  onAnnotate
+  onAnnotate,
+  delims,
+  separator,
+  onSeparator
 }: {
   samples: InteractiveSampleCond[]
   spans: Record<string, RowSpans>
   armed: Field | null
   setArmed: (f: Field | null) => void
   onAnnotate: (refName: string, tokStart: number, tokEnd: number, activeSamples: string[]) => void
+  /** effective token separator(s) (never empty) */
+  delims: string[]
+  /** the separator as typed (may be blank mid-edit) */
+  separator: string
+  onSeparator: (sep: string) => void
 }): ReactNode {
   // Rows the paint action applies to (and that are editable). Tracked as the INACTIVE set so a
   // freshly-appearing sample defaults to active — empty set = all active = the original behaviour.
@@ -1728,16 +2001,41 @@ function Stage1({
     }
     anchorRef.current = index
   }
+  // Flip every row's active state — the quick way to tag "everything else" after painting one
+  // layout. The shift-click anchor is dropped since its meaning inverted with it.
+  const invertSelection = (): void => {
+    setInactive(new Set(samples.filter((s) => !inactive.has(s.sample)).map((s) => s.sample)))
+    anchorRef.current = null
+  }
   const activeSamples = samples.filter((s) => !inactive.has(s.sample)).map((s) => s.sample)
+  // Row under the mouse (tinted, so the whole row reads as one clickable unit).
+  const [hoverRow, setHoverRow] = useState<string | null>(null)
+  // Clicking a row's empty space toggles it, like its checkbox. The checkbox handles itself, and
+  // tokens (`data-token`) are reserved for painting.
+  const rowClick = (e: React.MouseEvent, index: number): void => {
+    const t = e.target as HTMLElement
+    if (t.tagName === 'INPUT' || t.closest('[data-token]')) return
+    clickRow(index, e.shiftKey)
+  }
+  // The page (dialog body) scrolls as one, with three stacked sticky strips: the stage title pins
+  // to the top, the field chips pin under it (the hint between them scrolls away beneath the
+  // title), and the table header pins under the chips. Heights are measured, since the chip row
+  // wraps to a variable number of lines.
+  const [titleRef, titleH] = useMeasuredHeight<HTMLDivElement>()
+  const [chipsRef, chipsH] = useMeasuredHeight<HTMLDivElement>()
+  const headerH = titleH + chipsH
   return (
     <>
-      <div style={styles.stageTitle}>{COND_TITLE}</div>
+      <div ref={titleRef} style={{ ...styles.stageTitle, ...styles.stickyTitle }}>
+        {COND_TITLE}
+      </div>
       <div style={styles.hint}>
         Click a field to activate it, then click/drag tokens on a row to tag it. A tag is applied to
         every <b>checked</b> row — uncheck rows whose names use a different layout (their existing
         tags are kept) and tag them separately. Click a tag again to clear it.
       </div>
-      <div style={styles.chips}>
+      <div ref={chipsRef} style={{ ...styles.chips, ...styles.stickyChips, top: titleH }}>
+        <span style={styles.chipsLabel}>conditions</span>
         {FIELDS.map((f) => {
           const on = armed === f
           // `applied` = at least one sample has this field tagged. An applied chip is tinted in the
@@ -1761,35 +2059,59 @@ function Stage1({
             </button>
           )
         })}
+        {/* Token separator the names are split on. Right-aligned; changing it re-tokenises the
+            table and clears the painted spans (they're token indexes). */}
+        <label style={styles.sepBox} title="Sample names are split into tokens at this separator">
+          separator:
+          <input
+            type="text"
+            value={separator}
+            spellCheck={false}
+            onChange={(e) => onSeparator(e.target.value)}
+            style={styles.sepInput}
+          />
+        </label>
       </div>
       <div style={styles.tableTitle}>Sample names</div>
-      <div style={styles.gridWrap}>
+      {/* Not a scroll box: the table takes its natural height so the body scrolls as one page. */}
+      <div style={styles.nameTableWrap}>
         <table style={styles.nameTable}>
           <thead>
             <tr>
-              <td style={{ ...styles.checkCell, ...styles.rulerCheckCell }}>
-                {/* Select / deselect all rows (indeterminate when only some are active). */}
-                <input
-                  type="checkbox"
-                  ref={(el) => {
-                    if (el) el.indeterminate = activeSamples.length > 0 && activeSamples.length < samples.length
-                  }}
-                  checked={activeSamples.length === samples.length}
-                  onChange={() =>
-                    setInactive(
-                      activeSamples.length === samples.length
-                        ? new Set(samples.map((s) => s.sample)) // all active → deselect all
-                        : new Set() // some/none active → select all
-                    )
-                  }
-                  title="Select / deselect all rows"
-                  style={{ accentColor: UI.accent, cursor: 'pointer' }}
-                />
+              <td style={{ ...styles.checkCell, ...styles.rulerCheckCell, top: headerH }}>
+                {/* Invert the row selection — stacked directly above the select-all checkbox. */}
+                <button
+                  style={styles.invertLink}
+                  onClick={invertSelection}
+                  title="Check every unchecked row and uncheck every checked one"
+                >
+                  invert
+                </button>
+                {/* Select / deselect all rows (indeterminate when only some are active). The
+                    label makes the whole "all ☐" pair clickable. */}
+                <label style={styles.allCheck} title="Select / deselect all rows">
+                  all
+                  <input
+                    type="checkbox"
+                    ref={(el) => {
+                      if (el) el.indeterminate = activeSamples.length > 0 && activeSamples.length < samples.length
+                    }}
+                    checked={activeSamples.length === samples.length}
+                    onChange={() =>
+                      setInactive(
+                        activeSamples.length === samples.length
+                          ? new Set(samples.map((s) => s.sample)) // all active → deselect all
+                          : new Set() // some/none active → select all
+                      )
+                    }
+                    style={{ accentColor: UI.accent, cursor: 'pointer', margin: 0 }}
+                  />
+                </label>
               </td>
-              <td style={styles.rulerCell}>
+              <td style={{ ...styles.rulerCell, top: headerH }}>
                 <RulerName
                   name={samples[0].sample}
-                  map={fieldMapFromSpans(samples[0].sample, spans[samples[0].sample] ?? {})}
+                  map={fieldMapFromSpans(samples[0].sample, spans[samples[0].sample] ?? {}, delims)}
                 />
               </td>
             </tr>
@@ -1797,9 +2119,16 @@ function Stage1({
           <tbody>
             {samples.map((s, index) => {
               const active = !inactive.has(s.sample)
+              const hovered = hoverRow === s.sample
               return (
-                <tr key={s.sample}>
-                  <td style={styles.checkCell}>
+                <tr
+                  key={s.sample}
+                  style={styles.sampleRow}
+                  onMouseEnter={() => setHoverRow(s.sample)}
+                  onMouseLeave={() => setHoverRow((h) => (h === s.sample ? null : h))}
+                  onClick={(e) => rowClick(e, index)}
+                >
+                  <td style={{ ...styles.checkCell, ...(hovered ? styles.hoverCell : null) }}>
                     <input
                       type="checkbox"
                       checked={active}
@@ -1820,17 +2149,19 @@ function Stage1({
                     // region from this row and re-places it on every active row.
                     <TeacherRow
                       name={s.sample}
-                      map={fieldMapFromSpans(s.sample, spans[s.sample] ?? {})}
+                      map={fieldMapFromSpans(s.sample, spans[s.sample] ?? {}, delims)}
                       armed={armed}
                       onAnnotate={(st, en) => onAnnotate(s.sample, st, en, activeSamples)}
+                      hovered={hovered}
+                      delims={delims}
                     />
                   ) : (
                     // Inactive: greyed-out, non-editable, but still shows its ALREADY-painted spans
                     // (faint) — excluded from the paint, its existing tags are left untouched.
-                    <td style={{ ...styles.nameCell, ...styles.dimCell }}>
+                    <td style={{ ...styles.nameCell, ...styles.dimCell, ...(hovered ? styles.hoverCell : null) }}>
                       <PaintedName
                         name={s.sample}
-                        map={fieldMapFromSpans(s.sample, spans[s.sample] ?? {})}
+                        map={fieldMapFromSpans(s.sample, spans[s.sample] ?? {}, delims)}
                         faint
                       />
                     </td>
@@ -1908,12 +2239,15 @@ function ValueRefactor({
 function Stage2({
   samples,
   spans,
+  delims,
   setCell,
   onRenameValue
 }: {
   samples: InteractiveSampleCond[]
   /** sample header → field → applied token span (the source of the raw "original" value) */
   spans: Record<string, RowSpans>
+  /** token separators the spans were painted under */
+  delims: string[]
   setCell: (i: number, key: keyof InteractiveSampleCond, value: string | boolean) => void
   onRenameValue: (field: Field, oldVal: string, newVal: string) => void
 }): ReactNode {
@@ -1940,7 +2274,7 @@ function Stage2({
       const cur = String(s[f] ?? '').trim()
       if (cur === '') continue
       const span = spans[s.sample]?.[f]
-      const orig = span ? spanValue(s.sample, span) : cur
+      const orig = span ? spanValue(s.sample, span, delims) : cur
       ;(bucket[cur] ??= new Set()).add(orig)
     }
     const resolved: Record<string, string | undefined> = {}
@@ -1987,20 +2321,32 @@ function Stage2({
     document.addEventListener('mouseup', onUp)
   }
 
+  // Same stacked-sticky layout as the conditions step: stage title on top, the refactor section
+  // (title + hint + panel) under it with the page hint scrolling away between, then the table
+  // header under both. The refactor panel's height depends on how many values it lists.
+  const [titleRef, titleH] = useMeasuredHeight<HTMLDivElement>()
+  const [refactorRef, refactorH] = useMeasuredHeight<HTMLDivElement>()
+  const headerH = titleH + refactorH
+
   return (
     <>
-      <div style={styles.stageTitle}>{SHEET_TITLE}</div>
+      <div ref={titleRef} style={{ ...styles.stageTitle, ...styles.stickyTitle }}>
+        {SHEET_TITLE}
+      </div>
       <div style={styles.hint}>
         Review the parsed conditions and correct any cell. Drag a column border to resize; uncheck a
         row to drop it.
       </div>
       {distinctByField.length > 0 && (
-        <>
+        // The how-to hint sits outside the sticky section so it scrolls away with the page hint.
+        <div style={styles.hint}>
+          Under <b>Refactor values</b>, edit a value to rename it across <b>every</b> sample in that
+          condition (press Enter or click away to apply).
+        </div>
+      )}
+      {distinctByField.length > 0 && (
+        <div ref={refactorRef} style={{ ...styles.stickyChips, ...styles.stickySection, top: titleH }}>
           <div style={styles.tableTitle}>Refactor values</div>
-          <div style={styles.hint}>
-            Edit a value to rename it across <b>every</b> sample in that condition (press Enter or
-            click away to apply).
-          </div>
           <div style={styles.refactorPanel}>
             {distinctByField.map(({ field, values }) => (
               <ValueRefactor
@@ -2012,12 +2358,12 @@ function Stage2({
               />
             ))}
           </div>
-        </>
+        </div>
       )}
       <div style={styles.tableTitle}>Condition samplesheet</div>
-      {/* fill=false so the table takes its natural height and the whole dialog body scrolls as one —
-          the refactor panel growing then scrolls the page rather than shrinking this table. */}
-      <ScrollFade fill={false}>
+      {/* Not a scroll box: the table takes its natural height so the body scrolls as one page and
+          the header cells pin to the BODY's scroll (under the sticky strips above). */}
+      <div style={styles.nameTableWrap}>
         {/* minWidth:0 (not the shared grid's 100%) so columns fit their content — the sample
             column sizes to the longest sample name instead of stretching to fill the modal. */}
         <table style={{ ...styles.grid, tableLayout: fixed ? 'fixed' : 'auto', minWidth: 0 }}>
@@ -2039,6 +2385,7 @@ function Stage2({
                     }}
                     style={{
                       ...styles.th,
+                      top: headerH,
                       ...(active ? { color: FIELD_COLORS[c as Field] } : null)
                     }}
                     aria-label={c === 'include' ? 'include' : undefined}
@@ -2094,7 +2441,7 @@ function Stage2({
             })}
           </tbody>
         </table>
-      </ScrollFade>
+      </div>
     </>
   )
 }
@@ -2122,45 +2469,17 @@ function ValueDropdown({
 }): ReactNode {
   const mode = useUiTheme((s) => s.mode)
   const [open, setOpen] = useState(false)
-  const [rect, setRect] = useState<{ right: number; top: number; width: number } | null>(null)
-  const btnRef = useRef<HTMLButtonElement>(null)
-  const menuRef = useRef<HTMLDivElement>(null)
   const kept = values.filter((v) => !dropped.has(v)).length
   const summary =
     kept === values.length ? 'All values' : kept === 0 ? 'None kept' : `${kept}/${values.length} kept`
   // Deactivating the tile closes the menu without a state sync (derive rather than setState-in-effect).
   const isOpen = open && !disabled
-
-  useEffect(() => {
-    if (!isOpen) return
-    const b = btnRef.current?.getBoundingClientRect()
-    // Right-align the menu to the button so it never spills past the dialog's right edge.
-    if (b) setRect({ right: window.innerWidth - b.right, top: b.bottom + 4, width: b.width })
-    const onDown = (e: MouseEvent): void => {
-      const t = e.target as Node
-      if (menuRef.current?.contains(t) || btnRef.current?.contains(t)) return
-      setOpen(false)
-    }
-    const close = (): void => setOpen(false)
-    const onKey = (e: KeyboardEvent): void => {
-      if (e.key === 'Escape') setOpen(false)
-    }
-    document.addEventListener('mousedown', onDown)
-    window.addEventListener('scroll', close, true) // capture: any ancestor scroll dismisses
-    window.addEventListener('resize', close)
-    document.addEventListener('keydown', onKey)
-    return () => {
-      document.removeEventListener('mousedown', onDown)
-      window.removeEventListener('scroll', close, true)
-      window.removeEventListener('resize', close)
-      document.removeEventListener('keydown', onKey)
-    }
-  }, [isOpen])
+  const { btnRef, menuRef, rect } = useFloatingMenu(isOpen, setOpen)
 
   return (
     <>
       <button
-        ref={btnRef}
+        ref={btnRef as React.RefObject<HTMLButtonElement | null>}
         disabled={disabled}
         style={{ ...styles.dropdownBtn, borderColor: isOpen ? color : UI.border }}
         onClick={() => setOpen((o) => !o)}
@@ -2540,7 +2859,51 @@ const styles: Record<string, CSSProperties> = {
     fontSize: 12
   },
   hint: { color: UI.textMuted, fontSize: 12, lineHeight: 1.45 },
-  chips: { display: 'flex', flexWrap: 'wrap', gap: 8 },
+  chips: { display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8 },
+  chipsLabel: { fontSize: 12, fontWeight: 600, color: UI.textMuted, marginRight: 2 },
+  // "separator: [_]" box at the right end of the chip strip.
+  sepBox: {
+    marginLeft: 'auto',
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: 6,
+    fontSize: 12,
+    color: UI.textMuted
+  },
+  sepInput: {
+    width: 36,
+    padding: '3px 6px',
+    fontSize: 12,
+    fontFamily: MONO,
+    textAlign: 'center',
+    color: UI.text,
+    background: UI.panelRaised,
+    border: `1px solid ${UI.border}`,
+    borderRadius: 5
+  },
+  // Strips pinned to the top of the scrolling body (conditions step). Negative side margins +
+  // matching padding stretch each across the body's padding so rows can't peek past the edges,
+  // and the topmost one also paints an opaque, blur-less shadow above itself covering the body's
+  // top padding — sticky offsets can land inside a scroller's padding, and rows would otherwise
+  // show through that strip.
+  stickyTitle: {
+    position: 'sticky',
+    top: 0,
+    zIndex: 4,
+    background: UI.panel,
+    boxShadow: `0 -16px 0 0 ${UI.panel}`,
+    margin: '0 -16px',
+    padding: '0 16px 4px'
+  },
+  stickyChips: {
+    position: 'sticky',
+    zIndex: 3,
+    background: UI.panel,
+    margin: '0 -16px',
+    padding: '8px 16px'
+  },
+  // Sticky refactor section (samplesheet step): stacks its title, hint and panel like the body does.
+  stickySection: { display: 'flex', flexDirection: 'column', gap: 12 },
   chip: {
     display: 'inline-flex',
     alignItems: 'center',
@@ -2591,9 +2954,9 @@ const styles: Record<string, CSSProperties> = {
   },
   // Apply / Reset row beneath the filter cards.
   filterActions: { display: 'flex', alignItems: 'center', gap: 8, paddingTop: 2 },
-  filterDirty: { fontSize: 11, color: '#e2b93b', fontStyle: 'italic' },
+  filterDirty: { fontSize: 11, color: UI.warn, fontStyle: 'italic' },
   // Reason the Next button is disabled, shown just to its left.
-  nextBlock: { fontSize: 11, color: '#e2b93b', alignSelf: 'center', textAlign: 'right', maxWidth: 320 },
+  nextBlock: { fontSize: 11, color: UI.warn, alignSelf: 'center', textAlign: 'right', maxWidth: 320 },
   nextPreview: { fontSize: 12, color: UI.textMuted, alignSelf: 'center', textAlign: 'right' },
   stageTitle: { fontSize: 15, fontWeight: 700, color: UI.text, marginBottom: 2 },
   filterTools: { display: 'flex', gap: 10 },
@@ -2604,6 +2967,29 @@ const styles: Record<string, CSSProperties> = {
     padding: 0,
     fontSize: 11,
     fontWeight: 600,
+    cursor: 'pointer'
+  },
+  // "all ☐" select-all control in the sample-name table's header cell.
+  allCheck: {
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: 4,
+    fontSize: 10,
+    color: UI.textMuted,
+    cursor: 'pointer',
+    whiteSpace: 'nowrap'
+  },
+  // Compact "invert" button in the sample-name table's header cell, on top of the select-all box.
+  invertLink: {
+    display: 'block',
+    margin: '0 auto 3px',
+    background: UI.panelAlt,
+    color: UI.text,
+    border: `1px solid ${UI.border}`,
+    borderRadius: 4,
+    padding: '1px 5px',
+    fontSize: 10,
+    lineHeight: '14px',
     cursor: 'pointer'
   },
   valueChip: {
@@ -2813,6 +3199,7 @@ const styles: Record<string, CSSProperties> = {
   rulerCell: {
     position: 'sticky',
     top: 0,
+    zIndex: 2,
     // Extra headroom for the 45°-angled field labels, which ascend above the region text.
     padding: '34px 10px 2px',
     whiteSpace: 'nowrap',
@@ -2830,9 +3217,21 @@ const styles: Record<string, CSSProperties> = {
   },
   // Header cell for the select-all checkbox: sticky like the ruler, checkbox at the bottom so it
   // sits by the sample-name baseline rather than up in the angled-label headroom.
-  rulerCheckCell: { position: 'sticky', top: 0, background: UI.panel, verticalAlign: 'bottom', paddingBottom: 3 },
+  rulerCheckCell: {
+    position: 'sticky',
+    top: 0,
+    zIndex: 2,
+    background: UI.panel,
+    verticalAlign: 'bottom',
+    paddingBottom: 3
+  },
   // Active sample row: light/raised; tokens are clicked to tag (not text-selected).
   teachCell: { userSelect: 'none', background: UI.panelRaised },
+  // Whole row is a click target (toggles active) — pointer everywhere but the paintable tokens.
+  sampleRow: { cursor: 'pointer' },
+  // Hovered-row tint: a translucent wash layered over whichever base background the cell has, so
+  // it reads in both themes without a per-theme colour.
+  hoverCell: { backgroundImage: 'linear-gradient(rgba(128,128,128,0.14), rgba(128,128,128,0.14))' },
   // Inactive row: greyed background + muted text, non-editable — shows its faint existing tags only.
   dimCell: { userSelect: 'none', background: UI.panelAlt, color: UI.textMuted },
   confirm: {
@@ -2861,15 +3260,25 @@ const styles: Record<string, CSSProperties> = {
     background: UI.panelAlt
   },
   annTitle: { fontSize: 12, fontWeight: 700, color: UI.text, flex: '0 0 auto' },
-  annFields: { display: 'inline-flex', flexWrap: 'wrap', gap: 12 },
-  annField: {
+  annFields: { display: 'inline-flex', flexWrap: 'wrap', gap: 10 },
+  // One annotation category chip: [☐ Label n/m ▾] — the box picks the whole category, the label
+  // opens its member list.
+  annCatBtn: {
     display: 'inline-flex',
     alignItems: 'center',
-    gap: 4,
-    fontSize: 12,
+    gap: 6,
+    background: UI.panel,
     color: UI.text,
-    cursor: 'pointer'
+    border: `1px solid ${UI.border}`,
+    borderRadius: 5,
+    padding: '3px 8px 3px 6px',
+    fontSize: 12,
+    fontWeight: 600,
+    userSelect: 'none'
   },
+  annCatLabel: { display: 'inline-flex', alignItems: 'center', gap: 6 },
+  annCatCount: { fontSize: 10, fontWeight: 500, color: UI.textMuted },
+  annSoon: { marginLeft: 'auto', fontSize: 10, color: UI.textMuted, fontStyle: 'italic' },
   annMsg: {
     fontSize: 12,
     color: UI.textMuted,
@@ -2888,7 +3297,9 @@ const styles: Record<string, CSSProperties> = {
     animation: 'oe-spin 0.7s linear infinite',
     flex: '0 0 auto'
   },
-  gridWrap: { overflow: 'auto', border: `1px solid ${UI.border}`, borderRadius: 6 },
+  // Conditions-step table frame: no overflow (sticky header cells must pin to the BODY's scroll,
+  // not a nested box), so a wide table scrolls the body horizontally instead.
+  nameTableWrap: { flex: '0 0 auto', border: `1px solid ${UI.border}`, borderRadius: 6 },
   fadeWrap: { position: 'relative', flex: 1, minHeight: 0, display: 'flex' },
   fadeScroll: {
     flex: 1,

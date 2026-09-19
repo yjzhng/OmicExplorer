@@ -2,11 +2,15 @@ import { BaseEdge, EdgeLabelRenderer, getBezierPath, type EdgeProps } from '@xyf
 import { type CSSProperties } from 'react'
 
 import { UI } from '../ui/theme'
+import { usedInputs } from './contrastPair'
 import { useGraph } from './store'
+import { isStep, type ContrastConfig } from './types'
 
 /** Editable edge: selectable, with a delete button shown when selected. */
 export function GraphEdge({
   id,
+  source,
+  target,
   sourceX,
   sourceY,
   targetX,
@@ -17,6 +21,14 @@ export function GraphEdge({
   markerEnd
 }: EdgeProps) {
   const removeEdge = useGraph((s) => s.removeEdge)
+  // A Contrast can have more inputs wired than it consumes (it picks one dataset, or a pair);
+  // an input it isn't using is drawn dashed so the wiring reads as "connected but idle".
+  const idle = useGraph((s) => {
+    const tgt = s.nodes.find((n) => n.id === target)
+    if (!tgt || !isStep(tgt) || tgt.data.kind !== 'contrast') return false
+    const ups = s.edges.filter((e) => e.target === target).map((e) => e.source)
+    return !usedInputs(tgt.data.config as ContrastConfig, ups).has(source)
+  })
   const [path, labelX, labelY] = getBezierPath({
     sourceX,
     sourceY,
@@ -34,7 +46,8 @@ export function GraphEdge({
         markerEnd={markerEnd}
         style={{
           stroke: selected ? UI.accent : '#5a5a6a',
-          strokeWidth: selected ? 2 : 1.5
+          strokeWidth: selected ? 2 : 1.5,
+          ...(idle ? { strokeDasharray: '6 4', opacity: 0.6 } : null)
         }}
       />
       {selected && (

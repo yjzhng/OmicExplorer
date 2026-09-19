@@ -170,7 +170,8 @@ export function EnrichView({
       // KEGG category → colour (stable order = first appearance, top→bottom). Colour each pathway's
       // y-tick label by its category and show a centred legend above (only categories present).
       const cats: string[] = []
-      for (const row of rows) if (row.category && !cats.includes(row.category)) cats.push(row.category)
+      for (const row of rows)
+        if (row.category && !cats.includes(row.category)) cats.push(row.category)
       const catColor = new Map(cats.map((c, i) => [c, CATEGORICAL[i % CATEGORICAL.length]]))
       // y-tick label for a pathway given its hover state: active → bold in its (category or default)
       // colour; when another pathway is active this one FADES (low-opacity of its own colour, like the
@@ -395,7 +396,7 @@ export function EnrichView({
     const tickvals: number[] = []
     for (let k = -kmax; k <= kmax; k++) tickvals.push(k * step)
     const bound = kmax * step
-    const xTitle = style === 'bar' ? '−log₁₀ p.adj' : gsea ? 'NES' : 'gene ratio'
+    const xTitle = style === 'bar' ? '−log p.adj' : gsea ? 'NES' : 'gene ratio'
     const unit = gsea ? 'sets' : 'genes'
     const heading = title ?? ''
 
@@ -429,7 +430,14 @@ export function EnrichView({
         ? [note('No enriched terms', 0.5, 0.5, p.textMuted, 12)]
         : [
             note(`up ▸ ${enrich.querySize.up} ${unit}`, 0.99, 1.05, EFFECT_COLOR.up, 11, 'right'),
-            note(`◂ down ${enrich.querySize.down} ${unit}`, 0.01, 1.05, EFFECT_COLOR.down, 11, 'left')
+            note(
+              `◂ down ${enrich.querySize.down} ${unit}`,
+              0.01,
+              1.05,
+              EFFECT_COLOR.down,
+              11,
+              'left'
+            )
           ]
     }
     if (empty) {

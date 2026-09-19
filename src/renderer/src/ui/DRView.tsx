@@ -17,6 +17,9 @@ import { useUiTheme } from './useUiTheme'
  * background and coloured too, ALONGSIDE the top-N — so linked selection highlights any
  * curve, not only the pre-chosen ones.
  */
+/** Fold-change axis title, naming the comparison ("log₂FC · A | B") when the rows share one. */
+const fcLabel = (dr: DRData): string => (dr.comparison ? `log₂FC · ${dr.comparison}` : 'log₂FC')
+
 export function DRView({ dr, title }: { dr: DRData; title?: string }) {
   const mode = useUiTheme((s) => s.mode)
   const hoverId = useSelection((s) => s.hoverId)
@@ -55,7 +58,7 @@ export function DRView({ dr, title }: { dr: DRData; title?: string }) {
       y: by,
       text: btext,
       customdata: bid,
-      hovertemplate: `%{text}<br>${dr.axis}=%{x}<br>log2FC=%{y:.3f}<extra></extra>`,
+      hovertemplate: `%{text}<br>${dr.axis}=%{x}<br>${fcLabel(dr)}=%{y:.3f}<extra></extra>`,
       line: { color: p.textMuted, width: 1 },
       opacity: 0.22,
       showlegend: false
@@ -82,7 +85,7 @@ export function DRView({ dr, title }: { dr: DRData; title?: string }) {
       x: s.points.map((pt) => String(pt.x)),
       y: s.points.map((pt) => pt.y),
       customdata: s.points.map(() => s.uniqID),
-      hovertemplate: `${s.label}<br>${dr.axis}=%{x}<br>log2FC=%{y:.3f}<extra></extra>`,
+      hovertemplate: `${s.label}<br>${dr.axis}=%{x}<br>${fcLabel(dr)}=%{y:.3f}<extra></extra>`,
       line: { color, width },
       showlegend
     })
@@ -99,13 +102,10 @@ export function DRView({ dr, title }: { dr: DRData; title?: string }) {
       return line(s, CATEGORICAL[i % CATEGORICAL.length], on ? 4 : 2)
     })
     // A hovered/pinned gene that ISN'T a top-N curve has no colour of its own (it lives in the grey
-    // background), so draw it as an emphasis overlay — coloured by its peak |log2FC| on the shared
+    // background), so draw it as an emphasis overlay — coloured by its peak |log₂FC| on the shared
     // diverging (down→up) scale (not a flat accent), so it matches the bubble/heatmap palette.
     const extra = dr.series.filter((s) => active.has(s.uniqID) && !topIds.has(s.uniqID))
-    const absMax = Math.max(
-      1e-9,
-      ...dr.series.flatMap((s) => s.points.map((pt) => Math.abs(pt.y)))
-    )
+    const absMax = Math.max(1e-9, ...dr.series.flatMap((s) => s.points.map((pt) => Math.abs(pt.y))))
     const dcolor = divergeColor(absMax)
     const peak = (s: DRSeries): number =>
       s.points.reduce((best, pt) => (Math.abs(pt.y) > Math.abs(best) ? pt.y : best), 0)
@@ -126,7 +126,7 @@ export function DRView({ dr, title }: { dr: DRData; title?: string }) {
         categoryorder: 'array',
         categoryarray: cats
       },
-      yaxis: { ...axisBase(p), title: 'log₂ fold change', zeroline: true }
+      yaxis: { ...axisBase(p), title: fcLabel(dr), zeroline: true }
     }
     return { data: [background, ...colored], layout: lay }
   }, [dr, title, mode, hoverId, pinnedIds, background])

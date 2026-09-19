@@ -6,6 +6,8 @@
  */
 import { create } from 'zustand'
 
+import type { GeneSet } from '../graph/types'
+
 interface SelectionState {
   /** transient hover (one feature) */
   hoverId: string | null
@@ -56,3 +58,23 @@ export const useSelection = create<SelectionState>((set) => ({
   setPins: (ids) => set({ pinnedIds: new Set(ids) }),
   clearPins: () => set((s) => (s.pinnedIds.size === 0 ? s : { pinnedIds: new Set() }))
 }))
+
+/** The saved geneset the pinned selection IS, if any: its gene ids equal the pinned set exactly
+ *  (first match wins). Views name a selection-derived legend entry after it — an ad-hoc pick has
+ *  no name worth a legend row, so they hide the entry when this is null. */
+export function matchingGeneSet(pinnedIds: Set<string>, geneSets: GeneSet[]): GeneSet | null {
+  if (pinnedIds.size === 0) return null
+  for (const gs of geneSets) {
+    const ids = new Set(gs.genes.map((g) => g.id))
+    if (ids.size !== pinnedIds.size) continue
+    let same = true
+    for (const id of pinnedIds) {
+      if (!ids.has(id)) {
+        same = false
+        break
+      }
+    }
+    if (same) return gs
+  }
+  return null
+}

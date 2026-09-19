@@ -7,8 +7,8 @@ import { useSelection } from './useSelection'
 import { useUiTheme } from './useUiTheme'
 
 /** Bubble grid: genes (x) × dose/time (y). Dot fill = log2FC (diverging), size =
- *  |log2FC|; no outline. Genes are pre-ordered by max log2FC. The base
- *  set is top-N (or the GOI subset); hovered/pinned genes are appended to the axis so a
+ *  |log₂FC|; no outline. Genes are pre-ordered by max log2FC. The base
+ *  set is top-N (or the selected subset); hovered/pinned genes are appended to the axis so a
  *  linked selection shows up alongside rather than replacing the list. */
 export function BubbleView({
   rows,
@@ -62,7 +62,7 @@ export function BubbleView({
       customdata: bubble.points.map((pt) => pt.uniqID),
       // Level index is not human-readable, so carry the real value in the hover text.
       text: bubble.points.map((pt) => `${pt.gene}<br>${bubble.axis}=${pt.x}`),
-      hovertemplate: `%{text}<br>log2FC=%{marker.color:.3f}<extra></extra>`,
+      hovertemplate: `%{text}<br>log₂FC=%{marker.color:.3f}<extra></extra>`,
       marker: {
         size: bubble.points.map((pt) => 6 + (Math.abs(pt.log2FC) / maxAbsFC) * 22),
         color: bubble.points.map((pt) => pt.log2FC),

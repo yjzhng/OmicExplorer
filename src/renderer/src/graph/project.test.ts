@@ -15,7 +15,7 @@ function sampleResults(): Record<string, NodeResult> {
     'std-1': {
       kind: 'standardize',
       std: {
-        rows: [{ uniqID: 'g1', strain: '', cmpd: 'E28', dose: 0.3, time: 72, rep: 1, value: 9.2 }],
+        rows: [{ uniqID: 'g1', cell: '', cmpd: 'E28', dose: 0.3, time: 72, rep: 1, value: 9.2 }],
         displayMap: { g1: 'Rv1155a' },
         activeConditions: ['cmpd', 'dose', 'time']
       }
@@ -112,6 +112,141 @@ describe('project (folders) serialization', () => {
     const fresh = nextWorkflowId()
     const n = Number(/-(\d+)$/.exec(fresh)?.[1])
     expect(n).toBeGreaterThan(3) // past wf-3 and fd-7 → no collision
+  })
+
+  it('migrates the pre-rename `strain` condition to `cell` in configs and embedded results', () => {
+    const p = deserializeProject(
+      JSON.stringify({
+        format: 'omicexplorer-project',
+        version: 2,
+        name: 'old',
+        activeFolderId: 'fd-1',
+        folders: [
+          {
+            id: 'fd-1',
+            name: 'f',
+            path: '/d',
+            activeWorkflowId: 'wf-1',
+            workflows: [
+              {
+                id: 'wf-1',
+                name: 'A',
+                doc: {
+                  ...emptyWorkflowDoc(),
+                  nodes: [
+                    {
+                      id: 'std-1',
+                      kind: 'standardize',
+                      config: { activeConditions: ['strain', 'dose'], minSamplePctPerStrain: true }
+                    },
+                    {
+                      id: 'cmp-1',
+                      kind: 'compare',
+                      config: {
+                        num: { strain: ['M'] },
+                        den: { strain: ['W'] },
+                        match: ['strain', 'time'],
+                        condition: 'strain',
+                        condition2: 'time'
+                      }
+                    },
+                    {
+                      id: 'imp-1',
+                      kind: 'interactive',
+                      config: {
+                        conditions: { s1: { sample: 's1', strain: 'WT', cmpd: 'A' } },
+                        spans: { s1: { strain: [0, 2] } }
+                      }
+                    },
+                    { id: 'cl-1', kind: 'cluster', config: { colorBy: 'strain' }, name: 'strain' }
+                  ]
+                },
+                results: {
+                  'std-1': {
+                    kind: 'standardize',
+                    std: {
+                      rows: [{ uniqID: 'g1', strain: 'WT', cmpd: 'A', value: 1 }],
+                      activeConditions: ['strain'],
+                      cleanup: { perStrain: true }
+                    }
+                  },
+                  'cmp-1': {
+                    kind: 'compare',
+                    cmp: { rows: [{ uniqID: 'g1', strain: 'M', cmp_cond: 'cmpd:strain' }] }
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      })
+    )
+    const nodes = p.folders[0].workflows[0].doc.nodes as unknown as {
+      id: string
+      config: Record<string, unknown>
+      name?: string
+    }[]
+    const cfg = (id: string): Record<string, unknown> => nodes.find((n) => n.id === id)!.config
+    expect(cfg('std-1')).toEqual({ activeConditions: ['cell', 'dose'], minSamplePctBy: ['cell'] })
+    expect(cfg('cmp-1')).toEqual({
+      num: { cell: ['M'] },
+      den: { cell: ['W'] },
+      match: ['cell', 'time'],
+      condition: 'cell',
+      condition2: 'time'
+    })
+    expect(cfg('imp-1')).toEqual({
+      conditions: { s1: { sample: 's1', cell: 'WT', cmpd: 'A' } },
+      spans: { s1: { cell: [0, 2] } }
+    })
+    expect(cfg('cl-1')).toEqual({ colorBy: 'cell' })
+    // A user-visible node name is left alone — it's a label, not a key.
+    expect(nodes.find((n) => n.id === 'cl-1')!.name).toBe('strain')
+    const res = p.folders[0].workflows[0].results as unknown as Record<
+      string,
+      { std?: unknown; cmp?: { rows: unknown[] } }
+    >
+    expect(res['std-1'].std).toEqual({
+      rows: [{ uniqID: 'g1', cell: 'WT', cmpd: 'A', value: 1 }],
+      activeConditions: ['cell'],
+      cleanup: { by: ['cell'] }
+    })
+    expect(res['cmp-1'].cmp?.rows[0]).toEqual({ uniqID: 'g1', cell: 'M', cmp_cond: 'cmpd:cell' })
+    expect(JSON.stringify(p)).not.toMatch(/"strain"\s*:/) // no key left under the old name
+  })
+
+  it('migration is a no-op on a project already using `cell`, and `cell` wins over a stale `strain`', () => {
+    const doc = {
+      ...emptyWorkflowDoc(),
+      nodes: [
+        {
+          id: 'cmp-1',
+          kind: 'compare',
+          config: { num: { cell: ['M'], strain: ['X'] }, match: ['cell'] }
+        }
+      ]
+    }
+    const p = deserializeProject(
+      JSON.stringify({
+        format: 'omicexplorer-project',
+        version: 2,
+        name: 'new',
+        activeFolderId: 'fd-1',
+        folders: [
+          {
+            id: 'fd-1',
+            name: 'f',
+            path: '/d',
+            activeWorkflowId: 'wf-1',
+            workflows: [{ id: 'wf-1', name: 'A', doc, results: {} }]
+          }
+        ]
+      })
+    )
+    const node = p.folders[0].workflows[0].doc.nodes[0] as unknown as {
+      config: Record<string, unknown>
+    }
+    expect(node.config).toEqual({ num: { cell: ['M'] }, match: ['cell'] })
   })
 
   it('newProjectFile starts with one folder + one workflow, no data path', () => {

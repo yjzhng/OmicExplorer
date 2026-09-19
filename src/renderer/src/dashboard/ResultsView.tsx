@@ -135,7 +135,11 @@ export function ResultsView(): ReactNode {
     const m: Record<string, Record<string, string>> = {}
     for (const r of Object.values(results)) {
       const am =
-        r.kind === 'standardize' ? r.std.annotationMap : r.kind === 'compare' ? r.annotationMap : undefined
+        r.kind === 'standardize'
+          ? r.std.annotationMap
+          : r.kind === 'compare'
+            ? r.annotationMap
+            : undefined
       if (!am) continue
       for (const id in am) {
         const rec = m[id] ?? (m[id] = {})
@@ -149,7 +153,11 @@ export function ResultsView(): ReactNode {
     const m: Record<string, string> = {}
     for (const r of Object.values(results)) {
       const kc =
-        r.kind === 'standardize' ? r.std.keggCategories : r.kind === 'compare' ? r.keggCategories : undefined
+        r.kind === 'standardize'
+          ? r.std.keggCategories
+          : r.kind === 'compare'
+            ? r.keggCategories
+            : undefined
       if (kc) for (const k in kc) if (!(k in m)) m[k] = kc[k]
     }
     return m
@@ -241,8 +249,7 @@ export function ResultsView(): ReactNode {
     return (
       <div style={styles.view}>
         <div style={styles.empty}>
-          No analyses yet. Add a Standardize, Compare, or Contrast step with its plots on the
-          canvas.
+          No analyses yet. Add a Clean data, Compare, or Contrast step with its plots on the canvas.
         </div>
       </div>
     )
@@ -373,7 +380,7 @@ export function ResultsView(): ReactNode {
 }
 
 /** The shared facet switcher for one analysis group, shown on the results tab row. Reads
- *  the group's comparison rows for the full context (strain/dose/time) and writes the one
+ *  the group's comparison rows for the full context (cell/dose/time) and writes the one
  *  selection every FacetedPlot in the group follows. Renders nothing for a non-faceted
  *  group (e.g. a Standardize's heatmap/bar/cluster). */
 function FacetContextBar({
@@ -402,16 +409,26 @@ function FacetContextBar({
           {/* Fused pill, matching the main-nav Workflow/Results switch and the in-plot
               SwitchBar: a rounded track whose active level is an accent-filled chip. */}
           <div style={styles.facetPill}>
-            {options.map((v) => {
+            {options.map(({ value: v, onlyOn }) => {
               const on = String(v) === String(value)
+              // One-sided contrast level (outer-join rows with nothing to pair): greyed, not
+              // selectable — the tooltip says which side has the data.
               return (
                 <button
                   key={String(v)}
                   role="tab"
                   aria-selected={on}
+                  aria-disabled={!!onlyOn}
+                  disabled={!!onlyOn}
+                  title={
+                    onlyOn
+                      ? `${dim} = ${v} is only on ${onlyOn} — no partner to contrast`
+                      : undefined
+                  }
                   onClick={() => setLevel(group.id, dim, String(v))}
                   style={{
                     ...styles.facetTab,
+                    ...(onlyOn ? styles.facetTabOff : null),
                     background: on ? UI.accent : 'transparent',
                     color: on ? UI.accentText : UI.text
                   }}
@@ -595,6 +612,8 @@ const styles: Record<string, CSSProperties> = {
     whiteSpace: 'nowrap',
     flex: '0 0 auto'
   },
+  // A level with no paired data (one side of a contrast only): greyed and inert.
+  facetTabOff: { opacity: 0.35, cursor: 'not-allowed' },
   tab: {
     display: 'inline-flex',
     alignItems: 'center',

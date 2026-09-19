@@ -38,17 +38,17 @@ export function buildFolderMap(
 
 /**
  * Build the path (relative to the export base dir) for one output. `folder` is the resolved
- * per-analysis folder name (see buildFolderMap). GOI-subset variants are filed under a `GOI`
- * subfolder so they never overwrite the all-genes version of the same plot.
+ * per-analysis folder name (see buildFolderMap). Selected-only variants are filed under a
+ * `selected` subfolder so they never overwrite the all-genes version of the same plot.
  */
 export function exportPath(
   folder: string,
   fileBase: string,
   structure: 'subfolder' | 'flat',
   ext: string,
-  goi = false
+  selected = false
 ): string {
   const file = `${sanitize(fileBase)}.${ext}`
-  if (structure === 'subfolder') return goi ? `${folder}/GOI/${file}` : `${folder}/${file}`
-  return goi ? `GOI/${folder}__${file}` : `${folder}__${file}`
+  if (structure === 'subfolder') return selected ? `${folder}/selected/${file}` : `${folder}/${file}`
+  return selected ? `selected/${folder}__${file}` : `${folder}__${file}`
 }

@@ -41,7 +41,7 @@ function transpose<T>(m: T[][]): T[][] {
 
 /** Distinct values of a condition → track colour. Numeric conditions (dose, time) use a
  *  monochrome grey ramp keyed to the sorted value (low = light, high = dark), kept off its
- *  extremes; categorical conditions cycle a palette — strain uses CATEGORICAL, cmpd a distinct
+ *  extremes; categorical conditions cycle a palette — cell uses CATEGORICAL, cmpd a distinct
  *  one so the two never read as the same colour scheme. */
 function condColours(samples: HeatmapData['samples'], c: ConditionKey): Map<string, string> {
   const ramp = SEQ_RAMPS[c]
@@ -80,7 +80,7 @@ function buildTracks(
   bg: string
 ): { trace: Record<string, unknown>; shapes: Record<string, unknown>[] } | null {
   // Portrait stacks the tracks on the y-axis, where Plotly draws row 0 at the BOTTOM — so reverse
-  // the order there to read strain→cmpd→dose→time top-to-bottom. Landscape lays them left-to-right
+  // the order there to read cell→cmpd→dose→time top-to-bottom. Landscape lays them left-to-right
   // (row 0 already leftmost), so keep the natural order.
   const conds = landscape ? heatmap.conds : [...heatmap.conds].reverse()
   if (conds.length === 0) return null
@@ -238,10 +238,10 @@ export function HeatmapView({
         x: landscape ? heatmap.y : heatmap.x,
         y: landscape ? heatmap.x : heatmap.y,
         colorscale: 'Viridis',
-        colorbar: { title: { text: 'log₁₀', side: 'right' }, thickness: 12 },
+        colorbar: { title: { text: 'log abundance', side: 'right' }, thickness: 12 },
         hovertemplate: landscape
-          ? 'gene=%{x}<br>sample=%{y}<br>log₁₀=%{z:.2f}<extra></extra>'
-          : 'gene=%{y}<br>sample=%{x}<br>log₁₀=%{z:.2f}<extra></extra>'
+          ? 'gene=%{x}<br>sample=%{y}<br>log=%{z:.2f}<extra></extra>'
+          : 'gene=%{y}<br>sample=%{x}<br>log=%{z:.2f}<extra></extra>'
       }
     ]
     if (tracks) traces.push(tracks.trace)
@@ -277,7 +277,8 @@ export function HeatmapView({
     if (landscape) {
       lay.yaxis = { ...sampleAxis }
       lay.xaxis = { ...geneAxis, domain: nT > 0 ? [0, mainEnd] : [0, 1] }
-      if (tracks) lay.xaxis2 = { ...trackAxis, domain: [mainEnd + gap, 1], anchor: 'y', tickangle: -45 }
+      if (tracks)
+        lay.xaxis2 = { ...trackAxis, domain: [mainEnd + gap, 1], anchor: 'y', tickangle: -45 }
     } else {
       lay.xaxis = { ...sampleAxis }
       // Reverse so the FIRST gene row renders at the TOP (Plotly puts index 0 at the bottom by

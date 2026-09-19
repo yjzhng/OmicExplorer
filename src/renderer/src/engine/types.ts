@@ -1,12 +1,13 @@
+import type { ImputeOptions, ImputeSummary } from './impute'
 /** Shared types for the analysis engine. */
 
-export type ConditionKey = 'strain' | 'cmpd' | 'dose' | 'time'
-export const VALID_CONDITIONS: ConditionKey[] = ['strain', 'cmpd', 'dose', 'time']
+export type ConditionKey = 'cell' | 'cmpd' | 'dose' | 'time'
+export const VALID_CONDITIONS: ConditionKey[] = ['cell', 'cmpd', 'dose', 'time']
 
 /** One row of the tidy standardized table (one gene × one sample). */
 export interface StandardRow {
   uniqID: string
-  strain: string
+  cell: string
   cmpd: string
   dose: number | null
   time: number | null
@@ -14,6 +15,8 @@ export interface StandardRow {
   value: number | null
   /** optional PSM/peptide count carried through for DEqMS (unused in M1) */
   peptides?: number | null
+  /** true when `value` was filled in by imputation rather than measured */
+  imputed?: boolean
 }
 
 export interface StandardizeInput {
@@ -30,11 +33,13 @@ export interface StandardizeInput {
   /** clean-up: drop genes identified (non-null value) in fewer than this % of
    *  samples. 0 / undefined = keep everything. */
   minSamplePct?: number
-  /** when true, the % threshold is measured PER STRAIN: a gene's values are removed (nulled) in
-   *  every strain where its within-strain coverage is below the threshold (kept only where it
-   *  clears the bar); a gene failing in all strains is dropped. Otherwise the threshold pools all
-   *  samples and drops the whole gene. */
-  minSamplePctPerStrain?: boolean
+  /** conditions the % threshold is measured WITHIN: samples are grouped by the tuple of these
+   *  conditions and a gene is dropped only when its within-group coverage is below the threshold
+   *  in EVERY group (clearing it in any one group keeps the gene whole — absence elsewhere may just
+   *  be below the detection limit). Empty / undefined pools all samples. */
+  minSamplePctBy?: ConditionKey[]
+  /** fill missing values after clean-up (see impute.ts); undefined = leave them missing */
+  impute?: ImputeOptions
   /** pathway name → KEGG category (global; from the interactive import). Passed straight through to
    *  the result — it's not per-row, so it can't ride the DB columns. */
   keggCategories?: Record<string, string>
@@ -56,13 +61,15 @@ export interface StandardizeResult {
   /** distinct compound names found */
   compounds: string[]
   /** clean-up summary: how many genes were dropped, how many total samples the presence threshold
-   *  was measured against, the threshold, and whether it was applied per strain. */
+   *  was measured against, the threshold, and the conditions it was measured within (if any). */
   cleanup: {
     droppedGenes: number
     sampleCount: number
     minSamplePct: number
-    perStrain?: boolean
+    by?: ConditionKey[]
   }
+  /** imputation summary when it ran (absent = values left missing) */
+  imputation?: ImputeSummary
 }
 
 /** A (numerator, denominator) compound pair for a comparison. */
@@ -107,7 +114,7 @@ export interface CompareResultRow {
   cmpd: string
   dose: number | null
   time: number | null
-  strain?: string
+  cell?: string
   cmp_cond: string
   comparison: string
   mean1: number | null
@@ -128,4 +135,7 @@ export interface VehNormResult {
   rows: CompareResultRow[]
   /** the comparisons present, e.g. ["E28 | DMSO"] */
   comparisons: string[]
+  /** the threshold the rows' calls were made with (see CompareTableResult; absent on results
+   *  saved before it existed) */
+  threshold?: import('./stats').ThresholdConfig
 }

@@ -2,21 +2,25 @@ import { mkdir, writeFile, unlink } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { tmpdir } from 'node:os'
 
-import { BrowserWindow, ipcMain, shell } from 'electron'
+import { BrowserWindow, clipboard, ipcMain, nativeImage, shell } from 'electron'
 
 import { buildCsv, buildXlsx } from './xlsx'
 
-/** One plot to write: a base64 PNG (produced in the renderer via Plotly.toImage),
- *  plus the physical page size to use when wrapping it into a PDF. */
+/** One plot to write: a base64 PNG (produced in the renderer via Plotly.toImage) — or, for
+ *  `svg`, the base64 SVG markup — plus the physical page size to use when wrapping it into a
+ *  PDF. */
 export interface ExportItem {
   /** path relative to the export base dir, using '/' separators (may contain one subdir) */
   relPath: string
-  format: 'png' | 'pdf'
-  /** base64-encoded PNG bytes (no data: prefix) */
+  format: 'png' | 'pdf' | 'svg'
+  /** base64-encoded file bytes (PNG, or the SVG markup; no data: prefix) */
   base64: string
   widthIn: number
   heightIn: number
 }
+
+/** One plot to put on the clipboard: PNG bytes as an image, or SVG markup as text. */
+export type CopyPayload = { format: 'png'; base64: string } | { format: 'svg'; svg: string }
 
 export interface ExportPayload {
   baseDir: string
@@ -110,6 +114,7 @@ export function registerPlotExport(): void {
             const pdf = await pngToPdf(pdfWin, it.base64, it.widthIn, it.heightIn)
             await writeFile(abs, pdf)
           } else {
+            // PNG bytes, or the SVG markup — both arrive base64 and are written verbatim.
             await writeFile(abs, Buffer.from(it.base64, 'base64'))
           }
           written++
@@ -143,6 +148,14 @@ export function registerPlotExport(): void {
       }
     }
     return { dir: baseDir, written, errors }
+  })
+
+  /** Per-tile "copy" button: PNG goes on the clipboard as an image (pastes into slides, docs,
+   *  chat); SVG has no cross-app clipboard image type, so it goes on as its markup text. Done here
+   *  with Electron's clipboard, which has none of the focus/permission rules of the web API. */
+  ipcMain.handle('plots:copy', async (_evt, payload: CopyPayload): Promise<void> => {
+    if (payload.format === 'svg') clipboard.writeText(payload.svg)
+    else clipboard.writeImage(nativeImage.createFromBuffer(Buffer.from(payload.base64, 'base64')))
   })
 
   ipcMain.handle('plots:reveal', async (_evt, dir: string): Promise<void> => {

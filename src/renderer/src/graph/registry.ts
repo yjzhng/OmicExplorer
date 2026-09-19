@@ -1,5 +1,6 @@
 /** Static metadata for node operations, grouped under high-level categories. */
 import { DEFAULT_THRESHOLD } from '../engine'
+import { isStep } from './types'
 import type {
   BarConfig,
   BubbleConfig,
@@ -9,7 +10,6 @@ import type {
   DumbbellConfig,
   EnrichConfig,
   StringConfig,
-  FocusConfig,
   HeatmapConfig,
   LoadConfig,
   MAConfig,
@@ -17,6 +17,7 @@ import type {
   NodeConfig,
   NodeKind,
   NodeResult,
+  GraphNode,
   ClusterConfig,
   CorrConfig,
   PlotGroupConfig,
@@ -28,12 +29,11 @@ import type {
   VolcanoConfig
 } from './types'
 
-/** Fresh default focus config (own arrays, so nodes never alias one list). */
-const mkFocus = (): FocusConfig => ({ mode: 'inherit', goi: [], panel: [] })
-
 export interface NodeSpec {
   kind: NodeKind
   label: string
+  /** one-line gloss shown under the label in the new-step picker */
+  subtitle?: string
   category: NodeCategory
   /** upstream operations this op accepts an input from (empty = source node) */
   acceptsFrom: NodeKind[]
@@ -59,20 +59,19 @@ export const NODE_SPECS: Record<NodeKind, NodeSpec> = {
   },
   standardize: {
     kind: 'standardize',
-    label: 'Standardize',
+    label: 'Clean data',
     category: 'processing',
     acceptsFrom: ['load'],
     hasRun: true,
     defaultConfig: (): StandardizeConfig => ({
       activeConditions: null,
-      goi: [],
-      panel: [],
       minSamplePct: 0
     })
   },
   compare: {
     kind: 'compare',
     label: 'Compare',
+    subtitle: 'fold change of A | B',
     category: 'processing',
     acceptsFrom: ['standardize'],
     hasRun: true,
@@ -96,6 +95,7 @@ export const NODE_SPECS: Record<NodeKind, NodeSpec> = {
   contrast: {
     kind: 'contrast',
     label: 'Contrast',
+    subtitle: 'side-by-side A vs B',
     category: 'processing',
     // One Compare (split by a condition), or two same-kind inputs (Compare or Standardize) joined
     // as FC1/FC2 in 'pair' mode.
@@ -115,7 +115,7 @@ export const NODE_SPECS: Record<NodeKind, NodeSpec> = {
     category: 'plotting',
     acceptsFrom: ['compare'],
     hasRun: false,
-    defaultConfig: (): VolcanoConfig => ({ statType: 'pP', labelTop: 0, focus: mkFocus() })
+    defaultConfig: (): VolcanoConfig => ({ capEnabled: false, labelTop: 20 })
   },
   heatmap: {
     kind: 'heatmap',
@@ -124,7 +124,7 @@ export const NODE_SPECS: Record<NodeKind, NodeSpec> = {
     // Standardize → intensity heatmap; Compare → log2FC heatmap (same tile, upstream decides).
     acceptsFrom: ['standardize', 'compare'],
     hasRun: false,
-    defaultConfig: (): HeatmapConfig => ({ maxGenes: 0, log10: true, focus: mkFocus() })
+    defaultConfig: (): HeatmapConfig => ({ capEnabled: false, maxGenes: 50, log10: true })
   },
   scatter: {
     kind: 'scatter',
@@ -134,7 +134,7 @@ export const NODE_SPECS: Record<NodeKind, NodeSpec> = {
     // (mean1 vs mean2), e.g. the basal clpP-vs-WT abundances from a direct comparison.
     acceptsFrom: ['contrast', 'compare'],
     hasRun: false,
-    defaultConfig: (): ScatterConfig => ({ labelTop: 0 })
+    defaultConfig: (): ScatterConfig => ({ capEnabled: false, labelTop: 20 })
   },
   ma: {
     kind: 'ma',
@@ -142,7 +142,7 @@ export const NODE_SPECS: Record<NodeKind, NodeSpec> = {
     category: 'plotting',
     acceptsFrom: ['compare'],
     hasRun: false,
-    defaultConfig: (): MAConfig => ({ fcLow: -1, fcHigh: 1, focus: mkFocus() })
+    defaultConfig: (): MAConfig => ({ fcLow: -1, fcHigh: 1 })
   },
   dr: {
     kind: 'dr',
@@ -152,7 +152,7 @@ export const NODE_SPECS: Record<NodeKind, NodeSpec> = {
     // BOTH contrasted sides (FC1 vs FC2), for comparing profiles between two datasets/contrasts.
     acceptsFrom: ['compare', 'contrast'],
     hasRun: false,
-    defaultConfig: (): DRConfig => ({ axis: 'dose', topGenes: 10, focus: mkFocus() })
+    defaultConfig: (): DRConfig => ({ axis: 'dose', capEnabled: true, topGenes: 1 })
   },
   bubble: {
     kind: 'bubble',
@@ -160,7 +160,7 @@ export const NODE_SPECS: Record<NodeKind, NodeSpec> = {
     category: 'plotting',
     acceptsFrom: ['compare'],
     hasRun: false,
-    defaultConfig: (): BubbleConfig => ({ axis: 'dose', topGenes: 20, focus: mkFocus() })
+    defaultConfig: (): BubbleConfig => ({ axis: 'dose', capEnabled: true, topGenes: 1 })
   },
   dumbbell: {
     kind: 'dumbbell',
@@ -168,7 +168,7 @@ export const NODE_SPECS: Record<NodeKind, NodeSpec> = {
     category: 'plotting',
     acceptsFrom: ['contrast'],
     hasRun: false,
-    defaultConfig: (): DumbbellConfig => ({ topGenes: 0, focus: mkFocus() })
+    defaultConfig: (): DumbbellConfig => ({ capEnabled: true, topGenes: 20 })
   },
   tdr: {
     kind: 'tdr',
@@ -176,7 +176,7 @@ export const NODE_SPECS: Record<NodeKind, NodeSpec> = {
     category: 'plotting',
     acceptsFrom: ['compare'],
     hasRun: false,
-    defaultConfig: (): TdrConfig => ({ focus: mkFocus() })
+    defaultConfig: (): TdrConfig => ({})
   },
   geneBar: {
     kind: 'geneBar',
@@ -184,13 +184,15 @@ export const NODE_SPECS: Record<NodeKind, NodeSpec> = {
     category: 'plotting',
     acceptsFrom: ['standardize'],
     hasRun: false,
-    defaultConfig: (): BarConfig => ({ focus: mkFocus() })
+    defaultConfig: (): BarConfig => ({})
   },
   pca: {
     kind: 'pca',
     label: 'Cluster',
     category: 'plotting',
-    acceptsFrom: ['standardize', 'compare'],
+    // Sample-level embedding of the clean intensities only; a fold-change "responsome" embedding
+    // (Compare-fed) reads differently enough that it isn't offered here.
+    acceptsFrom: ['standardize'],
     hasRun: false,
     // Defaults chosen to match a standard tool's PCA (e.g. Spectronaut): covariance (no per-gene
     // scaling), complete cases only (no imputation), log2, individual replicates, no per-sample
@@ -227,7 +229,11 @@ export const NODE_SPECS: Record<NodeKind, NodeSpec> = {
     category: 'plotting',
     acceptsFrom: ['compare'],
     hasRun: false,
-    defaultConfig: (): StringConfig => ({ confidence: 'medium', maxGenes: 40, addInteractors: false })
+    defaultConfig: (): StringConfig => ({
+      confidence: 'medium',
+      maxGenes: 40,
+      addInteractors: false
+    })
   },
   qc: {
     kind: 'qc',
@@ -345,6 +351,26 @@ export const ALL_OPS: NodeKind[] = [
   'plotGroup'
 ]
 
+/** The plotting ops NodeConfigPanel's PlotConfig has a panel for (the rest render nothing) —
+ *  the Results tile shows its config gear only for these. */
+export const PLOT_CONFIG_KINDS: ReadonlySet<NodeKind> = new Set<NodeKind>([
+  'volcano',
+  'heatmap',
+  'scatter',
+  'dumbbell',
+  'ma',
+  'dr',
+  'bubble',
+  'tdr',
+  'geneBar',
+  'pca',
+  'enrich',
+  'string',
+  'qc',
+  'corr',
+  'table'
+])
+
 export function categoryOf(op: NodeKind): NodeCategory {
   return NODE_SPECS[op].category
 }
@@ -384,7 +410,9 @@ export function plotEntriesFor(kind: NodeKind): PlotMenuEntry[] {
  *  unambiguous when one kind yields several entries. */
 export function entryKey(e: PlotMenuEntry): string {
   return e.override
-    ? `${e.kind}:${Object.entries(e.override).map(([k, v]) => `${k}=${v}`).join(',')}`
+    ? `${e.kind}:${Object.entries(e.override)
+        .map(([k, v]) => `${k}=${v}`)
+        .join(',')}`
     : e.kind
 }
 
@@ -403,14 +431,35 @@ export function axisAvailFromResult(r: NodeResult | undefined): AxisAvail {
   if (!rows) return { dose: true, time: true }
   return { dose: rows.some((x) => x.dose != null), time: rows.some((x) => x.time != null) }
 }
-/** Drop plot entries the upstream can't support: a `dr` axis needs that axis active; `tdr`
- *  (Time & Dose-response) needs BOTH. Every other entry passes through. */
-export function gatePlotEntries(entries: PlotMenuEntry[], avail: AxisAvail): PlotMenuEntry[] {
-  return entries.filter((e) => {
-    if (e.kind === 'dr') return (e.override?.axis === 'time' ? avail.time : avail.dose)
-    if (e.kind === 'tdr') return avail.dose && avail.time
-    return true
-  })
+/** The graph slice `axisAvailFor` walks: nodes, edges, and whatever results exist. */
+export interface AxisGraph {
+  nodes: GraphNode[]
+  edges: { source: string; target: string }[]
+  results: Record<string, NodeResult>
+}
+/** Response-axis availability for a plot fed by `upstreamId`, robust to a stale upstream: a run
+ *  result is authoritative; without one (invalidated by an upstream edit, or never run) walk up
+ *  the chain to the Clean data tile and use its declared `activeConditions`. When that's
+ *  auto-detect (null) and nothing has run, NOTHING is known — offer neither response axis rather
+ *  than options the data may not support (a stale menu would otherwise contradict the pipeline's
+ *  "needs re-run" state). No upstream at all (unwired) ⇒ allow both. */
+export function axisAvailFor(g: AxisGraph, upstreamId: string | undefined): AxisAvail {
+  if (!upstreamId) return { dose: true, time: true }
+  const seen = new Set<string>()
+  let id: string | undefined = upstreamId
+  while (id && !seen.has(id)) {
+    seen.add(id)
+    const r = g.results[id]
+    if (r) return axisAvailFromResult(r)
+    const n = g.nodes.find((x) => x.id === id)
+    if (n && isStep(n) && n.data.kind === 'standardize') {
+      const ac = (n.data.config as StandardizeConfig).activeConditions
+      if (ac) return { dose: ac.includes('dose'), time: ac.includes('time') }
+      return { dose: false, time: false }
+    }
+    id = g.edges.find((e) => e.target === id)?.source
+  }
+  return { dose: false, time: false }
 }
 /** True if an edge from `source` op into `target` op is allowed. */
 export function canConnect(source: NodeKind, target: NodeKind): boolean {
@@ -419,9 +468,10 @@ export function canConnect(source: NodeKind, target: NodeKind): boolean {
 /** Nodes that accept TWO upstream inputs; every other node accepts one. `contrast` pools two
  *  comparisons; `compare` pools two datasets so conditions can be drawn from either (joined by
  *  uniqID — see combineStandardize). */
-const TWO_INPUT_KINDS: NodeKind[] = ['contrast', 'compare']
+/** Nodes that accept several upstream inputs; every other node accepts one. Contrast can take
+ *  any number (the selector picks the two datasets to contrast); Compare pools two. */
 export function maxInputsFor(kind: NodeKind): number {
-  return TWO_INPUT_KINDS.includes(kind) ? 2 : 1
+  return kind === 'contrast' ? Infinity : kind === 'compare' ? 2 : 1
 }
 /** True if any op accepts `op` as an input (i.e. the node can be a source). */
 export function hasSourceHandle(op: NodeKind): boolean {

@@ -1,17 +1,27 @@
 import { Handle, Position, useReactFlow, type NodeProps, type Node } from '@xyflow/react'
-import { Fragment, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
+import {
+  Fragment,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties
+} from 'react'
 
+import { StatusNote } from '../ui/StatusNote'
 import { UI } from '../ui/theme'
-import { NodeConfigPanel } from './NodeConfigPanel'
+import { AddPlotMenu, NodeConfigPanel, PANEL_WIDTH } from './NodeConfigPanel'
 import {
   accentOf,
-  axisAvailFromResult,
   categoryOf,
   CATEGORIES,
   hasSourceHandle,
   NODE_SPECS,
   plotLabel
 } from './registry'
+import { unmetRequirement } from './requirements'
+import { useUpstreamFacts } from './useUpstreamFacts'
 import { useGraph } from './store'
 import { TilePicker } from './TilePicker'
 import { isCompareConfigured, isStep, normalizeCompareConfig, resolveLoadMode } from './types'
@@ -25,6 +35,10 @@ import type {
   PlotGroupConfig,
   StepStatus
 } from './types'
+
+/** Tile names may only hold letters, digits, space, `.`, `_` and `-`: they lead the file name of
+ *  every plot/table downloaded from the tile, so anything else is dropped as it's typed. */
+const safeTileName = (v: string): string => v.replace(/[^A-Za-z0-9 ._-]+/g, '')
 
 // One-time keyframes for the running-status pulse (self-contained; canvas nodes don't share
 // the dashboard stylesheet).
@@ -134,6 +148,17 @@ function GroupBody({
   const selectedSub = useGraph((s) => s.selectedSub)
   const selectChildCard = useGraph((s) => s.selectChildCard)
   const moveGroupChild = useGraph((s) => s.moveGroupChild)
+  const addGroupChildren = useGraph((s) => s.addGroupChildren)
+  const removeGroupChildren = useGraph((s) => s.removeGroupChildren)
+  // The group's upstream: gates which plots the add-plot menu offers (kind + response axes).
+  const upstreamKind = useGraph((s) => {
+    const upId = s.edges.find((e) => e.target === id)?.source
+    const up = upId ? s.nodes.find((n) => n.id === upId) : undefined
+    return up && isStep(up) ? up.data.kind : undefined
+  })
+  // What the upstream data carries (stale-aware): gates the menu and flags unsupported subcards.
+  const upId = useGraph((s) => s.edges.find((e) => e.target === id)?.source)
+  const facts = useUpstreamFacts(upId)
   // id of the subcard being dragged, and the gap it's over (target card + which side).
   const [dragId, setDragId] = useState<string | null>(null)
   const [gap, setGap] = useState<{ id: string; place: 'before' | 'after' } | null>(null)
@@ -141,11 +166,23 @@ function GroupBody({
     setDragId(null)
     setGap(null)
   }
-  if (config.children.length === 0) return <div style={muted}>Empty group.</div>
   return (
     <div style={subList}>
+      {/* Add / remove plots right on the tile, above the subcard stack. nodrag/nowheel so the
+          menu's interactions never move the node or zoom the canvas. */}
+      <div className="nodrag nowheel" onClick={(e) => e.stopPropagation()} style={{ display: 'flex' }}>
+        <AddPlotMenu
+          children={config.children}
+          upstreamKind={upstreamKind}
+          upstream={facts}
+          onAdd={(specs) => addGroupChildren(id, specs)}
+          onRemove={(ids) => removeGroupChildren(id, ids)}
+        />
+      </div>
+      {config.children.length === 0 && <div style={muted}>Empty group.</div>}
       {config.children.map((c) => {
         const active = selectedSub === c.id
+        const unmet = unmetRequirement(c.kind, c.config, facts)
         // The insertion line renders in the gap above/below the target card so it
         // clearly sits *between* two subcards, marking exactly where the drop lands.
         const lineBefore = gap?.id === c.id && gap.place === 'before'
@@ -180,15 +217,18 @@ function GroupBody({
                 e.stopPropagation() // don't let the node's onClick clear the subcard selection
                 selectChildCard(id, c.id)
               }}
+              // An unsupported plot (its requirement no longer holds after an upstream change) stays
+              // in the group but reads disabled, with the reason on hover.
+              title={unmet ?? undefined}
               style={{
                 ...subCard,
                 borderColor: active ? accent : UI.border,
                 background: active ? UI.panelAlt : UI.panel,
-                opacity: dragId === c.id ? 0.4 : 1
+                opacity: dragId === c.id ? 0.4 : unmet ? 0.45 : 1
               }}
             >
               <span style={grip}>⠿</span>
-              <span style={{ ...dot, background: accent }} />
+              <span style={{ ...dot, background: unmet ? UI.textMuted : accent }} />
               <span style={subLabel}>{plotLabel(c.kind, c.config)}</span>
             </button>
             {lineAfter && <div style={dropLine} />}
@@ -232,18 +272,32 @@ export function GraphNode({ id, data, selected: rfSelected }: NodeProps<Node<Nod
   const [hovered, setHovered] = useState(false)
   const sideColor = selected ? accent : UI.border
 
-  // Status dot: runnable tiles show their run lifecycle; live tiles (plots) show whether their
-  // upstream has produced data yet (ready vs waiting). Load (no upstream) reads as ready.
-  const upstreamReady = useGraph((s) => {
-    if (spec.hasRun) return false // unused for runnable tiles
-    const up = s.upstreamId(id)
-    return up ? !!s.results[up] : true
-  })
+  // Status dot: runnable tiles show their run lifecycle; live tiles (plots) are green only when
+  // the upstream has a result AND every requirement holds (kind + data shape — see
+  // requirements.ts), else grey with the reason. A group is green when all its plots are. Load
+  // (no upstream) reads as ready.
+  const plotUpId = useGraph((s) => (spec.hasRun ? undefined : s.upstreamId(id)))
+  const plotFacts = useUpstreamFacts(plotUpId)
+  const plotBlock = ((): string | null => {
+    if (spec.hasRun) return null
+    if (data.kind === 'load') return null
+    if (!plotUpId) return 'Waiting for data'
+    const kinds: { kind: NodeKind; config: unknown }[] =
+      data.kind === 'plotGroup'
+        ? (data.config as PlotGroupConfig).children.map((c) => ({ kind: c.kind, config: c.config }))
+        : [{ kind: data.kind, config: data.config }]
+    for (const k of kinds) {
+      const why = unmetRequirement(k.kind, k.config, plotFacts)
+      if (why) return kinds.length > 1 ? `${plotLabel(k.kind, k.config)}: ${why}` : why
+    }
+    if (!plotFacts.result) return 'Waiting for data'
+    return null
+  })()
   const statusInfo: StatusInfo = spec.hasRun
     ? runStatusInfo(data.status)
-    : upstreamReady
-      ? { color: '#3fae5a', label: 'Ready', pulse: false }
-      : { color: UI.textMuted, label: 'Waiting for data', pulse: false }
+    : plotBlock
+      ? { color: UI.textMuted, label: plotBlock, pulse: false }
+      : { color: '#3fae5a', label: 'Ready', pulse: false }
 
   // Inline rename: double-click the title to edit; Enter/blur commits, Escape cancels.
   const renameNode = useGraph((s) => s.renameNode)
@@ -259,27 +313,45 @@ export function GraphNode({ id, data, selected: rfSelected }: NodeProps<Node<Nod
     setEditing(true)
   }
   const commitRename = (): void => {
-    renameNode(id, draft)
+    renameNode(id, safeTileName(draft))
     setEditing(false)
   }
 
-  // Wheel over the tile BODY zooms the canvas at the cursor. React Flow's own pan/zoom handler
-  // lives on the renderer above us, and with pan-on-scroll a wheel over a node would pan instead of
-  // zoom — so we intercept it here with a native, non-passive listener (fires before the renderer's)
-  // and drive the viewport directly. Empty-canvas scroll still pans. The detail window (config
-  // float, `.nowheel`) is EXCLUDED so its own content can scroll natively.
   const rf = useReactFlow()
   const cardRef = useRef<HTMLDivElement>(null)
+  // Which side the detail panel opens on. Default right of the tile; flip to the left when the
+  // panel would run past the canvas's right edge and there's room on the left. Decided ONCE when
+  // the panel opens — it stays put while the user pans/zooms, so it never jumps mid-edit.
+  const [panelSide, setPanelSide] = useState<'right' | 'left'>('right')
+  useLayoutEffect(() => {
+    if (!configOpen) return
+    const el = cardRef.current
+    if (!el) return
+    const card = el.getBoundingClientRect()
+    const canvas = el.closest('.react-flow')?.getBoundingClientRect()
+    const right = canvas?.right ?? window.innerWidth
+    const left = canvas?.left ?? 0
+    // Read the zoom at open time (not subscribed — a later pan/zoom must not re-place the panel).
+    const need = (PANEL_WIDTH + PANEL_GAP) * rf.getViewport().zoom
+    const fitsRight = card.right + need <= right
+    const fitsLeft = card.left - need >= left
+    setPanelSide(!fitsRight && fitsLeft ? 'left' : 'right')
+  }, [configOpen, rf])
+  // Scrolling over a tile pans (React Flow's pan-on-scroll, same as empty canvas) and zoom is
+  // pinch / ctrl+scroll — except inside the detail window (`.nowheel`), which React Flow ignores
+  // entirely so its content can scroll natively. A pinch there (a trackpad pinch arrives as a
+  // wheel event with ctrlKey) would otherwise be lost, so it's handled here and drives the
+  // viewport directly.
   useEffect(() => {
     const el = cardRef.current
     if (!el) return
     const onWheel = (e: WheelEvent): void => {
-      // Inside the scrollable detail window → let it scroll; don't hijack the wheel to zoom.
-      if ((e.target as HTMLElement).closest?.('.nowheel')) return
+      if (!e.ctrlKey || !(e.target as HTMLElement).closest?.('.nowheel')) return
       e.preventDefault()
       e.stopPropagation()
       const { x, y, zoom } = rf.getViewport()
-      const nextZoom = Math.min(2, Math.max(0.5, zoom * Math.pow(1.0015, -e.deltaY)))
+      // Pinch deltas are small, so (like d3-zoom) they get a 10× rate.
+      const nextZoom = Math.min(2, Math.max(0.5, zoom * Math.pow(1.0015, -e.deltaY * 10)))
       if (nextZoom === zoom) return
       // Keep the flow point under the cursor fixed: new translate = old + p·(zoom − nextZoom).
       const p = rf.screenToFlowPosition({ x: e.clientX, y: e.clientY })
@@ -320,7 +392,8 @@ export function GraphNode({ id, data, selected: rfSelected }: NodeProps<Node<Nod
               autoFocus
               value={draft}
               placeholder={typeText}
-              onChange={(e) => setDraft(e.target.value)}
+              // File-name-safe only: the name leads downloaded plots/tables (see PanelTile).
+              onChange={(e) => setDraft(safeTileName(e.target.value))}
               onBlur={commitRename}
               onKeyDown={(e) => {
                 if (e.key === 'Enter') commitRename()
@@ -368,7 +441,11 @@ export function GraphNode({ id, data, selected: rfSelected }: NodeProps<Node<Nod
         ) : (
           <NodeSummary kind={data.kind} id={id} result={result} config={data.config} />
         )}
-        {data.error && <div style={errText}>{data.error}</div>}
+        {data.error && (
+          <StatusNote kind="error" style={{ fontSize: 10, marginTop: 4 }}>
+            {data.error}
+          </StatusNote>
+        )}
       </div>
       {hasSourceHandle(data.kind) && (
         <Handle type="source" position={Position.Right} style={handleStyle} />
@@ -377,7 +454,16 @@ export function GraphNode({ id, data, selected: rfSelected }: NodeProps<Node<Nod
         // Stop clicks inside the panel from bubbling to the node's onNodeClick, which
         // calls selectNode → clears selectedSub — that reset the active subcard to the
         // first on every interaction with a group's config.
-        <div className="nodrag nowheel" style={configFloat} onClick={(e) => e.stopPropagation()}>
+        <div
+          className="nodrag nowheel"
+          style={{
+            ...configFloat,
+            ...(panelSide === 'left'
+              ? { right: '100%', marginRight: PANEL_GAP }
+              : { left: '100%', marginLeft: PANEL_GAP })
+          }}
+          onClick={(e) => e.stopPropagation()}
+        >
           <NodeConfigPanel id={id} />
         </div>
       )}
@@ -465,15 +551,15 @@ function NodeSummary({
     )
   }
   if (kind === 'volcano') return <div style={muted}>log₂FC vs significance. Select to view.</div>
-  if (kind === 'scatter') return <div style={muted}>FC1 vs FC2 contrast. Select to view.</div>
+  if (kind === 'scatter') return <div style={muted}>Group A vs group B. Select to view.</div>
   if (kind === 'ma') return <div style={muted}>Abundance vs log₂FC. Select to view.</div>
-  if (kind === 'dr') return <div style={muted}>Dose/time response curves. Select to view.</div>
+  if (kind === 'dr') return <div style={muted}>Response curves. Select to view.</div>
   if (kind === 'bubble') return <div style={muted}>Gene × dose bubble grid. Select to view.</div>
-  if (kind === 'dumbbell') return <div style={muted}>FC1↔FC2 per gene. Select to view.</div>
+  if (kind === 'dumbbell') return <div style={muted}>Group A ↔ group B per gene. Select to view.</div>
   if (kind === 'tdr')
-    return <div style={muted}>Dose×time response per focus gene. Select to view.</div>
+    return <div style={muted}>Dose×time response per selected gene. Select to view.</div>
   if (kind === 'geneBar')
-    return <div style={muted}>Focus gene value across conditions. Select to view.</div>
+    return <div style={muted}>Selected gene value across conditions. Select to view.</div>
   if (kind === 'pca')
     return <div style={muted}>Cluster samples or responsome (PCA/UMAP/t-SNE). Select to view.</div>
   if (kind === 'qc')
@@ -487,16 +573,16 @@ function NodeSummary({
  *  so there is a single surface at the drop point (not a separate floating menu). */
 export function PlaceholderNode({ id, data }: NodeProps<Node<PlaceholderData>>) {
   const resolvePlaceholder = useGraph((s) => s.resolvePlaceholder)
-  // Gate dose/time-response options by what the upstream data actually carries (see TilePicker).
-  const upstream = useGraph((s) => (data.source ? s.results[data.source] : undefined))
-  const axes = data.source ? axisAvailFromResult(upstream) : undefined
+  // Gate plot options by what the upstream data actually carries (see requirements.ts), reading
+  // through a stale upstream to the Clean data tile's declared conditions.
+  const facts = useUpstreamFacts(data.source ?? undefined)
   return (
     <div style={{ position: 'relative' }}>
       <Handle type="target" position={Position.Left} style={handleStyle} />
       <TilePicker
         ops={data.ops}
         header="New step"
-        axes={axes}
+        upstream={data.source ? facts : undefined}
         onPick={(picks) => resolvePlaceholder(id, picks)}
       />
     </div>
@@ -634,7 +720,6 @@ const stat: CSSProperties = {
   fontVariantNumeric: 'tabular-nums',
   marginTop: 2
 }
-const errText: CSSProperties = { color: '#f2b8b9', fontSize: 10, lineHeight: 1.4 }
 const runChip: CSSProperties = {
   border: '1px solid',
   background: 'transparent',
@@ -646,11 +731,12 @@ const runChip: CSSProperties = {
   cursor: 'pointer',
   whiteSpace: 'nowrap'
 }
+/** Gap between a tile and its detail panel (flow units). */
+const PANEL_GAP = 14
+/** Detail panel float: top-aligned beside the tile; the side is chosen at render (see panelSide). */
 const configFloat: CSSProperties = {
   position: 'absolute',
   top: 0,
-  left: '100%',
-  marginLeft: 14,
   zIndex: 1000,
   cursor: 'default'
 }

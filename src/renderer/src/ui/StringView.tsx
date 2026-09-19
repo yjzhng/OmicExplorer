@@ -37,7 +37,8 @@ function hyperTail(k: number, K: number, n: number, N: number): number {
   if (n === 0 || N === 0) return 1
   const denom = lnChoose(N, n)
   let p = 0
-  for (let i = k; i <= Math.min(K, n); i++) p += Math.exp(lnChoose(K, i) + lnChoose(N - K, n - i) - denom)
+  for (let i = k; i <= Math.min(K, n); i++)
+    p += Math.exp(lnChoose(K, i) + lnChoose(N - K, n - i) - denom)
   return Math.min(1, Math.max(0, p))
 }
 
@@ -306,7 +307,8 @@ export function StringView({
       const n = setGenes.length
       if (n < 2 || bgN < 2) return ''
       const kByTerm = new Map<string, number>()
-      for (const m of setGenes) for (const t of pathsByNode.get(m)!) kByTerm.set(t, (kByTerm.get(t) ?? 0) + 1)
+      for (const m of setGenes)
+        for (const t of pathsByNode.get(m)!) kByTerm.set(t, (kByTerm.get(t) ?? 0) + 1)
       const staged = [...kByTerm.entries()]
         .filter(([, k]) => k >= 2)
         .map(([term, k]) => ({ term, k, K: termGenes.get(term)?.size ?? k }))
@@ -316,7 +318,10 @@ export function StringView({
         .map((s, i) => ({ term: s.term, padj: padj[i], k: s.k }))
         .filter((s) => s.padj < 0.05)
         .sort((a, b) => a.padj - b.padj || b.k - a.k)
-      return sig.slice(0, 3).map((s) => s.term).join(' / ')
+      return sig
+        .slice(0, 3)
+        .map((s) => s.term)
+        .join(' / ')
     }
     const territoryGroups = [...byCluster.entries()]
       .filter(([, mem]) => mem.length >= 2)
@@ -395,7 +400,8 @@ export function StringView({
     // resolves via the full annotation map (so it highlights when selected, not just query nodes).
     // Pure interactors (no uniqID) fall back to the node key (local-only linking).
     const focusId = vis.map(
-      (n) => (n.isQuery ? uniqByStringId.get(n.key) : undefined) ?? uniqByStringIdAll.get(n.key) ?? n.key
+      (n) =>
+        (n.isQuery ? uniqByStringId.get(n.key) : undefined) ?? uniqByStringIdAll.get(n.key) ?? n.key
     )
     // Draw order: context (added) nodes first, then query genes — so query markers sit ON TOP.
     // `nodeOrder[traceIndex] = visIndex`, used to map a hovered point back to its logical node.
@@ -495,7 +501,13 @@ export function StringView({
     // multi-gene selection). Active modules bold at full colour; the rest fade when anything is active.
     const legRender = (active: number | Set<number>, lines: LegItem[][]): string => {
       const set =
-        typeof active === 'number' ? (active < 0 ? null : new Set([active])) : active.size ? active : null
+        typeof active === 'number'
+          ? active < 0
+            ? null
+            : new Set([active])
+          : active.size
+            ? active
+            : null
       return lines
         .map((line) =>
           line
@@ -533,7 +545,12 @@ export function StringView({
       ...plotBase(p),
       showlegend: false,
       title: heading ? { text: heading, font: { size: 13 } } : undefined,
-      margin: { l: 6, r: 60, t: heading ? 30 : 10, b: legLines.length ? 12 + legLines.length * 15 : 10 },
+      margin: {
+        l: 6,
+        r: 60,
+        t: heading ? 30 : 10,
+        b: legLines.length ? 12 + legLines.length * 15 : 10
+      },
       xaxis: hidden,
       yaxis: { ...hidden, scaleanchor: 'x', scaleratio: 1 },
       annotations: clusterLegend
@@ -593,7 +610,11 @@ export function StringView({
       if (!hover) return
       const h = hover
       const P = Plotly as unknown as {
-        restyle: (el: PlotlyGraphDiv, u: Record<string, unknown>, idx?: number[]) => Promise<unknown>
+        restyle: (
+          el: PlotlyGraphDiv,
+          u: Record<string, unknown>,
+          idx?: number[]
+        ) => Promise<unknown>
         addTraces: (el: PlotlyGraphDiv, t: unknown[]) => Promise<unknown>
         deleteTraces: (el: PlotlyGraphDiv, idx: number[]) => Promise<unknown>
       }
@@ -623,7 +644,8 @@ export function StringView({
       // Pixels-per-data-unit → data-units-per-pixel (0 until the plot has a computed scale). x and y
       // share it (scaleanchor + scaleratio 1), so the x-axis slope covers both.
       const pxPerData = (): number => {
-        const ax = (el as unknown as { _fullLayout?: { xaxis?: { _m?: number } } })._fullLayout?.xaxis
+        const ax = (el as unknown as { _fullLayout?: { xaxis?: { _m?: number } } })._fullLayout
+          ?.xaxis
         const m = Math.abs(ax?._m ?? 0)
         return m > 0 ? 1 / m : 0
       }
@@ -676,9 +698,11 @@ export function StringView({
       }
       const relayout = (u: Record<string, unknown>): void => {
         try {
-          void (P as unknown as {
-            relayout: (el: PlotlyGraphDiv, u: Record<string, unknown>) => Promise<unknown>
-          }).relayout(el, u)
+          void (
+            P as unknown as {
+              relayout: (el: PlotlyGraphDiv, u: Record<string, unknown>) => Promise<unknown>
+            }
+          ).relayout(el, u)
         } catch {
           /* cosmetic */
         }
@@ -689,7 +713,8 @@ export function StringView({
       let legLinesLive = h.legWrap(620)
       const reflowLegend = (): void => {
         if (h.legendIdx < 0) return
-        const size = (el as unknown as { _fullLayout?: { _size?: { w: number } } })._fullLayout?._size
+        const size = (el as unknown as { _fullLayout?: { _size?: { w: number } } })._fullLayout
+          ?._size
         if (!size || size.w <= 0) return
         legLinesLive = h.legWrap(Math.max(120, size.w - 8))
         relayout({
@@ -704,7 +729,12 @@ export function StringView({
       }
       // Overlay a set of nodes (bright markers) + the given edge segments, over the dimmed base.
       // `focus` (optional) gets a heavier outline.
-      const overlay = (idxs: number[], ex: (number | null)[], ey: (number | null)[], focus = -1): void => {
+      const overlay = (
+        idxs: number[],
+        ex: (number | null)[],
+        ey: (number | null)[],
+        focus = -1
+      ): void => {
         clearOverlay()
         dim(true)
         try {
@@ -804,8 +834,7 @@ export function StringView({
         cancelAnimationFrame(trimRaf)
         trimRaf = requestAnimationFrame(trimEdges)
       }
-      const ro =
-        typeof ResizeObserver !== 'undefined' ? new ResizeObserver(scheduleTrim) : null
+      const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(scheduleTrim) : null
       ro?.observe(el as unknown as Element)
       // Broadcast this network's node hover to the shared store (round-trips to applyFocus above).
       const onHover = (e: { points?: { curveNumber?: number; pointNumber?: number }[] }): void => {
@@ -845,13 +874,15 @@ export function StringView({
     return (
       <Center>
         No local STRING data for this organism. In the interactive import, tick <b>STRING</b> in the
-        Metadata fetch to download it, then re-run Standardize and Compare.
+        Metadata fetch to download it, then re-run Clean data and Compare.
       </Center>
     )
   if (error && (net == null || net.nodes.length === 0)) return <Center>{error}</Center>
   if (net != null && nConnected === 0)
     return (
-      <Center>No interacting genes at this confidence — lower the confidence or raise max genes.</Center>
+      <Center>
+        No interacting genes at this confidence — lower the confidence or raise max genes.
+      </Center>
     )
 
   return (
@@ -949,7 +980,11 @@ function scaleToGap(x: number[], y: number[]): void {
  * over ALL edges, so every edge (weak inter-cluster bridges included) pulls its endpoints together
  * and connected clusters stay adjacent with no overstretched links.
  */
-function layoutNetwork(n: number, edges: [number, number][], seed: number): { x: number[]; y: number[] } {
+function layoutNetwork(
+  n: number,
+  edges: [number, number][],
+  seed: number
+): { x: number[]; y: number[] } {
   if (n === 0) return { x: [], y: [] }
   const c = fruchtermanReingold(n, edges, seed)
   const x = c.x.slice()
@@ -965,7 +1000,11 @@ function layoutNetwork(n: number, edges: [number, number][], seed: number): { x:
  * components are the clusters. Self-loops are added so every node attracts itself. Small n only.
  * Returns a cluster id per node.
  */
-function mclClusters(n: number, edges: { a: number; b: number; w: number }[], inflation = 2): number[] {
+function mclClusters(
+  n: number,
+  edges: { a: number; b: number; w: number }[],
+  inflation = 2
+): number[] {
   if (n === 0) return []
   let M = Array.from({ length: n }, () => new Float64Array(n))
   for (const { a, b, w } of edges) {

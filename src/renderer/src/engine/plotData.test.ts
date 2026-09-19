@@ -49,8 +49,8 @@ describe('jacobiEigenSymmetric', () => {
 
 describe('buildCluster (PCA)', () => {
   const S = (cmpd: string, rep: number, g1: number, g2: number): StandardRow[] => [
-    { uniqID: 'g1', strain: '', cmpd, dose: null, time: null, rep, value: g1 },
-    { uniqID: 'g2', strain: '', cmpd, dose: null, time: null, rep, value: g2 }
+    { uniqID: 'g1', cell: '', cmpd, dose: null, time: null, rep, value: g1 },
+    { uniqID: 'g2', cell: '', cmpd, dose: null, time: null, rep, value: g2 }
   ]
   const rows: StandardRow[] = [
     ...S('A', 1, 16, 4),
@@ -90,7 +90,7 @@ describe('buildCluster (PCA)', () => {
 })
 
 describe('buildResponseCluster (responsome PCA)', () => {
-  // A strain comparison (clpP | WT) — strain is the compared dim, so cmpd/dose are
+  // A cell comparison (clpP | WT) — cell is the compared dim, so cmpd/dose are
   // context. Two compounds with opposite log2FC signatures → one point per condition,
   // colored by the context cmpd, separating along PC1. Mirrors omicViz's pca_response.
   const C = (cmpd: string, dose: number, fc1: number, fc2: number): CompareResultRow[] =>
@@ -99,7 +99,7 @@ describe('buildResponseCluster (responsome PCA)', () => {
       cmpd,
       dose,
       time: null,
-      cmp_cond: 'strain',
+      cmp_cond: 'cell',
       comparison: 'clpP | WT',
       mean1: null,
       mean2: null,
@@ -148,7 +148,7 @@ describe('buildResponseCluster (responsome PCA)', () => {
       .map((r) => ({ ...r, cmp_cond: 'cmpd', comparison: 'A | H2O' }))
     const c = buildResponseCluster(oneCmpd, { method: 'pca', colorBy: 'cmpd' })
     expect(c.colorBy).not.toBe('cmpd')
-    expect(['strain', 'dose', 'time']).toContain(c.colorBy)
+    expect(['cell', 'dose', 'time']).toContain(c.colorBy)
     expect(new Set(c.points.map((p) => p.group)).size).toBeGreaterThan(1)
   })
 
@@ -217,7 +217,7 @@ describe('buildGeneBar', () => {
   it('averages each focus gene per condition with sd over replicates', () => {
     const S = (uniqID: string, dose: number, rep: number, value: number): StandardRow => ({
       uniqID,
-      strain: '',
+      cell: '',
       cmpd: 'A',
       dose,
       time: null,
@@ -242,7 +242,7 @@ describe('buildGeneBar', () => {
 })
 
 describe('buildMA / buildDumbbell', () => {
-  it('MA computes A = mean log2 abundance and M = log2FC', () => {
+  it('MA computes A = mean log10 abundance and M = log2FC', () => {
     const ma = buildMA(
       [
         {
@@ -267,8 +267,9 @@ describe('buildMA / buildDumbbell', () => {
       { fcLow: -1, fcHigh: 1 }
     )
     expect(ma.points).toHaveLength(1)
-    expect(ma.points[0].x).toBeCloseTo(3, 9) // 0.5*(log2 16 + log2 4) = 0.5*(4+2)
+    expect(ma.points[0].x).toBeCloseTo(0.5 * (Math.log10(16) + Math.log10(4)), 9)
     expect(ma.points[0].y).toBe(2)
+    expect(ma.comparison).toBe('X | Y') // single comparison → named on the FC axis
   })
 
   const mkDumbbell = (id: string, fcdiff: number, signf = true): ContrastResultRow => ({

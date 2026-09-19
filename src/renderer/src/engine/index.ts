@@ -24,13 +24,30 @@ export {
   type FieldRule
 } from './interactive'
 export { runVehNorm } from './compare'
-export { runDirect, runCompare, previewCompare } from './direct'
+export { runDirect, runCompare, previewCompare, classifyConditions } from './direct'
 export type { ComparePreview } from './direct'
 export { runTwoWayAnova, previewTwoWay, crossPairs } from './twoWay'
 export type { TwoWayPreview } from './twoWay'
-export { runContrast, runContrastPair } from './contrast'
-export type { ContrastSideRow, ContrastPairInput } from './contrast'
 export {
+  runContrast,
+  runContrastPair,
+  previewContrastPair,
+  CONTRAST_STAT_DEFAULTS,
+  AXIS_TAILS,
+  statTails
+} from './contrast'
+export type {
+  ContrastSideRow,
+  ContrastPairInput,
+  ContrastPairPreview,
+  ContrastStat,
+  AxisTail,
+  PairFix,
+  PairValueAlignment
+} from './contrast'
+export {
+  BUBBLE_DUMBBELL_CAP,
+  enrichTermsOf,
   buildVolcano,
   buildHeatmap,
   buildFcHeatmap,
@@ -50,7 +67,9 @@ export {
   facetContextDims,
   responseColorDims,
   facetDims,
-  facetCompareRows
+  facetCompareRows,
+  facetPaired,
+  facetSides
 } from './plotData'
 export type { ClusterMethod } from './embed'
 export { recommendedPlots } from './plotChoice'
@@ -63,7 +82,8 @@ export {
 } from './stats'
 export { VALID_CONDITIONS } from './types'
 
-export type { ThresholdConfig, Effect } from './stats'
+export type { ThresholdConfig, Effect, FdrMethod } from './stats'
+export { FDR_LABEL, fdrMethodOf, adjustPValues, roundP, snapStatMin } from './stats'
 export type {
   ConditionKey,
   StandardRow,
@@ -125,3 +145,5 @@ export type {
   ContextRow
 } from './plotData'
 export type { Analysis, PlotOption } from './plotChoice'
+export { IMPUTE_DEFAULTS, IMPUTE_LABEL } from './impute'
+export type { ImputeMethod, ImputeOptions, ImputeSummary } from './impute'

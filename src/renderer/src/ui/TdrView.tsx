@@ -45,7 +45,11 @@ export function TdrView({ tdr, title }: { tdr: TdrData; title?: string }) {
         categoryorder: 'array',
         categoryarray: cats
       },
-      yaxis: { ...axisBase(p), title: 'log₂ fold change', zeroline: true }
+      yaxis: {
+        ...axisBase(p),
+        title: tdr.comparison ? `log₂FC · ${tdr.comparison}` : 'log₂FC',
+        zeroline: true
+      }
     }
     return { data: traces, layout: lay }
   }, [tdr, title, mode])

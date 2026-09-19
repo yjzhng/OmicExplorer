@@ -1,5 +1,5 @@
 /** TDR panel body: a dose×time figure for one gene, shown via the shared gene switch-tab
- *  (focus genes as tabs, pinned genes appended, hover drives the figure). */
+ *  (selected genes as tabs, hover drives the figure). */
 import { useMemo, type CSSProperties } from 'react'
 
 import { buildTdr, type CompareResultRow } from '../engine'

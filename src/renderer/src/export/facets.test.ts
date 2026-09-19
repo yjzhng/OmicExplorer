@@ -5,7 +5,7 @@ import { facetViews, planPlotJobs } from './facets'
 import type { ExportSpec } from './specs'
 import type { GraphNode, NodeResult, StepNode } from '../graph/types'
 
-/** Two compare rows across two strains → the volcano facets into two views. */
+/** Two compare rows across two cells → the volcano facets into two views. */
 function cmpResult(): NodeResult {
   const base = {
     cmpd: 'Amk',
@@ -29,8 +29,8 @@ function cmpResult(): NodeResult {
     displayMap: {},
     cmp: {
       rows: [
-        { ...base, uniqID: 'g1', strain: 'WT' },
-        { ...base, uniqID: 'g2', strain: 'clpP' }
+        { ...base, uniqID: 'g1', cell: 'WT' },
+        { ...base, uniqID: 'g2', cell: 'clpP' }
       ],
       comparisons: ['Amk | H2O']
     }
@@ -40,8 +40,40 @@ function cmpResult(): NodeResult {
 describe('facetViews', () => {
   it('returns one view per facet tuple for a faceted plot', () => {
     const views = facetViews('volcano', {}, cmpResult())
-    expect(views.map((v) => v.suffix).sort()).toEqual(['strain-WT', 'strain-clpP'].sort())
-    expect(views.find((v) => v.suffix === 'strain-WT')?.sel).toEqual({ strain: 'WT' })
+    expect(views.map((v) => v.suffix).sort()).toEqual(['cell-WT', 'cell-clpP'].sort())
+    expect(views.find((v) => v.suffix === 'cell-WT')?.sel).toEqual({ cell: 'WT' })
+  })
+
+  it('skips one-sided contrast tuples (outer-join rows with nothing to pair)', () => {
+    const base = {
+      uniqID: 'g',
+      cell: null,
+      cmpd: null,
+      time: null,
+      cmp_cond: 'dataset',
+      cmp1: 'KO',
+      cmp2: 'WT',
+      comparison: 'KO | WT',
+      FC1: 1,
+      FC2: 1
+    }
+    const ctr = {
+      kind: 'contrast',
+      displayMap: {},
+      ctr: {
+        rows: [
+          { ...base, dose: 5 },
+          { ...base, dose: 10 },
+          { ...base, dose: 20, FC2: null }
+        ],
+        comparisons: ['KO | WT']
+      }
+    } as unknown as NodeResult
+    expect(
+      facetViews('scatter', {}, ctr)
+        .map((v) => v.suffix)
+        .sort()
+    ).toEqual(['dose-10', 'dose-5'])
   })
 
   it('returns a single unlabelled view for non-faceted kinds', () => {
@@ -66,7 +98,7 @@ describe('planPlotJobs', () => {
     analysis: 'Amk | H2O',
     plot: 'Volcano',
     key: 'volcano-3',
-    hasGoi: false
+    hasSelection: false
   }
   const nodes: GraphNode[] = [node]
   void nodes
@@ -76,13 +108,13 @@ describe('planPlotJobs', () => {
   it('fans a faceted plot into one job per facet', () => {
     const jobs = planPlotJobs([spec], edges, results)
     expect(jobs).toHaveLength(2)
-    expect(jobs.every((j) => j.goiOnly === false)).toBe(true)
-    expect(jobs.map((j) => j.suffix).sort()).toEqual(['strain-WT', 'strain-clpP'].sort())
+    expect(jobs.every((j) => j.selectedOnly === false)).toBe(true)
+    expect(jobs.map((j) => j.suffix).sort()).toEqual(['cell-WT', 'cell-clpP'].sort())
   })
 
-  it('doubles each facet when the plot has GOI focus genes', () => {
-    const jobs = planPlotJobs([{ ...spec, hasGoi: true }], edges, results)
-    expect(jobs).toHaveLength(4) // 2 facets × (all-genes + GOI)
-    expect(jobs.filter((j) => j.goiOnly).length).toBe(2)
+  it('doubles each facet when genes are selected', () => {
+    const jobs = planPlotJobs([{ ...spec, hasSelection: true }], edges, results)
+    expect(jobs).toHaveLength(4) // 2 facets × (all-genes + selected)
+    expect(jobs.filter((j) => j.selectedOnly).length).toBe(2)
   })
 })

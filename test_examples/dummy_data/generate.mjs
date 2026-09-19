@@ -1,11 +1,11 @@
 // Generate a synthetic example dataset in the demo project's 3-file format:
 //   example_long.csv       UniProtID,well,value        (tidy long intensities)
-//   example_samplesheet.csv well,strain,cmpd,dose,time,rep  (sample metadata)
+//   example_samplesheet.csv well,cell,cmpd,dose,time,rep  (sample metadata)
 //   example_DB.csv          uniqID,GeneID,locus_tag,UniProtID,type,gene,product
 //
-// Design mirrors the demo: 2 strains (WT, mutant) x {two drugs, vehicle} x a dose
+// Design mirrors the demo: 2 cells (WT, mutant) x {two drugs, vehicle} x a dose
 // series x a time course x 3 reps. A subset of proteins respond to each drug
-// (dose- and time-dependent), some with a strain-dependent interaction, and a
+// (dose- and time-dependent), some with a cell-dependent interaction, and a
 // handful are low-coverage (identified in only a few samples) to exercise the
 // Standardize clean-up (minSamplePct) filter.
 import { mkdirSync, writeFileSync } from 'node:fs'
@@ -33,12 +33,12 @@ function gauss() {
 }
 const pick = (arr) => arr[Math.floor(rnd() * arr.length)]
 
-// ── experimental design: strain x cmpd x dose x time ───────────────────────────
-// Full enough to exercise every plot type: strain {WT, mutant} for two-way factors
+// ── experimental design: cell x cmpd x dose x time ───────────────────────────
+// Full enough to exercise every plot type: cell {WT, mutant} for two-way factors
 // and Contrast; two drugs {drugA, drugB} vs a DMSO vehicle for veh-norm and
 // drug-vs-drug Compare; a 7-point dose series and a 6-point time course (starting
 // at an untreated t=0 baseline) so Dose/time-response, Bubble and TDR have real axes.
-const STRAINS = ['WT', 'mutant']
+const CELLS = ['WT', 'mutant']
 const DRUGS = ['drugA', 'drugB']
 const VEH = 'DMSO' // vehicle (denominator; always dose 0)
 const DOSES = [1.25, 2.5, 5, 10, 20, 40, 80] // drug dose series
@@ -47,18 +47,18 @@ const N_REP = 3
 const MAX_DOSE = Math.max(...DOSES)
 const MAX_TIME = Math.max(...TIMES)
 
-// One sample per (strain, condition, rep). Vehicle appears at every (strain, time)
-// so veh-norm can match it against each drug dose. 2 strains x (2 drugs x 7 doses
+// One sample per (cell, condition, rep). Vehicle appears at every (cell, time)
+// so veh-norm can match it against each drug dose. 2 cells x (2 drugs x 7 doses
 // + 1 veh) x 6 times x 3 reps = 540 wells, laid out across 96-well plates P1..P6.
-const samples = [] // { well, strain, cmpd, dose, time, rep }
-for (const strain of STRAINS) {
+const samples = [] // { well, cell, cmpd, dose, time, rep }
+for (const cell of CELLS) {
   for (const time of TIMES) {
     for (const drug of DRUGS) {
       for (const dose of DOSES) {
-        for (let r = 1; r <= N_REP; r++) samples.push({ strain, cmpd: drug, dose, time, rep: r })
+        for (let r = 1; r <= N_REP; r++) samples.push({ cell, cmpd: drug, dose, time, rep: r })
       }
     }
-    for (let r = 1; r <= N_REP; r++) samples.push({ strain, cmpd: VEH, dose: 0, time, rep: r })
+    for (let r = 1; r <= N_REP; r++) samples.push({ cell, cmpd: VEH, dose: 0, time, rep: r })
   }
 }
 // Well ids follow a 96-well plate layout (rows A–H × cols 1–12), across as many
@@ -100,12 +100,12 @@ const PRODUCTS = [
 ]
 
 // A per-drug response for a gene: direction, magnitude, and an optional
-// strain-dependent interaction (the mutant blunts <1 or amplifies >1 the effect).
+// cell-dependent interaction (the mutant blunts <1 or amplifies >1 the effect).
 function drugResponse(forced) {
   return {
     dir: forced ? 1 : rnd() < 0.5 ? 1 : -1, // up- or down-regulated
     effect: forced ? 2.4 : uniform(0.6, 2.6), // |log2 FC| at max dose & time
-    inter: forced || rnd() < 0.35, // strain-dependent interaction
+    inter: forced || rnd() < 0.35, // cell-dependent interaction
     sfac: forced ? 0.35 : rnd() < 0.5 ? 0.2 : 1.8 // mutant blunts (<1) or amplifies (>1)
   }
 }
@@ -116,7 +116,7 @@ for (let i = 1; i <= N_GENES + N_DB_EXTRA; i++) {
   const measured = i <= N_GENES
   const lowcov = measured && i > N_GENES - N_LOWCOV // last block of measured genes
   // First 3 measured proteins are forced strong responders (to BOTH drugs) with a
-  // strain interaction, so g0001–g0003 make reliable focus genes for GeneBar / TDR /
+  // cell interaction, so g0001–g0003 make reliable focus genes for GeneBar / TDR /
   // dumbbell testing.
   const forced = i <= 3
   const hasGene = forced || rnd() < 0.6
@@ -159,7 +159,7 @@ function intensity(g, s) {
     const doseF = s.dose / MAX_DOSE // 0.0156 → 1 across the dose series
     const timeF = s.time / MAX_TIME // 0 at the t=0 baseline → 1 at the last timepoint
     let eff = e.dir * e.effect * doseF * timeF
-    if (s.strain === STRAINS[1] && e.inter) eff *= e.sfac // strain-dependent interaction
+    if (s.cell === CELLS[1] && e.inter) eff *= e.sfac // cell-dependent interaction
     log2v += eff
   }
   log2v += gauss() * 0.15 // ~10% CV replicate noise
@@ -183,9 +183,9 @@ for (const g of genes) {
 }
 
 // ── emit samplesheet ───────────────────────────────────────────────────────────
-const ssLines = ['well,strain,cmpd,dose,time,rep']
+const ssLines = ['well,cell,cmpd,dose,time,rep']
 for (const s of samples)
-  ssLines.push(`${s.well},${s.strain},${s.cmpd},${s.dose},${s.time},${s.rep}`)
+  ssLines.push(`${s.well},${s.cell},${s.cmpd},${s.dose},${s.time},${s.rep}`)
 
 // ── emit DB (organism-wide superset of the measured proteins) ──────────────────
 const dbLines = ['uniqID,GeneID,locus_tag,UniProtID,type,gene,product']
@@ -200,9 +200,9 @@ writeFileSync(join(OUT, 'example_long.csv'), dataLines.join('\n') + '\n')
 writeFileSync(join(OUT, 'example_samplesheet.csv'), ssLines.join('\n') + '\n')
 writeFileSync(join(OUT, 'example_DB.csv'), dbLines.join('\n') + '\n')
 
-console.log('samples:', samples.length, '(strains', STRAINS.length, 'x drugs', DRUGS.length,
+console.log('samples:', samples.length, '(cells', CELLS.length, 'x drugs', DRUGS.length,
   'x doses', DOSES.length, '+veh x times', TIMES.length, 'x reps', N_REP, ')')
-console.log('conditions: strain, cmpd, dose, time')
+console.log('conditions: cell, cmpd, dose, time')
 console.log('measured proteins:', genes.filter((g) => g.measured).length)
 console.log('low-coverage proteins:', genes.filter((g) => g.lowcov).length)
 console.log('responders:', genes.filter((g) => g.resp).length,
