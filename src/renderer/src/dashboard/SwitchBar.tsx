@@ -4,44 +4,55 @@
 import { type CSSProperties, type ReactNode } from 'react'
 
 import { UI } from '../ui/theme'
+import { OnOffSwitch, ToggleSwitch } from '../ui/ToggleSwitch'
 
 export function SwitchBar({
   label,
   value,
   options,
+  optionLabel,
   onChange
 }: {
   label: string
   value: string
   options: readonly string[]
+  /** display text for an option; defaults to the option itself (a condition key needs `condLabel`
+   *  so a custom condition reads `genotype`, not `@genotype`) */
+  optionLabel?: (o: string) => string
   onChange: (v: string) => void
 }): ReactNode {
   return (
     <div style={styles.bars}>
-      <div style={styles.bar} role="tablist" aria-label={label}>
+      <div style={styles.bar}>
         <span style={styles.barLabel}>{label}</span>
-        {/* Fused pill, matching the main-nav Workflow/Results switch: a rounded track whose
-            active segment is a rounded chip (accent fill). */}
-        <div style={styles.pill}>
-          {options.map((o) => {
-            const on = o === value
-            return (
-              <button
-                key={o}
-                role="tab"
-                aria-selected={on}
-                onClick={() => onChange(o)}
-                style={{
-                  ...styles.tab,
-                  background: on ? UI.accent : 'transparent',
-                  color: on ? UI.accentText : UI.text
-                }}
-              >
-                {o}
-              </button>
-            )
-          })}
-        </div>
+        <ToggleSwitch
+          size="sm"
+          label={label}
+          value={value}
+          options={options.map((o) => ({ value: o, label: optionLabel ? optionLabel(o) : o }))}
+          onChange={onChange}
+        />
+      </div>
+    </div>
+  )
+}
+
+/** A labelled on/off in the same strip as a SwitchBar (e.g. a table's Colour), so a row of them
+ *  reads as one: same label, same padding and rule. */
+export function SwitchBarToggle({
+  label,
+  on,
+  onChange
+}: {
+  label: string
+  on: boolean
+  onChange: (on: boolean) => void
+}): ReactNode {
+  return (
+    <div style={styles.bars}>
+      <div style={styles.bar}>
+        <span style={styles.barLabel}>{label}</span>
+        <OnOffSwitch on={on} onChange={onChange} label={label} />
       </div>
     </div>
   )
@@ -65,23 +76,5 @@ const styles: Record<string, CSSProperties> = {
     letterSpacing: 0.5,
     color: UI.textMuted,
     flex: '0 0 auto'
-  },
-  pill: {
-    display: 'inline-flex',
-    gap: 2,
-    border: `1px solid ${UI.border}`,
-    borderRadius: 999,
-    padding: 2,
-    background: UI.panel,
-    flex: '0 0 auto'
-  },
-  tab: {
-    border: 'none',
-    borderRadius: 999,
-    padding: '2px 11px',
-    fontSize: 11,
-    fontWeight: 600,
-    cursor: 'pointer',
-    whiteSpace: 'nowrap'
   }
 }

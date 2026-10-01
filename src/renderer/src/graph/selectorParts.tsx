@@ -113,25 +113,7 @@ export const selectorStyles: Record<string, CSSProperties> = {
   },
   condName: { fontSize: 12, fontWeight: 600, color: UI.textMuted },
   condNameOn: { color: UI.text },
-  switchTrack: {
-    display: 'inline-flex',
-    alignItems: 'center',
-    flex: '0 0 auto',
-    width: 28,
-    height: 15,
-    borderRadius: 8,
-    padding: 2,
-    border: 'none',
-    boxSizing: 'border-box',
-    transition: 'background 120ms'
-  },
-  switchKnob: {
-    width: 11,
-    height: 11,
-    borderRadius: '50%',
-    background: '#fff',
-    boxShadow: '0 1px 2px rgba(0,0,0,0.4)'
-  },
+
   chips: { display: 'flex', flexWrap: 'wrap', gap: 4, alignItems: 'center' },
   // Border as LONGHANDS, not the `border` shorthand: the partial look overrides borderStyle, and
   // when a chip returns to another look React only clears that one property — with a shorthand

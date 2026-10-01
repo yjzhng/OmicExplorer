@@ -10,7 +10,11 @@ import {
 import { createPortal } from 'react-dom'
 
 import { useGraph } from '../graph/store'
-import { PALETTES, UI } from './theme'
+import { cssVars, PALETTES, UI } from './theme'
+import { CLEAR, ColorPicker } from './ColorPicker'
+import { Select } from './Select'
+import { POPOVER_ATTR } from './usePopover'
+import { ToggleSwitch } from './ToggleSwitch'
 import { useSelection } from './useSelection'
 import { useUiTheme } from './useUiTheme'
 
@@ -61,28 +65,22 @@ function iconProps(): Record<string, string | number> {
     strokeLinejoin: 'round'
   }
 }
+/** A text field with a cursor — rename: it changes the set's NAME. Drawn unlike the gene-editing
+ *  pencil on purpose; with a pencil on both, the two read as the same action. */
 function IconRename(): ReactNode {
+  return (
+    <svg {...iconProps()}>
+      <rect x="3" y="7" width="18" height="10" rx="2" />
+      <path d="M12 4v16M10 4h4M10 20h4" />
+    </svg>
+  )
+}
+/** A pencil — edit the set's GENES, by checking them in the gene list below. */
+function IconEditGenes(): ReactNode {
   return (
     <svg {...iconProps()}>
       <path d="M4 20l1-4L16 5l3 3L8 19z" />
       <path d="M14 7l3 3" />
-    </svg>
-  )
-}
-/** Plus — add the current selection to the set. */
-function IconAdd(): ReactNode {
-  return (
-    <svg {...iconProps()}>
-      <path d="M12 5v14M5 12h14" />
-    </svg>
-  )
-}
-/** Circular arrow — overwrite (rewrite) the set with the current selection. */
-function IconRewrite(): ReactNode {
-  return (
-    <svg {...iconProps()}>
-      <path d="M4 12a8 8 0 1 1 2.4 5.7" />
-      <path d="M4 20v-5h5" />
     </svg>
   )
 }
@@ -125,6 +123,13 @@ export interface GeneGroupTab {
   key: string
   label: string
   categories: GeneCategory[]
+  /** a choice WITHIN the tab (Pathway: which term set groups the genes), shown as a dropdown under
+   *  the tab bar while the tab is active; the caller rebuilds `categories` for the choice */
+  variant?: {
+    value: string
+    options: { value: string; label: string }[]
+    onChange: (value: string) => void
+  }
 }
 
 const CAP = 200
@@ -155,26 +160,31 @@ export function GeneSelectMenu({ tabs }: { tabs: GeneGroupTab[] }): ReactNode {
   const [tabKey, setTabKey] = useState(tabs[0]?.key)
   const [openCat, setOpenCat] = useState<Set<string>>(() => new Set())
   const [openPath, setOpenPath] = useState<Set<string>>(() => new Set())
-  // Geneset editing state: `creating` shows the new-name input; `renameId` marks the row being renamed.
-  const [creating, setCreating] = useState(false)
+  // Geneset editing state: `creating` shows the new-name input, for a set saved from the selection
+  // or an empty one; `renameId` marks the row being renamed.
+  const [creating, setCreating] = useState<'selection' | 'empty' | null>(null)
+  // The placeholder row clicked: asking whether the new set starts empty or from the selection.
+  const [choosing, setChoosing] = useState(false)
   const [nameDraft, setNameDraft] = useState('')
   const [renameId, setRenameId] = useState<string | null>(null)
+  // The geneset being edited from the gene list: while set, the list's checkboxes show and change
+  // THAT set's members instead of the shared selection — how a set is built without selecting first.
+  const [editId, setEditId] = useState<string | null>(null)
   // Which genesets are expanded (showing their member genes for un-checking / removal).
   const [openGs, setOpenGs] = useState<Set<string>>(() => new Set())
-  // Two-step confirm for destructive per-row actions: first click arms {id, act}; a second click
+  // Two-step confirm for Delete: first click arms {id, act}; a second click
   // on the same button within ~3s (or before the mouse leaves the row) commits.
-  const [confirm, setConfirm] = useState<{ id: string; act: 'rewrite' | 'delete' } | null>(null)
+  const [confirm, setConfirm] = useState<{ id: string; act: 'delete' } | null>(null)
   const confirmTimer = useRef<number | null>(null)
-  const armConfirm = (id: string, act: 'rewrite' | 'delete'): void => {
+  const armConfirm = (id: string, act: 'delete'): void => {
     if (confirmTimer.current) window.clearTimeout(confirmTimer.current)
     setConfirm({ id, act })
     confirmTimer.current = window.setTimeout(() => setConfirm(null), 3000)
   }
-  const isArmed = (id: string, act: 'rewrite' | 'delete'): boolean =>
-    confirm?.id === id && confirm.act === act
+  const isArmed = (id: string, act: 'delete'): boolean => confirm?.id === id && confirm.act === act
   // Portal-rendered action tooltip (so the scrollable list can't crop it). Anchored to the hovered
   // icon's screen rect; the text is derived at render time so it flips to "Confirm…" once armed.
-  type TipKind = 'rename' | 'add' | 'rewrite' | 'delete'
+  type TipKind = 'rename' | 'edit' | 'delete'
   const [tip, setTip] = useState<{ id: string; kind: TipKind; cx: number; top: number } | null>(
     null
   )
@@ -184,13 +194,12 @@ export function GeneSelectMenu({ tabs }: { tabs: GeneGroupTab[] }): ReactNode {
   }
   const tipText = (t: { id: string; kind: TipKind }): string => {
     if (t.kind === 'rename') return 'Rename'
-    if (t.kind === 'add') return 'Add selection'
-    if (t.kind === 'rewrite') return isArmed(t.id, 'rewrite') ? 'Confirm rewrite' : 'Rewrite'
+    if (t.kind === 'edit') return editId === t.id ? 'Done editing genes' : 'Edit genes'
     return isArmed(t.id, 'delete') ? 'Confirm delete' : 'Delete'
   }
   useEffect(ensureMenuCss, [])
   const activeTab = tabs.find((t) => t.key === tabKey) ?? tabs[0]
-  const categories = activeTab?.categories ?? []
+  const categories = useMemo(() => activeTab?.categories ?? [], [activeTab])
   // id → label across every tab, so a geneset saved from the selection carries display labels.
   const labelById = useMemo(() => {
     const m = new Map<string, string>()
@@ -218,16 +227,59 @@ export function GeneSelectMenu({ tabs }: { tabs: GeneGroupTab[] }): ReactNode {
   // The current selection as geneset members (id + captured label).
   const selectionGenes = (): { id: string; label: string }[] =>
     [...pinnedIds].map((id) => ({ id, label: labelById.get(id) ?? id }))
+  // "Save selected genes" takes the selection; "New geneset" starts empty and opens for editing, so
+  // its genes are then checked straight off the list below.
   const commitCreate = (): void => {
-    if (pinnedIds.size === 0) return
-    createGeneSet(nameDraft.trim() || `Geneset ${geneSets.length + 1}`, selectionGenes())
-    setCreating(false)
+    const name = nameDraft.trim() || `Geneset ${geneSets.length + 1}`
+    const empty = creating === 'empty' || pinnedIds.size === 0
+    const id = createGeneSet(name, empty ? [] : selectionGenes())
+    if (empty) startEdit(id, [])
+    setCreating(null)
     setNameDraft('')
   }
   const commitRename = (id: string): void => {
     renameGeneSet(id, nameDraft)
     setRenameId(null)
     setNameDraft('')
+  }
+  // What the gene list's checkboxes read and write: the edited set's members, else the selection.
+  const editSet = geneSets.find((g) => g.id === editId) ?? null
+  // Editing keeps the selection equal to the set (startEdit / toggleIds move both together). Any
+  // other change to the selection — loading another set, clearing it, picking in a plot — ends
+  // editing, so later picks go to the selection and never quietly into the set.
+  if (
+    editSet &&
+    (editSet.genes.length !== pinnedIds.size || editSet.genes.some((g) => !pinnedIds.has(g.id)))
+  )
+    setEditId(null)
+  const checkedIds = useMemo(
+    () => (editSet ? new Set(editSet.genes.map((g) => g.id)) : pinnedIds),
+    [editSet, pinnedIds]
+  )
+  // Editing a geneset selects it, and every edit re-selects it: the plots highlight the set as
+  // it's built, and the selector's label names it with its live count. (Left alone, the selection
+  // would sit still while the set changed, and the label with it.)
+  function startEdit(id: string, ids: string[]): void {
+    setEditId(id)
+    setPins(ids)
+  }
+  // Same all-or-nothing rule as togglePins: every id already in → take them all out, else add the rest.
+  const toggleIds = (ids: string[]): void => {
+    if (!editSet) return ids.length === 1 ? togglePin(ids[0]) : togglePins(ids)
+    const uniq = [...new Set(ids)]
+    if (uniq.length === 0) return
+    const have = new Set(editSet.genes.map((g) => g.id))
+    const allIn = uniq.every((id) => have.has(id))
+    const genes = allIn
+      ? editSet.genes.filter((g) => !uniq.includes(g.id))
+      : [
+          ...editSet.genes,
+          ...uniq
+            .filter((id) => !have.has(id))
+            .map((id) => ({ id, label: labelById.get(id) ?? id }))
+        ]
+    updateGeneSetGenes(editSet.id, genes)
+    setPins(genes.map((g) => g.id))
   }
   const [rect, setRect] = useState<{ right: number; bottom: number } | null>(null)
   const btnRef = useRef<HTMLButtonElement>(null)
@@ -237,7 +289,12 @@ export function GeneSelectMenu({ tabs }: { tabs: GeneGroupTab[] }): ReactNode {
     if (!open) return
     const onDoc = (e: MouseEvent): void => {
       const t = e.target as Node
-      if (!btnRef.current?.contains(t) && !menuRef.current?.contains(t)) setOpen(false)
+      // A click in a popover opened from the menu (a geneset's colour grid) is not a click away.
+      const inPopover = (t as Element).closest?.(`[${POPOVER_ATTR}]`)
+      if (!btnRef.current?.contains(t) && !menuRef.current?.contains(t) && !inPopover) {
+        setOpen(false)
+        setEditId(null)
+      }
     }
     const onScroll = (e: Event): void => {
       if (menuRef.current?.contains(e.target as Node)) return
@@ -257,6 +314,7 @@ export function GeneSelectMenu({ tabs }: { tabs: GeneGroupTab[] }): ReactNode {
   const toggle = (): void => {
     if (open) {
       setTip(null)
+      setEditId(null)
       return setOpen(false)
     }
     const r = btnRef.current?.getBoundingClientRect()
@@ -308,10 +366,30 @@ export function GeneSelectMenu({ tabs }: { tabs: GeneGroupTab[] }): ReactNode {
   // Selected/total over a set of gene-id lists (deduped) — for the count chips + tri-state boxes.
   const tally = (idLists: string[][]): { ids: string[]; sel: number } => {
     const ids = [...new Set(idLists.flat())]
-    return { ids, sel: ids.filter((id) => pinnedIds.has(id)).length }
+    return { ids, sel: ids.filter((id) => checkedIds.has(id)).length }
   }
 
   const n = pinnedIds.size
+  // What the selection IS, when it's exactly one named group: a geneset first (the user's own
+  // name wins), else a pathway / category from the menu's groupings — any tab, any level (a KEGG
+  // category counts as the union of its pathways). Null for an ad-hoc selection.
+  const selectionName = useMemo((): string | null => {
+    if (pinnedIds.size === 0) return null
+    const same = (ids: Iterable<string>): boolean => {
+      const set = new Set(ids)
+      if (set.size !== pinnedIds.size) return false
+      for (const id of set) if (!pinnedIds.has(id)) return false
+      return true
+    }
+    for (const gs of geneSets) if (same(gs.genes.map((g) => g.id))) return gs.name
+    for (const t of tabs)
+      for (const c of t.categories) {
+        if (c.genes && same(c.genes.map((g) => g.id))) return c.name
+        for (const pw of c.pathways ?? []) if (same(pw.genes.map((g) => g.id))) return pw.name
+        if (c.pathways && same(c.pathways.flatMap((pw) => pw.genes.map((g) => g.id)))) return c.name
+      }
+    return null
+  }, [pinnedIds, geneSets, tabs])
   const box = (sel: number, total: number, onClick: () => void, title: string): ReactNode => {
     const allOn = sel === total && total > 0
     return (
@@ -320,7 +398,8 @@ export function GeneSelectMenu({ tabs }: { tabs: GeneGroupTab[] }): ReactNode {
         onClick={onClick}
         style={{
           ...styles.box,
-          border: `1px solid ${sel > 0 ? p.accent : p.border}`,
+          // Empty: muted-text ink, not the border grey, which vanishes on the editing tint.
+          border: `1px solid ${sel > 0 ? p.accent : p.textMuted}`,
           background: allOn ? p.accent : 'transparent',
           color: allOn ? p.panel : p.accent
         }}
@@ -345,7 +424,7 @@ export function GeneSelectMenu({ tabs }: { tabs: GeneGroupTab[] }): ReactNode {
   const geneRows = (genes: Gene[], indent: number): ReactNode => (
     <>
       {genes.slice(0, CAP).map((g) => {
-        const on = pinnedIds.has(g.id)
+        const on = checkedIds.has(g.id)
         return (
           <label
             key={g.id}
@@ -361,7 +440,7 @@ export function GeneSelectMenu({ tabs }: { tabs: GeneGroupTab[] }): ReactNode {
             <input
               type="checkbox"
               checked={on}
-              onChange={() => togglePin(g.id)}
+              onChange={() => toggleIds([g.id])}
               style={{ accentColor: p.accent }}
             />
             <span style={styles.geneName}>{g.label}</span>
@@ -384,7 +463,15 @@ export function GeneSelectMenu({ tabs }: { tabs: GeneGroupTab[] }): ReactNode {
   return (
     <div style={{ flex: '0 0 auto' }}>
       <button ref={btnRef} onClick={toggle} style={styles.trigger}>
-        <span>{n > 0 ? `${n} gene${n > 1 ? 's' : ''} selected` : 'Select genes'}</span>
+        {selectionName ? (
+          // A named selection: its name (cut short in the nav, whole on hover) and the count.
+          <span style={styles.triggerName} title={`${selectionName} (${n})`}>
+            <span style={styles.triggerNameText}>{selectionName}</span>
+            <span style={styles.triggerCount}>({n})</span>
+          </span>
+        ) : (
+          <span>{n > 0 ? `${n} gene${n > 1 ? 's' : ''} selected` : 'Select genes'}</span>
+        )}
         <Chevron deg={open ? -90 : 90} />
       </button>
       {open &&
@@ -397,80 +484,20 @@ export function GeneSelectMenu({ tabs }: { tabs: GeneGroupTab[] }): ReactNode {
               left: menuLeft,
               top: rect.bottom + 4,
               width: MENU_W,
-              background: p.panel,
-              border: `1px solid ${p.border}`
+              // While a geneset is being edited the whole window takes an accent tint: its
+              // checkboxes are changing the set, not the selection.
+              background: editSet
+                ? `linear-gradient(${p.accent}26, ${p.accent}26), ${p.panel}`
+                : p.panel,
+              border: `1px solid ${editSet ? p.accent : p.border}`
             }}
           >
-            <input
-              autoFocus
-              value={q}
-              onChange={(e) => setQ(e.target.value)}
-              placeholder="Search genes / pathways…"
-              style={{
-                ...styles.search,
-                background: p.panelAlt,
-                color: p.text,
-                border: `1px solid ${p.border}`
-              }}
-            />
             {/* Custom genesets — saved gene selections. Click a name to load it (replacing the current
-                selection); per-row Rename / Rewrite (overwrite with current selection) / Delete. */}
+                selection); per-row Rename / Edit genes (the only way a set's genes change) / Delete. */}
             <div style={{ ...styles.gsSection, borderColor: p.border }}>
               <div style={styles.gsHead}>
                 <span style={{ ...styles.gsTitle, color: p.textMuted }}>Custom genesets</span>
-                <button
-                  onClick={() => {
-                    setNameDraft('')
-                    setRenameId(null)
-                    setCreating(true)
-                  }}
-                  disabled={n === 0}
-                  title={
-                    n === 0 ? 'Select genes first' : 'Save the current selection as a new geneset'
-                  }
-                  style={{
-                    ...styles.gsNew,
-                    color: n === 0 ? p.textMuted : p.accent,
-                    cursor: n === 0 ? 'default' : 'pointer'
-                  }}
-                >
-                  + New from selection
-                </button>
               </div>
-              {creating && (
-                <div style={styles.gsRow}>
-                  <input
-                    autoFocus
-                    value={nameDraft}
-                    onChange={(e) => setNameDraft(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter') commitCreate()
-                      else if (e.key === 'Escape') setCreating(false)
-                    }}
-                    placeholder={`Name (${n} gene${n > 1 ? 's' : ''})…`}
-                    style={{
-                      ...styles.gsInput,
-                      background: p.panelAlt,
-                      color: p.text,
-                      border: `1px solid ${p.border}`
-                    }}
-                  />
-                  <button
-                    onClick={commitCreate}
-                    style={{ ...styles.gsIcon, color: p.accent }}
-                    title="Save"
-                  >
-                    ✓
-                  </button>
-                  <button
-                    onClick={() => setCreating(false)}
-                    style={{ ...styles.gsIcon, color: p.textMuted }}
-                    title="Cancel"
-                  >
-                    ✕
-                  </button>
-                </div>
-              )}
               {/* Cap the visible list to ~10 rows; scroll beyond. Expanded member lists scroll too. */}
               <div style={styles.gsList}>
                 {geneSets.map((gs) => {
@@ -520,13 +547,14 @@ export function GeneSelectMenu({ tabs }: { tabs: GeneGroupTab[] }): ReactNode {
                         className="oe-gs-row"
                         style={{
                           ...styles.gsRow,
-                          ...(active ? { background: `${p.accent}22` } : {})
+                          ...(active || editId === gs.id ? { background: `${p.accent}22` } : {}),
+                          ...(editId === gs.id ? { boxShadow: `inset 2px 0 0 ${p.accent}` } : {})
                         }}
                         onMouseLeave={() => setConfirm((c) => (c?.id === gs.id ? null : c))}
                       >
                         <button
                           onClick={() => toggleIn(openGs, setOpenGs, gs.id)}
-                          title={expanded ? 'Collapse' : 'Expand to edit genes'}
+                          title={expanded ? 'Collapse' : 'Show its genes'}
                           style={styles.gsCaret}
                         >
                           <Chevron deg={expanded ? 90 : 0} size={9} color={p.textMuted} />
@@ -542,33 +570,33 @@ export function GeneSelectMenu({ tabs }: { tabs: GeneGroupTab[] }): ReactNode {
                         >
                           <Eye off={!!gs.hidden} />
                         </button>
-                        {/* Colour swatch: the set's point colour on volcano/MA/scatter while it's the
-                            selection. A native colour input sits invisibly over it; unset shows as a
-                            dashed ring. Right-click clears. */}
-                        <label
-                          style={{
-                            ...styles.gsSwatch,
-                            background: gs.color ?? 'transparent',
-                            border: gs.color ? `1px solid ${p.border}` : `1px dashed ${p.textMuted}`
-                          }}
+                        {/* Colour: the set's point colour on volcano / MA / scatter while it's the
+                            selection. The plot settings' picker (same grid, same clear chip), on a
+                            chip drawn like the legend's — hatched while unset. */}
+                        <ColorPicker
+                          value={gs.color ?? CLEAR}
+                          onPick={(c) => setGeneSetColor(gs.id, c)}
+                          onClear={() => setGeneSetColor(gs.id, undefined)}
+                          clearLabel="No colour (the plot's default)"
+                          label={`${gs.name} colour`}
                           title={
                             gs.color
-                              ? 'Point colour on volcano / MA / scatter — click to change, right-click to clear'
+                              ? 'Point colour on volcano / MA / scatter — click to change'
                               : 'Set a point colour for this geneset on volcano / MA / scatter'
                           }
-                          onContextMenu={(e) => {
-                            e.preventDefault()
-                            setGeneSetColor(gs.id, undefined)
+                          // Unset: a slash on the panel colour — its own fill and a stronger ink, so it
+                          // still reads on a selected (tinted) row.
+                          triggerStyle={{
+                            ...styles.gsSwatch,
+                            // Muted-text outline either way: a pale or panel-like colour still has an edge.
+                            border: `1px solid ${p.textMuted}`,
+                            background:
+                              gs.color ??
+                              `linear-gradient(to bottom right, transparent 42%, ${p.textMuted} 42%, ${p.textMuted} 58%, transparent 58%), ${p.panel}`
                           }}
                         >
-                          <input
-                            type="color"
-                            value={gs.color ?? '#ff2d95'}
-                            aria-label={`${gs.name} colour`}
-                            style={styles.gsSwatchInput}
-                            onChange={(e) => setGeneSetColor(gs.id, e.target.value)}
-                          />
-                        </label>
+                          <span />
+                        </ColorPicker>
                         <button
                           onClick={() => setPins(ids)}
                           title={`Load ${gs.genes.length} gene${gs.genes.length > 1 ? 's' : ''}`}
@@ -592,13 +620,34 @@ export function GeneSelectMenu({ tabs }: { tabs: GeneGroupTab[] }): ReactNode {
                             {gs.genes.length}
                           </span>
                         </button>
-                        <span className="oe-gs-actions" style={styles.gsActions}>
+                        {/* Always shown while editing (the row's actions only show on hover), and
+                            the way out: click to finish. */}
+                        {editId === gs.id && (
+                          <button
+                            onClick={() => setEditId(null)}
+                            title="Editing this geneset from the gene list — click to finish"
+                            style={{ ...styles.editBadge, background: p.accent, color: p.panel }}
+                          >
+                            Editing
+                          </button>
+                        )}
+                        <span
+                          className="oe-gs-actions"
+                          // Always shown while this set is edited (hover-only otherwise), so the
+                          // confirming tick is in view. Inline display outranks the hover CSS.
+                          style={{
+                            ...styles.gsActions,
+                            ...(editId === gs.id
+                              ? { display: 'inline-flex', alignItems: 'center' }
+                              : null)
+                          }}
+                        >
                           <button
                             onMouseEnter={(e) => showTip(e, gs.id, 'rename')}
                             onMouseLeave={() => setTip(null)}
                             onClick={() => {
                               setNameDraft(gs.name)
-                              setCreating(false)
+                              setCreating(null)
                               setRenameId(gs.id)
                             }}
                             style={{ ...styles.gsAct, color: p.textMuted }}
@@ -606,48 +655,19 @@ export function GeneSelectMenu({ tabs }: { tabs: GeneGroupTab[] }): ReactNode {
                             <IconRename />
                           </button>
                           <button
-                            onMouseEnter={(e) => showTip(e, gs.id, 'add')}
+                            onMouseEnter={(e) => showTip(e, gs.id, 'edit')}
                             onMouseLeave={() => setTip(null)}
-                            onClick={() => {
-                              const have = new Set(ids)
-                              updateGeneSetGenes(gs.id, [
-                                ...gs.genes,
-                                ...selectionGenes().filter((g) => !have.has(g.id))
-                              ])
-                            }}
-                            disabled={n === 0}
+                            onClick={() =>
+                              editId === gs.id ? setEditId(null) : startEdit(gs.id, ids)
+                            }
                             style={{
                               ...styles.gsAct,
-                              color: n === 0 ? p.border : p.accent,
-                              cursor: n === 0 ? 'default' : 'pointer'
+                              color: editId === gs.id ? p.accent : p.textMuted,
+                              background: editId === gs.id ? `${p.accent}22` : undefined
                             }}
                           >
-                            <IconAdd />
-                          </button>
-                          <button
-                            onMouseEnter={(e) => showTip(e, gs.id, 'rewrite')}
-                            onMouseLeave={() => setTip(null)}
-                            onClick={() => {
-                              if (n === 0) return
-                              if (isArmed(gs.id, 'rewrite')) {
-                                updateGeneSetGenes(gs.id, selectionGenes())
-                                setConfirm(null)
-                              } else armConfirm(gs.id, 'rewrite')
-                            }}
-                            disabled={n === 0}
-                            style={{
-                              ...styles.gsAct,
-                              color:
-                                n === 0
-                                  ? p.border
-                                  : isArmed(gs.id, 'rewrite')
-                                    ? DANGER
-                                    : p.textMuted,
-                              background: isArmed(gs.id, 'rewrite') ? `${DANGER}22` : undefined,
-                              cursor: n === 0 ? 'default' : 'pointer'
-                            }}
-                          >
-                            {isArmed(gs.id, 'rewrite') ? <IconCheck /> : <IconRewrite />}
+                            {/* Editing: the pencil turns into a tick — click to confirm and finish. */}
+                            {editId === gs.id ? <IconCheck /> : <IconEditGenes />}
                           </button>
                           <button
                             onMouseEnter={(e) => showTip(e, gs.id, 'delete')}
@@ -668,8 +688,9 @@ export function GeneSelectMenu({ tabs }: { tabs: GeneGroupTab[] }): ReactNode {
                           </button>
                         </span>
                       </div>
-                      {/* Expanded: member genes with a (checked) box — un-checking removes the gene
-                          from the geneset. Hovering highlights it across every plot/table. */}
+                      {/* Expanded: member genes with a (checked) box — while the set is being edited,
+                          un-checking removes the gene; otherwise read-only. Hovering highlights it
+                          across every plot/table. */}
                       {expanded && (
                         <div style={styles.gsMembers}>
                           {gs.genes.length === 0 && (
@@ -689,12 +710,20 @@ export function GeneSelectMenu({ tabs }: { tabs: GeneGroupTab[] }): ReactNode {
                                 <input
                                   type="checkbox"
                                   checked
-                                  onChange={() =>
-                                    updateGeneSetGenes(
-                                      gs.id,
-                                      gs.genes.filter((x) => x.id !== g.id)
-                                    )
+                                  // Only the set being edited can lose genes here; otherwise the
+                                  // list just shows what's in it.
+                                  disabled={editId !== gs.id}
+                                  title={
+                                    editId === gs.id
+                                      ? 'Remove from the geneset'
+                                      : 'Turn on Edit genes (the pencil action) to remove genes'
                                   }
+                                  onChange={() => {
+                                    const rest = gs.genes.filter((x) => x.id !== g.id)
+                                    updateGeneSetGenes(gs.id, rest)
+                                    // The set being edited stays the selection (see editSet).
+                                    setPins(rest.map((x) => x.id))
+                                  }}
                                   style={{ accentColor: p.accent }}
                                 />
                                 <span style={styles.geneName}>{g.label}</span>
@@ -720,36 +749,147 @@ export function GeneSelectMenu({ tabs }: { tabs: GeneGroupTab[] }): ReactNode {
                   )
                 })}
               </div>
-              {geneSets.length === 0 && !creating && (
-                <div style={{ ...styles.gsEmpty, color: p.textMuted }}>
-                  Select genes below, then “New from selection”.
+              {/* The way to add one: a placeholder row at the end of the list. Clicked, it asks
+                  where the genes come from — none yet (then check them in the list below), or the
+                  current selection — and then for a name, in the same spot. */}
+              {creating ? (
+                <div style={styles.gsRow}>
+                  <input
+                    autoFocus
+                    value={nameDraft}
+                    onChange={(e) => setNameDraft(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') commitCreate()
+                      else if (e.key === 'Escape') setCreating(null)
+                    }}
+                    placeholder={
+                      creating === 'empty'
+                        ? 'Name (empty — add genes after)…'
+                        : `Name (${n} gene${n > 1 ? 's' : ''})…`
+                    }
+                    style={{
+                      ...styles.gsInput,
+                      background: p.panelAlt,
+                      color: p.text,
+                      border: `1px solid ${p.border}`
+                    }}
+                  />
+                  <button
+                    onClick={commitCreate}
+                    style={{ ...styles.gsIcon, color: p.accent }}
+                    title="Save"
+                  >
+                    ✓
+                  </button>
+                  <button
+                    onClick={() => setCreating(null)}
+                    style={{ ...styles.gsIcon, color: p.textMuted }}
+                    title="Cancel"
+                  >
+                    ✕
+                  </button>
                 </div>
+              ) : choosing ? (
+                <div style={styles.gsChoose}>
+                  <button
+                    onClick={() => {
+                      setChoosing(false)
+                      setNameDraft('')
+                      setRenameId(null)
+                      setCreating('empty')
+                    }}
+                    title="Create an empty geneset, then check its genes in the list below"
+                    style={{
+                      ...styles.gsChoice,
+                      color: p.text,
+                      background: p.panelAlt,
+                      border: `1px solid ${p.border}`
+                    }}
+                  >
+                    Empty
+                  </button>
+                  <button
+                    onClick={() => {
+                      setChoosing(false)
+                      setNameDraft('')
+                      setRenameId(null)
+                      setCreating('selection')
+                    }}
+                    disabled={n === 0}
+                    title={
+                      n === 0
+                        ? 'Select genes first'
+                        : `Save the ${n} selected gene${n > 1 ? 's' : ''} as a new geneset`
+                    }
+                    style={{
+                      ...styles.gsChoice,
+                      color: p.text,
+                      background: p.panelAlt,
+                      border: `1px solid ${p.border}`,
+                      ...(n === 0 ? styles.gsChoiceOff : null)
+                    }}
+                  >
+                    From selection ({n})
+                  </button>
+                  <button
+                    onClick={() => setChoosing(false)}
+                    style={{ ...styles.gsIcon, color: p.textMuted }}
+                    title="Cancel"
+                  >
+                    ✕
+                  </button>
+                </div>
+              ) : (
+                <button
+                  onClick={() => setChoosing(true)}
+                  style={{
+                    ...styles.gsPlaceholder,
+                    color: p.textMuted,
+                    border: `1px dashed ${p.border}`
+                  }}
+                >
+                  + New geneset
+                </button>
               )}
             </div>
+            {/* Search sits with what it searches: right above the grouping switch and the list. */}
+            <input
+              autoFocus
+              value={q}
+              onChange={(e) => setQ(e.target.value)}
+              placeholder="Search genes / pathways…"
+              style={{
+                ...styles.search,
+                background: p.panelAlt,
+                color: p.text,
+                border: `1px solid ${p.border}`
+              }}
+            />
             {tabs.length > 1 && (
-              <div
-                style={{
-                  ...styles.tabPill,
-                  border: `1px solid ${p.border}`,
-                  background: p.panelAlt
-                }}
-              >
-                {tabs.map((t) => {
-                  const on = t.key === activeTab?.key
-                  return (
-                    <button
-                      key={t.key}
-                      onClick={() => setTabKey(t.key)}
-                      style={{
-                        ...styles.tabBtn,
-                        background: on ? p.accent : 'transparent',
-                        color: on ? p.panel : p.text
-                      }}
-                    >
-                      {t.label}
-                    </button>
-                  )
-                })}
+              // The menu is portalled outside the app root, so the switch gets the theme's
+              // variables here (it is styled with them, where the rest of the menu uses `p`).
+              <div style={{ ...cssVars(p), display: 'flex' }}>
+                <ToggleSwitch
+                  fill
+                  label="Group genes by"
+                  value={activeTab?.key ?? ''}
+                  options={tabs.map((t) => ({ value: t.key, label: t.label }))}
+                  onChange={setTabKey}
+                />
+              </div>
+            )}
+            {activeTab?.variant && activeTab.variant.options.length > 0 && (
+              <div style={{ ...styles.variantRow, color: p.textMuted }}>
+                Group by
+                {/* The app's Select, not the OS popup. Themed via the variables here — the menu
+                    is portalled outside the app root. */}
+                <div style={{ ...cssVars(p), ...styles.variantSelect }}>
+                  <Select
+                    value={activeTab.variant.value}
+                    options={activeTab.variant.options}
+                    onChange={(v) => activeTab.variant?.onChange(v)}
+                  />
+                </div>
               </div>
             )}
             <div style={styles.list}>
@@ -765,8 +905,8 @@ export function GeneSelectMenu({ tabs }: { tabs: GeneGroupTab[] }): ReactNode {
                       {box(
                         cat.sel,
                         cat.ids.length,
-                        () => togglePins(cat.ids),
-                        'Select all in category'
+                        () => toggleIds(cat.ids),
+                        editSet ? 'Add all in category to the geneset' : 'Select all in category'
                       )}
                       <button
                         onClick={() => toggleIn(openCat, setOpenCat, c.name)}
@@ -789,12 +929,19 @@ export function GeneSelectMenu({ tabs }: { tabs: GeneGroupTab[] }): ReactNode {
                       c.pathways.map((pw) => {
                         const key = `${c.name}::${pw.name}`
                         const ids = pw.genes.map((g) => g.id)
-                        const sel = ids.filter((id) => pinnedIds.has(id)).length
+                        const sel = ids.filter((id) => checkedIds.has(id)).length
                         const pwOpen = searching || openPath.has(key)
                         return (
                           <div key={key}>
                             <div style={styles.pathHead}>
-                              {box(sel, ids.length, () => togglePins(ids), 'Select all in pathway')}
+                              {box(
+                                sel,
+                                ids.length,
+                                () => toggleIds(ids),
+                                editSet
+                                  ? 'Add all in pathway to the geneset'
+                                  : 'Select all in pathway'
+                              )}
                               <button
                                 onClick={() => toggleIn(openPath, setOpenPath, key)}
                                 style={{ ...styles.headBtn, color: p.text, fontWeight: 600 }}
@@ -817,10 +964,21 @@ export function GeneSelectMenu({ tabs }: { tabs: GeneGroupTab[] }): ReactNode {
                 </div>
               )}
             </div>
-            {n > 0 && (
-              <button style={{ ...styles.clear, color: p.textMuted }} onClick={() => clearPins()}>
-                Clear selection ({n})
+            {editSet ? (
+              // Editing: finish here, at the end of the list being edited. (Clearing the selection
+              // instead would end editing too — see editSet — so it's not offered meanwhile.)
+              <button
+                onClick={() => setEditId(null)}
+                style={{ ...styles.confirm, background: p.accent, color: p.panel }}
+              >
+                Confirm {editSet.name} ({editSet.genes.length})
               </button>
+            ) : (
+              n > 0 && (
+                <button style={{ ...styles.clear, color: p.textMuted }} onClick={() => clearPins()}>
+                  Clear selection ({n})
+                </button>
+              )
             )}
           </div>,
           document.body
@@ -895,18 +1053,28 @@ const headBtn: CSSProperties = {
   textAlign: 'left'
 }
 const styles: Record<string, CSSProperties> = {
+  // The trigger's named-selection label: the name ellipsizes, the count always shows.
+  triggerName: { display: 'inline-flex', alignItems: 'baseline', gap: 4, minWidth: 0 },
+  triggerNameText: {
+    maxWidth: 220,
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap'
+  },
+  triggerCount: { color: UI.textMuted, fontWeight: 500, flex: '0 0 auto' },
   trigger: {
     display: 'inline-flex',
     alignItems: 'center',
     gap: 6,
     height: 30,
-    padding: '0 10px',
+    // Pill: fully rounded ends, with a little more side padding so the text clears the curve.
+    padding: '0 14px',
     fontSize: 12,
     fontWeight: 600,
     color: UI.text,
     background: 'transparent',
     border: `1px solid ${UI.border}`,
-    borderRadius: 6,
+    borderRadius: 999,
     cursor: 'pointer',
     whiteSpace: 'nowrap'
   },
@@ -941,7 +1109,35 @@ const styles: Record<string, CSSProperties> = {
     padding: '2px 4px'
   },
   gsTitle: { fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5 },
-  gsNew: { border: 'none', background: 'transparent', fontSize: 11, fontWeight: 600, padding: 0 },
+  // The "+ New geneset" placeholder: a dashed row the size of a geneset row, ending the list.
+  gsPlaceholder: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    width: '100%',
+    marginTop: 2,
+    padding: '3px 6px',
+    borderRadius: 4,
+    background: 'transparent',
+    fontSize: 11,
+    fontWeight: 600,
+    cursor: 'pointer'
+  },
+  // …clicked: where the new set's genes come from.
+  gsChoose: { display: 'flex', alignItems: 'center', gap: 4, marginTop: 2, padding: '0 4px' },
+  gsChoice: {
+    flex: 1,
+    minWidth: 0,
+    borderRadius: 4,
+    padding: '3px 6px',
+    fontSize: 11,
+    fontWeight: 600,
+    cursor: 'pointer',
+    whiteSpace: 'nowrap',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis'
+  },
+  gsChoiceOff: { opacity: 0.45, cursor: 'not-allowed' },
   gsRow: { display: 'flex', alignItems: 'center', gap: 4, padding: '1px 4px', borderRadius: 4 },
   gsEye: {
     display: 'inline-flex',
@@ -975,26 +1171,17 @@ const styles: Record<string, CSSProperties> = {
   // Scrollable geneset list: ~8 rows tall, then scrolls (rows are ~24px each).
   gsList: { maxHeight: 192, overflowY: 'auto', display: 'flex', flexDirection: 'column' },
   /** the geneset colour swatch (a small circle the colour input hides behind) */
+  // The legend's colour chip (NodeConfigPanel's swatch), at a geneset row's scale.
   gsSwatch: {
-    position: 'relative',
     flex: '0 0 auto',
-    width: 11,
-    height: 11,
-    borderRadius: '50%',
-    boxSizing: 'border-box',
-    overflow: 'hidden',
-    cursor: 'pointer'
-  },
-  gsSwatchInput: {
-    position: 'absolute',
-    inset: 0,
-    width: '100%',
-    height: '100%',
-    opacity: 0,
+    width: 16,
+    height: 13,
     padding: 0,
-    border: 'none',
+    borderRadius: 3,
+    boxSizing: 'border-box',
     cursor: 'pointer'
   },
+
   gsCaret: {
     display: 'inline-flex',
     alignItems: 'center',
@@ -1048,17 +1235,23 @@ const styles: Record<string, CSSProperties> = {
     fontSize: 12
   },
   gsEmpty: { fontSize: 11, padding: '2px 6px 4px' },
-  tabPill: { display: 'flex', gap: 2, borderRadius: 999, padding: 2 },
-  tabBtn: {
-    flex: 1,
+  // The active tab's own choice (Pathway: which term set), one line under the tab bar.
+  variantRow: { display: 'flex', alignItems: 'center', gap: 8, fontSize: 11, padding: '0 2px' },
+  variantSelect: { flex: 1, minWidth: 0, display: 'flex' },
+
+  // The editing set's row badge — always visible, unlike the hover-only actions.
+  editBadge: {
+    flex: '0 0 auto',
     border: 'none',
     borderRadius: 999,
-    padding: '3px 0',
-    fontSize: 11,
-    fontWeight: 600,
-    cursor: 'pointer',
-    whiteSpace: 'nowrap'
+    padding: '1px 7px',
+    fontSize: 9,
+    fontWeight: 700,
+    textTransform: 'uppercase',
+    letterSpacing: 0.4,
+    cursor: 'pointer'
   },
+
   list: { maxHeight: 380, overflowY: 'auto', display: 'flex', flexDirection: 'column' },
   catHead: { display: 'flex', alignItems: 'center', gap: 6, padding: '4px 4px 2px' },
   pathHead: { display: 'flex', alignItems: 'center', gap: 6, padding: '2px 4px 2px 18px' },
@@ -1116,6 +1309,18 @@ const styles: Record<string, CSSProperties> = {
     fontSize: 11
   },
   more: { padding: '3px 6px 3px 40px', fontSize: 11 },
+  // The editing mode's confirm, across the foot of the window.
+  confirm: {
+    border: 'none',
+    borderRadius: 6,
+    padding: '7px 10px',
+    fontSize: 12,
+    fontWeight: 700,
+    cursor: 'pointer',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap'
+  },
   clear: {
     border: 'none',
     background: 'transparent',

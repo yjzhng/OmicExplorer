@@ -79,3 +79,72 @@
 .oe-slider:focus-visible::-webkit-slider-thumb {
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 35%, transparent);
 }
+
+/* Number boxes in the config panels: hide the browser's spinner arrows. They're tiny targets that
+   eat half the box's width, and every such field is typed or arrow-keyed rather than clicked. */
+.oe-num::-webkit-inner-spin-button,
+.oe-num::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+.oe-num {
+  appearance: textfield;
+}
+
+/* Form-mode scroll areas: the native macOS scrollbar (the one shown when the system is set to always
+   show scrollbars) minus the outline its track draws down the gutter. Styling any part of a
+   scrollbar drops the native one entirely, so this reproduces its size and thumb rather than
+   tweaking it: a 15px gutter with a 7px rounded thumb (4px inset), in a grey that reads on both
+   themes. */
+.oe-scroll::-webkit-scrollbar {
+  width: 15px;
+  height: 15px;
+}
+.oe-scroll::-webkit-scrollbar-track,
+.oe-scroll::-webkit-scrollbar-corner {
+  background: transparent;
+  border: none;
+}
+.oe-scroll::-webkit-scrollbar-thumb {
+  background: rgba(138, 138, 138, 0.55);
+  border-radius: 8px;
+  border: 4px solid transparent;
+  background-clip: padding-box;
+}
+.oe-scroll::-webkit-scrollbar-thumb:hover {
+  background: rgba(138, 138, 138, 0.8);
+  background-clip: padding-box;
+}
+
+/* The form workflow's details column before its window can open: the reason, centred. */
+.oe-dock:empty::before {
+  content: attr(data-empty);
+  margin: auto;
+  padding: 24px;
+  max-width: 360px;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+/* The results dashboard's data-tab row: a slim scrollbar of its own. The native one is tall and, as
+   an overlay, sits on top of the tabs. A styled scrollbar takes real space instead, so it lives in
+   the strip under the tabs; scrolling is mostly by wheel / trackpad anyway (see ResultsView). */
+.oe-tabscroll::-webkit-scrollbar {
+  height: 4px;
+}
+.oe-tabscroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+/* Auto-hidden: the thumb is invisible until the pointer is over the row — which it always is
+   while scrolling it, by wheel or trackpad. Its strip stays reserved, so nothing shifts. */
+.oe-tabscroll::-webkit-scrollbar-thumb {
+  background: transparent;
+  border-radius: 2px;
+}
+.oe-tabscroll:hover::-webkit-scrollbar-thumb {
+  background: rgba(138, 138, 138, 0.45);
+}
+.oe-tabscroll::-webkit-scrollbar-thumb:hover {
+  background: rgba(138, 138, 138, 0.75);
+}

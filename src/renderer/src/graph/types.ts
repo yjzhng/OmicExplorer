@@ -3,9 +3,11 @@ import type { Node } from '@xyflow/react'
 
 import type {
   CondSelector,
+  ClusterColorBy,
   ConditionKey,
   ContrastResult,
   ContrastStat,
+  EnrichSource,
   FilterSpec,
   ImputeMethod,
   InteractiveRole,
@@ -24,6 +26,7 @@ export type NodeCategory = 'data' | 'processing' | 'plotting'
 export type NodeKind =
   | 'load'
   | 'standardize'
+  | 'merge'
   | 'compare'
   | 'contrast'
   | 'volcano'
@@ -46,6 +49,9 @@ export type StepStatus = 'idle' | 'running' | 'done' | 'error'
 /** Plot orientation for the tiles that support it (bubble/dumbbell/heatmap/bar): genes/
  *  categories across x (landscape) or down y (portrait). Undefined = the plot's default. */
 export type PlotOrient = 'landscape' | 'portrait'
+
+/** Merge has nothing to configure yet — which datasets it pools is the wiring, not a setting. */
+export type MergeConfig = Record<string, never>
 
 export interface FileEntry {
   name: string
@@ -86,6 +92,19 @@ export function resolveLoadMode(c: LoadConfig): LoadMode {
   return c.data || c.samplesheet || c.db ? 'manual' : 'interactive'
 }
 
+/** Why a Load tile isn't ready to feed a Clean data step — null when it is. Both standard files
+ *  must be set: Clean data reads them in either mode (interactive materialises them on convert),
+ *  so this mirrors the run's own check rather than merely "some file is named". */
+export function unconfiguredLoad(c: LoadConfig): string | null {
+  const interactive = resolveLoadMode(c) === 'interactive'
+  if (!c.data)
+    return interactive
+      ? 'Not configured — click “Configure samples…” and convert'
+      : 'No data file selected'
+  if (!c.samplesheet) return interactive ? 'Not converted yet' : 'No samplesheet selected'
+  return null
+}
+
 /** Interactive import: the user's column classification + per-sample conditions, from which the
  *  three standard files are generated (see engine buildStandardInputs). */
 export interface InteractiveImport {
@@ -95,6 +114,10 @@ export interface InteractiveImport {
   roles: Record<string, InteractiveRole>
   /** sample header → assigned conditions */
   conditions: Record<string, InteractiveSampleCond>
+  /** custom condition axes the user added beyond the five presets, in display order. Each becomes
+   *  a samplesheet column of the same name, and a `@name` condition key downstream. Always
+   *  categorical — see the engine's CustomConditionKey. */
+  customConditions?: string[]
   /** filter-column header → row-filter spec (Filtering step); absent = no row filtering */
   filters?: Record<string, FilterSpec>
   /** sample header → condition field → the token-index range [start, end) that field occupies in
@@ -143,6 +166,10 @@ export interface StandardizeConfig {
    *  per cell × dose); a gene is dropped only if it falls short in every group. Empty/absent = all
    *  samples pooled. */
   minSamplePctBy?: ConditionKey[]
+  /** The scale Clean data presents its values on (its table, its written CSV): none = as the input
+   *  arrived, or log₁₀ / log₂. Analyses always work from exact linear values (see engine scale.ts).
+   *  Absent = the default for the detected input scale: log₁₀ for linear input, none for logged. */
+  logTransform?: 'none' | 'log2' | 'log10'
   /** imputation on/off (absent = off) */
   imputeEnabled?: boolean
   /** imputation method while enabled (absent = 'perseus') */
@@ -191,6 +218,20 @@ export interface EffectLabels {
   down: string
   up: string
 }
+/** A cluster plot's look as the two settings it now is — what marks the data, and what territory
+ *  outlines it — from any config, old or new: an old 'territory' display is centroids + its saved
+ *  shape (hull by default); any other old display had no outline. */
+export function clusterLook(c: Pick<ClusterConfig, 'display' | 'outline' | 'territory'>): {
+  data: 'replicate' | 'centroid'
+  territory: 'hull' | 'gaussian' | 'none'
+} {
+  const display = c.display ?? 'replicate'
+  return {
+    data: display === 'replicate' ? 'replicate' : 'centroid',
+    territory: c.outline ?? (display === 'territory' ? (c.territory ?? 'hull') : 'none')
+  }
+}
+
 export const DEFAULT_EFFECT_LABELS: EffectLabels = { down: 'down', up: 'up' }
 /** A Compare's effect names with defaults filled in (blank entries fall back too). */
 export const effectLabelsOf = (
@@ -323,6 +364,9 @@ export function isContrastConfigured(c: ContrastConfig): boolean {
 export const capOn = (enabled: boolean | undefined, n: number | undefined): boolean =>
   enabled ?? (n ?? 0) > 0
 
+/** How a line is stroked, for the axis decorations that offer a choice. */
+export type LineStyle = 'solid' | 'dash' | 'dot'
+
 /** Per-axis overrides for a Plotly plot's x or y axis. Every field is optional — unset keeps the
  *  view's own layout (title text, auto range, theme grid/line colours). */
 export interface AxisStyle {
@@ -330,6 +374,8 @@ export interface AxisStyle {
   title?: string
   /** title font size (px) */
   titleSize?: number
+  /** show the tick labels (default on) */
+  tickLabels?: boolean
   /** tick label font size (px) */
   tickSize?: number
   /** fixed range bounds; a missing side falls back to the view's range (or the data extent) */
@@ -337,16 +383,34 @@ export interface AxisStyle {
   max?: number
   /** tick mark placement */
   ticks?: 'outside' | 'inside' | 'none'
-  /** approximate number of ticks (0/unset = auto) */
-  nticks?: number
+  /** spacing between ticks, in the axis's own units (unset = Plotly's automatic spacing). On a
+   *  categorical axis (response steps, gene rows) it counts categories: 2 = label every other. */
+  interval?: number
   /** show gridlines */
   grid?: boolean
+  /** gridline style (default solid) */
+  gridStyle?: LineStyle
+  /** gridline thickness (px) */
+  gridWidth?: number
   /** axis line thickness (px); 0 hides the line */
   lineWidth?: number
+  /** the axis line's style (default solid). Plotly draws the axis line solid-only, so anything
+   *  else is drawn as a shape instead — see ui/plotAxes. */
+  lineStyle?: LineStyle
   /** mirror the axis line (and ticks) on the opposite side — a framed plot */
   mirror?: boolean
+  /** the mirrored line's style (default solid). Plotly mirrors the axis line as-is, so anything
+   *  else is drawn as a shape instead — see ui/plotAxes. */
+  frameStyle?: LineStyle
+  /** the mirrored line's thickness (px); unset = the axis line's own */
+  frameWidth?: number
   /** draw the zero line */
   zeroline?: boolean
+  /** its line style (default solid). Plotly's own zero line is solid-only, so anything else is
+   *  drawn as a shape instead — see ui/plotAxes. */
+  zerolineStyle?: LineStyle
+  /** zero-line thickness (px) */
+  zerolineWidth?: number
 }
 /** A plot's axis overrides, per axis. */
 export interface PlotAxes {
@@ -379,20 +443,31 @@ export interface GroupStyle {
   opacity?: number
   /** marker colour (CSS) */
   color?: string
+  /** outline thickness around the marker (px); 0 (the default) = no outline */
+  outline?: number
+  /** outline colour; unset = the theme's text colour */
+  outlineColor?: string
   /** whether this group's genes are offered to the collision-managed label layer */
   label?: boolean
   /** whether this group has a legend entry (default on; moot while the legend is hidden) */
   legend?: boolean
+  /** how THIS group's points look when selected/hovered, and how they fade when others are.
+   *  Unset fields fall back to the plot-wide `PointStyle.highlight`, then to the defaults. */
+  highlight?: HighlightStyle
 }
 
 /** Look of the emphasised (selected / hovered) points, and of the rest of the cloud while a
- *  selection is active. Unset fields fall back to the shared defaults (ui/pointStyle.ts). */
+ *  selection is active. Used plot-wide (`PointStyle.highlight`) and per group
+ *  (`GroupStyle.highlight`, which wins). Unset fields fall back (ui/pointStyle.ts). */
 export interface HighlightStyle {
-  /** px added to the marker's own diameter for the emphasised copy */
+  /** the emphasised marker's diameter (px). Unset = the point's own size plus `bump`, so a plot
+   *  whose group sizes change keeps its emphasis proportional until this is set explicitly. */
+  size?: number
+  /** px added to the marker's own diameter when `size` is unset */
   bump?: number
-  /** ring width (px) around the emphasised marker; 0 = none */
+  /** the emphasised marker's outline width (px); 0 = none. Shown as "outline" in the panel. */
   ring?: number
-  /** ring colour; unset = the theme's text colour */
+  /** that outline's colour; unset = the theme's text colour */
   ringColor?: string
   /** opacity of every non-selected point while something is selected (0–1) */
   dim?: number
@@ -459,9 +534,19 @@ export interface MAConfig {
 /** Per-field switch for a plot's quick-access switch bars in its tile: `quick[field] === false`
  *  hides that field's bar (the gear still has it). Unset fields are surfaced. */
 export type QuickAccess = Record<string, boolean>
-/** Whether a setting is surfaced in the tile as a quick-access switch bar. */
-export const quickOn = (cfg: { quick?: QuickAccess } | undefined, field: string): boolean =>
-  cfg?.quick?.[field] !== false
+/** Quick access a kind's settings start with, where it isn't simply on: a setting not listed is on.
+ *  The user's own choice (`quick`) always wins. Cluster: only the plot type, the colouring and the
+ *  territory sit on the tile by default — the rest are tuned once, in the settings window. */
+export const QUICK_DEFAULTS: Partial<Record<NodeKind, Record<string, boolean>>> = {
+  pca: { legend: false, clusterOn: false, clusterCount: false, display: false }
+}
+/** Whether a setting is surfaced in the tile as a quick-access switch bar: the user's choice, else
+ *  the kind's default (QUICK_DEFAULTS), else on. */
+export const quickOn = (
+  cfg: { quick?: QuickAccess } | undefined,
+  field: string,
+  kind?: NodeKind
+): boolean => cfg?.quick?.[field] ?? (kind ? QUICK_DEFAULTS[kind]?.[field] : undefined) ?? true
 
 export interface DRConfig {
   axis: 'dose' | 'time'
@@ -523,13 +608,14 @@ export interface BarConfig {
   axes?: PlotAxes
 }
 
-/** Enrichment (compare): over-representation of GO terms / KEGG pathways in the significant
- *  gene set, drawn as a dot or bar plot. Reads the annotations fetched in the interactive import. */
+/** Enrichment (compare): over-representation of GO / KEGG / COG / MSigDB / Reactome terms in the
+ *  significant gene set, drawn as a dot or bar plot. Reads the annotations fetched in the
+ *  interactive import. */
 export interface EnrichConfig {
   /** 'ora' = over-representation (hypergeometric); 'gsea' reserved (ranked, not yet computed). */
   method: 'ora' | 'gsea'
   /** which annotation term set to test */
-  source: 'go' | 'kegg'
+  source: EnrichSource
   /** plot style ('ridge' is GSEA-only: per-set log₂FC density ridges) */
   style: 'dot' | 'bar' | 'ridge'
   /** how many top terms to show */
@@ -550,7 +636,8 @@ export interface StringConfig {
   /** cap on the number of genes (strongest |log₂FC|) sent to STRING */
   maxGenes: number
   /** also include first-shell interactors of the query set (proteins that directly connect to a
-   *  differential gene above the confidence threshold), up to maxGenes of them. */
+   *  differential gene above the confidence threshold). They count toward `maxGenes` like any
+   *  other node. */
   addInteractors?: boolean
   /** manual NCBI taxon override; 0/undefined = use the species from the annotation fetch */
   species?: number
@@ -605,11 +692,44 @@ export interface PlotGroupConfig {
 /** Sample cluster/embedding (standardize): method + coloring condition. */
 export interface ClusterConfig {
   method: 'pca' | 'umap' | 'tsne'
-  colorBy: ConditionKey
-  /** 'replicate' plots every replicate; 'centroid' collapses each condition's
-   *  replicates to a centroid + spread territory (falling back to the point when
-   *  a condition has a single replicate). */
-  display: 'replicate' | 'centroid'
+  /** A condition, or `'cluster'` to colour by a grouping computed from the data itself. */
+  colorBy: ClusterColorBy
+  /** `colorBy: 'cluster'` only — what the grouping is computed from. 'coords' clusters the embedded
+   *  x/y, so colours always match the visual grouping; 'features' clusters the high-dimensional
+   *  matrix, so the grouping is the real structure and is the same under PCA/UMAP/t-SNE. */
+  clusterOn?: 'coords' | 'features'
+  /** `colorBy: 'cluster'` only — how the group count is chosen: `clusterK`, one per distinct
+   *  condition, or the largest gap in the dendrogram. */
+  clusterCount?: 'fixed' | 'conditions' | 'auto'
+  /** `clusterCount: 'fixed'` only — the number of groups. */
+  clusterK?: number
+  /** What marks the data: 'replicate' plots every replicate; 'centroid' collapses each
+   *  condition's replicates to a single centroid marker. 'territory' is the older combined choice
+   *  (centroid + outline) — still read, never written; see clusterLook. */
+  display: 'replicate' | 'centroid' | 'territory'
+  /** The region each condition's replicates occupy, drawn under the markers (with either
+   *  `display`): 'hull' is the convex hull of the replicates, claiming only where measurements
+   *  actually landed; 'gaussian' is a ~95% covariance ellipse, smoother and comparable across
+   *  conditions but extrapolated; 'none' draws none. A condition with too few (or coincident)
+   *  replicates to bound gets no outline. Unset on configs from before it existed — see
+   *  clusterLook. */
+  outline?: 'hull' | 'gaussian' | 'none'
+  /** The older outline shape, read only while `display` is the legacy 'territory'. Kept apart from
+   *  `outline` because it could linger set while unused (a shape picked, then display switched
+   *  back), and reading it as an outline would draw one on a plot that never showed it. */
+  territory?: 'hull' | 'gaussian'
+  /** Which plot the tile draws.
+   *   - 'pc' (default) — the embedding scatter.
+   *   - 'scree' — variance explained per component: how many components the dataset actually
+   *     carries, and so whether the 2-D scatter is a fair summary.
+   *   - 'loadings' — the most influential features as vectors in the same component plane, showing
+   *     WHICH measurements drive the separation rather than only that it exists.
+   *  All three are PCA-only choices: UMAP/t-SNE have neither component variances nor feature axes
+   *  to project onto, so the control isn't offered for them. */
+  plot?: 'pc' | 'scree' | 'loadings'
+  /** `plot: 'loadings'` only — how many features to draw, longest vector first. Defaults to 10;
+   *  more than a handful turns the plot into a thicket of labels. */
+  loadings?: number
   /** 'simple' colours by a single condition (colorBy). 'complex' drives marker aesthetics
    *  from every varying condition at once — colour by the qualitative condition(s), shade
    *  by a quantitative one, and connect a dose/time series with arrows. */
@@ -644,6 +764,7 @@ export interface ClusterConfig {
 export type NodeConfig =
   | LoadConfig
   | StandardizeConfig
+  | MergeConfig
   | CompareConfig
   | ContrastConfig
   | VolcanoConfig

@@ -77,9 +77,21 @@ export function BubbleView({
         line: { width: 0 },
         // Portrait (genes down a tall y axis): the dose/time axis moves to the TOP (see levelAxis),
         // so the log₂FC colourbar goes horizontally along the BOTTOM. Landscape keeps it vertical
-        // on the right.
+        // on the right. BOTH variants spell out the SAME keys: Plotly.react merges a trace's
+        // nested objects rather than replacing them, so a key set by one orientation and omitted
+        // by the other would survive the switch — a horizontal bar stuck where the vertical one
+        // belongs, eating half the plot.
         colorbar: landscape
-          ? { title: { text: 'log₂FC', side: 'right' }, thickness: 12 }
+          ? {
+              orientation: 'v',
+              title: { text: 'log₂FC', side: 'right' },
+              thickness: 12,
+              len: 1,
+              x: 1.02,
+              xanchor: 'left',
+              y: 0.5,
+              yanchor: 'middle'
+            }
           : {
               orientation: 'h',
               // Horizontal colourbar tick labels sit BELOW the bar, so keep the title there too.
@@ -129,8 +141,10 @@ export function BubbleView({
       autorange: false,
       showgrid: true,
       automargin: true,
-      // Portrait puts this (the x axis) along the TOP, leaving the bottom for the colourbar.
-      ...(landscape ? {} : { side: 'top' })
+      // Portrait puts this (the x axis) along the TOP, leaving the bottom for the colourbar;
+      // landscape names its own side rather than omitting the key, for the same reason as the
+      // colourbar above — an omitted key keeps the other orientation's value.
+      side: landscape ? 'left' : 'top'
     }
     const lay: Record<string, unknown> = {
       ...plotBase(p),

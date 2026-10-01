@@ -79,7 +79,10 @@ describe('direct parity vs omicViz (cmpd E28 | E08-Cym)', () => {
         const w = Number(want)
         if (!Number.isFinite(w)) return
         expect(got, `${field} @ ${e.uniqID} d${e.dose} t${e.time}`).not.toBeNull()
-        expect(Math.abs((got as number) - w), `${field} @ ${e.uniqID} d${e.dose} t${e.time}`).toBeLessThan(1e-6)
+        expect(
+          Math.abs((got as number) - w),
+          `${field} @ ${e.uniqID} d${e.dose} t${e.time}`
+        ).toBeLessThan(1e-6)
       }
       near(a!.mean1, e.mean1, 'mean1')
       near(a!.mean2, e.mean2, 'mean2')

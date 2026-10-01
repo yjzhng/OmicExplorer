@@ -15,7 +15,13 @@ const byDose = (rows: CompareResultRow[]): Map<number | null, CompareResultRow> 
   new Map(rows.map((r) => [r.dose, r]))
 
 describe('runCompare parity with runDirect (match all)', () => {
-  const row = (uniqID: string, cell: string, dose: number, rep: number, value: number): StandardRow => ({
+  const row = (
+    uniqID: string,
+    cell: string,
+    dose: number,
+    rep: number,
+    value: number
+  ): StandardRow => ({
     uniqID,
     cell,
     cmpd: '',
@@ -35,7 +41,12 @@ describe('runCompare parity with runDirect (match all)', () => {
     row('g1', 'W', 2, 2, 8)
   ]
 
-  const direct = runDirect({ rows, condition: 'cell', pairs: [['M', 'W']], activeConditions: ['cell', 'dose'] })
+  const direct = runDirect({
+    rows,
+    condition: 'cell',
+    pairs: [['M', 'W']],
+    activeConditions: ['cell', 'dose']
+  })
   // Same comparison, declared explicitly: numerator cell=M, denominator cell=W, dose matched.
   const compare = runCompare({
     rows,
@@ -64,7 +75,13 @@ describe('runCompare parity with runDirect (match all)', () => {
 })
 
 describe('runCompare parity with runVehNorm (dose unmatched)', () => {
-  const row = (uniqID: string, cmpd: string, dose: number, rep: number, value: number): StandardRow => ({
+  const row = (
+    uniqID: string,
+    cmpd: string,
+    dose: number,
+    rep: number,
+    value: number
+  ): StandardRow => ({
     uniqID,
     cell: '',
     cmpd,
@@ -113,7 +130,13 @@ describe('runCompare parity with runVehNorm (dose unmatched)', () => {
 })
 
 describe('condition roles (classifyConditions / one-on-one t-test)', () => {
-  const row = (uniqID: string, cmpd: string, dose: number, rep: number, value: number): StandardRow => ({
+  const row = (
+    uniqID: string,
+    cmpd: string,
+    dose: number,
+    rep: number,
+    value: number
+  ): StandardRow => ({
     uniqID,
     cell: '',
     cmpd,
@@ -138,17 +161,34 @@ describe('condition roles (classifyConditions / one-on-one t-test)', () => {
     expect(roles.invariant).toEqual(['dose'])
     // Matching dose (the dialog matches every non-axis condition) must still yield one comparison
     // per treated dose against the single dmso@0 slice.
-    const res = runCompare({ rows, num: { cmpd: ['drug'] }, den: { cmpd: ['dmso'] }, match: ['dose'], activeConditions: active })
+    const res = runCompare({
+      rows,
+      num: { cmpd: ['drug'] },
+      den: { cmpd: ['dmso'] },
+      match: ['dose'],
+      activeConditions: active
+    })
     expect(res.comparisons).toEqual(['drug | dmso'])
     expect(res.rows.map((r) => r.dose).sort()).toEqual([10, 20])
     expect(res.rows.every((r) => r.cmp_cond === 'cmpd')).toBe(true)
   })
 
   it('dose vs dose within the drug is a genuine axis (a choice exists on both sides)', () => {
-    const roles = classifyConditions(rows, { cmpd: ['drug'], dose: ['20'] }, { cmpd: ['drug'], dose: ['10'] }, active)
+    const roles = classifyConditions(
+      rows,
+      { cmpd: ['drug'], dose: ['20'] },
+      { cmpd: ['drug'], dose: ['10'] },
+      active
+    )
     expect(roles.axis).toEqual(['dose'])
     expect(roles.invariant).toEqual([])
-    const p = previewCompare({ rows, num: { cmpd: ['drug'], dose: ['20'] }, den: { cmpd: ['drug'], dose: ['10'] }, match: active, activeConditions: active })
+    const p = previewCompare({
+      rows,
+      num: { cmpd: ['drug'], dose: ['20'] },
+      den: { cmpd: ['drug'], dose: ['10'] },
+      match: active,
+      activeConditions: active
+    })
     expect(p.groups).toBe(1)
     expect(p.labels).toEqual(['20 | 10'])
   })
@@ -168,7 +208,13 @@ describe('condition roles (classifyConditions / one-on-one t-test)', () => {
 })
 
 describe('condition roles — filter pin on the numerator does not confuse the axis', () => {
-  const row = (uniqID: string, cmpd: string, dose: number, rep: number, value: number): StandardRow => ({
+  const row = (
+    uniqID: string,
+    cmpd: string,
+    dose: number,
+    rep: number,
+    value: number
+  ): StandardRow => ({
     uniqID,
     cell: '',
     cmpd,
@@ -186,17 +232,34 @@ describe('condition roles — filter pin on the numerator does not confuse the a
     row('g1', 'dmso', 0, 2, 4)
   ]
   it('drug @ 20 vs dmso (@ its only dose 0) is a cmpd comparison with dose as invariant context', () => {
-    const roles = classifyConditions(rows, { cmpd: ['drug'], dose: ['20'] }, { cmpd: ['dmso'], dose: ['0'] }, ['cmpd', 'dose'])
+    const roles = classifyConditions(
+      rows,
+      { cmpd: ['drug'], dose: ['20'] },
+      { cmpd: ['dmso'], dose: ['0'] },
+      ['cmpd', 'dose']
+    )
     expect(roles.axis).toEqual(['cmpd'])
     expect(roles.invariant).toEqual(['dose'])
-    const p = previewCompare({ rows, num: { cmpd: ['drug'], dose: ['20'] }, den: { cmpd: ['dmso'], dose: ['0'] }, match: ['cmpd', 'dose'], activeConditions: ['cmpd', 'dose'] })
+    const p = previewCompare({
+      rows,
+      num: { cmpd: ['drug'], dose: ['20'] },
+      den: { cmpd: ['dmso'], dose: ['0'] },
+      match: ['cmpd', 'dose'],
+      activeConditions: ['cmpd', 'dose']
+    })
     expect(p.groups).toBe(1)
     expect(p.labels).toEqual(['drug | dmso'])
   })
 })
 
 describe('matched context with partial coverage (B measured at fewer doses than A)', () => {
-  const row = (uniqID: string, cmpd: string, dose: number, rep: number, value: number): StandardRow => ({
+  const row = (
+    uniqID: string,
+    cmpd: string,
+    dose: number,
+    rep: number,
+    value: number
+  ): StandardRow => ({
     uniqID,
     cell: '',
     cmpd,
@@ -219,13 +282,25 @@ describe('matched context with partial coverage (B measured at fewer doses than 
   ]
   const active: ('cmpd' | 'dose')[] = ['cmpd', 'dose']
   it('matches dose like-for-like, skips the dose B lacks, and does not block applying', () => {
-    const p = previewCompare({ rows, num: { cmpd: ['A'] }, den: { cmpd: ['B'] }, match: active, activeConditions: active })
+    const p = previewCompare({
+      rows,
+      num: { cmpd: ['A'] },
+      den: { cmpd: ['B'] },
+      match: active,
+      activeConditions: active
+    })
     expect(p.matched).toEqual(['dose'])
     expect(p.invariant).toEqual([])
     expect(p.groups).toBe(2)
     expect(p.warnings).toEqual([])
     expect(p.notes.some((n) => n.includes('1 of 3'))).toBe(true)
-    const res = runCompare({ rows, num: { cmpd: ['A'] }, den: { cmpd: ['B'] }, match: active, activeConditions: active })
+    const res = runCompare({
+      rows,
+      num: { cmpd: ['A'] },
+      den: { cmpd: ['B'] },
+      match: active,
+      activeConditions: active
+    })
     expect(res.rows.map((r) => r.dose).sort()).toEqual([1, 5])
   })
 })
@@ -251,7 +326,13 @@ describe('denominator is a single reference (never pooled; the dialog allows one
     row('g1', 'D', 2, 4)
   ]
   it('A, B vs C, D runs four one-on-one comparisons with per-level fold changes', () => {
-    const res = runCompare({ rows, num: { cmpd: ['A', 'B'] }, den: { cmpd: ['C', 'D'] }, match: [], activeConditions: ['cmpd'] })
+    const res = runCompare({
+      rows,
+      num: { cmpd: ['A', 'B'] },
+      den: { cmpd: ['C', 'D'] },
+      match: [],
+      activeConditions: ['cmpd']
+    })
     expect(res.comparisons.sort()).toEqual(['A | C', 'A | D', 'B | C', 'B | D'])
     const fc = new Map(res.rows.map((r) => [r.comparison, r.log2FC]))
     expect(fc.get('A | C')).toBeCloseTo(2, 9) // log2(8/2)
@@ -260,10 +341,22 @@ describe('denominator is a single reference (never pooled; the dialog allows one
     expect(fc.get('B | D')).toBeCloseTo(2, 9)
     // The preview refuses a multi-value denominator (one reference only) — the run above is the
     // engine's safety net for a stale config, never a configuration the dialog allows.
-    const p = previewCompare({ rows, num: { cmpd: ['A', 'B'] }, den: { cmpd: ['C', 'D'] }, match: [], activeConditions: ['cmpd'] })
+    const p = previewCompare({
+      rows,
+      num: { cmpd: ['A', 'B'] },
+      den: { cmpd: ['C', 'D'] },
+      match: [],
+      activeConditions: ['cmpd']
+    })
     expect(p.groups).toBe(0)
     expect(p.warnings.some((w) => w.includes('denominator must be one value'))).toBe(true)
-    const ok = previewCompare({ rows, num: { cmpd: ['A', 'B'] }, den: { cmpd: ['C'] }, match: [], activeConditions: ['cmpd'] })
+    const ok = previewCompare({
+      rows,
+      num: { cmpd: ['A', 'B'] },
+      den: { cmpd: ['C'] },
+      match: [],
+      activeConditions: ['cmpd']
+    })
     expect(ok.groups).toBe(2)
   })
 })

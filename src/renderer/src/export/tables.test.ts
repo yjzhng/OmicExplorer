@@ -109,6 +109,58 @@ describe('collectTableExports', () => {
     expect(t.columns).not.toContain('log2FC')
   })
 
+  it('exports a custom condition as a column of its own, named without the @ key prefix', () => {
+    const g = [step('load-1', 'load'), step('std-2', 'standardize')]
+    const e = [edge('load-1', 'std-2')]
+    const r: Record<string, NodeResult> = {
+      'std-2': {
+        kind: 'standardize',
+        std: {
+          rows: [
+            {
+              uniqID: 'g1',
+              cell: 'WT',
+              cmpd: 'A',
+              dose: null,
+              time: null,
+              rep: 1,
+              extra: { genotype: 'parent' },
+              value: 1
+            },
+            {
+              uniqID: 'g1',
+              cell: 'WT',
+              cmpd: 'A',
+              dose: null,
+              time: null,
+              rep: 1,
+              extra: { genotype: 'mutant' },
+              value: 2
+            }
+          ],
+          displayMap: { g1: 'argF' },
+          activeConditions: [],
+          compounds: ['A']
+        }
+      } as unknown as NodeResult
+    }
+    const t = collectTableExports(g, e, r)[0]
+    // Between the presets and `rep`, headed by the plain name (not `@genotype`).
+    expect(t.columns).toEqual([
+      'uniqID',
+      'gene',
+      'cell',
+      'cmpd',
+      'dose',
+      'time',
+      'genotype',
+      'rep',
+      'value'
+    ])
+    const i = t.columns.indexOf('genotype')
+    expect(t.rows.map((row) => row[i])).toEqual(['parent', 'mutant'])
+  })
+
   it('honours the selection filter and skips un-run roots', () => {
     expect(
       collectTableExports(nodes, edges, results, new Set(['cmp-3'])).map((t) => t.key)

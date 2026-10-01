@@ -2,7 +2,7 @@
  * Public surface of the analysis engine. Pure TypeScript, framework-free — safe
  * to call directly or from a Web Worker (see worker.ts / client.ts).
  */
-export { standardize } from './ingest'
+export { previewScale, standardize, type ScalePreview } from './ingest'
 export { combineStandardize } from './combine'
 export {
   parseMatrix,
@@ -48,6 +48,12 @@ export type {
 export {
   BUBBLE_DUMBBELL_CAP,
   enrichTermsOf,
+  cogAreasOf,
+  enrichSourcesPresent,
+  ENRICH_FALLBACK,
+  ENRICH_GROUPS,
+  ENRICH_SOURCE_LABEL,
+  resolveEnrichSource,
   buildVolcano,
   buildHeatmap,
   buildFcHeatmap,
@@ -69,7 +75,11 @@ export {
   facetDims,
   facetCompareRows,
   facetPaired,
-  facetSides
+  facetSides,
+  ctxValue,
+  metaValue,
+  facetKeyLabel,
+  CLUSTER_COLOR
 } from './plotData'
 export type { ClusterMethod } from './embed'
 export { recommendedPlots } from './plotChoice'
@@ -80,10 +90,32 @@ export {
   benjaminiHochberg,
   applyThreshold
 } from './stats'
-export { VALID_CONDITIONS } from './types'
+export {
+  VALID_CONDITIONS,
+  RESERVED_COND_NAMES,
+  condLabel,
+  condsIn,
+  customCond,
+  customCondsIn,
+  customSlug,
+  isCustomCond,
+  isNumericCond,
+  orderConds,
+  validCondName
+} from './types'
+export type { CustomConditionKey, PresetConditionKey } from './types'
+export { condValue, condPresent } from './compare'
+export { detectCustomConditions } from './ingest'
 
 export type { ThresholdConfig, Effect, FdrMethod } from './stats'
-export { FDR_LABEL, fdrMethodOf, adjustPValues, roundP, snapStatMin } from './stats'
+export {
+  FDR_LABEL,
+  fdrMethodOf,
+  adjustPValues,
+  jacobiEigenSymmetric,
+  roundP,
+  snapStatMin
+} from './stats'
 export type {
   ConditionKey,
   StandardRow,
@@ -142,8 +174,22 @@ export type {
   CorrData,
   FacetGroup,
   FacetKey,
-  ContextRow
+  ContextRow,
+  ClusterColorBy
 } from './plotData'
 export type { Analysis, PlotOption } from './plotChoice'
 export { IMPUTE_DEFAULTS, IMPUTE_LABEL } from './impute'
 export type { ImputeMethod, ImputeOptions, ImputeSummary } from './impute'
+export {
+  defaultTransform,
+  detectScale,
+  fromLinear,
+  histogram,
+  outputScale,
+  toLinear,
+  presentStd,
+  type LogTransform,
+  type ScaleEvidence,
+  type ValueHistogram,
+  type ValueScale
+} from './scale'

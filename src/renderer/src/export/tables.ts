@@ -4,6 +4,16 @@
  *  (full-precision) values, not the 3-decimal display format. No React imports. */
 import type { Edge } from '@xyflow/react'
 
+import {
+  condLabel,
+  condPresent,
+  customCondsIn,
+  customSlug,
+  isCustomCond,
+  type ConditionKey,
+  type CustomConditionKey,
+  presentStd
+} from '../engine'
 import { deriveGroups } from '../graph/groups'
 import {
   isStep,
@@ -36,13 +46,30 @@ const present = (rows: readonly unknown[], c: string): boolean =>
     return v !== '' && v != null
   })
 
+/** The custom condition columns these rows carry. The internal column id is the condition key
+ *  (`@slug`) so it can't collide with a result column; the exported HEADER is the plain name. */
+function customCols(rows: ReadonlyArray<{ extra?: Record<string, string> }>): string[] {
+  return customCondsIn(rows).filter((c) => condPresent(rows as never, c))
+}
+
+/** One exported cell for column `c`. A custom condition lives in the row's `extra` bag rather
+ *  than as a column of its own, so it can't simply be indexed. */
+function cellOf(r: object, c: string): Cell {
+  if (isCustomCond(c as ConditionKey))
+    return (
+      (r as { extra?: Record<string, string> }).extra?.[customSlug(c as CustomConditionKey)] ?? null
+    )
+  return (r as unknown as Record<string, Cell>)[c] ?? null
+}
+
 /** Standardized table → columns + rows (cell shown only when the data carries it). */
 function standardizeTable(result: Extract<NodeResult, { kind: 'standardize' }>): {
   columns: string[]
   rows: Cell[][]
 } {
   const dm = result.std.displayMap
-  const src = result.std.rows
+  // On Clean data's presented scale (its chosen log-transform), as its table shows them.
+  const src = presentStd(result.std).rows
   const showCell = present(src, 'cell')
   const cols = [
     'uniqID',
@@ -51,6 +78,7 @@ function standardizeTable(result: Extract<NodeResult, { kind: 'standardize' }>):
     'cmpd',
     'dose',
     'time',
+    ...customCols(src),
     'rep',
     'value'
   ]
@@ -58,10 +86,10 @@ function standardizeTable(result: Extract<NodeResult, { kind: 'standardize' }>):
     const gene = dm[r.uniqID] ?? ''
     return cols.map((c): Cell => {
       if (c === 'gene') return gene
-      return (r as unknown as Record<string, Cell>)[c] ?? null
+      return cellOf(r, c)
     })
   })
-  return { columns: cols, rows }
+  return { columns: cols.map((c) => condLabel(c as ConditionKey)), rows }
 }
 
 /** Comparison table → columns + rows (two-way's log2FC is an interaction term). */
@@ -80,6 +108,7 @@ function compareTable(
     ...(present(src, 'cmpd') ? ['cmpd'] : []),
     ...(present(src, 'dose') ? ['dose'] : []),
     ...(present(src, 'time') ? ['time'] : []),
+    ...customCols(src),
     'log2FC',
     'pP',
     'pQ',
@@ -87,13 +116,13 @@ function compareTable(
     'effect'
   ]
   const label = analysis === 'two_way_anova' ? 'interaction' : 'log2FC'
-  const headers = cols.map((c) => (c === 'log2FC' ? label : c))
+  const headers = cols.map((c) => (c === 'log2FC' ? label : condLabel(c as ConditionKey)))
   const rows = src.map((r) => {
     const gene = dm[r.uniqID] ?? ''
     return cols.map((c): Cell => {
       if (c === 'gene') return gene
       if (c === 'signf') return b(r.signf)
-      return (r as unknown as Record<string, Cell>)[c] ?? null
+      return cellOf(r, c)
     })
   })
   return { columns: headers, rows }
@@ -112,6 +141,7 @@ function contrastTable(result: Extract<NodeResult, { kind: 'contrast' }>): {
     ...(present(src, 'cell') ? ['cell'] : []),
     ...(present(src, 'dose') ? ['dose'] : []),
     ...(present(src, 'time') ? ['time'] : []),
+    ...customCols(src),
     'FC1',
     'FC2',
     'FCdiff',
@@ -126,10 +156,10 @@ function contrastTable(result: Extract<NodeResult, { kind: 'contrast' }>): {
       if (c === 'gene') return gene
       if (c === 'signf' || c === 'signf1' || c === 'signf2')
         return b((r as unknown as Record<string, boolean>)[c])
-      return (r as unknown as Record<string, Cell>)[c] ?? null
+      return cellOf(r, c)
     })
   })
-  return { columns: cols, rows }
+  return { columns: cols.map((c) => condLabel(c as ConditionKey)), rows }
 }
 
 const KIND_LABEL: Record<string, string> = {

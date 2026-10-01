@@ -2,6 +2,7 @@ import {
   useCallback,
   useEffect,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
   type CSSProperties,
@@ -27,17 +28,35 @@ import '@xyflow/react/dist/style.css'
 import './app.css'
 
 import { ResultsView } from './dashboard/ResultsView'
-import { ExportModal } from './export/ExportModal'
+import { useGeneMenuTabs } from './dashboard/useGeneMenuTabs'
+import { GeneSelectMenu } from './ui/GeneSelectMenu'
+import { FormWorkflow } from './form/FormWorkflow'
 import { UserGuide } from './ui/UserGuide'
 import { RELEASES_URL, useUpdateCheck, type UpdateInfo } from './ui/useUpdateCheck'
 import { edgeTypes } from './graph/GraphEdge'
 import { nodeTypes } from './graph/GraphNode'
 import { useGraph } from './graph/store'
-import { accentOf, ALL_OPS, canConnect, categoryOf, NODE_SPECS } from './graph/registry'
-import { isStep, type GraphNode, type NodeData, type StepNode } from './graph/types'
+import {
+  accentOf,
+  ALL_OPS,
+  canConnect,
+  categoryOf,
+  NODE_SPECS,
+  PLOT_CONFIG_KINDS
+} from './graph/registry'
+import { PlotConfig, PlotKindMenu } from './graph/NodeConfigPanel'
+import {
+  isStep,
+  type GraphNode,
+  type NodeConfig,
+  type NodeData,
+  type NodeKind,
+  type StepNode
+} from './graph/types'
 import { IconGear, IconTrash } from './ui/icons'
 import { StatusIcon, StatusNote } from './ui/StatusNote'
 import { cssVars, PALETTES, UI } from './ui/theme'
+import { ToggleSwitch } from './ui/ToggleSwitch'
 import { useAppView, type AppView } from './ui/useAppView'
 import { DPI_CHOICES, useAppSettings } from './ui/useAppSettings'
 import { useUiTheme } from './ui/useUiTheme'
@@ -58,6 +77,128 @@ function NewStep({
         onClick={onToggle}
       >
         {placing ? 'Cancel' : '+ New step'}
+      </button>
+    </Panel>
+  )
+}
+
+/** How long the Workflow ⇄ Results slide takes, and its easing (quick out, gentle settle). */
+const VIEW_SLIDE = '320ms cubic-bezier(0.2, 0.7, 0.2, 1)'
+
+/** The flow layout's two pages, side by side — Workflow on the left, Results on the right — with
+ *  a switch between them sliding the whole page across. Both ways of switching (the canvas's
+ *  "Results →", the dashboard's "← Workflow") set the same view, so both slide.
+ *
+ *  Both pages exist only for the length of the slide; once it settles, the one left behind is
+ *  unmounted, as before — Results' many Plotly charts mustn't sit in the DOM (and in memory) while
+ *  you work on the canvas. Re-opening Results rebuilds its tiles, paced by the reveal queue. */
+function FlowViews({ view }: { view: AppView }) {
+  // The page on show, the one sliding out (null when settled), and the slide's phase: `start`
+  // places the incoming page off-screen with no transition; `run` lets it glide in.
+  const [slide, setSlide] = useState<{ to: AppView; from: AppView | null; run: boolean }>({
+    to: view,
+    from: null,
+    run: false
+  })
+  // A new view: start a slide from the current page — adjusted during render, so the first frame
+  // already has both pages in place. Reduced motion just swaps.
+  if (view !== slide.to) {
+    const still =
+      typeof window !== 'undefined' &&
+      window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
+    setSlide({ to: view, from: still ? null : slide.to, run: false })
+  }
+  // Once the starting positions have painted, let the slide run (two frames: one to commit the
+  // start, one to be sure it was drawn, or the browser skips straight to the end).
+  useLayoutEffect(() => {
+    if (!slide.from || slide.run) return
+    let second = 0
+    const first = requestAnimationFrame(() => {
+      second = requestAnimationFrame(() => setSlide((s) => (s.from ? { ...s, run: true } : s)))
+    })
+    return () => {
+      cancelAnimationFrame(first)
+      cancelAnimationFrame(second)
+    }
+  }, [slide])
+  const settle = (): void => setSlide((s) => (s.from ? { to: s.to, from: null, run: false } : s))
+  // Settle even if transitionend never comes (a tab hidden mid-slide).
+  useEffect(() => {
+    if (!slide.run) return
+    const t = window.setTimeout(settle, 450)
+    return () => window.clearTimeout(t)
+  }, [slide.run])
+
+  // The pages' content, built once: the slide re-renders this component three times (start, run,
+  // settle), and re-rendering the canvas or a full dashboard at the moment the slide starts is
+  // what made it stutter. The same elements let React skip them; they update from their own
+  // stores as usual.
+  const canvasPage = useMemo(
+    () => (
+      <div style={styles.canvasArea}>
+        <ReactFlowProvider>
+          <Canvas />
+        </ReactFlowProvider>
+      </div>
+    ),
+    []
+  )
+  const resultsPage = useMemo(
+    () => (
+      <div style={styles.resultsArea}>
+        <ResultsView />
+      </div>
+    ),
+    []
+  )
+
+  // Results sits to the right: going there moves everything left, and back moves it right.
+  const dir = slide.to === 'results' ? 1 : -1
+  const offset = (page: AppView): string => {
+    if (!slide.from) return 'none'
+    if (page === slide.to) return slide.run ? 'none' : `translateX(${dir * 100}%)`
+    return slide.run ? `translateX(${-dir * 100}%)` : 'none'
+  }
+  const page = (p: AppView): ReactNode => (
+    <div
+      key={p}
+      style={{
+        ...styles.viewPage,
+        transform: offset(p),
+        transition: slide.run ? `transform ${VIEW_SLIDE}` : 'none',
+        // Its own compositor layer while sliding, so the move doesn't repaint the page each frame.
+        willChange: slide.from ? 'transform' : undefined
+      }}
+      // The incoming page finishing its glide ends the slide.
+      onTransitionEnd={(e) => {
+        if (p === slide.to && e.target === e.currentTarget) settle()
+      }}
+      aria-hidden={p !== slide.to}
+    >
+      {p === 'canvas' ? canvasPage : resultsPage}
+    </div>
+  )
+  return (
+    <div style={styles.viewStage}>
+      {/* Fixed order, so a page keeps its element (and its state) as the other comes and goes. */}
+      {(['canvas', 'results'] as const).filter((p) => p === slide.to || p === slide.from).map(page)}
+    </div>
+  )
+}
+
+/** Top-right button from the canvas to the results dashboard — the way there; the dashboard's
+ *  "← Workflow" is the way back. */
+function ResultsLink() {
+  const setView = useAppView((s) => s.setView)
+  return (
+    <Panel position="top-right">
+      <button
+        className="new-step-btn"
+        style={styles.resultsLink}
+        onClick={() => setView('results')}
+        title="Open the results dashboard"
+      >
+        Results →
       </button>
     </Panel>
   )
@@ -317,7 +458,8 @@ function Canvas() {
   const onCanvasMouseMove = useCallback(
     (e: ReactMouseEvent) => {
       if (!placing) return
-      // Keep the ghost hidden while the pointer is still over the New step / Cancel button.
+      // Keep the ghost hidden while the pointer is over a floating canvas button (New step /
+      // Cancel, Results →).
       if ((e.target as HTMLElement).closest?.('.new-step-btn')) {
         setGhost(null)
         return
@@ -510,9 +652,11 @@ function Canvas() {
         )}
         <PanControls onPan={panBy} />
         <Controls position="bottom-left" showInteractive={false} />
+        <ResultsLink />
         {showMini && (
           <MiniMap
-            position="top-right"
+            // Top-left, clear of the Results button in the top-right corner.
+            position="top-left"
             pannable
             zoomable
             nodeColor={(n) =>
@@ -525,6 +669,64 @@ function Canvas() {
       </ReactFlow>
       {placing && ghost && <PlacementGhost x={ghost.x} y={ghost.y} />}
     </div>
+  )
+}
+
+/**
+ * Settings → Plots → Defaults: the settings a NEW tile of a plot kind starts with. It's the same
+ * config panel a tile shows, bound to the stored defaults instead of a node — so anything a tile
+ * can be set to can be a default. Kept in app settings (not the project), so it holds across
+ * projects and updates; existing tiles are never touched.
+ */
+function PlotDefaults(): ReactNode {
+  const KINDS = ALL_OPS.filter((k) => PLOT_CONFIG_KINDS.has(k))
+  const [kind, setKind] = useState<NodeKind>(KINDS[0])
+  const plotDefaults = useAppSettings((s) => s.plotDefaults)
+  const setPlotDefault = useAppSettings((s) => s.setPlotDefault)
+  const clearPlotDefault = useAppSettings((s) => s.clearPlotDefault)
+  const own = plotDefaults[kind]
+  // The panel edits a full config: the kind's built-in defaults with the stored overrides on top —
+  // the same value a new tile would be created with.
+  const config = { ...NODE_SPECS[kind].defaultConfig(), ...(own ?? {}) } as NodeConfig
+  return (
+    <>
+      <div style={styles.settingsSubTitle}>Defaults for new plots</div>
+      <div style={styles.defaultsHead}>
+        {/* The workflow tile's plot menu, single-choice: same sections, same rows. Its themed
+            dropdown reads the canvas zoom, so it needs a provider of its own out here. */}
+        <ReactFlowProvider>
+          <PlotKindMenu value={kind} kinds={KINDS} onChange={setKind} />
+        </ReactFlowProvider>
+        {own && (
+          <button
+            style={styles.defaultsReset}
+            onClick={() => clearPlotDefault(kind)}
+            title={`Forget the saved defaults for ${NODE_SPECS[kind].label}`}
+          >
+            Reset
+          </button>
+        )}
+      </div>
+      <div style={styles.settingsHint}>
+        {own
+          ? `New ${NODE_SPECS[kind].label} tiles start with these settings.`
+          : `New ${NODE_SPECS[kind].label} tiles start with the built-in settings — change anything below to save a default.`}
+      </div>
+      {/* The panel's Selects read React Flow's zoom for their dropdown metrics; a provider of its
+          own pins that to 1 here, outside the canvas. `edgeNodeId` matches no node, so the panels
+          that look upstream simply offer everything. */}
+      <ReactFlowProvider>
+        <div style={styles.defaultsPanel}>
+          <PlotConfig
+            key={kind}
+            kind={kind}
+            config={config}
+            update={(patch) => setPlotDefault(kind, patch)}
+            edgeNodeId=""
+          />
+        </div>
+      </ReactFlowProvider>
+    </>
   )
 }
 
@@ -546,9 +748,12 @@ function SettingsPopover({
   const downloadFormat = useAppSettings((s) => s.downloadFormat)
   const downloadDpi = useAppSettings((s) => s.downloadDpi)
   const tableFormat = useAppSettings((s) => s.tableFormat)
+  const uiStyle = useAppSettings((s) => s.uiStyle)
   const updateSettings = useAppSettings((s) => s.update)
   const DPI_OPTS = DPI_CHOICES.map((d) => ({ v: String(d), label: `${d} dpi` }))
-  const [active, setActive] = useState<'appearance' | 'plots' | 'about'>('appearance')
+  const [active, setActive] = useState<'layout' | 'plots' | 'export' | 'appearance' | 'about'>(
+    'layout'
+  )
   const showDot = update.updateAvailable && !silenced
   const APPEARANCE = [
     { v: 'auto', label: '◐ Auto' },
@@ -556,32 +761,24 @@ function SettingsPopover({
     { v: 'light', label: '☀ Light' }
   ] as const
   const SECTIONS = [
-    { id: 'appearance', title: 'Appearance', dot: false },
+    { id: 'layout', title: 'Layout', dot: false },
     { id: 'plots', title: 'Plots', dot: false },
+    { id: 'export', title: 'Export', dot: false },
+    { id: 'appearance', title: 'Appearance', dot: false },
     { id: 'about', title: 'About', dot: showDot }
   ] as const
-  /** Segmented control in the settings modal's own style. */
+  /** A settings choice: the app's ToggleSwitch. */
   const seg = <V extends string>(
     value: V,
     options: readonly { v: V; label: string }[],
     onChange: (v: V) => void
   ): ReactNode => (
-    <div style={{ ...styles.segmented, display: 'inline-flex' }}>
-      {options.map((o) => (
-        <button
-          key={o.v}
-          onClick={() => onChange(o.v)}
-          style={{
-            ...styles.segment,
-            padding: '5px 12px',
-            background: value === o.v ? UI.accent : 'transparent',
-            color: value === o.v ? UI.accentText : UI.text
-          }}
-        >
-          {o.label}
-        </button>
-      ))}
-    </div>
+    <ToggleSwitch
+      label="Setting"
+      value={value}
+      options={options.map((o) => ({ value: o.v, label: o.label }))}
+      onChange={onChange}
+    />
   )
   return (
     <>
@@ -614,29 +811,48 @@ function SettingsPopover({
             {active === 'appearance' ? (
               <>
                 <h2 style={styles.settingsContentTitle}>Appearance</h2>
-                <div style={{ ...styles.segmented, display: 'inline-flex' }}>
-                  {APPEARANCE.map((o) => (
-                    <button
-                      key={o.v}
-                      onClick={() => setPreference(o.v)}
-                      style={{
-                        ...styles.segment,
-                        padding: '5px 12px',
-                        background: preference === o.v ? UI.accent : 'transparent',
-                        color: preference === o.v ? UI.accentText : UI.text
-                      }}
-                    >
-                      {o.label}
-                    </button>
-                  ))}
-                </div>
+                {seg(preference, APPEARANCE, (v) => setPreference(v))}
                 {preference === 'auto' && (
                   <div style={styles.settingsHint}>Following your system colour scheme.</div>
                 )}
               </>
+            ) : active === 'layout' ? (
+              <>
+                <h2 style={styles.settingsContentTitle}>Layout</h2>
+                <div style={styles.layoutTiles} role="radiogroup" aria-label="Layout">
+                  {LAYOUTS.map((o) => {
+                    const on = uiStyle === o.v
+                    return (
+                      <button
+                        key={o.v}
+                        role="radio"
+                        aria-checked={on}
+                        onClick={() => updateSettings({ uiStyle: o.v })}
+                        style={{
+                          ...styles.layoutTile,
+                          // Whole shorthand, so nothing is left behind when the choice moves.
+                          border: `2px solid ${on ? UI.accent : UI.border}`,
+                          background: on ? UI.panelAlt : 'transparent'
+                        }}
+                      >
+                        <span style={{ color: on ? UI.accent : UI.textMuted }}>
+                          <LayoutGlyph kind={o.v} />
+                        </span>
+                        <span style={styles.layoutTileTitle}>{o.label}</span>
+                        <span style={styles.layoutTileText}>{o.hint}</span>
+                      </button>
+                    )
+                  })}
+                </div>
+              </>
             ) : active === 'plots' ? (
               <>
                 <h2 style={styles.settingsContentTitle}>Plots</h2>
+                <PlotDefaults />
+              </>
+            ) : active === 'export' ? (
+              <>
+                <h2 style={styles.settingsContentTitle}>Export</h2>
                 {/* A tile's Copy and Download buttons act straight away (no window of their own):
                     Copy in this format/DPI; Download opens the OS save window for this format. */}
                 <div style={styles.settingsSubTitle}>Copy to clipboard</div>
@@ -728,27 +944,62 @@ function SettingsPopover({
   )
 }
 
-/** Segmented Canvas | Results switch for the top nav. */
-function ViewToggle() {
-  const view = useAppView((s) => s.view)
-  const setView = useAppView((s) => s.setView)
-  return (
-    <div style={styles.segmented}>
-      {(['canvas', 'results'] as const).map((v: AppView) => (
-        <button
-          key={v}
-          onClick={() => setView(v)}
-          style={{
-            ...styles.segment,
-            background: view === v ? UI.accent : 'transparent',
-            color: view === v ? UI.accentText : UI.text
-          }}
-        >
-          {v === 'canvas' ? 'Workflow' : 'Results'}
-        </button>
-      ))}
-    </div>
+/** The two layouts, as the Settings tiles present them. */
+const LAYOUTS = [
+  {
+    v: 'flow' as const,
+    label: 'Flow',
+    hint: 'Workflow as a node canvas; results as a drag-and-drop dashboard.'
+  },
+  {
+    v: 'form' as const,
+    label: 'Form',
+    hint: 'Workflow as a list of steps, each with its settings and plots beside it.'
+  }
+]
+
+/** A layout's glyph for its Settings tile, drawn in currentColor. Flow: three nodes wired left to
+ *  right, the canvas in miniature. Form: a step list down the left beside a stack of panels. */
+function LayoutGlyph({ kind }: { kind: 'flow' | 'form' }): ReactNode {
+  const common = {
+    width: 72,
+    height: 48,
+    viewBox: '0 0 72 48',
+    fill: 'none',
+    stroke: 'currentColor',
+    strokeWidth: 2,
+    strokeLinecap: 'round' as const,
+    strokeLinejoin: 'round' as const,
+    'aria-hidden': true
+  }
+  return kind === 'flow' ? (
+    <svg {...common}>
+      <rect x="3" y="18" width="16" height="12" rx="3" />
+      <rect x="29" y="5" width="16" height="12" rx="3" />
+      <rect x="29" y="31" width="16" height="12" rx="3" />
+      <rect x="54" y="18" width="15" height="12" rx="3" />
+      <path d="M19 24 C24 24 24 11 29 11" />
+      <path d="M19 24 C24 24 24 37 29 37" />
+      <path d="M45 11 C50 11 49 24 54 24" />
+    </svg>
+  ) : (
+    <svg {...common}>
+      <rect x="3" y="4" width="20" height="40" rx="3" />
+      <path d="M8 12h10M8 20h10M8 28h10M8 36h6" />
+      <rect x="29" y="4" width="40" height="17" rx="3" />
+      <rect x="29" y="27" width="40" height="17" rx="3" />
+      <path d="M35 12h20M35 35h14" />
+    </svg>
   )
+}
+
+/** The gene selector, in the top nav in both layouts: the selection it drives is shared by every
+ *  plot, on the dashboard and in the form alike, so it sits with the app-wide controls rather than
+ *  inside one view. */
+function NavGeneSelector() {
+  const results = useGraph((s) => s.results)
+  const tabs = useGeneMenuTabs(results)
+  return <GeneSelectMenu tabs={tabs} />
 }
 
 /** The folder chip: shows the active folder and a dropdown to switch/add/delete. */
@@ -1143,25 +1394,6 @@ function IconGuide() {
     </svg>
   )
 }
-function IconExport() {
-  // Tray with a downward arrow — "save plots out to disk".
-  return (
-    <svg
-      width="16"
-      height="16"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.8"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    >
-      <path d="M12 3v11" />
-      <path d="M8 10l4 4 4-4" />
-      <path d="M4 17v2a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-2" />
-    </svg>
-  )
-}
 function IconHome() {
   // House — "back to the project home".
   return (
@@ -1417,8 +1649,8 @@ function Home() {
 export default function App() {
   const mode = useUiTheme((s) => s.mode)
   const view = useAppView((s) => s.view)
+  const uiStyle = useAppSettings((s) => s.uiStyle)
   const [settingsOpen, setSettingsOpen] = useState(false)
-  const [exportOpen, setExportOpen] = useState(false)
   const [guideOpen, setGuideOpen] = useState(false)
   // Update check drives a notification dot on the settings gear + the About section.
   const update = useUpdateCheck()
@@ -1481,24 +1713,16 @@ export default function App() {
           </>
         )}
         <div style={styles.navSpacer} />
-        {/* Workflow/Results switch, absolutely centred at 0.65 regardless of side groups. */}
+        {/* The gene selector, centred in the space between the left group (ending at the
+            folder / workflow selector) and the Run button: equal spacers on either side. */}
         {projectOpen && (
-          <div style={styles.centerToggle}>
-            <ViewToggle />
-          </div>
+          <>
+            <NavGeneSelector />
+            <div style={styles.navSpacer} />
+          </>
         )}
-        {/* Workflow actions: run/re-run + export, grouped and split from the general buttons. */}
+        {/* Workflow action: run/re-run, split from the general buttons. */}
         {projectOpen && <RunButton />}
-        {projectOpen && (
-          <button
-            style={styles.navBtn}
-            onClick={() => setExportOpen(true)}
-            title="Export plots & tables"
-            aria-label="Export"
-          >
-            <IconExport />
-          </button>
-        )}
         {projectOpen && <div style={styles.navSep} />}
         <button
           style={styles.navBtn}
@@ -1525,24 +1749,18 @@ export default function App() {
             onToggleSilence={toggleSilence}
           />
         )}
-        {exportOpen && <ExportModal onClose={() => setExportOpen(false)} />}
         {guideOpen && <UserGuide onClose={() => setGuideOpen(false)} />}
       </header>
       {!projectOpen ? (
         <Home />
-      ) : view === 'canvas' ? (
-        // Results is unmounted on the canvas so its many Plotly charts don't sit in the DOM
-        // (and in memory) making the whole app sluggish. Re-opening it rebuilds the tiles, but
-        // paced by the reveal queue + buffering spinners so the mount stays responsive.
+      ) : uiStyle === 'form' ? (
+        // Form mode has no Workflow/Results split — a step and its output are one view, so both
+        // entries land on it (a project saved in Results still reopens on something).
         <div style={styles.canvasArea}>
-          <ReactFlowProvider>
-            <Canvas />
-          </ReactFlowProvider>
+          <FormWorkflow />
         </div>
       ) : (
-        <div style={styles.resultsArea}>
-          <ResultsView />
-        </div>
+        <FlowViews view={view} />
       )}
     </div>
   )
@@ -1579,17 +1797,7 @@ const styles: Record<string, CSSProperties> = {
     flex: '0 0 auto'
   },
   navSpacer: { flex: 1 },
-  // Anchored so the toggle's centre sits at 0.65 regardless of the side groups' widths.
-  centerToggle: {
-    position: 'absolute',
-    left: '65%',
-    top: '50%',
-    transform: 'translate(-50%, -50%)',
-    display: 'inline-flex',
-    alignItems: 'center',
-    gap: 10,
-    zIndex: 1
-  },
+
   // Vertical divider between the workflow-action buttons and the general buttons.
   navSep: { width: 1, height: 20, background: UI.border, alignSelf: 'center', flex: '0 0 auto' },
   chipGroup: {
@@ -1626,6 +1834,7 @@ const styles: Record<string, CSSProperties> = {
     background: 'rgba(128,128,128,0.22)'
   },
   chipSegWarn: { color: UI.warn },
+
   chipSeg: {
     display: 'inline-flex',
     alignItems: 'center',
@@ -1920,6 +2129,20 @@ const styles: Record<string, CSSProperties> = {
     outline: 'none',
     boxShadow: '0 2px 10px rgba(0,0,0,0.35)'
   },
+  // Floating, like "+ New step", but a rounded square with a lighter shadow — it navigates away
+  // rather than acting on the canvas, so it sits back a little.
+  resultsLink: {
+    background: UI.panel,
+    color: UI.text,
+    border: `1px solid ${UI.border}`,
+    borderRadius: 8,
+    padding: '8px 16px',
+    fontSize: 13,
+    fontWeight: 600,
+    cursor: 'pointer',
+    outline: 'none',
+    boxShadow: '0 1px 4px rgba(0,0,0,0.15)'
+  },
   // "Cancel" state while placing — red to read as a stop/abort action.
   newStepBtnActive: {
     background: '#e15759',
@@ -1984,10 +2207,12 @@ const styles: Record<string, CSSProperties> = {
     top: '50%',
     left: '50%',
     transform: 'translate(-50%, -50%)',
-    width: 540,
+    // Roomy enough for the widest pane — Plots holds a whole tile config panel (group table,
+    // highlight blocks, axes), which was cramped in the old 540×380 card.
+    width: 760,
     maxWidth: '94vw',
-    height: 380,
-    maxHeight: '86vh',
+    height: 620,
+    maxHeight: '88vh',
     display: 'flex',
     flexDirection: 'column',
     background: UI.panel,
@@ -2060,31 +2285,53 @@ const styles: Record<string, CSSProperties> = {
   },
   settingsHint: { marginTop: 8, fontSize: 11, color: UI.textMuted },
   settingsSubTitle: { fontSize: 12, fontWeight: 700, color: UI.text, marginBottom: 10 },
+  // Settings › Layout: two large side-by-side choices, glyph over name over description.
+  layoutTiles: { display: 'flex', gap: 12, flexWrap: 'wrap' },
+  layoutTile: {
+    flex: '1 1 180px',
+    maxWidth: 240,
+    display: 'flex',
+    flexDirection: 'column',
+    alignItems: 'center',
+    gap: 8,
+    padding: '18px 14px 14px',
+    borderRadius: 10,
+    color: UI.text,
+    cursor: 'pointer',
+    textAlign: 'center'
+  },
+  layoutTileTitle: { fontSize: 13, fontWeight: 700 },
+  layoutTileText: { fontSize: 11, color: UI.textMuted, lineHeight: 1.4 },
+  /** the plot-defaults block: its type picker, and the tile config panel under it */
+  defaultsHead: { display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 },
+  defaultsSelect: {
+    background: UI.panelAlt,
+    color: UI.text,
+    border: `1px solid ${UI.border}`,
+    borderRadius: 6,
+    padding: '5px 8px',
+    fontSize: 12
+  },
+  defaultsReset: {
+    background: 'transparent',
+    color: UI.textMuted,
+    border: 'none',
+    fontSize: 11,
+    textDecoration: 'underline',
+    cursor: 'pointer'
+  },
+  defaultsPanel: {
+    border: `1px solid ${UI.border}`,
+    borderRadius: 8,
+    overflow: 'hidden',
+    marginTop: 8
+  },
   settingsFieldLabel: {
     fontSize: 11,
     textTransform: 'uppercase',
     letterSpacing: 0.5,
     color: UI.textMuted,
     marginBottom: 6
-  },
-  // Pill-shaped Workflow/Results switch, centred in the nav bar.
-  segmented: {
-    display: 'flex',
-    gap: 4,
-    border: `1px solid ${UI.border}`,
-    borderRadius: 999,
-    padding: 3,
-    background: UI.panel,
-    flex: '0 0 auto'
-  },
-  segment: {
-    border: 'none',
-    borderRadius: 999,
-    padding: '5px 16px',
-    fontSize: 12,
-    fontWeight: 600,
-    cursor: 'pointer',
-    whiteSpace: 'nowrap'
   },
   aboutName: { fontSize: 12, color: UI.text, marginBottom: 6 },
   aboutMuted: { fontSize: 12, color: UI.textMuted },
@@ -2140,6 +2387,9 @@ const styles: Record<string, CSSProperties> = {
     minHeight: 0,
     borderTop: `1px solid ${UI.border}`
   },
+  // The flow layout's page area: the two pages overlap here, each sliding in or out (FlowViews).
+  viewStage: { position: 'relative', flex: 1, minHeight: 0, overflow: 'hidden' },
+  viewPage: { position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column' },
   // Results dashboard fill.
   resultsArea: {
     display: 'flex',

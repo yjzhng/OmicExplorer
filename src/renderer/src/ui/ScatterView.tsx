@@ -40,14 +40,18 @@ export function ScatterView({
   effectLabels?: EffectLabels
 }) {
   const mode = useUiTheme((s) => s.mode)
-  // Pinned (linked-selection) genes become their own trace, as on volcano/MA: kept fully opaque,
-  // with a legend entry (and the set's own colour) only when they form a saved geneset. Subscribe
-  // to pinnedIds only (not hoverId), so the plot rebuilds on a click-select, not on every hover.
+  // The linked selection, read only to tell whether it IS a saved geneset (selIds below) — not
+  // hoverId, and not per click: an ordinary pick is drawn by PlotlyChart's overlay.
   const pinnedIds = useSelection((s) => s.pinnedIds)
   const geneSets = useGraph((s) => s.geneSets)
   const selSet = matchingGeneSet(pinnedIds, geneSets)
   const selName = selSet?.name ?? null
   const selColor = selSet?.color ?? null
+  // The selection trace exists only for a saved geneset (its legend entry and colour), so the plot's
+  // data follows the MATCHED geneset, not every click: an ad-hoc pick is marked by PlotlyChart's
+  // shared overlay alone, restyled in place. Keyed on pinnedIds directly, each click-select anywhere
+  // in the app rebuilt this plot from scratch (a full redraw — the lag after a click).
+  const selIds = useMemo(() => (selSet ? new Set(selSet.genes.map((g) => g.id)) : null), [selSet])
   // Point groups depend on the relationship. A correlated (OLS) contrast colours genes by
   // whether they sit above/below the line of identity — up (red) / down (blue) / none (grey),
   // matching volcano/MA. An independent (marginal) contrast instead colours by QUADRANT: the
@@ -75,12 +79,19 @@ export function ScatterView({
       mode: 'markers',
       name: `${g.name} (${pts.length})`,
       showlegend: g.legend,
+      // This group's own highlight look — see PlotlyChart's EMPH_KEY.
+      __oeEmph: g.highlight,
       x: pts.map((pt) => pt.x),
       y: pts.map((pt) => pt.y),
       text: pts.map((pt) => pt.label),
       customdata: pts.map((pt) => pt.uniqID),
       hovertemplate: hover,
-      marker: { color: g.color, size: g.size, opacity: g.opacity }
+      marker: {
+        color: g.color,
+        size: g.size,
+        opacity: g.opacity,
+        line: { width: g.outline, color: g.outlineColor ?? p.text }
+      }
     })
     // A point's group key: its quadrant (marginal) or effect class; anything unknown is 'none'.
     const keyOf = (pt: ScatterPoint): string =>
@@ -238,9 +249,9 @@ export function ScatterView({
       showlegend: showLegend,
       legend: { orientation: 'h', yanchor: 'bottom', y: 1.02, xanchor: 'center', x: 0.5 }
     }
-    // Pinned genes on top: markers only (the overlay names them), sized/coloured per their group
-    // unless the selection is a geneset with a colour of its own.
-    const sel = scatter.points.filter((pt) => pinnedIds.has(pt.uniqID))
+    // A selection that is a saved geneset → its genes on top as their own trace (markers only; the
+    // overlay names them), with its legend entry and its colour if it has one.
+    const sel = selIds ? scatter.points.filter((pt) => selIds.has(pt.uniqID)) : []
     const selTrace = sel.length
       ? [
           {
@@ -256,7 +267,11 @@ export function ScatterView({
             marker: {
               color: selColor ?? sel.map((pt) => look(keyOf(pt)).color),
               size: sel.map((pt) => look(keyOf(pt)).size),
-              opacity: 1
+              opacity: 1,
+              line: {
+                width: sel.map((pt) => look(keyOf(pt)).outline),
+                color: sel.map((pt) => look(keyOf(pt)).outlineColor ?? p.text)
+              }
             }
           }
         ]
@@ -271,7 +286,7 @@ export function ScatterView({
     groups,
     showLegend,
     emphasis.label,
-    pinnedIds,
+    selIds,
     selName,
     selColor
   ])

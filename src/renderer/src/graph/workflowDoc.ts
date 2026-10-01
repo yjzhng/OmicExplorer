@@ -4,6 +4,8 @@
  *  wrappers preserve the standalone `.json` round-trip. */
 import type { Edge } from '@xyflow/react'
 
+import { orderedByWiring } from './sequence'
+
 import {
   isStep,
   type FavGene,
@@ -68,7 +70,13 @@ function scaleLayouts(
 ): Record<string, PanelLayoutItem[]> {
   const out: Record<string, PanelLayoutItem[]> = {}
   for (const [rootId, items] of Object.entries(m)) {
-    out[rootId] = items.map((it) => ({ ...it, x: it.x * kx, y: it.y * ky, w: it.w * kx, h: it.h * ky }))
+    out[rootId] = items.map((it) => ({
+      ...it,
+      x: it.x * kx,
+      y: it.y * ky,
+      w: it.w * kx,
+      h: it.h * ky
+    }))
   }
   return out
 }
@@ -121,12 +129,24 @@ export function parseWorkflowDoc(doc: WorkflowDoc): LoadedWorkflow {
     }
   }))
   const edges: Edge[] = doc.edges.map((e) => ({ id: e.id, source: e.source, target: e.target }))
+  // A step never sits before one of its inputs. Projects saved before that rule existed can, and
+  // this is the one place a stored workflow becomes a graph — so fixing it here repairs every old
+  // file on open, rather than leaving the form layout to render an order the wiring contradicts.
+  const seq = orderedByWiring(
+    nodes.map((n) => n.id),
+    edges
+  )
+  const byId = new Map(nodes.map((n) => [n.id, n]))
+  const ordered = seq.flatMap((id) => {
+    const n = byId.get(id)
+    return n ? [n] : []
+  })
   const maxIdx = nodes.reduce((m, n) => {
     const k = Number(n.id.split('-').pop())
     return Number.isFinite(k) ? Math.max(m, k) : m
   }, 1)
   return {
-    nodes,
+    nodes: ordered,
     edges,
     nextId: doc.nextId ?? maxIdx + 1,
     groupLayouts:

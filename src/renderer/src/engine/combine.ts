@@ -9,7 +9,7 @@
  * unchanged.
  */
 import type { ConditionKey, StandardizeResult } from './types'
-import { VALID_CONDITIONS } from './types'
+import { orderConds } from './types'
 
 export function combineStandardize(stds: StandardizeResult[]): StandardizeResult {
   if (stds.length === 1) return stds[0]
@@ -27,7 +27,11 @@ export function combineStandardize(stds: StandardizeResult[]): StandardizeResult
 
   const activeSet = new Set<ConditionKey>()
   for (const s of stds) for (const c of s.activeConditions) activeSet.add(c)
-  const activeConditions = VALID_CONDITIONS.filter((c) => activeSet.has(c))
+  // orderConds, not a VALID_CONDITIONS filter: that only lists the four presets, so filtering
+  // through it silently dropped every custom (`@slug`) condition from the union — and since
+  // runCompare derives its context dims from activeConditions, the custom axis then vanished from
+  // the merged dataset's plots and result switchers entirely.
+  const activeConditions = orderConds([...activeSet])
   const compounds = [...new Set(stds.flatMap((s) => s.compounds))]
 
   const cleanup = {
@@ -37,5 +41,16 @@ export function combineStandardize(stds: StandardizeResult[]): StandardizeResult
     by: stds[0]?.cleanup?.by
   }
 
-  return { rows, displayMap, annotationMap, keggCategories, activeConditions, compounds, cleanup }
+  // Rows are linear in every input (see scale.ts), so they pool as-is; the merged dataset is
+  // presented on the first input's scale.
+  return {
+    rows,
+    displayMap,
+    annotationMap,
+    keggCategories,
+    activeConditions,
+    compounds,
+    cleanup,
+    ...(stds[0]?.scale ? { scale: stds[0].scale } : {})
+  }
 }

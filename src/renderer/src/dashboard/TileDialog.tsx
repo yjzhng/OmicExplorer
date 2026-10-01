@@ -3,23 +3,27 @@
 import { useEffect, type CSSProperties, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 
-import { cssVars, PALETTES, UI } from '../ui/theme'
+import { cssVars, PALETTES } from '../ui/theme'
+import { ToggleSwitch } from '../ui/ToggleSwitch'
 import { useUiTheme } from '../ui/useUiTheme'
 import { styles } from './tileDialogStyles'
 
-/** Where a popover hangs from, in viewport coordinates: `top`/`bottom` of the opening button (it
- *  drops below, or flips above), `right` the edge it right-aligns to (the tile's right edge). */
+/** Where a popover hangs from, in viewport coordinates: the TILE's box. The window opens beside
+ *  it (right, else left) and aligns to its top, so the plot it configures stays in view. `bottom`
+ *  is the tile's, used only to keep a short window from hanging past it. */
 export type Anchor = Pick<DOMRect, 'top' | 'bottom' | 'left' | 'right'>
 
 const POP_W = 340
-const GAP = 6 // between the button and the popover
+const GAP = 8 // between the tile and the window
 const MARGIN = 8 // kept clear of the viewport edges
 
 /**
- * The window shell shared by a tile's settings and download popovers: a card hanging just below
- * the header button, right-aligned to the tile's edge so it reads in context, clamped inside the viewport
- * (its body scrolls when the space below is short). An invisible click-away layer closes it; there
- * is no dimming scrim. Themed explicitly because it portals outside the app root.
+ * The window shell shared by a tile's settings and download popovers: a card BESIDE the tile —
+ * to its right, or to its left when the right would cross the viewport edge — so a change applies
+ * in full view of the plot instead of behind the window. Aligned to the tile's top and clamped
+ * inside the viewport (its body scrolls when it's taller than the screen). An invisible click-away
+ * layer closes it; there is no dimming scrim. Themed explicitly because it portals outside the app
+ * root.
  */
 export function TileDialog({
   title,
@@ -51,19 +55,21 @@ export function TileDialog({
     return () => window.removeEventListener('keydown', onKey)
   }, [busy, onClose])
 
-  // Below the button, right-aligned to the anchor's right edge (the tile's); slid left/right to
-  // stay inside the viewport. If the
-  // space below is too short for even a small card, flip above the button instead.
+  // Beside the tile: to its right when the window fits there, else to its left; if neither side
+  // has room (a tile spanning a narrow window), it sits against whichever edge is roomier.
   const vw = window.innerWidth
   const vh = window.innerHeight
   const width = Math.min(POP_W, vw - 2 * MARGIN)
-  const left = Math.max(MARGIN, Math.min(anchor.right - width, vw - MARGIN - width))
-  const below = vh - anchor.bottom - GAP - MARGIN
-  const above = anchor.top - GAP - MARGIN
-  const flip = below < 240 && above > below
-  const place: CSSProperties = flip
-    ? { bottom: vh - anchor.top + GAP, maxHeight: above }
-    : { top: anchor.bottom + GAP, maxHeight: below }
+  const roomRight = vw - anchor.right - GAP - MARGIN
+  const roomLeft = anchor.left - GAP - MARGIN
+  const onRight = roomRight >= width || roomRight >= roomLeft
+  const left = onRight
+    ? Math.min(anchor.right + GAP, vw - MARGIN - width)
+    : Math.max(MARGIN, anchor.left - GAP - width)
+  // Top-aligned with the tile, then lifted if that would run it off the bottom of the screen.
+  const maxHeight = vh - 2 * MARGIN
+  const top = Math.max(MARGIN, Math.min(anchor.top, vh - MARGIN - Math.min(maxHeight, 240)))
+  const place: CSSProperties = { top, maxHeight: vh - MARGIN - top }
   return createPortal(
     <div style={cssVars(PALETTES[mode])}>
       <div style={styles.clickAway} onClick={busy ? undefined : onClose} />
@@ -98,23 +104,11 @@ export function Segmented({
   options: Array<{ v: string; label: string }>
 }): ReactNode {
   return (
-    <div style={styles.segmented}>
-      {options.map((o) => {
-        const on = value === o.v
-        return (
-          <button
-            key={o.v}
-            onClick={() => onChange(o.v)}
-            style={{
-              ...styles.segment,
-              background: on ? UI.accent : 'transparent',
-              color: on ? UI.accentText : UI.text
-            }}
-          >
-            {o.label}
-          </button>
-        )
-      })}
-    </div>
+    <ToggleSwitch
+      label="Option"
+      value={value}
+      options={options.map((o) => ({ value: o.v, label: o.label }))}
+      onChange={onChange}
+    />
   )
 }

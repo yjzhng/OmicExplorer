@@ -18,6 +18,10 @@ export interface Embedding {
   /** PCA only: variance fraction of every component, sorted descending (the scree). Undefined
    *  for UMAP/t-SNE. */
   scree?: number[]
+  /** PCA only: each FEATURE's coordinates in the plotted component plane (the loadings), in the
+   *  input's feature order — what the loadings plot draws. Undefined for UMAP/t-SNE, which have no
+   *  feature axes to project onto. */
+  loadings?: Array<[number, number]>
 }
 
 /** Small deterministic PRNG (mulberry32) so seeded runs are reproducible. */
@@ -129,6 +133,12 @@ function tsne2D(X: number[][], perplexity: number): Array<[number, number]> {
   const Y = Array.from({ length: n }, () => [gauss() * 1e-2, gauss() * 1e-2])
   const vel = Array.from({ length: n }, () => [0, 0])
   const gains = Array.from({ length: n }, () => [1, 1])
+  // The whole gradient is computed against ONE set of positions before anything moves. Updating
+  // Y[i] inside the gradient loop would let later points feel their neighbours' new positions
+  // while still using the affinities (`num`) computed at the old ones — an inconsistency that
+  // compounds down the loop and blows the embedding up to ~1e20.
+  const gradX = new Float64Array(n)
+  const gradY = new Float64Array(n)
   const ITERS = 500
   const EXAG_UNTIL = 100
   const LR = 200
@@ -149,6 +159,7 @@ function tsne2D(X: number[][], perplexity: number): Array<[number, number]> {
     if (qsum === 0) qsum = 1e-12
     const exag = iter < EXAG_UNTIL ? 4 : 1
     const mom = iter < 250 ? 0.5 : 0.8
+    // Pass 1 — the gradient at the current positions, for every point.
     for (let i = 0; i < n; i++) {
       let gx = 0
       let gy = 0
@@ -158,8 +169,14 @@ function tsne2D(X: number[][], perplexity: number): Array<[number, number]> {
         gx += mult * (Y[i][0] - Y[j][0])
         gy += mult * (Y[i][1] - Y[j][1])
       }
-      gx *= 4
-      gy *= 4
+      gradX[i] = 4 * gx
+      gradY[i] = 4 * gy
+    }
+    // Pass 2 — apply it. Adaptive gains (Jacobs): speed up while a point keeps moving the same
+    // way, damp down when it reverses.
+    for (let i = 0; i < n; i++) {
+      const gx = gradX[i]
+      const gy = gradY[i]
       gains[i][0] = Math.max(
         0.01,
         Math.sign(gx) !== Math.sign(vel[i][0]) ? gains[i][0] + 0.2 : gains[i][0] * 0.8
@@ -213,6 +230,40 @@ function embedPCA(matrix: number[][]): Embedding {
   return {
     coords: matrix.map((_, i) => [score(i, k1), score(i, k2)]),
     varExplained: [Math.max(values[k1], 0) / total, Math.max(values[k2], 0) / total],
-    scree
+    scree,
+    loadings: pcaLoadings(matrix, vectors, values, k1, k2)
   }
+}
+
+/**
+ * Feature loadings for the two plotted components.
+ *
+ * The decomposition here runs on the sample Gram matrix G = XXᵀ, so its eigenvectors `u` live in
+ * SAMPLE space. The matching feature-space vectors come from projecting the data back onto them:
+ * `v_k = Xᵀ u_k / √λ_k`. A component with no variance (λ ≤ 0) has no direction, so its axis is
+ * left at zero rather than divided by zero.
+ */
+function pcaLoadings(
+  matrix: number[][],
+  vectors: number[][],
+  values: number[],
+  k1: number,
+  k2: number
+): Array<[number, number]> {
+  const nS = matrix.length
+  const nF = matrix[0]?.length ?? 0
+  const s1 = Math.sqrt(Math.max(values[k1], 0))
+  const s2 = Math.sqrt(Math.max(values[k2], 0))
+  const out: Array<[number, number]> = new Array(nF)
+  for (let f = 0; f < nF; f++) {
+    let a = 0
+    let b = 0
+    for (let i = 0; i < nS; i++) {
+      const x = matrix[i][f]
+      a += x * vectors[i][k1]
+      b += x * vectors[i][k2]
+    }
+    out[f] = [s1 > 0 ? a / s1 : 0, s2 > 0 ? b / s2 : 0]
+  }
+  return out
 }

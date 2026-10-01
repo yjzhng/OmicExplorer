@@ -470,6 +470,12 @@ function ColumnMenu({
   }
 
   const range = filter?.type === 'numeric' ? filter : { min: null, max: null }
+  /** A filter bound from the box: blank (or a partial entry like "-") = no bound, never NaN. */
+  const numOrNull = (raw: string): number | null => {
+    if (raw.trim() === '') return null
+    const v = Number(raw)
+    return Number.isFinite(v) ? v : null
+  }
   const setRange = (min: number | null, max: number | null): void =>
     onFilter(min == null && max == null ? null : { type: 'numeric', min, max })
 
@@ -517,9 +523,7 @@ function ColumnMenu({
               type="number"
               placeholder="min"
               value={range.min ?? ''}
-              onChange={(e) =>
-                setRange(e.target.value === '' ? null : Number(e.target.value), range.max)
-              }
+              onChange={(e) => setRange(numOrNull(e.target.value), range.max)}
             />
             <span style={styles.rangeDash}>–</span>
             <input
@@ -527,9 +531,7 @@ function ColumnMenu({
               type="number"
               placeholder="max"
               value={range.max ?? ''}
-              onChange={(e) =>
-                setRange(range.min, e.target.value === '' ? null : Number(e.target.value))
-              }
+              onChange={(e) => setRange(range.min, numOrNull(e.target.value))}
             />
           </div>
           {filter && (

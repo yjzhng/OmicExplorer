@@ -7,7 +7,7 @@
  */
 import type { Edge } from '@xyflow/react'
 
-import { categoryOf, NODE_SPECS } from './registry'
+import { categoryOf, NODE_SPECS, outputKindOf } from './registry'
 import { isStep, type GraphNode, type NodeKind, type PlotGroupConfig } from './types'
 
 /** Separator between a group id and a subcard id in an expanded panel id. */
@@ -108,8 +108,9 @@ export interface AnalysisGroup {
 }
 
 /** The step kinds that root an analysis. A group stops at the next root, so a
- *  contrast never swallows its parent compares' plots. */
-const ROOT_KINDS: readonly NodeKind[] = ['standardize', 'compare', 'contrast']
+ *  contrast never swallows its parent compares' plots — and a merge's plots form their own group
+ *  rather than being absorbed into whichever input dataset happens to come first. */
+const ROOT_KINDS: readonly NodeKind[] = ['standardize', 'merge', 'compare', 'contrast']
 
 /**
  * Group the graph into analyses. For each root, members are the nodes reachable
@@ -149,7 +150,8 @@ export function deriveGroups(nodes: GraphNode[], edges: Edge[]): AnalysisGroup[]
     groups.push({
       id: root.id,
       rootId: root.id,
-      kind: root.data.kind as AnalysisGroup['kind'],
+      // A Merge emits a Clean-data result, so its group behaves as one.
+      kind: outputKindOf(root.data.kind) as AnalysisGroup['kind'],
       label: `${NODE_SPECS[root.data.kind].label} · ${root.id}`,
       memberIds: members
     })

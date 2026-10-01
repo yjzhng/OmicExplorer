@@ -299,10 +299,9 @@ describe('buildMA / buildDumbbell', () => {
   })
 
   it('dumbbell keeps the top-N significant genes by |FCdiff|', () => {
-    const db = buildDumbbell(
-      [mkDumbbell('g1', 0.5), mkDumbbell('g2', 3), mkDumbbell('g3', -2)],
-      { topGenes: 2 }
-    )
+    const db = buildDumbbell([mkDumbbell('g1', 0.5), mkDumbbell('g2', 3), mkDumbbell('g3', -2)], {
+      topGenes: 2
+    })
     expect(db.rows.map((r) => r.label)).toEqual(['g2', 'g3'])
   })
 

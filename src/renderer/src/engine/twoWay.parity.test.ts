@@ -63,7 +63,10 @@ function checkParity(
 
   const actual = new Map<string, CompareResultRow>(res.rows.map((r) => [r.uniqID, r]))
 
-  expect(expected.every((e) => actual.has(e.uniqID)), 'all expected genes present').toBe(true)
+  expect(
+    expected.every((e) => actual.has(e.uniqID)),
+    'all expected genes present'
+  ).toBe(true)
   expect(res.rows.length).toBe(expected.length)
 
   for (const e of expected) {

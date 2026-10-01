@@ -58,23 +58,7 @@ export const styles: Record<string, CSSProperties> = {
     letterSpacing: 0.5,
     color: UI.textMuted
   },
-  segmented: {
-    display: 'inline-flex',
-    border: `1px solid ${UI.border}`,
-    borderRadius: 6,
-    overflow: 'hidden',
-    alignSelf: 'flex-start',
-    maxWidth: '100%',
-    flexWrap: 'wrap'
-  },
-  segment: {
-    border: 'none',
-    padding: '6px 12px',
-    fontSize: 12,
-    fontWeight: 600,
-    whiteSpace: 'nowrap',
-    cursor: 'pointer'
-  },
+
   hint: { fontSize: 11, color: UI.textMuted },
   foot: { display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 4 },
   btnGhost: {
@@ -90,6 +74,46 @@ export const styles: Record<string, CSSProperties> = {
     background: UI.accent,
     color: UI.accentText,
     border: 'none',
+    borderRadius: 6,
+    padding: '7px 14px',
+    fontSize: 13,
+    fontWeight: 600,
+    cursor: 'pointer'
+  },
+  /** the confirm window that guards an overwrite (above the settings popover, hence the z) */
+  confirmScrim: { position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', zIndex: 70 },
+  confirmModal: {
+    position: 'fixed',
+    top: '50%',
+    left: '50%',
+    transform: 'translate(-50%, -50%)',
+    width: 360,
+    maxWidth: '92vw',
+    background: UI.panel,
+    border: `1px solid ${UI.border}`,
+    borderRadius: 10,
+    boxShadow: '0 20px 60px rgba(0,0,0,0.5)',
+    zIndex: 71,
+    overflow: 'hidden'
+  },
+  confirmBody: { padding: '4px 16px 12px', fontSize: 13, color: UI.text, lineHeight: 1.45 },
+  confirmFoot: { display: 'flex', justifyContent: 'flex-end', gap: 8, padding: '0 16px 14px' },
+  /** an armed destructive action: it will overwrite something, and says so */
+  btnWarn: {
+    background: `${UI.warn}22`,
+    color: UI.warn,
+    border: `1px solid ${UI.warn}`,
+    borderRadius: 6,
+    padding: '7px 14px',
+    fontSize: 13,
+    fontWeight: 600,
+    cursor: 'pointer'
+  },
+  /** an action that stands out from Close without competing with the primary button */
+  btnAccentGhost: {
+    background: 'transparent',
+    color: UI.accent,
+    border: `1px solid ${UI.accent}`,
     borderRadius: 6,
     padding: '7px 14px',
     fontSize: 13,

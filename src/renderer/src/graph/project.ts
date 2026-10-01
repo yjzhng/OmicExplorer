@@ -115,9 +115,9 @@ function coerceWorkflows(
   return { workflows, activeWorkflowId: active }
 }
 
-/** Object keys renamed by the strain → cell condition rename (v0.4). */
+/** Object keys renamed by the strain → cell condition rename (v0.3.3). */
 const RENAMED_KEYS: Record<string, string> = { strain: 'cell' }
-/** The boolean "per strain/cell" clean-up flag became a list of grouping conditions (v0.4):
+/** The boolean "per strain/cell" clean-up flag became a list of grouping conditions (v0.3.3):
  *  true → ['cell'], false → pooled (key dropped). Config key → new key, result key → new key. */
 const PER_CELL_FLAGS: Record<string, string> = {
   minSamplePctPerStrain: 'minSamplePctBy',
@@ -130,7 +130,7 @@ const COND_VALUE_KEYS = new Set(['condition', 'condition2', 'colorBy'])
 /** Keys whose array value lists conditions. */
 const COND_LIST_KEYS = new Set(['match', 'activeConditions'])
 
-/** The `strain` condition was renamed `cell` (v0.4). Rewrite every place a saved project names
+/** The `strain` condition was renamed `cell` (v0.3.3). Rewrite every place a saved project names
  *  it — row/selector/config keys, condition-valued fields, condition lists and `cmp_cond` labels
  *  (`cmpd:strain`) — in place, so projects saved before the rename open unchanged. Walks node
  *  configs and embedded results alike; a key already present under its new name wins. */

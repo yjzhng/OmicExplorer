@@ -15,15 +15,20 @@ import {
   previewCompare,
   previewContrastPair,
   previewTwoWay,
-  VALID_CONDITIONS,
+  condLabel,
+  condsIn,
+  condValue,
+  orderConds,
   type CondSelector,
   type ConditionKey,
   type PairFix,
   type StandardRow
 } from '../engine'
+import { DOCKED_CARD, DOCKED_WRAP, useDialogDock } from './dialogDock'
 import { useGraph } from './store'
 import type { ContrastConfig } from './types'
 import { cssVars, PALETTES, UI } from '../ui/theme'
+import { OnOffSwitch, ToggleSwitch } from '../ui/ToggleSwitch'
 import { StatusNote } from '../ui/StatusNote'
 import { PreviewTable, selectorStyles } from './selectorParts'
 import { pairSides, selectorRowsOf, toContrastSide } from './contrastPair'
@@ -44,10 +49,16 @@ type Combo = Record<ConditionKey, string>
 function combosOf(rows: StandardRow[]): Combo[] {
   const seen = new Set<string>()
   const out: Combo[] = []
+  // Every condition the rows carry, custom ones included — a combo that left one out would merge
+  // distinct sample groups and hide their values from the chips below.
+  const conds = condsIn(rows)
   for (const r of rows) {
     const rec = {} as Combo
-    for (const c of VALID_CONDITIONS) rec[c] = r[c] == null || r[c] === '' ? '' : String(r[c])
-    const key = VALID_CONDITIONS.map((c) => rec[c]).join('|')
+    for (const c of conds) {
+      const v = condValue(r, c)
+      rec[c] = v == null || v === '' ? '' : String(v)
+    }
+    const key = conds.map((c) => rec[c]).join('|')
     if (seen.has(key)) continue
     seen.add(key)
     out.push(rec)
@@ -64,7 +75,7 @@ function rowMatchesSel(
   return active.every((c) => {
     const want = sel[c]
     if (!want || want.length === 0) return true
-    const v = r[c]
+    const v = condValue(r as never, c)
     return v != null && v !== '' && want.map(String).includes(String(v))
   })
 }
@@ -103,11 +114,13 @@ function previewContrast(
   const A = recs.filter((r) => rowMatchesSel(r, num, active))
   const B = recs.filter((r) => rowMatchesSel(r, den, active))
   // Only align on match dims both sides actually carry.
-  const ctx = match.filter(
-    (c) => A.some((r) => r[c] != null && r[c] !== '') && B.some((r) => r[c] != null && r[c] !== '')
-  )
+  const has = (r: Record<ConditionKey, unknown>, c: ConditionKey): boolean => {
+    const v = condValue(r as never, c)
+    return v != null && v !== ''
+  }
+  const ctx = match.filter((c) => A.some((r) => has(r, c)) && B.some((r) => has(r, c)))
   const ctxKey = (r: Record<ConditionKey, unknown>): string =>
-    ctx.map((c) => String(r[c] ?? '')).join('¦')
+    ctx.map((c) => String(condValue(r as never, c) ?? '')).join('¦')
   const group = (src: Record<ConditionKey, unknown>[]): Map<string, Set<string>> => {
     const m = new Map<string, Set<string>>()
     for (const r of src) {
@@ -160,8 +173,8 @@ export function contrastSummary(
   match: ConditionKey[],
   active: ConditionKey[]
 ): { groups: number; axis: ConditionKey[]; nameA: string; nameB: string } | null {
-  const axis = VALID_CONDITIONS.filter(
-    (c) => active.includes(c) && pinnedOn(num, c) && pinnedOn(den, c) && !sameSetOf(num[c], den[c])
+  const axis = orderConds(active).filter(
+    (c) => pinnedOn(num, c) && pinnedOn(den, c) && !sameSetOf(num[c], den[c])
   )
   const p = previewContrast(rows, num, den, match, active, axis)
   if (p.warnings.length > 0) return null
@@ -209,6 +222,8 @@ export function ComparisonDialog({
 }): ReactNode {
   const update = useGraph((s) => s.updateConfig)
   const mode = useUiTheme((s) => s.mode)
+  // Docked (the form workflow's details column): rendered into that pane, with no scrim.
+  const dock = useDialogDock()
   const contrast = variant === 'contrast'
   const [analysis, setAnalysis] = useState<Analysis>(
     initial.analysis === 'two_way_anova' ? 'two_way_anova' : 'compare'
@@ -270,9 +285,12 @@ export function ComparisonDialog({
   // All distinct values per condition (numeric-aware order).
   const allValues = useMemo(() => {
     const out = {} as Record<ConditionKey, string[]>
-    for (const c of VALID_CONDITIONS) {
+    // Keys come from the combos themselves, so a custom condition's values are listed too.
+    for (const c of orderConds([
+      ...new Set(combos.flatMap((m) => Object.keys(m)))
+    ] as ConditionKey[])) {
       const seen = new Set<string>()
-      for (const combo of combos) if (combo[c] !== '') seen.add(combo[c])
+      for (const combo of combos) if (combo[c] !== '' && combo[c] != null) seen.add(combo[c])
       out[c] = [...seen].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))
     }
     return out
@@ -292,9 +310,9 @@ export function ComparisonDialog({
             !sameSetOf(initial.num[c], initial.den[c])
         )
       : classifyConditions(rows, initial.num, initial.den, active).axis
-    return VALID_CONDITIONS.filter((c) => ax.includes(c))
+    return orderConds(ax)
   })
-  const ordered = useMemo(() => VALID_CONDITIONS.filter((c) => active.includes(c)), [active])
+  const ordered = useMemo(() => orderConds(active), [active])
   const matched = useMemo(() => ordered.filter((c) => !compared.includes(c)), [ordered, compared])
   // Compared values per side; matched values to INCLUDE (absent = every value).
   const [numVals, setNumVals] = useState<CondSelector>(() => {
@@ -411,8 +429,10 @@ export function ComparisonDialog({
   const roleWarnings: string[] = []
   if (!twoWay && axis.length === 0) roleWarnings.push('Switch on the condition to be compared.')
   for (const c of axis) {
-    if (!(numVals[c]?.length ?? 0)) roleWarnings.push(`${c}: pick the numerator value(s).`)
-    if (!(denVals[c]?.length ?? 0)) roleWarnings.push(`${c}: pick the denominator value(s).`)
+    if (!(numVals[c]?.length ?? 0))
+      roleWarnings.push(`${condLabel(c)}: pick the numerator value(s).`)
+    if (!(denVals[c]?.length ?? 0))
+      roleWarnings.push(`${condLabel(c)}: pick the denominator value(s).`)
   }
 
   // Two-way ANOVA needs exactly two compared conditions (two factors). Each factor may carry
@@ -424,7 +444,9 @@ export function ComparisonDialog({
       warnings.push('2-way ANOVA needs two conditions switched on (the two factors).')
     for (const c of axis) {
       if (crossPairs(num[c] ?? [], den[c] ?? []).length === 0)
-        warnings.push(`Factor “${c}”: pick at least one numerator and one denominator level.`)
+        warnings.push(
+          `Factor “${condLabel(c)}”: pick at least one numerator and one denominator level.`
+        )
     }
     return { warnings, ok: axis.length === 2 && warnings.length === 0 }
   })()
@@ -538,10 +560,10 @@ export function ComparisonDialog({
     const on = axis.includes(c)
     const disabled = !on && axis.length >= maxCompared
     return (
-      <button
-        role="switch"
-        aria-checked={on}
-        aria-label={`Compare on ${c}`}
+      <OnOffSwitch
+        on={on}
+        onChange={(v) => setComparedOn(c, v)}
+        label={`Compare on ${condLabel(c)}`}
         disabled={disabled}
         title={
           on
@@ -552,17 +574,7 @@ export function ComparisonDialog({
                 : `A ${contrast ? 'contrast' : 'comparison'} is on one condition — switch the other off first`
               : `Switch on to ${contrast ? 'contrast' : 'compare'} on this condition`
         }
-        onClick={() => setComparedOn(c, !on)}
-        style={{
-          ...styles.switchTrack,
-          background: on ? UI.accent : UI.border,
-          justifyContent: on ? 'flex-end' : 'flex-start',
-          opacity: disabled ? 0.35 : 1,
-          cursor: disabled ? 'not-allowed' : 'pointer'
-        }}
-      >
-        <span style={styles.switchKnob} />
-      </button>
+      />
     )
   }
   const sideChips = (side: Side, c: ConditionKey): ReactNode => {
@@ -629,7 +641,9 @@ export function ComparisonDialog({
       <div key={c} style={styles.condRow}>
         <div style={styles.condHead}>
           {condSwitch(c)}
-          <span style={{ ...styles.condName, ...(on ? styles.condNameOn : null) }}>{c}</span>
+          <span style={{ ...styles.condName, ...(on ? styles.condNameOn : null) }}>
+            {condLabel(c)}
+          </span>
         </div>
         {on ? (
           <div style={styles.sidePair}>
@@ -681,7 +695,7 @@ export function ComparisonDialog({
                       // Fan out on the varying side against the fixed side's single slice —
                       // a partial match by nature, so it takes the partial look.
                       look = styles.valChipPartial
-                      title = `Runs against the ${fixedLabel}'s single slice (${c} is fixed there) — click to leave out`
+                      title = `Runs against the ${fixedLabel}'s single slice (${condLabel(c)} is fixed there) — click to leave out`
                     } else {
                       const nC = N.byValue.get(v) ?? new Set<string>()
                       const dC = D.byValue.get(v) ?? new Set<string>()
@@ -689,10 +703,10 @@ export function ComparisonDialog({
                       if (paired.length === 0) {
                         // No sample pair anywhere → stays plain grey (nothing to match).
                         look = styles.valChipIdle
-                        title = `No matching sample pair at ${c} = ${v} in any context — skipped`
+                        title = `No matching sample pair at ${condLabel(c)} = ${v} in any context — skipped`
                       } else if (paired.length < shared.length) {
                         look = styles.valChipPartial
-                        title = `${c} = ${v} is compared in ${paired.length} of ${shared.length} contexts — missing on a side in the rest`
+                        title = `${condLabel(c)} = ${v} is compared in ${paired.length} of ${shared.length} contexts — missing on a side in the rest`
                       } else look = styles.valChipIncluded
                     }
                   } else if (vOn) look = styles.valChipIdle
@@ -719,13 +733,13 @@ export function ComparisonDialog({
   return createPortal(
     // Re-establish the theme CSS variables inside the portal (document.body is outside the app
     // root where they're defined), otherwise UI.* (var(--panel) …) resolve to transparent.
-    <div style={cssVars(PALETTES[mode])}>
+    <div style={dock ? { ...cssVars(PALETTES[mode]), ...DOCKED_WRAP } : cssVars(PALETTES[mode])}>
       {/* Chips are buttons: no focus ring after a click (it lingered as a dark outline), but keep
           one for keyboard focus. */}
       <style>{`.oe-chip:focus{outline:none}.oe-chip:focus-visible{box-shadow:0 0 0 2px var(--accent)}`}</style>
-      <div style={styles.scrim} onClick={onClose} />
+      {!dock && <div style={styles.scrim} onClick={onClose} />}
       <div
-        style={styles.modal}
+        style={dock ? { ...styles.modal, ...DOCKED_CARD } : styles.modal}
         role="dialog"
         aria-label={contrast ? 'Configure contrast' : 'Configure comparison'}
       >
@@ -735,46 +749,41 @@ export function ComparisonDialog({
           </span>
           {/* Mode toggle: Compare picks the analysis (plain two-level vs 2×2 interaction); Contrast
               picks its inputs (two groups from one upstream vs two upstreams). */}
-          {contrast ? (
-            <div style={styles.pill}>
-              {(['select', 'pair'] as ContrastSource[]).map((s) => {
-                // Inter-dataset needs two inputs wired; intra-dataset always works.
-                const off = s === 'pair' && inputCount < 2
-                return (
-                  <button
-                    key={s}
-                    disabled={off}
-                    title={
-                      off ? 'Wire a second input into the tile to contrast two datasets' : undefined
-                    }
-                    onClick={() => setSource(s)}
-                    style={{
-                      ...styles.pillBtn,
-                      ...(source === s ? styles.pillBtnOn : off ? styles.pillBtnOff : null)
-                    }}
-                  >
-                    {s === 'select' ? 'intra-dataset' : 'inter-dataset'}
-                  </button>
-                )
-              })}
-            </div>
-          ) : (
-            <div style={styles.pill}>
-              {(['compare', 'two_way_anova'] as Analysis[]).map((a) => (
-                <button
-                  key={a}
-                  onClick={() => {
-                    setAnalysis(a)
-                    // t-test compares one condition: drop any second factor left from 2-way.
-                    if (a === 'compare') setCompared((p) => p.slice(0, 1))
-                  }}
-                  style={{ ...styles.pillBtn, ...(analysis === a ? styles.pillBtnOn : null) }}
-                >
-                  {a === 'compare' ? 't-test' : '2-way ANOVA'}
-                </button>
-              ))}
-            </div>
-          )}
+          <span style={styles.modeSwitch}>
+            {contrast ? (
+              <ToggleSwitch
+                label="Contrast source"
+                value={source}
+                options={(['select', 'pair'] as ContrastSource[]).map((v) => {
+                  // Inter-dataset needs two inputs wired; intra-dataset always works.
+                  const off = v === 'pair' && inputCount < 2
+                  return {
+                    value: v,
+                    label: v === 'select' ? 'intra-dataset' : 'inter-dataset',
+                    disabled: off,
+                    title: off
+                      ? 'Wire a second input into the tile to contrast two datasets'
+                      : undefined
+                  }
+                })}
+                onChange={(v) => setSource(v)}
+              />
+            ) : (
+              <ToggleSwitch
+                label="Analysis"
+                value={analysis}
+                options={[
+                  { value: 'compare' as Analysis, label: 't-test' },
+                  { value: 'two_way_anova' as Analysis, label: '2-way ANOVA' }
+                ]}
+                onChange={(a) => {
+                  setAnalysis(a)
+                  // t-test compares one condition: drop any second factor left from 2-way.
+                  if (a === 'compare') setCompared((p) => p.slice(0, 1))
+                }}
+              />
+            )}
+          </span>
           <button style={styles.close} onClick={onClose} aria-label="Close">
             ✕
           </button>
@@ -962,7 +971,7 @@ export function ComparisonDialog({
         </div>
       </div>
     </div>,
-    document.body
+    dock ?? document.body
   )
 }
 
@@ -994,28 +1003,9 @@ const styles: Record<string, CSSProperties> = {
     background: UI.panelAlt
   },
   title: { fontWeight: 700, fontSize: 14, color: UI.text },
-  pill: {
-    marginLeft: 'auto',
-    display: 'inline-flex',
-    gap: 4,
-    border: `1px solid ${UI.border}`,
-    borderRadius: 999,
-    padding: 3,
-    background: UI.panel
-  },
-  pillBtn: {
-    border: 'none',
-    borderRadius: 999,
-    padding: '4px 12px',
-    fontSize: 11,
-    fontWeight: 600,
-    cursor: 'pointer',
-    whiteSpace: 'nowrap',
-    background: 'transparent',
-    color: UI.text
-  },
-  pillBtnOn: { background: UI.accent, color: UI.accentText },
-  pillBtnOff: { opacity: 0.4, cursor: 'default' },
+
+  // The header's mode switch, pushed to the right of the title.
+  modeSwitch: { marginLeft: 'auto', display: 'inline-flex' },
   close: {
     marginLeft: 12,
     background: 'transparent',

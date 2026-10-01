@@ -4,7 +4,7 @@
  *  Dragging is bound to each panel's header (`.panel-drag`), not the body, so the
  *  charts inside stay interactive (hover, future brushing) instead of being
  *  swallowed by a body-wide drag target. */
-import { useMemo, type CSSProperties, type ReactNode } from 'react'
+import { useMemo, useState, type CSSProperties, type ReactNode } from 'react'
 import GridLayout, { type ResizeHandleAxis } from 'react-grid-layout'
 
 import 'react-grid-layout/css/styles.css'
@@ -20,27 +20,25 @@ const HANDLES: ResizeHandleAxis[] = ['n', 'e', 's', 'w', 'ne', 'nw', 'se', 'sw']
 interface Props {
   ids: string[]
   layout: PanelLayout
-  editing: boolean
   onLayoutChange: (layout: PanelLayout) => void
   children: (id: string) => ReactNode
 }
 
-export function DashboardGrid({
-  ids,
-  layout,
-  editing,
-  onLayoutChange,
-  children
-}: Props): ReactNode {
+export function DashboardGrid({ ids, layout, onLayoutChange, children }: Props): ReactNode {
   // Note: useElementSize holds the last real width while a tab is hidden, so the grid
   // keeps its layout instead of rebuilding every plot on each tab switch.
   const { ref, width: gridWidth } = useElementSize<HTMLDivElement>()
+  // Tiles can always be dragged (by the header) and resized; this is whether one is being, right
+  // now — the snap dots show only then, so the dashboard isn't dotted the rest of the time.
+  const [moving, setMoving] = useState(false)
+  const start = (): void => setMoving(true)
+  const stop = (): void => setMoving(false)
 
-  // Faint dots marking the grid's snap intersections, shown only while editing.
+  // Faint dots marking the grid's snap intersections, shown only while a tile is moving.
   // The pitch is derived from the same numbers the grid uses, so the dots stay
   // registered with where tiles actually land as the container is resized.
   const dotStyle = useMemo<CSSProperties>(() => {
-    if (!editing || gridWidth <= 0) return {}
+    if (!moving || gridWidth <= 0) return {}
     const colWidth =
       (gridWidth - GRID_MARGIN[0] * (GRID_COLS - 1) - GRID_PADDING[0] * 2) / GRID_COLS
     const colPitch = colWidth + GRID_MARGIN[0]
@@ -54,26 +52,27 @@ export function DashboardGrid({
       // Tile the dots across the full scroll height, not just the first viewport.
       backgroundRepeat: 'repeat'
     }
-  }, [editing, gridWidth])
+  }, [moving, gridWidth])
 
   return (
     <div
       ref={ref}
-      // In edit mode the wrapper fills the dashboard so the snap-dot backdrop shows
-      // in the empty space around tiles (tiles are opaque and cover their own dots).
-      // A tall dotted buffer below the content keeps free space to scroll into and drag
-      // tiles down onto — the buffer always re-extends below wherever the tiles end.
-      style={{
-        width: '100%',
-        ...(editing ? { minHeight: '100%', paddingBottom: '60vh', ...dotStyle } : {})
-      }}
-      className={editing ? 'oe-grid editing' : 'oe-grid'}
+      // The wrapper fills the dashboard so the snap-dot backdrop shows in the empty space
+      // around tiles (tiles are opaque and cover their own dots). A tall buffer below the
+      // content keeps free space to scroll into and drag tiles down onto — it always
+      // re-extends below wherever the tiles end.
+      style={{ width: '100%', minHeight: '100%', paddingBottom: '60vh', ...dotStyle }}
+      className="oe-grid editing"
     >
       {gridWidth > 0 && (
         <GridLayout
           width={gridWidth}
           layout={layout}
           onLayoutChange={onLayoutChange}
+          onDragStart={start}
+          onDragStop={stop}
+          onResizeStart={start}
+          onResizeStop={stop}
           gridConfig={{
             cols: GRID_COLS,
             rowHeight: ROW_HEIGHT,
@@ -81,12 +80,12 @@ export function DashboardGrid({
             containerPadding: GRID_PADDING
           }}
           dragConfig={{
-            enabled: editing,
+            enabled: true,
             handle: '.panel-drag',
             // Controls inside a header stay clickable rather than starting a drag.
             cancel: 'button,select,input,a'
           }}
-          resizeConfig={{ enabled: editing, handles: HANDLES }}
+          resizeConfig={{ enabled: true, handles: HANDLES }}
         >
           {ids.map((id) => (
             <div key={id} className="oe-grid-item">

@@ -46,7 +46,10 @@ describe('context faceting (omicViz plot_group_cols parity)', () => {
 
   it('facetDims prepends `comparison` only when a tile has multiple comparisons', () => {
     // Single comparison → no comparison facet (just context).
-    const one = [row({ comparison: 'Amk | H2O', dose: 10 }), row({ comparison: 'Amk | H2O', dose: 5 })]
+    const one = [
+      row({ comparison: 'Amk | H2O', dose: 10 }),
+      row({ comparison: 'Amk | H2O', dose: 5 })
+    ]
     expect(facetDims(one)).toEqual(['dose'])
     // Multiple comparisons (all-compounds veh_norm) → `comparison` becomes the first facet, so the
     // pairs split into separate plots instead of merging.
@@ -152,5 +155,34 @@ describe('facetPaired / facetSides (one-sided outer-join contexts)', () => {
     const rows = [ctr({ FC2: null }), ctr({ uniqID: 'h', FC1: null })]
     expect(facetPaired(rows)).toBe(false)
     expect(facetSides(rows)).toEqual(['KO', 'WT'])
+  })
+})
+
+describe('facet dim order', () => {
+  // The switcher and the in-plot facet tabs read this order, and dims resolve left to right — the
+  // leading dim narrows what the rest offer, so it is not merely cosmetic.
+  const ctx = (): CompareResultRow[] => [
+    row({ cell: 'WT', dose: 1, extra: { genotype: 'parent', medium: 'rich' } }),
+    row({ cell: 'KO', dose: 10, extra: { genotype: 'mutant', medium: 'min' } })
+  ]
+
+  it('puts custom conditions before the presets', () => {
+    const dims = facetContextDims(ctx())
+    expect(dims).toEqual(['@genotype', '@medium', 'cell', 'dose'])
+  })
+
+  it('keeps `comparison` ahead of everything — it is not a condition', () => {
+    const rows = [
+      ...ctx(),
+      row({ cell: 'WT', dose: 1, comparison: 'B | H2O', extra: { genotype: 'parent' } })
+    ]
+    expect(facetDims(rows)[0]).toBe('comparison')
+    expect(facetDims(rows)[1]).toBe('@genotype')
+  })
+
+  it('still drops dims the comparison consumes, and honours `exclude`', () => {
+    expect(facetContextDims(ctx(), ['@genotype'])).toEqual(['@medium', 'cell', 'dose'])
+    // cmpd is consumed by cmp_cond, so it never appears whichever order the rest take.
+    expect(facetContextDims(ctx())).not.toContain('cmpd')
   })
 })

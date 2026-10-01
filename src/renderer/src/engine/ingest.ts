@@ -8,8 +8,27 @@
 import Papa from 'papaparse'
 
 import type { StandardizeInput, StandardizeResult, StandardRow } from './types'
-import { VALID_CONDITIONS } from './types'
+import {
+  condsIn,
+  customCond,
+  customSlug,
+  isCustomCond,
+  RESERVED_COND_NAMES,
+  validCondName,
+  VALID_CONDITIONS,
+  type ConditionKey
+} from './types'
+import { condPresent } from './compare'
 import { imputeMissing } from './impute'
+import {
+  detectScale,
+  histogram,
+  outputScale,
+  sampleValues,
+  toLinear,
+  type ScaleEvidence,
+  type ValueScale
+} from './scale'
 
 type Row = Record<string, string>
 
@@ -63,21 +82,32 @@ function readSamplesheet(text: string): Row[] {
   })
 }
 
+/** Which samplesheet columns to read as custom conditions when the caller didn't say.
+ *
+ *  A column qualifies when its name is a usable condition name, it carries at least one value, and
+ *  it GROUPS the samples rather than identifying them — fewer distinct values than samples. That
+ *  last test is what keeps a free-text `notes` or `acquired_at` column, unique per sample, from
+ *  silently becoming a condition axis with one level per sample. */
+export function detectCustomConditions(ss: Row[]): string[] {
+  if (ss.length === 0) return []
+  const names = [...new Set(ss.flatMap((r) => Object.keys(r)))].filter(validCondName)
+  return names.filter((n) => {
+    const vals = new Set<string>()
+    for (const r of ss) {
+      const v = String(r[n] ?? '').trim()
+      if (v !== '') vals.add(v)
+    }
+    return vals.size > 0 && vals.size < ss.length
+  })
+}
+
 /** Detect the feature-ID column by matching a data column name to a DB column name. */
-function detectIdColumn(fields: string[], dbFields: string[]): string | null {
-  const nonId = new Set([
-    'position',
-    'value',
-    'sample',
-    'rep',
-    'cell',
-    'cmpd',
-    'dose',
-    'time',
-    'gene_label',
-    'peptides',
-    'well'
-  ])
+function detectIdColumn(
+  fields: string[],
+  dbFields: string[],
+  customConds: string[] = []
+): string | null {
+  const nonId = new Set([...RESERVED_COND_NAMES, 'gene_label', ...customConds])
   const dbSet = new Set(dbFields)
   return fields.find((c) => !nonId.has(c) && dbSet.has(c)) ?? null
 }
@@ -123,7 +153,8 @@ function buildIdMap(dbRows: Row[], dbFields: string[], idColumn: string): IdMap 
   // Disambiguate duplicate labels: when two features map to the SAME display name, append their
   // uniqID so every plot's gene label stays distinguishable (unique names are left untouched).
   const nameCount = new Map<string, number>()
-  for (const uid in displayMap) nameCount.set(displayMap[uid], (nameCount.get(displayMap[uid]) ?? 0) + 1)
+  for (const uid in displayMap)
+    nameCount.set(displayMap[uid], (nameCount.get(displayMap[uid]) ?? 0) + 1)
   for (const uid in displayMap) {
     if (displayMap[uid] !== uid && (nameCount.get(displayMap[uid]) ?? 0) > 1)
       displayMap[uid] = `${displayMap[uid]} (${uid})`
@@ -150,6 +181,38 @@ function buildIdMap(dbRows: Row[], dbFields: string[], idColumn: string): IdMap 
   return { lookup, displayMap, annotationMap, idColumn }
 }
 
+/** The data scale of a data file, before any run: the scale its values look to be on, what that
+ *  was judged from, and a sample of the values for a preview histogram. Reads the same values
+ *  Clean data's run judges from (arrivedValues), so the two always agree. */
+export interface ScalePreview {
+  inputScale: ValueScale
+  evidence: ScaleEvidence
+  sample: number[]
+}
+export function previewScale(dataText: string, dataFilename: string): ScalePreview {
+  const parsed = parseCsv(dataText)
+  const values = arrivedValues(detectFormat(dataFilename), parsed.fields, parsed.rows)
+  const { scale, evidence } = detectScale(values)
+  return { inputScale: scale, evidence, sample: sampleValues(values) }
+}
+
+/** Every numeric data value in a parsed data file, as it arrived: a wide file's sample columns
+ *  (all but the first, the id), or a long file's `value` column. */
+function arrivedValues(
+  fmt: ReturnType<typeof detectFormat>,
+  fields: string[],
+  rows: Row[]
+): number[] {
+  const out: number[] = []
+  const cols = fmt === 'wide' ? fields.slice(1) : ['value']
+  for (const r of rows)
+    for (const c of cols) {
+      const n = num(r[c])
+      if (n != null) out.push(n)
+    }
+  return out
+}
+
 /**
  * Full standardization pipeline. Produces the tidy long table and a display map.
  */
@@ -158,6 +221,9 @@ export function standardize(input: StandardizeInput): StandardizeResult {
   const parsed = parseCsv(input.dataText)
   let fields = parsed.fields
   let dataRows = parsed.rows
+  // The values as they arrived — what the data scale is judged from (the same set previewScale
+  // reads, so the settings' preview and the run agree).
+  const arrived = arrivedValues(fmt, fields, dataRows)
 
   // ── wide → long melt, or long: rename well/position → sample ────────────────
   if (fmt === 'wide') {
@@ -184,6 +250,13 @@ export function standardize(input: StandardizeInput): StandardizeResult {
 
   // ── samplesheet: sample → conditions + rep ──────────────────────────────────
   const ss = readSamplesheet(input.samplesheetText)
+  // Custom condition columns: what the caller declared (the interactive import knows exactly what
+  // the user defined), else auto-detected from the sheet. readSamplesheet lowercases headers, so
+  // declared names are matched in lower case too.
+  const customConds = (
+    input.customConditions?.map((n) => n.trim().toLowerCase()).filter(validCondName) ??
+    detectCustomConditions(ss)
+  ).filter((n) => ss.some((r) => String(r[n] ?? '').trim() !== ''))
   const ssBySample = new Map<string, Row>()
   for (const r of ss) if (r.sample != null) ssBySample.set(String(r.sample), r)
   const validSamples = new Set(ssBySample.keys())
@@ -199,6 +272,8 @@ export function standardize(input: StandardizeInput): StandardizeResult {
     dose: number | null
     time: number | null
     rep: number | null
+    /** custom condition slug → value, for the columns resolved above */
+    extra: Record<string, string>
     peptides: number | null
   }
   const merged: Merged[] = []
@@ -215,6 +290,7 @@ export function standardize(input: StandardizeInput): StandardizeResult {
       dose: num(meta.dose),
       time: num(meta.time),
       rep: num(meta.rep),
+      extra: Object.fromEntries(customConds.map((c) => [c, String(meta[c] ?? '').trim()])),
       peptides: num(r.peptides)
     })
   }
@@ -231,7 +307,15 @@ export function standardize(input: StandardizeInput): StandardizeResult {
     for (const m of merged) {
       if (seen.has(m.sample)) continue
       seen.add(m.sample)
-      const condKey = [m.cell, m.cmpd, m.dose ?? '', m.time ?? ''].join('')
+      // Custom conditions join the key: two samples differing only in one are distinct
+      // conditions, not replicates of a single one.
+      const condKey = [
+        m.cell,
+        m.cmpd,
+        m.dose ?? '',
+        m.time ?? '',
+        ...customConds.map((c) => m.extra[c])
+      ].join('')
       const n = (perCond.get(condKey) ?? 0) + 1
       perCond.set(condKey, n)
       repOf.set(m.sample, m.rep != null ? m.rep : n)
@@ -244,7 +328,7 @@ export function standardize(input: StandardizeInput): StandardizeResult {
   let idMap: IdMap | null = null
   if (input.dbText) {
     const db = parseCsv(input.dbText)
-    const idCol = detectIdColumn([idColData], db.fields)
+    const idCol = detectIdColumn([idColData], db.fields, customConds)
     if (idCol) {
       idMap = buildIdMap(db.rows, db.fields, idCol)
       displayMap = idMap.displayMap
@@ -259,9 +343,16 @@ export function standardize(input: StandardizeInput): StandardizeResult {
   const allSamples = new Set<string>()
   // sample → its clean-up group (the tuple of the `minSamplePctBy` conditions), so within-group
   // coverage can be computed from `presence` in the clean-up below. '' when pooling everything.
-  const groupBy = (input.minSamplePctBy ?? []).filter((c) => VALID_CONDITIONS.includes(c))
-  const groupOf = (m: { cell: string; cmpd: string; dose: number | null; time: number | null }): string =>
-    groupBy.map((c) => String(m[c] ?? '')).join('¦')
+  const knownConds = new Set<ConditionKey>([...VALID_CONDITIONS, ...customConds.map(customCond)])
+  const groupBy = (input.minSamplePctBy ?? []).filter((c) => knownConds.has(c))
+  const groupOf = (m: Merged): string =>
+    groupBy
+      .map((c) =>
+        isCustomCond(c)
+          ? m.extra[customSlug(c)]
+          : String((m as unknown as Record<string, unknown>)[c] ?? '')
+      )
+      .join('¦')
   const sampleGroup = new Map<string, string>()
   for (const m of merged) {
     allSamples.add(m.sample)
@@ -287,11 +378,21 @@ export function standardize(input: StandardizeInput): StandardizeResult {
         dose: m.dose,
         time: m.time,
         rep: repOf.get(m.sample) ?? m.rep,
+        ...(customConds.length ? { extra: m.extra } : null),
         value: m.value,
         peptides: m.peptides
       })
     }
   }
+
+  // ── data scale: detect what the values arrived on and convert them to linear ─────────────
+  // Everything after this (clean-up, imputation, every downstream step) works on linear values, so
+  // already-logged input is analysed correctly; the chosen log-transform only sets the scale the
+  // result is presented on (see scale.ts / presentStd).
+  const { scale: inputScale, evidence: scaleEvidence } = detectScale(arrived)
+  const inputHistogram = histogram(sampleValues(arrived))
+  if (inputScale !== 'linear')
+    rows = rows.map((r) => (r.value == null ? r : { ...r, value: toLinear(r.value, inputScale) }))
 
   // ── clean-up: drop low-coverage genes (identified in < minSamplePct of samples) ──
   // Pooled mode (no grouping conditions) measures coverage over every sample and drops the gene
@@ -354,11 +455,8 @@ export function standardize(input: StandardizeInput): StandardizeResult {
   }
 
   // ── which conditions are active (present with any non-empty value) ──────────
-  const requested = input.activeConditions ?? VALID_CONDITIONS
-  const activeConditions = requested.filter((c) => {
-    if (c === 'cell' || c === 'cmpd') return rows.some((r) => (r[c] as string) !== '')
-    return rows.some((r) => r[c] != null)
-  })
+  const requested = input.activeConditions ?? condsIn(rows)
+  const activeConditions = requested.filter((c) => condPresent(rows, c))
 
   const compounds = [...new Set(rows.map((r) => r.cmpd).filter((c) => c !== ''))].sort()
 
@@ -370,6 +468,10 @@ export function standardize(input: StandardizeInput): StandardizeResult {
     activeConditions,
     compounds,
     cleanup: { droppedGenes, sampleCount, minSamplePct, ...(grouped ? { by: groupBy } : {}) },
-    ...(imputation ? { imputation } : {})
+    ...(imputation ? { imputation } : {}),
+    scale: outputScale(input.logTransform, inputScale),
+    inputScale,
+    scaleEvidence,
+    inputHistogram
   }
 }

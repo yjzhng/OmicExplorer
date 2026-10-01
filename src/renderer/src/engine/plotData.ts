@@ -3,11 +3,19 @@
  * framework/library-free so the engine has no plotly dependency — the renderer
  * component assembles the actual Plotly traces from these.
  */
-import { clusterRowGroups, clusterRowOrder } from './cluster'
+import { condValue } from './compare'
+import { clusterRowGroups, clusterRowOrder, suggestClusterCount } from './cluster'
 import type { ContrastResultRow } from './contrast'
 import { embed2D, type ClusterMethod } from './embed'
 import { benjaminiHochberg, madNormal, median, normalSf, studentTppf, type Effect } from './stats'
-import { VALID_CONDITIONS } from './types'
+import {
+  condLabel,
+  condsIn,
+  customSlug,
+  isCustomCond,
+  isNumericCond,
+  VALID_CONDITIONS
+} from './types'
 import type { CompareResultRow, ConditionKey, StandardizeResult, StandardRow } from './types'
 
 // ── volcano ────────────────────────────────────────────────────────────────────
@@ -94,6 +102,8 @@ export interface ContextRow {
   cmpd?: string | null
   dose?: number | null
   time?: number | null
+  /** custom condition slug → value */
+  extra?: Record<string, string>
   /** Contrast rows only: the two sides' values and labels. The paired contrast is a FULL OUTER
    *  join, so a context tuple measured on one side only has FC1 or FC2 null on every row. */
   FC1?: number | null
@@ -124,13 +134,26 @@ export function facetSides(rows: ContextRow[]): string[] {
  *  multi-pair Compare tile into one plot per comparison instead of merging them). */
 export type FacetKey = ConditionKey | 'comparison'
 
+/** What to call a facet dimension on screen: a condition's display label (so a custom condition
+ *  reads `genotype`, not the `@genotype` key), or the literal `comparison`. */
+export const facetKeyLabel = (d: FacetKey): string => (d === 'comparison' ? d : condLabel(d))
+
+/** A context row's value for one condition — the `extra` bag for a custom condition, the column
+ *  itself for a preset. `facetCompareRows` and the facet-dim scans all read through this, so a
+ *  custom key is never used to index the row object directly. */
+export function ctxValue(r: ContextRow, c: ConditionKey | 'comparison'): string | number | null {
+  if (c !== 'comparison' && isCustomCond(c)) return r.extra?.[customSlug(c)] ?? ''
+  return (r as unknown as Record<string, string | number | null>)[c] ?? null
+}
+
 function condPresentInRows(rows: ContextRow[], c: ConditionKey): boolean {
-  if (c === 'cell' || c === 'cmpd')
+  // Categorical conditions (cell, cmpd, every custom one) treat '' as absent; numeric ones null.
+  if (!isNumericCond(c))
     return rows.some((r) => {
-      const v = (r as unknown as Record<string, unknown>)[c]
+      const v = ctxValue(r, c)
       return v != null && v !== ''
     })
-  return rows.some((r) => (r as unknown as Record<string, unknown>)[c] != null)
+  return rows.some((r) => ctxValue(r, c) != null)
 }
 
 /** Dimensions the comparison itself consumes (never faceted), parsed from `cmp_cond`. */
@@ -141,11 +164,20 @@ function comparisonDims(rows: ContextRow[]): Set<string> {
 }
 
 /** Context dimensions present in these rows, excluding the comparison's consumed dims.
- *  Pass `exclude` to remove further dims a plot consumes (e.g. a DR/bubble axis). */
+ *  Pass `exclude` to remove further dims a plot consumes (e.g. a DR/bubble axis).
+ *
+ *  Custom conditions come FIRST here, unlike the canonical `condsIn`/`orderConds` order used
+ *  elsewhere. A custom condition is one the user declared for this experiment — usually its own
+ *  axis (genotype, strain, medium) — whereas the presets that survive faceting are typically
+ *  covariates. Facet dims are resolved left to right, so the leading dim is both the first switcher
+ *  and the one that narrows what the rest offer; the experiment's own axis belongs there. Canonical
+ *  order is deliberately left alone for the cluster legend's channel hierarchy, which reads the
+ *  first condition as its hue family. */
 export function facetContextDims(rows: ContextRow[], exclude?: ConditionKey[]): ConditionKey[] {
   const ex = comparisonDims(rows)
   if (exclude) for (const d of exclude) ex.add(d)
-  return VALID_CONDITIONS.filter((c) => !ex.has(c) && condPresentInRows(rows, c))
+  const present = condsIn(rows).filter((c) => !ex.has(c) && condPresentInRows(rows, c))
+  return [...present.filter(isCustomCond), ...present.filter((c) => !isCustomCond(c))]
 }
 
 /** Colour-by choices for the pooled responsome embedding (buildResponseCluster). Like
@@ -155,13 +187,13 @@ export function facetContextDims(rows: ContextRow[], exclude?: ConditionKey[]): 
  *  way it is inside a single comparison's facet. */
 export function responseColorDims(rows: ContextRow[]): ConditionKey[] {
   const consumed = comparisonDims(rows)
-  return VALID_CONDITIONS.filter((c) => {
+  return condsIn(rows).filter((c) => {
     if (!condPresentInRows(rows, c)) return false
     if (!consumed.has(c)) return true
     // Consumed dim: only useful to colour by if it takes more than one value across the pool.
     const seen = new Set<string>()
     for (const r of rows) {
-      const v = (r as unknown as Record<string, unknown>)[c]
+      const v = ctxValue(r, c)
       if (v != null && v !== '') seen.add(String(v))
       if (seen.size > 1) return true
     }
@@ -193,10 +225,7 @@ export function facetCompareRows<T extends ContextRow>(
   if (dims.length === 0) return [{ key: '', values: [], rows }]
   const groups = new Map<string, FacetGroup<T>>()
   for (const r of rows) {
-    const values = dims.map((d) => ({
-      dim: d,
-      value: (r as unknown as Record<string, unknown>)[d] as string | number
-    }))
+    const values = dims.map((d) => ({ dim: d, value: ctxValue(r, d) as string | number }))
     const key = values.map((v) => `${v.dim}=${v.value}`).join(' · ')
     let g = groups.get(key)
     if (!g) {
@@ -208,16 +237,24 @@ export function facetCompareRows<T extends ContextRow>(
   // Numeric-aware ordering so dose/time facets read 2.5 < 5 < 10, strings lexical.
   return [...groups.values()].sort((a, b) => {
     for (let i = 0; i < dims.length; i++) {
+      const d = dims[i]
       const av = a.values[i]?.value
       const bv = b.values[i]?.value
       const an = Number(av)
       const bn = Number(bv)
-      // Numeric when both parse (dose 2.5 < 5 < 10); otherwise code-point order to
-      // match pandas groupby (uppercase before lowercase, e.g. 'WT' < 'clpP').
+      // Numeric order only for a dim that IS numeric (dose 2.5 < 5 < 10). A categorical dim —
+      // cell, cmpd, the `comparison` label, any custom condition — keeps code-point order even
+      // when its levels look like numbers, matching pandas groupby ('WT' < 'clpP').
       const sa = String(av)
       const sb = String(bv)
       const cmp =
-        Number.isFinite(an) && Number.isFinite(bn) ? an - bn : sa < sb ? -1 : sa > sb ? 1 : 0
+        d !== 'comparison' && isNumericCond(d) && Number.isFinite(an) && Number.isFinite(bn)
+          ? an - bn
+          : sa < sb
+            ? -1
+            : sa > sb
+              ? 1
+              : 0
       if (cmp !== 0) return cmp
     }
     return 0
@@ -899,6 +936,8 @@ export interface ClusterMeta {
   cmpd: string
   dose: number | null
   time: number | null
+  /** custom condition slug → value (categorical, so always a string) */
+  extra?: Record<string, string>
 }
 export interface ClusterPoint {
   x: number
@@ -918,7 +957,14 @@ export interface ClusterData {
   method: ClusterMethod
   /** PCA only: variance fraction on each axis ([0, 0] for UMAP/t-SNE). */
   varExplained: [number, number]
-  colorBy: ConditionKey
+  colorBy: ClusterColorBy
+  /** PCA only, and only when asked for: the most influential features in the plotted component
+   *  plane, longest first. Raw loading coordinates — the loadings plot has its own axes, so nothing
+   *  is rescaled to match the scores. */
+  loadings?: Array<{ label: string; x: number; y: number }>
+  /** Colouring by cluster only: the group count actually used (the `clusterCount` method resolves
+   *  to a number, which the UI can report — 'auto' especially, where the user didn't pick it). */
+  clusterK?: number
   /** What the embedding actually ran on, for a diagnostic caption (scree = variance fraction of
    *  each PC, descending; PCA only). `transform` = the log applied ('log2'|'log10'|'linear');
    *  `range` = raw value [min, max]. */
@@ -933,7 +979,23 @@ export interface ClusterData {
 }
 export interface ClusterOptions {
   method: ClusterMethod
-  colorBy: ConditionKey
+  colorBy: ClusterColorBy
+  /** Colouring by cluster: what the grouping is computed from. 'coords' clusters the embedded 2-D
+   *  positions, so the colours always match the visual grouping (but cluster a lossy projection);
+   *  'features' clusters the same high-dimensional matrix the embedding ran on, so the grouping is
+   *  the real structure and is identical whichever method draws it. Defaults to 'coords'. */
+  clusterOn?: 'coords' | 'features'
+  /** Colouring by cluster: how the group count is chosen. 'fixed' uses `clusterK`; 'conditions'
+   *  uses the number of distinct conditions (asking "do the samples group the way the design
+   *  says?"); 'auto' takes the largest gap in the dendrogram. Defaults to 'fixed'. */
+  clusterCount?: 'fixed' | 'conditions' | 'auto'
+  /** `clusterCount: 'fixed'` only — the number of groups to cut. Defaults to 3. */
+  clusterK?: number
+  /** Return the top-N feature loadings (PCA only). 0 / undefined = none, which is the default:
+   *  they're only computed for a tile that draws them. */
+  loadings?: number
+  /** uniqID → display label, for naming the loadings. Without it they carry the raw ID. */
+  displayMap?: Record<string, string>
   /** Per-gene scaling before embedding. 'unit' z-scores each gene to unit variance
    *  (correlation PCA — every gene weighted equally). 'none' only mean-centers each gene, so
    *  high-variance genes keep their weight (covariance PCA — matches tools like Spectronaut).
@@ -962,18 +1024,36 @@ export interface ClusterOptions {
   replicates?: 'individual' | 'mean'
 }
 
-/** Pull the four condition values off a standardized/compare row into a ClusterMeta. Numeric
- *  dose/time are coerced to numbers (null when absent); cell/cmpd stay strings. */
+/** Pull the condition values off a standardized/compare row into a ClusterMeta. Numeric dose/time
+ *  are coerced to numbers (null when absent); cell/cmpd and every custom condition stay strings. */
 function clusterMetaOf(row: Record<string, unknown> | object): ClusterMeta {
   const r = row as Record<string, unknown>
   const num = (v: unknown): number | null =>
     v == null || v === '' || !Number.isFinite(Number(v)) ? null : Number(v)
+  const extra = r.extra as Record<string, string> | undefined
   return {
     cell: r.cell != null ? String(r.cell) : '',
     cmpd: r.cmpd != null ? String(r.cmpd) : '',
     dose: num(r.dose),
-    time: num(r.time)
+    time: num(r.time),
+    ...(extra ? { extra: { ...extra } } : null)
   }
+}
+
+/** Colour an embedding by a COMPUTED grouping rather than by a condition. Reserved as a `colorBy`
+ *  value; it can't collide with a condition key (those are the presets or `@slug`). */
+export const CLUSTER_COLOR = 'cluster'
+/** What an embedding may be coloured by: any condition, or the computed clustering. */
+export type ClusterColorBy = ConditionKey | typeof CLUSTER_COLOR
+
+/** A cluster/heatmap meta's value for one condition, read the same way everywhere. Custom
+ *  conditions live in `extra`; the view must never index the meta object with a custom key. */
+export function metaValue(
+  m: { extra?: Record<string, string> },
+  c: ConditionKey
+): string | number | null {
+  if (isCustomCond(c)) return m.extra?.[customSlug(c)] ?? ''
+  return (m as unknown as Record<string, string | number | null>)[c] ?? null
 }
 
 /** Core embedding: given a genes×items log2 matrix (NaN = missing) and per-item
@@ -983,7 +1063,9 @@ function clusterMetaOf(row: Record<string, unknown> | object): ClusterMeta {
 function embedMatrix(
   M: number[][],
   items: Array<{ label: string; group: string; cond: string; meta: ClusterMeta }>,
-  opts: ClusterOptions
+  opts: ClusterOptions,
+  /** display label per row of `M`, for naming the biplot's loading arrows; omit to skip them */
+  geneLabels?: string[]
 ): ClusterData {
   const nItems = items.length
   // Missing-value fraction across the full gene×item matrix — reported so a flat scree can be
@@ -999,16 +1081,18 @@ function embedMatrix(
   // 'complete' (Spectronaut-style): drop any gene with a gap in any item, so PCA runs on fully
   // quantified proteins with no imputation. 'impute' (default): keep every gene (gaps filled with
   // the gene mean below).
-  let Mused =
+  // Both filters below select INDICES rather than rows, so `geneLabels` can be narrowed the same
+  // way and a loading stays attached to the gene it came from.
+  let keep =
     (opts.missing ?? 'complete') === 'complete'
-      ? M.filter((row) => row.every((v) => Number.isFinite(v)))
-      : M
+      ? M.map((_, i) => i).filter((i) => M[i].every((v) => Number.isFinite(v)))
+      : M.map((_, i) => i)
   // Feature selection: keep only the `topVar` most-variable genes (by log2 variance across items).
   // With p ≫ n, the many low-signal genes make the sample covariance nearly isotropic, so every PC
   // gets ~1/(n−1) of the variance and a real group axis is buried; restricting to the most variable
   // proteins (standard proteomics PCA practice) concentrates the variance on the informative axes.
   const topVar = opts.topVar ?? 0
-  if (topVar > 0 && Mused.length > topVar) {
+  if (topVar > 0 && keep.length > topVar) {
     const geneVar = (row: number[]): number => {
       let sum = 0
       let cnt = 0
@@ -1023,11 +1107,14 @@ function embedMatrix(
       for (let s = 0; s < nItems; s++) if (Number.isFinite(row[s])) ss += (row[s] - mean) ** 2
       return ss / (cnt - 1)
     }
-    Mused = Mused.map((row) => ({ row, v: geneVar(row) }))
+    keep = keep
+      .map((i) => ({ i, v: geneVar(M[i]) }))
       .sort((a, b) => b.v - a.v)
       .slice(0, topVar)
-      .map((e) => e.row)
+      .map((e) => e.i)
   }
+  const Mused = keep.map((i) => M[i])
+  const labelsUsed = geneLabels ? keep.map((i) => geneLabels[i]) : undefined
   const nG = Mused.length
   if (nItems < 2 || nG < 1) {
     return {
@@ -1063,12 +1150,15 @@ function embedMatrix(
   }
   // items×genes matrix D = Mᵀ, fed to the chosen embedding.
   const D: number[][] = Array.from({ length: nItems }, (_, s) => Mused.map((geneRow) => geneRow[s]))
-  const { coords, varExplained, scree } = embed2D(D, opts.method)
+  const { coords, varExplained, scree, loadings } = embed2D(D, opts.method)
+  // Colouring by cluster replaces each point's condition-derived group with its cluster label.
+  const cl = opts.colorBy === CLUSTER_COLOR ? clusterGroups(coords, D, items, opts) : null
+  const topLo = topLoadings(loadings, labelsUsed, opts.loadings ?? 0)
   const points: ClusterPoint[] = items.map((it, i) => ({
     x: coords[i][0],
     y: coords[i][1],
     sample: it.label,
-    group: it.group,
+    group: cl ? cl.labels[i] : it.group,
     cond: it.cond,
     meta: it.meta
   }))
@@ -1077,8 +1167,63 @@ function embedMatrix(
     method: opts.method,
     varExplained,
     colorBy: opts.colorBy,
+    ...(cl ? { clusterK: cl.k } : null),
+    ...(topLo ? { loadings: topLo } : null),
     diag: { items: nItems, features: nG, missingPct, scree }
   }
+}
+
+/**
+ * The `n` most influential features in the plotted component plane, longest first.
+ *
+ * "Most influential" is vector length in that plane — a long vector means the feature moves samples
+ * far along the two components being drawn. Values are the loadings as computed, unscaled: the
+ * loadings plot draws them on their own axes, so there is no score range to fit them to.
+ */
+function topLoadings(
+  loadings: Array<[number, number]> | undefined,
+  labels: string[] | undefined,
+  n: number
+): Array<{ label: string; x: number; y: number }> | null {
+  if (!loadings || !labels || n <= 0) return null
+  const mag = (p: [number, number]): number => Math.hypot(p[0], p[1])
+  const top = loadings
+    .map((p, i) => ({ p, label: labels[i] ?? `f${i}` }))
+    .sort((a, b) => mag(b.p) - mag(a.p))
+    .slice(0, n)
+  return top.length ? top.map(({ p, label }) => ({ label, x: p[0], y: p[1] })) : null
+}
+
+/**
+ * Assign each item a cluster label, for `colorBy: 'cluster'`.
+ *
+ * Clusters the embedded coordinates or the full feature matrix (`clusterOn`), cut into a group
+ * count from `clusterCount`. Labels are `Cluster 1..k` in dendrogram leaf order, so the numbering
+ * is stable for a given input rather than depending on item order.
+ */
+function clusterGroups(
+  coords: Array<[number, number]>,
+  D: number[][],
+  items: Array<{ cond: string }>,
+  opts: ClusterOptions
+): { labels: string[]; k: number } {
+  const src: number[][] =
+    (opts.clusterOn ?? 'coords') === 'features' ? D : coords.map((c) => [c[0], c[1]])
+  const n = src.length
+  const method = opts.clusterCount ?? 'fixed'
+  const k =
+    method === 'conditions'
+      ? new Set(items.map((it) => it.cond)).size
+      : method === 'auto'
+        ? suggestClusterCount(src)
+        : (opts.clusterK ?? 3)
+  const kk = Math.max(1, Math.min(Math.round(k), n))
+  const groups = clusterRowGroups(src, kk)
+  const labels = new Array<string>(n).fill('Cluster 1')
+  groups.forEach((g, gi) => {
+    for (const i of g) labels[i] = `Cluster ${gi + 1}`
+  })
+  return { labels, k: groups.length }
 }
 
 /** Per-sample (column) normalization of a genes×samples matrix, in place. NaN = missing (skipped).
@@ -1262,11 +1407,19 @@ export function buildCluster(rows: StandardRow[], opts: ClusterOptions): Cluster
   normalizeSamples(M, sampleMeta.length, opts.center ?? 'none')
   const items = sampleMeta.map((meta) => ({
     label: sampleLabel(meta),
-    group: String((meta as unknown as Record<string, unknown>)[opts.colorBy] ?? ''),
+    // Colouring by cluster has no condition to read — embedMatrix replaces the group with the
+    // computed label once the embedding (which the clustering may run on) exists.
+    group:
+      opts.colorBy === CLUSTER_COLOR
+        ? ''
+        : String(condValue(meta, opts.colorBy as ConditionKey) ?? ''),
     cond: sampleCond(meta),
     meta: clusterMetaOf(meta)
   }))
-  const out = embedMatrix(M, items, opts)
+  // Gene order matches the matrix rows (geneIdx was filled in first-seen order), labelled for the
+  // biplot's arrows.
+  const geneLabels = [...geneIdx.keys()].map((id) => opts.displayMap?.[id] ?? id)
+  const out = embedMatrix(M, items, opts, geneLabels)
   // Record what the log decision was and the raw value range, so the caption can show whether the
   // PCA ran on log or linear values (a wrong auto-guess is a common cause of a flat scree).
   if (out.diag) out.diag.transform = applied === 'none' ? 'linear' : applied
@@ -1277,7 +1430,12 @@ export function buildCluster(rows: StandardRow[], opts: ClusterOptions): Cluster
 /** Condition key for a comparison row: its present context columns joined, e.g.
  *  "E28|10|24". Mirrors omicViz pca_response's `_cond`. */
 function conditionLabel(r: CompareResultRow): string {
-  return VALID_CONDITIONS.map((c) => (r as unknown as Record<string, unknown>)[c])
+  return [
+    ...VALID_CONDITIONS.map((c) => (r as unknown as Record<string, unknown>)[c]),
+    ...Object.keys(r.extra ?? {})
+      .sort()
+      .map((k) => r.extra![k])
+  ]
     .filter((v) => v !== '' && v != null)
     .join('|')
 }
@@ -1290,9 +1448,12 @@ function conditionLabel(r: CompareResultRow): string {
  *  first such dim; the effective choice is returned in `colorBy`. */
 export function buildResponseCluster(rows: CompareResultRow[], opts: ClusterOptions): ClusterData {
   const contextDims = responseColorDims(rows)
-  const colorBy = contextDims.includes(opts.colorBy)
-    ? opts.colorBy
-    : (contextDims[0] ?? opts.colorBy)
+  // 'cluster' is not a context dim but IS a valid choice — keep it rather than snapping to a
+  // condition; embedMatrix fills the groups in.
+  const colorBy: ClusterColorBy =
+    opts.colorBy === CLUSTER_COLOR || contextDims.includes(opts.colorBy as ConditionKey)
+      ? opts.colorBy
+      : (contextDims[0] ?? opts.colorBy)
   const condIdx = new Map<string, number>()
   const condMeta: CompareResultRow[] = []
   const geneIdx = new Map<string, number>()
@@ -1319,7 +1480,7 @@ export function buildResponseCluster(rows: CompareResultRow[], opts: ClusterOpti
     // centroid mode collapses to the point itself (the single-replicate fallback).
     return {
       label,
-      group: String((meta as unknown as Record<string, unknown>)[colorBy] ?? ''),
+      group: colorBy === CLUSTER_COLOR ? '' : String(ctxValue(meta, colorBy as ConditionKey) ?? ''),
       cond: label,
       meta: clusterMetaOf(meta)
     }
@@ -1336,6 +1497,8 @@ export interface SampleMeta {
   dose: number | null
   time: number | null
   rep: number | null
+  /** custom condition slug → value (categorical, so always a string) */
+  extra?: Record<string, string>
 }
 
 export interface HeatmapData {
@@ -1366,14 +1529,35 @@ export interface HeatmapOptions {
 }
 
 function sampleLabel(r: StandardRow): string {
-  const parts = [r.cell, r.cmpd, r.dose ?? '', r.time ?? '', r.rep != null ? `r${r.rep}` : '']
+  // Custom conditions belong in the identity, before the replicate suffix: two samples differing
+  // only in one are different samples, and a shared label would pivot them into one column.
+  const parts = [
+    r.cell,
+    r.cmpd,
+    r.dose ?? '',
+    r.time ?? '',
+    ...Object.keys(r.extra ?? {})
+      .sort()
+      .map((k) => r.extra![k]),
+    r.rep != null ? `r${r.rep}` : ''
+  ]
   return parts.filter((p) => p !== '').join('_')
 }
 
 /** Sample condition identity without the replicate — replicates of one condition
  *  share it, so the cluster can group them into a centroid. */
 function sampleCond(r: StandardRow): string {
-  return [r.cell, r.cmpd, r.dose ?? '', r.time ?? ''].filter((p) => p !== '').join('_')
+  return [
+    r.cell,
+    r.cmpd,
+    r.dose ?? '',
+    r.time ?? '',
+    ...Object.keys(r.extra ?? {})
+      .sort()
+      .map((k) => r.extra![k])
+  ]
+    .filter((p) => p !== '')
+    .join('_')
 }
 
 /** Pivot the standardized long table into a genes × samples matrix for a heatmap. */
@@ -1391,7 +1575,14 @@ export function buildHeatmap(rows: StandardRow[], opts: HeatmapOptions = {}): He
     if (!sampleSeen.has(s)) {
       sampleSeen.add(s)
       sampleOrder.push(s)
-      sampleMeta.set(s, { cell: r.cell, cmpd: r.cmpd, dose: r.dose, time: r.time, rep: r.rep })
+      sampleMeta.set(s, {
+        cell: r.cell,
+        cmpd: r.cmpd,
+        dose: r.dose,
+        time: r.time,
+        rep: r.rep,
+        ...(r.extra ? { extra: { ...r.extra } } : null)
+      })
     }
     if (!geneSeen.has(r.uniqID)) {
       geneSeen.add(r.uniqID)
@@ -1410,16 +1601,23 @@ export function buildHeatmap(rows: StandardRow[], opts: HeatmapOptions = {}): He
     a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' })
   const numCmp = (a: number | null, b: number | null): number =>
     a == null && b == null ? 0 : a == null ? 1 : b == null ? -1 : a - b
+  // Custom conditions sort after the presets, in slug order, so the hierarchy stays
+  // cell → cmpd → dose → time → (customs) → rep.
+  const customSlugs = [
+    ...new Set(sampleOrder.flatMap((s) => Object.keys(sampleMeta.get(s)?.extra ?? {})))
+  ].sort()
   sampleOrder.sort((a, b) => {
     const ma = sampleMeta.get(a) as SampleMeta
     const mb = sampleMeta.get(b) as SampleMeta
-    return (
-      strCmp(ma.cell, mb.cell) ||
-      strCmp(ma.cmpd, mb.cmpd) ||
-      numCmp(ma.dose, mb.dose) ||
-      numCmp(ma.time, mb.time) ||
-      numCmp(ma.rep, mb.rep)
-    )
+    let c = strCmp(ma.cell, mb.cell) || strCmp(ma.cmpd, mb.cmpd)
+    if (c !== 0) return c
+    c = numCmp(ma.dose, mb.dose) || numCmp(ma.time, mb.time)
+    if (c !== 0) return c
+    for (const k of customSlugs) {
+      c = strCmp(ma.extra?.[k] ?? '', mb.extra?.[k] ?? '')
+      if (c !== 0) return c
+    }
+    return numCmp(ma.rep, mb.rep)
   })
 
   // The intensity heatmap shows the full proteome — no top-N cap (that's the FC heatmap's
@@ -1480,10 +1678,10 @@ export function buildHeatmap(rows: StandardRow[], opts: HeatmapOptions = {}): He
   )
   // Conditions that actually carry values become annotation tracks (cell/cmpd non-empty,
   // dose/time non-null across the samples); empty conditions are skipped.
-  const conds = VALID_CONDITIONS.filter((c) =>
-    c === 'cell' || c === 'cmpd'
-      ? samples.some((m) => m[c] !== '')
-      : samples.some((m) => m[c] != null)
+  const conds = condsIn(samples).filter((c) =>
+    isNumericCond(c)
+      ? samples.some((m) => metaValue(m, c) != null)
+      : samples.some((m) => metaValue(m, c) !== '' && metaValue(m, c) != null)
   )
   return { z, x: sampleOrder, y, samples, conds }
 }
@@ -1527,11 +1725,11 @@ export function buildFcHeatmap(
   // one comparison column from another alongside the `comparison` label.
   const consumed = new Set<string>()
   for (const r of rows) for (const p of r.cmp_cond.split(':')) if (p) consumed.add(p)
-  const ctxDims = VALID_CONDITIONS.filter(
-    (c) => !consumed.has(c) && rows.some((r) => r[c] != null && r[c] !== '')
+  const ctxDims = condsIn(rows).filter(
+    (c) => !consumed.has(c) && rows.some((r) => ctxValue(r, c) != null && ctxValue(r, c) !== '')
   )
   const colLabel = (r: CompareResultRow): string =>
-    [r.comparison, ...ctxDims.map((c) => `${c}=${r[c]}`)].join(' · ')
+    [r.comparison, ...ctxDims.map((c) => `${condLabel(c)}=${ctxValue(r, c)}`)].join(' · ')
 
   const colOrder: string[] = []
   const colSeen = new Set<string>()
@@ -1685,7 +1883,7 @@ function qcLabelCmp(a: string, b: string): number {
 export function buildQc(std: StandardizeResult, metric: QcMetric): QcData {
   const conds = std.activeConditions
   const parts = (r: StandardRow): string[] =>
-    conds.map((c) => String(r[c] ?? '')).filter((x) => x !== '')
+    conds.map((c) => String(condValue(r, c) ?? '')).filter((x) => x !== '')
   const sampleLabel = (r: StandardRow): string => {
     const p = parts(r)
     if (r.rep != null) p.push(`r${r.rep}`)
@@ -1783,7 +1981,7 @@ export function buildSampleCorr(
 ): CorrData {
   const conds = std.activeConditions
   const sampleLabel = (r: StandardRow): string => {
-    const p = conds.map((c) => String(r[c] ?? '')).filter((x) => x !== '')
+    const p = conds.map((c) => String(condValue(r, c) ?? '')).filter((x) => x !== '')
     if (r.rep != null) p.push(`r${r.rep}`)
     return p.join(' · ') || 'sample'
   }
@@ -1864,8 +2062,25 @@ export function buildSampleCorr(
 
 // ── enrichment (over-representation analysis) ────────────────────────────────────
 
-/** Which annotation term set to test. */
-export type EnrichSource = 'go' | 'kegg'
+/** Which annotation term set to test. KEGG and COG each offer two levels — the specific one
+ *  (pathway / orthologous group) and the broad one it rolls up into (BRITE top level / functional
+ *  category). Specific sets resolve finer biology but are small, so they need a deeper dataset to
+ *  clear an FDR cut; broad sets almost always have the counts but say less. The plain `kegg` and
+ *  `cog` ids keep their original meaning so saved projects still open. */
+export type EnrichSource =
+  'go' | 'kegg' | 'kegg_category' | 'cog' | 'cog_group' | 'msigdb' | 'reactome'
+/** Display name per source, for axis titles, selectors and unmet-requirement messages. */
+export const ENRICH_SOURCE_LABEL: Record<EnrichSource, string> = {
+  // Named for the source alone: a source's levels are its grouping (KEGG category → pathway, COG
+  // area → category), not separate choices.
+  go: 'GO',
+  kegg: 'KEGG',
+  kegg_category: 'KEGG category',
+  cog: 'COG',
+  cog_group: 'COG group',
+  msigdb: 'MSigDB',
+  reactome: 'Reactome'
+}
 /** Enrichment method. `ora` is over-representation (hypergeometric on the significant set);
  *  `gsea` is ranked gene-set enrichment (weighted running-sum over the log2FC-ranked list with
  *  gene-label permutation). */
@@ -1876,19 +2091,112 @@ export type EnrichMethod = 'ora' | 'gsea'
  *  older projects still enrich. */
 export const ENRICH_COLS: Record<EnrichSource, string[]> = {
   go: ['GO_BP', 'GO_MF', 'GO_CC', 'GO'],
-  kegg: ['keggPathway']
+  kegg: ['keggPathway'],
+  // Same column as `kegg`: a pathway's BRITE top level is a lookup, not a column of its own, so
+  // enrichTermsOf maps the names up (see `categories`).
+  kegg_category: ['keggPathway'],
+  cog: ['cogCategory'],
+  cog_group: ['COG'],
+  msigdb: ['msigdbSet'],
+  reactome: ['reactomePathway']
 }
-/** A gene's distinct terms for a source, pooled over that source's columns. */
+/** A gene's distinct terms for a source, pooled over that source's columns. `categories` is the
+ *  pathway → BRITE top-level map, needed only by `kegg_category`; without it that source has no
+ *  terms at all. */
 export function enrichTermsOf(
   ann: Record<string, Record<string, string>>,
   source: EnrichSource,
-  uid: string
+  uid: string,
+  categories?: Record<string, string>
 ): string[] {
   const rec = ann[uid]
   if (!rec) return []
   const out = new Set<string>()
   for (const col of ENRICH_COLS[source]) for (const t of splitTerms(rec[col])) out.add(t)
-  return [...out]
+  if (source !== 'kegg_category') return [...out]
+  const cats = new Set<string>()
+  for (const t of out) {
+    const c = categories?.[t]
+    if (c) cats.add(c)
+  }
+  return [...cats]
+}
+
+/** The order sources are fallen back through when a tile's chosen one isn't in the data, and the
+ *  order selectors list them in — also the sources OFFERED: one not listed is never picked or shown.
+ *  GO first: UniProt carries it for any organism, so it is the most likely to be there. Then the
+ *  pathway sets by reach — KEGG covers prokaryotes too, Reactome is mostly model eukaryotes,
+ *  MSigDB's hallmarks are human / mouse only. Then COG's functional categories, which nearly always
+ *  clear an FDR cut but say least.
+ *
+ *  Left out, though the engine still reads them: COG group (one set per orthologous group — too
+ *  fine to test or browse by) and KEGG category. A KEGG category, like a COG area, is a GROUPING of
+ *  terms, not a term set: it colours and groups KEGG pathways / COG categories (see termGroups). */
+export const ENRICH_FALLBACK: EnrichSource[] = ['go', 'kegg', 'reactome', 'msigdb', 'cog']
+
+/** How the offered sources are presented, as the import groups the annotations: what a gene DOES
+ *  (Function) and what it takes part in (Pathway). The enrichment terms dropdown lists them under
+ *  these headings; the gene selector makes them its Function and Pathway tabs. */
+export const ENRICH_GROUPS: { label: 'Function' | 'Pathway'; sources: EnrichSource[] }[] = [
+  { label: 'Function', sources: ['go', 'cog', 'msigdb'] },
+  { label: 'Pathway', sources: ['kegg', 'reactome'] }
+]
+
+/** The source a tile actually tests: its saved choice when the genes carry it, else the first of
+ *  ENRICH_FALLBACK they do; null when they carry none. `present` is enrichSourcesPresent's list. */
+export function resolveEnrichSource(
+  saved: EnrichSource | undefined,
+  present: EnrichSource[]
+): EnrichSource | null {
+  if (saved && present.includes(saved)) return saved
+  return ENRICH_FALLBACK.find((s) => present.includes(s)) ?? null
+}
+
+/** COG functional category → the area NCBI files it under, from the data: the annotation fetch
+ *  writes `cogArea` aligned with `cogCategory` (one area per category, '; '-joined in the same
+ *  order). Empty for data fetched before that column existed. */
+export function cogAreasOf(ann: Record<string, Record<string, string>>): Record<string, string> {
+  const areaOf: Record<string, string> = {}
+  for (const uid in ann) {
+    const rec = ann[uid]
+    if (!rec.cogCategory || !rec.cogArea) continue
+    const cats = rec.cogCategory.split(';').map((t) => t.trim())
+    const areas = rec.cogArea.split(';').map((t) => t.trim())
+    cats.forEach((c, i) => {
+      if (c && areas[i] && !(c in areaOf)) areaOf[c] = areas[i]
+    })
+  }
+  return areaOf
+}
+
+/** The sources these genes actually carry terms for, in ENRICH_FALLBACK order — so a selector can
+ *  offer only what the data can be tested against instead of every source that exists. Checks cells
+ *  directly rather than going through enrichTermsOf, since an ABSENT source costs a full scan. */
+export function enrichSourcesPresent(
+  ann: Record<string, Record<string, string>>,
+  categories?: Record<string, string>
+): EnrichSource[] {
+  const all = Object.keys(ENRICH_COLS) as EnrichSource[]
+  const found = new Set<EnrichSource>()
+  for (const uid in ann) {
+    const rec = ann[uid]
+    for (const s of all) {
+      if (found.has(s)) continue
+      for (const col of ENRICH_COLS[s]) {
+        const raw = rec[col]
+        if (!raw) continue
+        // A pathway only counts for the category level if it maps up to one.
+        const hit =
+          s === 'kegg_category' ? splitTerms(raw).some((t) => categories?.[t]) : !!raw.trim()
+        if (hit) {
+          found.add(s)
+          break
+        }
+      }
+    }
+    if (found.size === all.length) break
+  }
+  return ENRICH_FALLBACK.filter((s) => found.has(s))
 }
 
 export interface EnrichTerm {
@@ -1918,7 +2226,8 @@ export interface EnrichTerm {
   dist?: number[]
   /** GSEA: the ranking metric (log2FC) of the leading-edge genes, aligned to `genes` */
   leadingDist?: number[]
-  /** KEGG top-level category (BRITE) of this pathway, when the source is KEGG and it's known */
+  /** the group this term is coloured by — a KEGG pathway's category, a COG category's area —
+   *  when the source has one and it's known (EnrichOptions.termGroups) */
   category?: string
 }
 
@@ -1951,8 +2260,12 @@ export interface EnrichOptions {
   annotationMap: Record<string, Record<string, string>>
   /** uniqID → display name (for the per-term gene lists) */
   displayMap?: Record<string, string>
-  /** KEGG source only: pathway name → top-level category, for grouping/colouring terms */
+  /** KEGG pathway name → BRITE top-level category: the term set for `kegg_category` (no longer
+   *  offered, kept so an old tile still builds). */
   keggCategories?: Record<string, string>
+  /** term → the group it's coloured and grouped by: a KEGG pathway's category, a COG category's
+   *  area (cogAreasOf). Unset for a source without such a grouping. */
+  termGroups?: Record<string, string>
   /** ORA: minimum query-gene hits for a term to be tested (default 2) */
   minCount?: number
   /** GSEA: minimum / maximum genes a set must have in the data (default 5 / 500) */
@@ -2019,7 +2332,8 @@ export function buildEnrichment(rows: CompareResultRow[], opts: EnrichOptions): 
 function runOra(rows: CompareResultRow[], opts: EnrichOptions): EnrichData {
   const ann = opts.annotationMap ?? {}
   const dm = opts.displayMap ?? {}
-  const termsOf = (uid: string): string[] => enrichTermsOf(ann, opts.source, uid)
+  const termsOf = (uid: string): string[] =>
+    enrichTermsOf(ann, opts.source, uid, opts.keggCategories)
   const push = (m: Map<string, string[]>, t: string, uid: string): void => {
     const arr = m.get(t)
     if (arr) arr.push(uid)
@@ -2073,7 +2387,7 @@ function runOra(rows: CompareResultRow[], opts: EnrichOptions): EnrichData {
       pValue: pvals[i],
       pAdjust: padj[i],
       genes: e.genes.map((uid) => dm[uid] ?? uid).sort(),
-      category: opts.keggCategories?.[e.term]
+      category: opts.termGroups?.[e.term]
     }))
     terms.sort((a, b) => a.pAdjust - b.pAdjust || b.count - a.count)
     return { terms: terms.slice(0, limit), total: terms.length }
@@ -2165,7 +2479,8 @@ function runningEs(
 function runGsea(rows: CompareResultRow[], opts: EnrichOptions): EnrichData {
   const ann = opts.annotationMap ?? {}
   const dm = opts.displayMap ?? {}
-  const termsOf = (uid: string): string[] => enrichTermsOf(ann, opts.source, uid)
+  const termsOf = (uid: string): string[] =>
+    enrichTermsOf(ann, opts.source, uid, opts.keggCategories)
   const minSet = Math.max(2, opts.minSet ?? 5)
   const maxSet = opts.maxSet ?? 500
   const nPerm = Math.max(100, opts.permutations ?? 1000)
@@ -2317,7 +2632,7 @@ function runGsea(rows: CompareResultRow[], opts: EnrichOptions): EnrichData {
       nes: g.nes,
       dist: g.dist,
       leadingDist: g.leadDist,
-      category: opts.keggCategories?.[g.term]
+      category: opts.termGroups?.[g.term]
     }))
     terms.sort((a, b) => a.pAdjust - b.pAdjust || Math.abs(b.nes ?? 0) - Math.abs(a.nes ?? 0))
     return { terms: terms.slice(0, limit), total: terms.length }

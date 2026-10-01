@@ -25,7 +25,12 @@ import {
   valEq,
   type RawStatRow
 } from './compare'
-import { aggregatePerGene, DEFAULT_THRESHOLD, studentTTwoSided, type ThresholdConfig } from './stats'
+import {
+  aggregatePerGene,
+  DEFAULT_THRESHOLD,
+  studentTTwoSided,
+  type ThresholdConfig
+} from './stats'
 import type { CondSelector, ConditionKey, Pair, StandardRow } from './types'
 
 export interface TwoWayFactor {
@@ -83,15 +88,17 @@ function applyInclusion(input: TwoWayInput): StandardRow[] {
 
 /** Enumerate every 2×2 the design yields, and which context conditions ended up not matched on
  *  some cell because that cell is invariant on them (reported so the preview can say so). */
-function twoWayCells(input: TwoWayInput): { cells: TwoWayCell[]; context: ConditionKey[]; fixed: ConditionKey[] } {
+function twoWayCells(input: TwoWayInput): {
+  cells: TwoWayCell[]
+  context: ConditionKey[]
+  fixed: ConditionKey[]
+} {
   const rows = applyInclusion(input)
   const { factors, activeConditions } = input
   const [f1, f2] = factors
   const cond1 = f1.condition
   const cond2 = f2.condition
-  const ctxDims = activeConditions.filter(
-    (c) => c !== cond1 && c !== cond2 && condPresent(rows, c)
-  )
+  const ctxDims = activeConditions.filter((c) => c !== cond1 && c !== cond2 && condPresent(rows, c))
   const fixed = new Set<ConditionKey>()
   const cells: TwoWayCell[] = []
   // The context dims a set of rows actually varies on — a cell is matched only on those.
@@ -108,10 +115,15 @@ function twoWayCells(input: TwoWayInput): { cells: TwoWayCell[]; context: Condit
       const all00 = rows.filter((r) => is(r, cond1, d1) && is(r, cond2, d2))
       const dims = [all11, all10, all01, all00].map(varying)
       for (const cellRows of [all10, all01, all00])
-        for (const d of ctxDims) if (!varying(cellRows).includes(d) && dims[0].includes(d)) fixed.add(d)
+        for (const d of ctxDims)
+          if (!varying(cellRows).includes(d) && dims[0].includes(d)) fixed.add(d)
       // Contexts are driven by the c11 cell (the "treated × level 1" corner), grouped on every
       // context dim it varies on; each other cell is sliced to that context on the dims IT varies on.
-      const slice = (cellRows: StandardRow[], onDims: ConditionKey[], rep: StandardRow): StandardRow[] =>
+      const slice = (
+        cellRows: StandardRow[],
+        onDims: ConditionKey[],
+        rep: StandardRow
+      ): StandardRow[] =>
         cellRows.filter((r) =>
           onDims.every((d) => valEq(condValue(r, d), condValue(rep, d) as string | number))
         )
@@ -128,7 +140,9 @@ function twoWayCells(input: TwoWayInput): { cells: TwoWayCell[]; context: Condit
           c10,
           c01,
           c00,
-          context: ctxDims.map((d) => [d, condValue(rep, d)] as [ConditionKey, string | number | null])
+          context: ctxDims.map(
+            (d) => [d, condValue(rep, d)] as [ConditionKey, string | number | null]
+          )
         })
       }
     }
@@ -269,7 +283,9 @@ export function previewTwoWay(input: TwoWayInput): TwoWayPreview {
   })
   const warnings: string[] = []
   if (tableRows.length === 0)
-    warnings.push('No context has a complete 2×2 — some cell (factor-level combination) has no rows.')
+    warnings.push(
+      'No context has a complete 2×2 — some cell (factor-level combination) has no rows.'
+    )
   return {
     factors: `${f1.condition} × ${f2.condition}`,
     context,

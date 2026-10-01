@@ -62,6 +62,11 @@ interface Net {
   nodes: NetNode[]
   edges: { a: string; b: string; score: number }[]
 }
+/** Query genes are sent at this multiple of the draw cap (bounded by SEND_MAX), since only the
+ *  connected ones can be drawn — see `sendLimit`. */
+const SEND_MULT = 4
+const SEND_MAX = 400
+
 /** Precomputed geometry/adjacency for the imperative hover neighbour-highlight (see onGraphMount). */
 interface HoverInfo {
   /** trace index of the node markers, and of the edge traces */
@@ -142,13 +147,18 @@ export function StringView({
   species: number
   requiredScore: number
   maxGenes: number
-  /** also pull in first-shell interactors of the query set (up to maxGenes of them) */
+  /** also pull in first-shell interactors of the query set; they count toward `maxGenes` */
   addInteractors?: boolean
   title?: string
 }) {
   const mode = useUiTheme((s) => s.mode)
 
-  // Significant genes, one per feature (max |log₂FC|), strongest first, capped to maxGenes.
+  // How many genes are SENT to STRING. `maxGenes` caps what's DRAWN, and only connected nodes are
+  // (a lone dot says nothing), so sending exactly that many would draw far fewer — send a multiple
+  // and let the draw cap decide, bounded so a huge significant set can't blow up the query.
+  const sendLimit = Math.min(SEND_MAX, Math.max(maxGenes * SEND_MULT, maxGenes))
+
+  // Significant genes, one per feature (max |log₂FC|), strongest first, capped to `sendLimit`.
   const genes = useMemo<Gene[]>(() => {
     const dm = displayMap ?? {}
     const am = annotationMap ?? {}
@@ -166,8 +176,8 @@ export function StringView({
         stringId: (am[uniqID]?.stringId ?? '').trim() || undefined
       }))
       .sort((a, b) => Math.abs(b.log2FC) - Math.abs(a.log2FC))
-      .slice(0, Math.max(2, maxGenes))
-  }, [rows, displayMap, annotationMap, maxGenes])
+      .slice(0, Math.max(2, sendLimit))
+  }, [rows, displayMap, annotationMap, sendLimit])
 
   const sendIds = useMemo(() => genes.map((g) => g.stringId || g.name), [genes])
   // Stable key so the fetch effect only re-runs when the query (or interactor setting) changes.
@@ -210,6 +220,8 @@ export function StringView({
       genes.filter((g) => g.stringId).map((g) => [g.stringId as string, g.name])
     )
     window.api
+      // At most `maxGenes` interactors are ever useful: they compete with the query genes for the
+      // same draw budget, so more would only be trimmed below.
       .fetchStringNetwork(sendIds, species, requiredScore, addInteractors ? maxGenes : 0)
       .then((res) => {
         const nodes: NetNode[] = res.nodes.map((n) => ({
@@ -253,13 +265,35 @@ export function StringView({
       degAll[a]++
       degAll[b]++
     }
-    // Hide singletons; re-index to the kept set.
-    const keep = net.nodes.map((_, i) => i).filter((i) => degAll[i] > 0)
+    // What's DRAWN: singletons never are (an unconnected dot says nothing), and `maxGenes` is the
+    // budget for the rest — query genes first (the data being explored), then any first-shell
+    // interactors, each by how connected it is. Interactors count toward the SAME budget, so the
+    // setting reads as "at most N nodes" whether or not they're on.
+    const ranked = net.nodes
+      .map((_, i) => i)
+      .filter((i) => degAll[i] > 0)
+      .sort((a, b) => {
+        const q = Number(net.nodes[b].isQuery) - Number(net.nodes[a].isQuery)
+        return q !== 0 ? q : degAll[b] - degAll[a]
+      })
+      .slice(0, Math.max(2, maxGenes))
+    // Trimming can orphan a kept node (all its partners went): re-count degrees over the surviving
+    // edges and drop whatever is now isolated, so the drawing stays singleton-free.
+    const inBudget = new Set(ranked)
+    const budgetEdges = eAll.filter((e) => inBudget.has(e.a) && inBudget.has(e.b))
+    const degKept = new Array(net.nodes.length).fill(0)
+    for (const e of budgetEdges) {
+      degKept[e.a]++
+      degKept[e.b]++
+    }
+    // Original node order (not the ranking) keeps the layout stable across re-renders.
+    const keep = net.nodes.map((_, i) => i).filter((i) => inBudget.has(i) && degKept[i] > 0)
     const newIdx = new Map(keep.map((gi, ni) => [gi, ni]))
     const vis = keep.map((i) => net.nodes[i])
-    const degree = keep.map((i) => degAll[i])
-    const eIdx: [number, number][] = eAll.map((e) => [newIdx.get(e.a)!, newIdx.get(e.b)!])
-    const eScore = eAll.map((e) => e.score)
+    const degree = keep.map((i) => degKept[i])
+    const drawn = budgetEdges.filter((e) => newIdx.has(e.a) && newIdx.has(e.b))
+    const eIdx: [number, number][] = drawn.map((e) => [newIdx.get(e.a)!, newIdx.get(e.b)!])
+    const eScore = drawn.map((e) => e.score)
 
     // Territories from Markov clustering of the interaction scores.
     const wEdges = eIdx.map(([a, b], k) => ({ a, b, w: eScore[k] ?? 0 }))
@@ -600,7 +634,7 @@ export function StringView({
       labelColor: p.textMuted,
       hover
     }
-  }, [net, mode, title, genes, annotationMap])
+  }, [net, mode, title, genes, annotationMap, maxGenes])
 
   // Hover a node → highlight it + its neighbours + the connecting edges. Done imperatively (restyle
   // + overlay traces) so it never re-renders/resets the pan-zoom. Dims the base nodes/edges and draws

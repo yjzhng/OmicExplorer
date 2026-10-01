@@ -147,6 +147,25 @@ P99999,1024.7,980.2,1102.5,1043.1`}</CodeBlock>
 A1,WT,Amk,10,1
 A2,WT,Amk,10,2
 B1,clpP,Amk,5,1`}</CodeBlock>
+        <H>Your own conditions</H>
+        <P>
+          Any <B>further column</B> becomes a condition of its own — <Code>medium</Code>,{' '}
+          <Code>batch</Code>, <Code>timepoint_label</Code>, whatever the experiment varies. It can
+          group, facet, colour and be compared exactly like <Code>cell</Code> and <Code>cmpd</Code>.
+          Names are lowercase letters, digits and <Code>_</Code>.
+        </P>
+        <P>
+          Such a condition is always <B>categorical</B>: its values are labels with no order, so it
+          is never offered as a dose/time response axis, nor as a light→dark shade or low→high arrow
+          in the cluster plot. Use <Code>dose</Code> or <Code>time</Code> for anything measured on a
+          scale.
+        </P>
+        <P>
+          A column whose value is <B>different on every sample</B> (a note, an acquisition
+          timestamp) is not a factor, so it is left alone rather than turned into a condition with
+          one level per sample. In the interactive import you add these yourself with{' '}
+          <Code>+ condition</Code> on the Conditions step, which is exact rather than guessed.
+        </P>
         <P>
           Only samples listed here are kept — rows in the data file with no matching sample are
           dropped.

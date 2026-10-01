@@ -7,6 +7,7 @@
 import { useMemo, type CSSProperties, type ReactNode } from 'react'
 
 import { previewContrastPair, type ConditionKey, type PairFix } from '../engine'
+import { OnOffSwitch } from '../ui/ToggleSwitch'
 import { StatusNote } from '../ui/StatusNote'
 import { UI } from '../ui/theme'
 import { isPairable, toContrastSide } from './contrastPair'
@@ -149,10 +150,10 @@ export function PairContrastBody({
     return (
       <div key={c} style={S.condRow}>
         <div style={S.condHead}>
-          <button
-            role="switch"
-            aria-checked={on}
-            aria-label={`Match on ${c}`}
+          <OnOffSwitch
+            on={on}
+            onChange={() => onToggle(c)}
+            label={`Match on ${c}`}
             disabled={!matchable}
             title={
               !matchable
@@ -161,17 +162,7 @@ export function PairContrastBody({
                   ? 'Matched like-for-like — switch off to fix one slice per dataset'
                   : 'Switch on to match like-for-like'
             }
-            onClick={() => onToggle(c)}
-            style={{
-              ...S.switchTrack,
-              background: on ? UI.accent : UI.border,
-              justifyContent: on ? 'flex-end' : 'flex-start',
-              opacity: matchable ? 1 : 0.35,
-              cursor: matchable ? 'pointer' : 'not-allowed'
-            }}
-          >
-            <span style={S.switchKnob} />
-          </button>
+          />
           <span style={{ ...S.condName, ...(on ? S.condNameOn : null) }}>{c}</span>
         </div>
         {on ? (

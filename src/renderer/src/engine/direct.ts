@@ -17,7 +17,7 @@ import {
   type RawStatRow
 } from './compare'
 import { DEFAULT_THRESHOLD, welchTTest, type ThresholdConfig } from './stats'
-import { VALID_CONDITIONS } from './types'
+import { orderConds } from './types'
 import type {
   CompareInput,
   CompareResultRow,
@@ -209,7 +209,9 @@ export function classifyConditions(
   den: CondSelector,
   active: ConditionKey[]
 ): ConditionRoles {
-  const ordered = VALID_CONDITIONS.filter((c) => active.includes(c))
+  // Hierarchy order (cell → cmpd → dose → time, then the custom conditions): which condition is
+  // judged first decides which one reads as the comparison axis when several could.
+  const ordered = orderConds(active)
   const candidate = new Set(
     ordered.filter((c) => pinned(num, c) && pinned(den, c) && !sameSet(num[c], den[c]))
   )

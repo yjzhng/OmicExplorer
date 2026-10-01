@@ -18,11 +18,13 @@ import {
   CATEGORIES,
   hasSourceHandle,
   NODE_SPECS,
-  plotLabel
+  plotLabel,
+  safeTileName
 } from './registry'
 import { unmetRequirement } from './requirements'
 import { useUpstreamFacts } from './useUpstreamFacts'
 import { useGraph } from './store'
+import { RunControl, StatusDot, useStepStatus } from './StatusDot'
 import { TilePicker } from './TilePicker'
 import { isCompareConfigured, isStep, normalizeCompareConfig, resolveLoadMode } from './types'
 import { VALID_CONDITIONS } from '../engine'
@@ -32,120 +34,29 @@ import type {
   NodeData,
   NodeKind,
   PlaceholderData,
-  PlotGroupConfig,
-  StepStatus
+  PlotGroupConfig
 } from './types'
 
 /** Tile names may only hold letters, digits, space, `.`, `_` and `-`: they lead the file name of
  *  every plot/table downloaded from the tile, so anything else is dropped as it's typed. */
-const safeTileName = (v: string): string => v.replace(/[^A-Za-z0-9 ._-]+/g, '')
-
-// One-time keyframes for the running-status pulse (self-contained; canvas nodes don't share
-// the dashboard stylesheet).
-if (typeof document !== 'undefined' && !document.getElementById('oe-status-kf')) {
-  const el = document.createElement('style')
-  el.id = 'oe-status-kf'
-  el.textContent = '@keyframes oe-status-pulse{0%,100%{opacity:1}50%{opacity:.3}}'
-  document.head.appendChild(el)
-}
-
-interface StatusInfo {
-  color: string
-  label: string
-  pulse: boolean
-}
-
-/** Status shown for a runnable step from its run lifecycle. */
-function runStatusInfo(status: StepStatus): StatusInfo {
-  switch (status) {
-    case 'running':
-      return { color: '#e2b93b', label: 'Running…', pulse: true }
-    case 'done':
-      return { color: '#3fae5a', label: 'Completed', pulse: false }
-    case 'error':
-      return { color: '#e5484d', label: 'Error', pulse: false }
-    default:
-      return { color: UI.textMuted, label: 'Not run', pulse: false }
-  }
-}
-
-/** A persistent top-right status dot: run state for runnable tiles, upstream-readiness for
- *  live tiles (plots), so every tile shows its state at a glance. */
-function StatusDot({ color, label, pulse }: StatusInfo) {
-  return (
-    <span
-      role="img"
-      aria-label={label}
-      title={label}
-      style={{
-        width: 9,
-        height: 9,
-        borderRadius: '50%',
-        background: color,
-        flexShrink: 0,
-        ...(pulse ? { animation: 'oe-status-pulse 1.1s ease-in-out infinite' } : {})
-      }}
-    />
-  )
-}
-
-/** Text-chip run control: Run (idle) · Stop (running) · Re-run (done) · Retry (error).
- *  When `gate` is set the step is blocked (e.g. Interactive samples not set up) — the chip is
- *  disabled and explains why. */
-function RunControl({
-  status,
-  accent,
-  onRun,
-  onStop,
-  gate
-}: {
-  status: StepStatus
-  accent: string
-  onRun: () => void
-  onStop: () => void
-  gate?: string | null
-}) {
-  const chip = (label: string, color: string, fn: () => void) => (
-    <button
-      className="nodrag"
-      onClick={(e) => {
-        e.stopPropagation()
-        fn()
-      }}
-      style={{ ...runChip, color, borderColor: color }}
-    >
-      {label}
-    </button>
-  )
-  if (gate) {
-    return (
-      <span
-        className="nodrag"
-        title={gate}
-        style={{ ...runChip, color: UI.textMuted, borderColor: UI.border, cursor: 'not-allowed' }}
-      >
-        Set up first
-      </span>
-    )
-  }
-  if (status === 'running') return chip('Stop', '#e2b93b', onStop)
-  if (status === 'done') return chip('Re-run', accent, onRun)
-  if (status === 'error') return chip('Retry', '#e15759', onRun)
-  return chip('Run', accent, onRun)
-}
 
 /** A group tile's body: a stack of subcards, one per child plot. Clicking a subcard
  *  opens that child's config (via `selectChildCard`) and highlights it. */
 function GroupBody({
   id,
   config,
-  accent
+  accent,
+  activeChild
 }: {
   id: string
   config: PlotGroupConfig
   accent: string
+  /** the highlighted subcard; defaults to the store's `selectedSub` (the form view passes the one
+   *  it resolved, which falls back to the first plot when nothing is picked yet) */
+  activeChild?: string
 }) {
-  const selectedSub = useGraph((s) => s.selectedSub)
+  const storeSub = useGraph((s) => s.selectedSub)
+  const selectedSub = activeChild ?? storeSub
   const selectChildCard = useGraph((s) => s.selectChildCard)
   const moveGroupChild = useGraph((s) => s.moveGroupChild)
   const addGroupChildren = useGraph((s) => s.addGroupChildren)
@@ -170,7 +81,11 @@ function GroupBody({
     <div style={subList}>
       {/* Add / remove plots right on the tile, above the subcard stack. nodrag/nowheel so the
           menu's interactions never move the node or zoom the canvas. */}
-      <div className="nodrag nowheel" onClick={(e) => e.stopPropagation()} style={{ display: 'flex' }}>
+      <div
+        className="nodrag nowheel"
+        onClick={(e) => e.stopPropagation()}
+        style={{ display: 'flex' }}
+      >
         <AddPlotMenu
           children={config.children}
           upstreamKind={upstreamKind}
@@ -245,7 +160,6 @@ export function GraphNode({ id, data, selected: rfSelected }: NodeProps<Node<Nod
   const category = categoryOf(data.kind)
   const accent = accentOf(category)
   const selectedId = useGraph((s) => s.selectedId)
-  const result = useGraph((s) => s.results[id])
   const runNode = useGraph((s) => s.runNode)
   const cancelNode = useGraph((s) => s.cancelNode)
   // Gate: a Standardize whose upstream is an Interactive Load that hasn't been converted yet is
@@ -272,32 +186,7 @@ export function GraphNode({ id, data, selected: rfSelected }: NodeProps<Node<Nod
   const [hovered, setHovered] = useState(false)
   const sideColor = selected ? accent : UI.border
 
-  // Status dot: runnable tiles show their run lifecycle; live tiles (plots) are green only when
-  // the upstream has a result AND every requirement holds (kind + data shape — see
-  // requirements.ts), else grey with the reason. A group is green when all its plots are. Load
-  // (no upstream) reads as ready.
-  const plotUpId = useGraph((s) => (spec.hasRun ? undefined : s.upstreamId(id)))
-  const plotFacts = useUpstreamFacts(plotUpId)
-  const plotBlock = ((): string | null => {
-    if (spec.hasRun) return null
-    if (data.kind === 'load') return null
-    if (!plotUpId) return 'Waiting for data'
-    const kinds: { kind: NodeKind; config: unknown }[] =
-      data.kind === 'plotGroup'
-        ? (data.config as PlotGroupConfig).children.map((c) => ({ kind: c.kind, config: c.config }))
-        : [{ kind: data.kind, config: data.config }]
-    for (const k of kinds) {
-      const why = unmetRequirement(k.kind, k.config, plotFacts)
-      if (why) return kinds.length > 1 ? `${plotLabel(k.kind, k.config)}: ${why}` : why
-    }
-    if (!plotFacts.result) return 'Waiting for data'
-    return null
-  })()
-  const statusInfo: StatusInfo = spec.hasRun
-    ? runStatusInfo(data.status)
-    : plotBlock
-      ? { color: UI.textMuted, label: plotBlock, pulse: false }
-      : { color: '#3fae5a', label: 'Ready', pulse: false }
+  const statusInfo = useStepStatus(id, data)
 
   // Inline rename: double-click the title to edit; Enter/blur commits, Escape cancels.
   const renameNode = useGraph((s) => s.renameNode)
@@ -355,7 +244,11 @@ export function GraphNode({ id, data, selected: rfSelected }: NodeProps<Node<Nod
       if (nextZoom === zoom) return
       // Keep the flow point under the cursor fixed: new translate = old + p·(zoom − nextZoom).
       const p = rf.screenToFlowPosition({ x: e.clientX, y: e.clientY })
-      rf.setViewport({ x: x + p.x * (zoom - nextZoom), y: y + p.y * (zoom - nextZoom), zoom: nextZoom })
+      rf.setViewport({
+        x: x + p.x * (zoom - nextZoom),
+        y: y + p.y * (zoom - nextZoom),
+        zoom: nextZoom
+      })
     }
     el.addEventListener('wheel', onWheel, { passive: false })
     return () => el.removeEventListener('wheel', onWheel)
@@ -420,7 +313,9 @@ export function GraphNode({ id, data, selected: rfSelected }: NodeProps<Node<Nod
           )}
           {/* Type label as a subtitle whenever there's a name, and always while editing (so the
               type stays visible as you name the tile). */}
-          {(data.name || editing) && <span style={typeSub}>{plotLabel(data.kind, data.config)}</span>}
+          {(data.name || editing) && (
+            <span style={typeSub}>{plotLabel(data.kind, data.config)}</span>
+          )}
         </span>
         <div style={headerRight}>
           {spec.hasRun && (hovered || selected) && (
@@ -435,18 +330,7 @@ export function GraphNode({ id, data, selected: rfSelected }: NodeProps<Node<Nod
           <StatusDot {...statusInfo} />
         </div>
       </div>
-      <div style={body}>
-        {data.kind === 'plotGroup' ? (
-          <GroupBody id={id} config={data.config as PlotGroupConfig} accent={accent} />
-        ) : (
-          <NodeSummary kind={data.kind} id={id} result={result} config={data.config} />
-        )}
-        {data.error && (
-          <StatusNote kind="error" style={{ fontSize: 10, marginTop: 4 }}>
-            {data.error}
-          </StatusNote>
-        )}
-      </div>
+      <TileBody id={id} data={data} accent={accent} />
       {hasSourceHandle(data.kind) && (
         <Handle type="source" position={Position.Right} style={handleStyle} />
       )}
@@ -466,6 +350,42 @@ export function GraphNode({ id, data, selected: rfSelected }: NodeProps<Node<Nod
         >
           <NodeConfigPanel id={id} />
         </div>
+      )}
+    </div>
+  )
+}
+
+/** A tile's body: a group's add-plots menu and subcard stack, or any other step's summary, plus
+ *  its error. Exported for the form workflow, whose plot step shows this same tile body. */
+export function TileBody({
+  id,
+  data,
+  accent,
+  activeChild
+}: {
+  id: string
+  data: NodeData
+  accent: string
+  /** see GroupBody */
+  activeChild?: string
+}) {
+  const result = useGraph((s) => s.results[id])
+  return (
+    <div style={body}>
+      {data.kind === 'plotGroup' ? (
+        <GroupBody
+          id={id}
+          config={data.config as PlotGroupConfig}
+          accent={accent}
+          activeChild={activeChild}
+        />
+      ) : (
+        <NodeSummary kind={data.kind} id={id} result={result} config={data.config} />
+      )}
+      {data.error && (
+        <StatusNote kind="error" style={{ fontSize: 10, marginTop: 4 }}>
+          {data.error}
+        </StatusNote>
       )}
     </div>
   )
@@ -507,6 +427,18 @@ function NodeSummary({
       </div>
     ) : (
       <div style={muted}>Tidy uniqID × sample table.</div>
+    )
+  }
+  if (kind === 'merge') {
+    const std = result?.kind === 'standardize' ? result.std : null
+    // Once pooled the inputs are indistinguishable, so report what came out — the row count and
+    // the union of conditions is what tells you the merge did what you expected.
+    return std ? (
+      <div style={stat}>
+        {std.rows.length.toLocaleString()} rows · {std.activeConditions.join(', ')}
+      </div>
+    ) : (
+      <div style={muted}>Pool two or more Clean data tiles into one dataset.</div>
     )
   }
   if (kind === 'compare') {
@@ -555,7 +487,8 @@ function NodeSummary({
   if (kind === 'ma') return <div style={muted}>Abundance vs log₂FC. Select to view.</div>
   if (kind === 'dr') return <div style={muted}>Response curves. Select to view.</div>
   if (kind === 'bubble') return <div style={muted}>Gene × dose bubble grid. Select to view.</div>
-  if (kind === 'dumbbell') return <div style={muted}>Group A ↔ group B per gene. Select to view.</div>
+  if (kind === 'dumbbell')
+    return <div style={muted}>Group A ↔ group B per gene. Select to view.</div>
   if (kind === 'tdr')
     return <div style={muted}>Dose×time response per selected gene. Select to view.</div>
   if (kind === 'geneBar')
@@ -719,17 +652,6 @@ const stat: CSSProperties = {
   fontSize: 11,
   fontVariantNumeric: 'tabular-nums',
   marginTop: 2
-}
-const runChip: CSSProperties = {
-  border: '1px solid',
-  background: 'transparent',
-  borderRadius: 10,
-  padding: '2px 9px',
-  fontSize: 10,
-  fontWeight: 600,
-  lineHeight: 1.5,
-  cursor: 'pointer',
-  whiteSpace: 'nowrap'
 }
 /** Gap between a tile and its detail panel (flow units). */
 const PANEL_GAP = 14

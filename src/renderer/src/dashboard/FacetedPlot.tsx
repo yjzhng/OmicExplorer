@@ -11,8 +11,9 @@
  */
 import { useMemo, useState, type CSSProperties, type ReactNode } from 'react'
 
-import { facetDims, type ContextRow, type ConditionKey } from '../engine'
+import { facetDims, facetKeyLabel, type ContextRow, type ConditionKey } from '../engine'
 import { UI } from '../ui/theme'
+import { ToggleSwitch } from '../ui/ToggleSwitch'
 import { resolveFacets } from './facet'
 
 export function FacetedPlot<T extends ContextRow>({
@@ -44,30 +45,25 @@ export function FacetedPlot<T extends ContextRow>({
     <div style={styles.root}>
       <div style={styles.bars}>
         {bars.map(({ dim, value, options }) => (
-          <div key={dim} style={styles.bar} role="tablist" aria-label={`${dim} level`}>
-            <span style={styles.barLabel}>{dim}</span>
-            {options.map(({ value: v, onlyOn }) => (
-              // One-sided contrast level (outer-join rows with nothing to pair): greyed, not
-              // selectable — the tooltip says which side has the data.
-              <button
-                key={String(v)}
-                role="tab"
-                aria-selected={String(v) === String(value)}
-                aria-disabled={!!onlyOn}
-                disabled={!!onlyOn}
-                title={
-                  onlyOn ? `${dim} = ${v} is only on ${onlyOn} — no partner to contrast` : undefined
-                }
-                onClick={() => setSel((s) => ({ ...s, [dim]: String(v) }))}
-                style={{
-                  ...styles.tab,
-                  ...(String(v) === String(value) ? styles.tabActive : null),
-                  ...(onlyOn ? styles.tabOff : null)
-                }}
-              >
-                {String(v)}
-              </button>
-            ))}
+          <div key={dim} style={styles.bar}>
+            <span style={styles.barLabel}>{facetKeyLabel(dim)}</span>
+            {/* The plot tiles' switch (as in SwitchBar). A one-sided contrast level (outer-join
+                rows with nothing to pair) is greyed, not selectable — the tooltip says which side
+                has the data. */}
+            <ToggleSwitch
+              size="sm"
+              label={`${facetKeyLabel(dim)} level`}
+              value={String(value)}
+              options={options.map(({ value: v, onlyOn }) => ({
+                value: String(v),
+                label: String(v),
+                disabled: !!onlyOn,
+                title: onlyOn
+                  ? `${facetKeyLabel(dim)} = ${v} is only on ${onlyOn} — no partner to contrast`
+                  : undefined
+              }))}
+              onChange={(v) => setSel((s) => ({ ...s, [dim]: v }))}
+            />
           </div>
         ))}
       </div>
@@ -98,20 +94,5 @@ const styles: Record<string, CSSProperties> = {
     color: UI.textMuted,
     flex: '0 0 auto'
   },
-  tab: {
-    background: 'transparent',
-    color: UI.textMuted,
-    border: `1px solid ${UI.border}`,
-    borderRadius: 12,
-    padding: '2px 10px',
-    fontSize: 10,
-    fontWeight: 600,
-    cursor: 'pointer',
-    whiteSpace: 'nowrap',
-    flex: '0 0 auto'
-  },
-  tabActive: { background: UI.accent, color: UI.accentText, borderColor: UI.accent },
-  // A level with no paired data (one side of a contrast only): greyed and inert.
-  tabOff: { opacity: 0.35, cursor: 'not-allowed' },
   body: { flex: 1, minHeight: 0 }
 }

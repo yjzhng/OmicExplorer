@@ -29,7 +29,8 @@ export function TilePicker({
   onPick,
   header = 'New step',
   upstream,
-  style
+  style,
+  onCancel
 }: {
   ops: NodeKind[]
   /** Chosen picks. One → a single node; two or more plotting picks → a group tile. Each pick may
@@ -40,6 +41,9 @@ export function TilePicker({
    *  requirements.ts). Omitted (no upstream) ⇒ show all. */
   upstream?: UpstreamFacts
   style?: CSSProperties
+  /** Shows a Cancel at the header's right end. The form workflow passes it (its picker is inline,
+   *  so there is no outside click to dismiss it); the canvas menu doesn't. */
+  onCancel?: () => void
 }) {
   const avail = upstream ?? UNWIRED
   // `plotGroup` is never user-pickable — checking several plots in the plotting list
@@ -142,6 +146,8 @@ export function TilePicker({
   // All present plotting entries in declared order (gated) — to resolve the checked keys on commit.
   const allEntries =
     plotting && current ? gatePlotEntries(current.ops.flatMap(plotEntriesFor), avail) : []
+  // Every offered plot is checked: Select all turns into Clear.
+  const allChosen = allEntries.length > 0 && allEntries.every((en) => chosen.has(entryKey(en)))
 
   return (
     <div className="nodrag" style={{ ...card, ...style }}>
@@ -161,7 +167,48 @@ export function TilePicker({
             <span style={backText}>Back</span>
           </button>
         )}
-        <span style={catTag}>{current ? CATEGORIES[current.cat].label : header}</span>
+        {/* Not on the plot list: its sections and the Add button say what it is, and the header's
+            room goes to Select all. */}
+        {!plotting && (
+          <span style={catTag}>{current ? CATEGORIES[current.cat].label : header}</span>
+        )}
+        {(plotting || onCancel) && (
+          // The right end of the header: Select all (the plot list), then Cancel (form only).
+          <div style={headerEnd}>
+            {plotting && allEntries.length > 0 && (
+              <button
+                onMouseEnter={() => setHovered('__all')}
+                onMouseLeave={() => setHovered((h) => (h === '__all' ? null : h))}
+                onClick={(e) => {
+                  e.stopPropagation()
+                  setChosen(allChosen ? new Set() : new Set(allEntries.map(entryKey)))
+                }}
+                style={{
+                  ...backBtn,
+                  background: hovered === '__all' ? UI.panelAlt : 'transparent'
+                }}
+              >
+                {allChosen ? 'Clear' : 'Select all'}
+              </button>
+            )}
+            {onCancel && (
+              <button
+                onMouseEnter={() => setHovered('__cancel')}
+                onMouseLeave={() => setHovered((h) => (h === '__cancel' ? null : h))}
+                onClick={(e) => {
+                  e.stopPropagation()
+                  onCancel()
+                }}
+                style={{
+                  ...cancelBtn,
+                  background: hovered === '__cancel' ? 'rgba(225, 87, 89, 0.12)' : 'transparent'
+                }}
+              >
+                Cancel
+              </button>
+            )}
+          </div>
+        )}
       </div>
       <div style={body}>
         {current
@@ -231,6 +278,27 @@ const headerRow: CSSProperties = {
   padding: '5px 8px 5px 10px',
   borderBottom: `1px solid ${UI.border}`
 }
+// The header's right-hand controls. The auto margin pins them to the right and leaves Back and the
+// category tag together on the left.
+const headerEnd: CSSProperties = {
+  marginLeft: 'auto',
+  display: 'flex',
+  alignItems: 'center',
+  gap: 6
+}
+// Red like the other destructive controls (delete, remove).
+const cancelBtn: CSSProperties = {
+  fontSize: 9,
+  fontWeight: 700,
+  textTransform: 'uppercase',
+  letterSpacing: 0.6,
+  color: '#e15759',
+  border: '1px solid #e15759',
+  borderRadius: 5,
+  padding: '2px 8px',
+  cursor: 'pointer',
+  whiteSpace: 'nowrap'
+}
 const catTag: CSSProperties = {
   fontSize: 9,
   fontWeight: 700,
@@ -247,7 +315,9 @@ const backBtn: CSSProperties = {
   border: `1px solid ${UI.border}`,
   borderRadius: 5,
   padding: '2px 8px',
-  cursor: 'pointer'
+  cursor: 'pointer',
+  // Header labels stay on one line however narrow the picker.
+  whiteSpace: 'nowrap'
 }
 const backArrow: CSSProperties = { fontSize: 16, lineHeight: 1, fontWeight: 700, display: 'block' }
 const backText: CSSProperties = { lineHeight: 1, display: 'block' }
@@ -302,7 +372,12 @@ const addBtn: CSSProperties = {
 }
 const opLabel: CSSProperties = { fontWeight: 600 }
 // Optional gloss to the right of the label.
-const opSubtitle: CSSProperties = { fontSize: 11, fontWeight: 400, color: UI.textMuted, whiteSpace: 'nowrap' }
+const opSubtitle: CSSProperties = {
+  fontSize: 11,
+  fontWeight: 400,
+  color: UI.textMuted,
+  whiteSpace: 'nowrap'
+}
 const catName: CSSProperties = {
   marginLeft: 'auto',
   fontSize: 9,

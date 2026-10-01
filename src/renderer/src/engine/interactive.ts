@@ -36,6 +36,8 @@ export interface InteractiveSampleCond {
   dose: string
   time: string
   rep: string
+  /** custom condition name → value, for the axes the user added beyond the five presets */
+  extra?: Record<string, string>
 }
 
 export interface InteractiveAdapted {
@@ -261,7 +263,10 @@ export function columnFacet(rows: Row[], col: string, cap = 200): ColumnFacet {
 }
 
 /** Does a feature row pass every active column filter? */
-function rowPasses(row: Row, filters: Array<{ col: string; drop: Set<string>; spec: FilterSpec }>): boolean {
+function rowPasses(
+  row: Row,
+  filters: Array<{ col: string; drop: Set<string>; spec: FilterSpec }>
+): boolean {
   for (const { col, drop, spec } of filters) {
     const raw = (row[col] ?? '').trim()
     if (drop.size > 0 && drop.has(raw)) return false
@@ -334,7 +339,8 @@ const PRESETS: Record<MatrixPreset, PresetSpec> = {
       'PG.Organisms'
     ],
     // Pivot report quantity columns end in `.PG.Quantity` (or reference a raw/htrms run file).
-    sampleCols: (fields) => fields.filter((f) => /PG\.(?:MS2)?Quantity$|\.(?:raw|htrms|d)$/i.test(f))
+    sampleCols: (fields) =>
+      fields.filter((f) => /PG\.(?:MS2)?Quantity$|\.(?:raw|htrms|d)$/i.test(f))
   },
   maxquant: {
     label: 'MaxQuant',
@@ -373,13 +379,11 @@ export function guessRolesPreset(
   const spec = PRESETS[preset]
   const samples = new Set(spec.sampleCols(info.columns, info.rows))
   const rest = info.columns.filter((c) => !samples.has(c))
-  const firstPresent = (names: string[]): string | undefined =>
-    names.find((n) => rest.includes(n))
+  const firstPresent = (names: string[]): string | undefined => names.find((n) => rest.includes(n))
   // id only from a known column (no "first leftover" fallback); label falls back to a gene-ish
   // name; metadata is ONLY the preset's known annotation columns — everything else stays Ignore.
   const idCol = firstPresent(spec.idCols)
-  const labelCol =
-    firstPresent(spec.geneCols) ?? rest.find((c) => /gene/i.test(c) && c !== idCol)
+  const labelCol = firstPresent(spec.geneCols) ?? rest.find((c) => /gene/i.test(c) && c !== idCol)
   const metaSet = new Set(spec.metaCols)
   for (const c of info.columns) {
     roles[c] = samples.has(c)
@@ -424,6 +428,8 @@ export function buildStandardInputs(
      *  `fields` are the extra column names, `byId[uniqID][field]` the value. `taxon` (if set) is
      *  written as a hidden per-row `taxon` DB column so the STRING plot can learn the species. */
     annotations?: { fields: string[]; byId: Record<string, Record<string, string>>; taxon?: number }
+    /** custom condition names the user defined, in display order */
+    customConditions?: string[]
   }
 ): InteractiveAdapted {
   const { columns, rows: allRows } = parseMatrix(matrixText)
@@ -443,7 +449,8 @@ export function buildStandardInputs(
   const activeFilters = colsWithRole(columns, roles, 'filter')
     .filter((c) => spec.filters?.[c]?.active)
     .map((c) => ({ col: c, spec: spec.filters![c], drop: new Set(spec.filters![c].drop ?? []) }))
-  const rows = activeFilters.length > 0 ? allRows.filter((r) => rowPasses(r, activeFilters)) : allRows
+  const rows =
+    activeFilters.length > 0 ? allRows.filter((r) => rowPasses(r, activeFilters)) : allRows
 
   // data (wide): uniqID + one column per sample (raw header names).
   const dataRows = rows.map((r) => {
@@ -475,6 +482,9 @@ export function buildStandardInputs(
   const dbText = Papa.unparse(dbRows, { columns: dbCols })
 
   // samplesheet: sample (raw header) + conditions.
+  // Custom conditions get one samplesheet column each, named after the condition — that name is
+  // how ingest recognises them (see `customConditions` / detectCustomConditions).
+  const customConds = spec.customConditions ?? []
   const ssRows = sampleCols.map((sc) => {
     const c = conditions[sc]
     return {
@@ -483,11 +493,12 @@ export function buildStandardInputs(
       cmpd: c?.cmpd ?? '',
       dose: c?.dose ?? '',
       time: c?.time ?? '',
-      rep: c?.rep ?? ''
+      rep: c?.rep ?? '',
+      ...Object.fromEntries(customConds.map((n) => [n, c?.extra?.[n] ?? '']))
     }
   })
   const samplesheetText = Papa.unparse(ssRows, {
-    columns: ['sample', 'cell', 'cmpd', 'dose', 'time', 'rep']
+    columns: ['sample', 'cell', 'cmpd', 'dose', 'time', 'rep', ...customConds]
   })
 
   return { dataText, dataFilename: 'interactive_wide.csv', samplesheetText, dbText }

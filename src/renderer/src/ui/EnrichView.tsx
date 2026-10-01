@@ -167,21 +167,24 @@ export function EnrichView({
         })
         // Leading-edge genes are shown as dots only (names appear on hover); no baseline labels.
       })
-      // KEGG category → colour (stable order = first appearance, top→bottom). Colour each pathway's
-      // y-tick label by its category and show a centred legend above (only categories present).
+      // Term group → colour (a KEGG pathway's category, a COG category's area; stable order = first
+      // appearance, top→bottom). Mark each term's y-tick label with a square in its group's
+      // colour and show a centred legend above (only groups present).
       const cats: string[] = []
       for (const row of rows)
         if (row.category && !cats.includes(row.category)) cats.push(row.category)
       const catColor = new Map(cats.map((c, i) => [c, CATEGORICAL[i % CATEGORICAL.length]]))
-      // y-tick label for a pathway given its hover state: active → bold in its (category or default)
-      // colour; when another pathway is active this one FADES (low-opacity of its own colour, like the
-      // STRING legend); otherwise its plain colour.
+      // y-tick label for a term given its hover state: the name in the plain text colour, then a
+      // square in its group's colour (by the axis) — the colour marks the group without making the
+      // name itself hard to read. Active → bold; when another term is active this one FADES, square
+      // and all (low opacity, like the STRING legend).
       const tickLabel = (i: number, active: boolean, anyActive: boolean): string => {
         const row = rows[i]
-        const base = row.category ? (catColor.get(row.category) ?? p.text) : p.text
-        const col = anyActive && !active ? hexA(base, 0.3) : base
+        const fade = (c: string): string => (anyActive && !active ? hexA(c, 0.3) : c)
         const inner = active ? `<b>${row.label}</b>` : row.label
-        return `<span style="color:${col}">${inner}</span>`
+        const group = row.category ? catColor.get(row.category) : undefined
+        const square = group ? ` <span style="color:${fade(group)}">■</span>` : ''
+        return `<span style="color:${fade(p.text)}">${inner}</span>${square}`
       }
       const ticktext = rows.map((_, i) => tickLabel(i, false, false))
       // One annotation PER category, at a FIXED pixel offset (xshift) from the figure's left edge, so
@@ -218,11 +221,26 @@ export function EnrichView({
         legendX += Math.ceil(measureText(`■ ${c}`, `bold ${LEGEND_FS}px sans-serif`)) + LEGEND_PAD
         return ann
       })
+      // The left margin, sized for every label at its WIDEST — bold, with its group square — and
+      // fixed. Hovering a leading-edge gene bolds its pathways' labels (boldTicks); with an
+      // auto-sized margin that widened the margin and slid the whole plot right under the cursor,
+      // so the dot being clicked moved away (and, unhovered, un-bolded and slid back).
+      const TICK_FS = 10
+      const labelW = Math.max(
+        0,
+        ...rows.map((row) =>
+          measureText(
+            `${row.label}${row.category ? ' ■' : ''}`,
+            `bold ${TICK_FS}px system-ui, sans-serif`
+          )
+        )
+      )
       const lay: Record<string, unknown> = {
         ...plotBase(p),
         showlegend: false,
         title: title ? { text: title, font: { size: 13 } } : undefined,
-        margin: { l: 6, r: 12, t: cats.length ? 40 : 24, b: 40 },
+        // + the tick labels' gap from the axis, and a little slack for font metrics.
+        margin: { l: Math.ceil(labelW) + 16, r: 12, t: cats.length ? 40 : 24, b: 40 },
         annotations: legend,
         xaxis: {
           ...axisBase(p),
@@ -236,8 +254,10 @@ export function EnrichView({
           tickmode: 'array',
           tickvals: rows.map((_, r) => r * step),
           ticktext,
-          automargin: true,
-          tickfont: { size: 10 },
+          // Not automargin: the margin above already fits the widest (bold) label, and must not
+          // move as labels bold and un-bold.
+          automargin: false,
+          tickfont: { size: TICK_FS },
           range: [-0.6, (rows.length - 1) * step + overlap * step + 0.3],
           // Horizontal gridline at each pathway's baseline, to track a ridge back to its label.
           showgrid: true,

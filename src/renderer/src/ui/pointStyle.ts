@@ -4,15 +4,21 @@
 import type { GroupStyle, HighlightStyle, PointStyle } from '../graph/types'
 import { EFFECT_COLOR } from './theme'
 
-/** A group's fully-resolved look, plus its key and display name for the panel. */
-export interface ResolvedGroup extends Required<GroupStyle> {
+/** A group's fully-resolved look, plus its key and display name for the panel. Its `highlight`
+ *  is the plot-wide one with this group's own overrides on top. */
+export interface ResolvedGroup
+  extends
+    Required<Omit<GroupStyle, 'highlight' | 'outlineColor'>>,
+    Pick<GroupStyle, 'outlineColor'> {
   key: string
   name: string
+  highlight: ResolvedHighlight
 }
 
-/** The highlight look with every field resolved (ringColor stays optional: unset = theme text). */
-export type ResolvedHighlight = Required<Omit<HighlightStyle, 'ringColor'>> &
-  Pick<HighlightStyle, 'ringColor'>
+/** The highlight look with every field resolved. `ringColor` stays optional (unset = the theme's
+ *  text colour) and so does `size` (unset = the point's own size + `bump`). */
+export type ResolvedHighlight = Required<Omit<HighlightStyle, 'ringColor' | 'size'>> &
+  Pick<HighlightStyle, 'ringColor' | 'size'>
 
 /** Shared highlight defaults — historically PlotlyChart's EMPH_BUMP / EMPH_RING / DIM_OPACITY and
  *  the overlay's 10px bold name. `dim` is softened so a gene's existing highlight stays visible
@@ -72,7 +78,9 @@ const effectGroups = (
     opacity,
     color: EFFECT_COLOR.none,
     label: false,
-    legend: false
+    legend: false,
+    outline: 0,
+    highlight: DEFAULT_HIGHLIGHT
   },
   {
     key: 'down',
@@ -81,7 +89,9 @@ const effectGroups = (
     opacity,
     color: EFFECT_COLOR.down,
     label: true,
-    legend: true
+    legend: true,
+    outline: 0,
+    highlight: DEFAULT_HIGHLIGHT
   },
   {
     key: 'up',
@@ -90,7 +100,9 @@ const effectGroups = (
     opacity,
     color: EFFECT_COLOR.up,
     label: true,
-    legend: true
+    legend: true,
+    outline: 0,
+    highlight: DEFAULT_HIGHLIGHT
   }
 ]
 
@@ -116,7 +128,9 @@ export function defaultGroups(
           opacity: 0.85,
           color: EFFECT_COLOR.none,
           label: false,
-          legend: false
+          legend: false,
+          outline: 0,
+          highlight: DEFAULT_HIGHLIGHT
         },
         ...QUAD_ORDER.map((k) => ({
           key: k,
@@ -125,7 +139,9 @@ export function defaultGroups(
           opacity: 0.85,
           color: QUAD_COLORS[k],
           label: true,
-          legend: true
+          legend: true,
+          outline: 0,
+          highlight: DEFAULT_HIGHLIGHT
         }))
       ]
   }
@@ -134,15 +150,19 @@ export function defaultGroups(
 /** A group's look with the config's overrides applied over its default. */
 export function resolveGroup(style: PointStyle | undefined, def: ResolvedGroup): ResolvedGroup {
   const o = style?.groups?.[def.key]
-  if (!o) return def
+  const highlight = resolveHighlight(style, o?.highlight)
+  if (!o) return { ...def, highlight }
   return {
     ...def,
     name: o.name?.trim() || def.name,
     size: o.size ?? def.size,
     opacity: o.opacity ?? def.opacity,
     color: o.color ?? def.color,
+    outline: o.outline ?? def.outline,
+    outlineColor: o.outlineColor ?? def.outlineColor,
     label: o.label ?? def.label,
-    legend: o.legend ?? def.legend
+    legend: o.legend ?? def.legend,
+    highlight
   }
 }
 
@@ -155,17 +175,24 @@ export function resolveGroups(
   return new Map(defaultGroups(kind, names).map((d) => [d.key, resolveGroup(style, d)]))
 }
 
-/** The highlight look with the config's overrides applied over the shared defaults. */
-export function resolveHighlight(style: PointStyle | undefined): ResolvedHighlight {
+/** The highlight look: the shared defaults, then the plot-wide overrides, then (optionally) one
+ *  group's own. */
+export function resolveHighlight(
+  style: PointStyle | undefined,
+  group?: HighlightStyle
+): ResolvedHighlight {
   const h = style?.highlight
-  if (!h) return DEFAULT_HIGHLIGHT
+  if (!h && !group) return DEFAULT_HIGHLIGHT
+  const pick = <K extends keyof ResolvedHighlight>(k: K): ResolvedHighlight[K] =>
+    (group?.[k] as ResolvedHighlight[K]) ?? (h?.[k] as ResolvedHighlight[K]) ?? DEFAULT_HIGHLIGHT[k]
   return {
-    bump: h.bump ?? DEFAULT_HIGHLIGHT.bump,
-    ring: h.ring ?? DEFAULT_HIGHLIGHT.ring,
-    ringColor: h.ringColor,
-    dim: h.dim ?? DEFAULT_HIGHLIGHT.dim,
-    label: h.label ?? DEFAULT_HIGHLIGHT.label,
-    labelSize: h.labelSize ?? DEFAULT_HIGHLIGHT.labelSize
+    size: group?.size ?? h?.size,
+    bump: pick('bump'),
+    ring: pick('ring'),
+    ringColor: group?.ringColor ?? h?.ringColor,
+    dim: pick('dim'),
+    label: pick('label'),
+    labelSize: pick('labelSize')
   }
 }
 

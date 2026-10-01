@@ -54,12 +54,10 @@ describe('veh_norm parity vs omicViz (E28 | DMSO)', () => {
     threshold: { ...DEFAULT_THRESHOLD, statType: 'pP' }
   })
 
-  const expected = (
-    Papa.parse<ExpectedRow>(fx('expected_veh_norm_E28_DMSO.csv'), {
-      header: true,
-      skipEmptyLines: true
-    }).data
-  ).filter((r) => r.uniqID)
+  const expected = Papa.parse<ExpectedRow>(fx('expected_veh_norm_E28_DMSO.csv'), {
+    header: true,
+    skipEmptyLines: true
+  }).data.filter((r) => r.uniqID)
 
   const key = (uniqID: string, dose: unknown, time: unknown): string =>
     `${uniqID}|${Number(dose)}|${Number(time)}`

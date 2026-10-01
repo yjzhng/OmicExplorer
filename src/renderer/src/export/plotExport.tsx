@@ -94,14 +94,118 @@ const plotlyToImage = (
   }
 ).toImage
 
-/** The ground an exported plot sits on: the tile's panel colour in the current theme. Plots draw
- *  on transparent paper over the panel, and their emphasis ring / labels are inked in the theme's
- *  text colour — so a dark-theme export must keep the dark ground or those turn white-on-white. */
-const exportGround = (): string => PALETTES[useUiTheme.getState().mode].panel
+/** Plots.resize is typed for the full dist but not the dist-min bundle. */
+const plotlyResize = (Plotly as unknown as { Plots: { resize: (el: unknown) => Promise<unknown> } })
+  .Plots.resize
+
+/**
+ * Re-fit a live graph div to its container before capture. `liveSize` reads Plotly's own
+ * `_fullLayout`, which is only refreshed when a resize actually reaches Plotly — and a resize is
+ * SKIPPED while the chart is off-screen (a tile on an inactive tab, or one still laying out). A
+ * tile resized in edit mode could therefore keep its old `_fullLayout` size and export at the
+ * stale dimensions, however the plot looked on screen. Re-fitting here makes the capture match
+ * the tile it was taken from. Hidden divs measure 0, so those keep their last known size.
+ */
+async function syncSize(gd: Element): Promise<void> {
+  if ((gd as HTMLElement).offsetParent === null) return
+  try {
+    await plotlyResize(gd)
+  } catch {
+    // Cosmetic: a failed re-fit just means the previous size is used.
+  }
+}
+
+/** Every capture is LIGHT on plain white, whatever the app's theme: an exported plot lands in a
+ *  paper, a slide or a document, not back in the dark UI. Dark-theme charts are recoloured to the
+ *  light palette first (see lightCapture) — a white ground alone would leave light ink invisible. */
+const EXPORT_GROUND = '#ffffff'
+
+/** Plotly entry points absent from the dist-min typings. */
+const plotlyNewPlot = (
+  Plotly as unknown as {
+    newPlot: (el: unknown, data: unknown[], layout: unknown, config: unknown) => Promise<unknown>
+  }
+).newPlot
+const plotlyPurge = (Plotly as unknown as { purge: (el: unknown) => void }).purge
+
+/** Dark → light substitutions for the theme colours a chart bakes into its traces and layout.
+ *  Anything theme-independent (effect reds/blues, a geneset's own colour, a colourscale) has no
+ *  entry and passes through untouched. */
+function lightSubstitutions(): Map<string, string> {
+  const m = new Map<string, string>()
+  const dark = PALETTES.dark as unknown as Record<string, string>
+  const light = PALETTES.light as unknown as Record<string, string>
+  for (const k of Object.keys(dark))
+    if (dark[k] !== light[k]) m.set(dark[k].toLowerCase(), light[k])
+  return m
+}
+
+/** A deep copy of a Plotly data/layout value with those substitutions applied to every string. */
+function recolor<T>(v: T, sub: Map<string, string>): T {
+  if (typeof v === 'string') return (sub.get(v.toLowerCase()) ?? v) as T
+  if (Array.isArray(v)) return v.map((x) => recolor(x, sub)) as unknown as T
+  if (v && typeof v === 'object') {
+    const out: Record<string, unknown> = {}
+    for (const [k, val] of Object.entries(v as Record<string, unknown>))
+      // Plotly's private bookkeeping (_fullInput, _expandedInput, …) must not be carried over.
+      if (!k.startsWith('_')) out[k] = recolor(val, sub)
+    return out as T
+  }
+  return v
+}
+
+/** The graph div a capture should read: the live one in light mode, or — in dark mode — a hidden
+ *  clone re-plotted with the light palette, at the same size, ranges and white paper. Returns the
+ *  div plus a cleanup to run once the capture is done. */
+async function lightCapture(gd: Element): Promise<{ el: Element; done: () => void }> {
+  if (useUiTheme.getState().mode === 'light') return { el: gd, done: () => {} }
+  const { w, h } = liveSize(gd)
+  const live = gd as unknown as {
+    data?: unknown[]
+    layout?: Record<string, unknown>
+    _fullLayout?: Record<string, unknown>
+  }
+  const sub = lightSubstitutions()
+  const data = recolor(live.data ?? [], sub)
+  const layout = recolor({ ...(live.layout ?? {}) }, sub) as Record<string, unknown>
+  // Pin what the live plot actually shows: its size and each axis's drawn range (an autoranged
+  // axis would otherwise re-fit, and any zoom would be lost), on white paper.
+  for (const key of ['xaxis', 'yaxis'] as const) {
+    const liveAx = live._fullLayout?.[key] as { range?: unknown } | undefined
+    if (!Array.isArray(liveAx?.range)) continue
+    const ax = { ...((layout[key] as Record<string, unknown>) ?? {}) }
+    ax.range = [...(liveAx.range as unknown[])]
+    ax.autorange = false
+    layout[key] = ax
+  }
+  layout.width = w
+  layout.height = h
+  layout.autosize = false
+  layout.paper_bgcolor = EXPORT_GROUND
+  layout.plot_bgcolor = EXPORT_GROUND
+  const container = document.createElement('div')
+  container.style.cssText = `position:fixed;left:-100000px;top:0;width:${w}px;height:${h}px;pointer-events:none;`
+  document.body.appendChild(container)
+  await plotlyNewPlot(container, data as unknown[], layout, {
+    staticPlot: true,
+    displaylogo: false
+  })
+  return {
+    el: container,
+    done: () => {
+      try {
+        plotlyPurge(container)
+      } catch {
+        // Nothing to release if the plot never drew.
+      }
+      container.remove()
+    }
+  }
+}
 
 /**
  * Rasterise an SVG data URL to a PNG data URL at `w`×`h` device pixels, on `ground` (default:
- * the current theme's panel colour, see exportGround). We go via SVG (not Plotly's own PNG path)
+ * plain white, see EXPORT_GROUND). We go via SVG (not Plotly's own PNG path)
  * because the app's CSP allows `data:` but not `blob:` images, and Plotly's PNG rasteriser loads
  * the intermediate image from a blob URL — which CSP blocks. A `data:` SVG drawn onto a canvas
  * stays within CSP and, being vector, scales to any DPI crisply.
@@ -110,7 +214,7 @@ function svgUrlToPng(
   svgUrl: string,
   w: number,
   h: number,
-  ground: string = exportGround()
+  ground: string = EXPORT_GROUND
 ): Promise<string> {
   return new Promise((resolve, reject) => {
     const img = new Image()
@@ -156,15 +260,20 @@ function liveSize(gd: Element): { w: number; h: number } {
 /** The SVG markup of a live graph div, as drawn (see liveSize). Plotly's toImage returns it as a
  *  `data:image/svg+xml,<url-encoded>` URL, decoded here. */
 export async function gdToSvg(gd: Element): Promise<string> {
+  await syncSize(gd)
   const { w, h } = liveSize(gd)
-  const url = await plotlyToImage(gd, { format: 'svg', width: w, height: h, scale: 1 })
-  const svg = decodeURIComponent(url.slice(url.indexOf(',') + 1))
-  // The paper is transparent; give the file the tile's ground (see exportGround) as a first
-  // rect, so it reads in a viewer the way it does on screen.
-  return svg.replace(
-    /<svg\b[^>]*>/,
-    (open) => `${open}<rect width="100%" height="100%" fill="${exportGround()}"/>`
-  )
+  const { el, done } = await lightCapture(gd)
+  try {
+    const url = await plotlyToImage(el, { format: 'svg', width: w, height: h, scale: 1 })
+    const svg = decodeURIComponent(url.slice(url.indexOf(',') + 1))
+    // The paper is transparent; give the file a plain white first rect so it reads on any ground.
+    return svg.replace(
+      /<svg\b[^>]*>/,
+      (open) => `${open}<rect width="100%" height="100%" fill="${EXPORT_GROUND}"/>`
+    )
+  } finally {
+    done()
+  }
 }
 
 /** base64 of a UTF-8 string (btoa alone chokes on non-Latin-1 glyphs such as ₂ or −). */
@@ -186,6 +295,7 @@ export async function gdToExportItem(
   dpi: number
 ): Promise<ExportItem> {
   if (format === 'svg') {
+    await syncSize(gd)
     const { w, h } = liveSize(gd)
     return {
       relPath,
@@ -205,11 +315,17 @@ export async function gdToExportItem(
  * need the off-screen re-render path.
  */
 export async function rasterizeGd(gd: Element, dpi = 300): Promise<PngResult> {
+  await syncSize(gd)
   const { w, h } = liveSize(gd)
-  const svgUrl = await plotlyToImage(gd, { format: 'svg', width: w, height: h, scale: 1 })
-  const scale = dpi / DPI_BASE
-  const base64 = await svgUrlToPng(svgUrl, Math.round(w * scale), Math.round(h * scale))
-  return { base64, widthIn: w / DPI_BASE, heightIn: h / DPI_BASE }
+  const { el, done } = await lightCapture(gd)
+  try {
+    const svgUrl = await plotlyToImage(el, { format: 'svg', width: w, height: h, scale: 1 })
+    const scale = dpi / DPI_BASE
+    const base64 = await svgUrlToPng(svgUrl, Math.round(w * scale), Math.round(h * scale))
+    return { base64, widthIn: w / DPI_BASE, heightIn: h / DPI_BASE }
+  } finally {
+    done()
+  }
 }
 
 /**
@@ -281,14 +397,20 @@ async function renderSpecToPng(
   try {
     const gd = await waitForPlot(container)
     if (!gd) return null
-    const svgUrl = await plotlyToImage(gd, {
-      format: 'svg',
-      width: BASE_W,
-      height: BASE_H,
-      scale: 1
-    })
-    const scale = dpi / DPI_BASE
-    return await svgUrlToPng(svgUrl, Math.round(BASE_W * scale), Math.round(BASE_H * scale))
+    // Exports are light-on-white like the per-tile capture, whatever theme the app is in.
+    const { el, done } = await lightCapture(gd)
+    try {
+      const svgUrl = await plotlyToImage(el, {
+        format: 'svg',
+        width: BASE_W,
+        height: BASE_H,
+        scale: 1
+      })
+      const scale = dpi / DPI_BASE
+      return await svgUrlToPng(svgUrl, Math.round(BASE_W * scale), Math.round(BASE_H * scale))
+    } finally {
+      done()
+    }
   } catch {
     return null
   } finally {

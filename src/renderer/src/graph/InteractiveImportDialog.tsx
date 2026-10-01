@@ -22,6 +22,8 @@ import {
   columnFacet,
   MATRIX_PRESETS,
   parseMatrix,
+  RESERVED_COND_NAMES,
+  validCondName,
   type ColumnFacet,
   type FilterSpec,
   type InteractiveRole,
@@ -30,11 +32,27 @@ import {
 } from '../engine'
 import { cssVars, PALETTES, UI } from '../ui/theme'
 import { useUiTheme } from '../ui/useUiTheme'
+import { ToggleSwitch } from '../ui/ToggleSwitch'
+import { DOCKED_CARD, DOCKED_WRAP, useDialogDock } from './dialogDock'
 import { useGraph } from './store'
 import { isStep, type AnnotationSet, type LoadConfig } from './types'
 
-const FIELDS = ['cell', 'cmpd', 'dose', 'time', 'rep'] as const
-type Field = (typeof FIELDS)[number]
+/** The five built-in condition fields. A custom condition adds a sixth, seventh, … — so a Field is
+ *  any name, and the preset list is only what's ALWAYS offered. */
+const PRESET_FIELDS = ['cell', 'cmpd', 'dose', 'time', 'rep'] as const
+type PresetField = (typeof PRESET_FIELDS)[number]
+type Field = string
+const isPresetField = (f: Field): f is PresetField =>
+  (PRESET_FIELDS as readonly string[]).includes(f)
+
+/** One sample's value for a field. Preset fields are columns of their own; a custom condition's
+ *  value lives in the `extra` bag (keyed by the condition's name). */
+const condOf = (c: InteractiveSampleCond, f: Field): string =>
+  isPresetField(f) ? String(c[f] ?? '') : (c.extra?.[f] ?? '')
+
+/** `c` with field `f` set to `v` — routed to the column or the `extra` bag as appropriate. */
+const withCond = (c: InteractiveSampleCond, f: Field, v: string): InteractiveSampleCond =>
+  isPresetField(f) ? { ...c, [f]: v } : { ...c, extra: { ...(c.extra ?? {}), [f]: v } }
 /** A field's location in a sample name as a token-index range [start, end). This is the SINGLE
  *  source of truth for the Conditions step — the value, the highlight and the samplesheet
  *  "original" all derive from it (never a separately-coded value-matching heuristic). */
@@ -45,14 +63,28 @@ type RowSpans = Partial<Record<Field, Span>>
 
 const MONO = 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace'
 
-/** One colour per condition field, shared by the chips and the highlighted regions. */
-const FIELD_COLORS: Record<Field, string> = {
+/** One colour per preset condition field, shared by the chips and the highlighted regions. */
+const PRESET_COLORS: Record<PresetField, string> = {
   cell: '#4e79a7',
   cmpd: '#59a14f',
   dose: '#c99700',
   time: '#b07aa1',
   rep: '#e15759'
 }
+/** Colours custom conditions cycle through — distinct from every preset colour above, so a custom
+ *  condition's regions never read as one of the built-in fields. */
+const CUSTOM_COLORS = ['#76b7b2', '#ff9da7', '#9c755f', '#bab0ac', '#86bcb6', '#d37295']
+
+/** A field's colour. `customs` is the ordered custom condition list, so each keeps a stable colour
+ *  as long as the list's order doesn't change. */
+const fieldColorIn = (f: Field, customs: readonly string[]): string => {
+  if (isPresetField(f)) return PRESET_COLORS[f]
+  const i = customs.indexOf(f)
+  return CUSTOM_COLORS[(i < 0 ? 0 : i) % CUSTOM_COLORS.length]
+}
+
+/** The colour lookup the painting components take, so they don't each need the custom list. */
+type ColorOf = (f: Field) => string
 
 /** Default token separator for sample names (configurable per import — see `separator`). */
 const DEFAULT_DELIM = '_'
@@ -124,7 +156,9 @@ function spanValue(name: string, span: Span, delims: string[]): string {
  *  condition applied (and survives a later value rename, which never touches the span). */
 function fieldMapFromSpans(name: string, rowSpans: RowSpans, delims: string[]): (Field | null)[] {
   const m: (Field | null)[] = new Array(name.length).fill(null)
-  for (const f of FIELDS) {
+  // Driven by the row's own painted fields rather than a fixed field list, so a custom condition
+  // paints, anchors and highlights exactly like a preset one with no list to keep in sync.
+  for (const f of Object.keys(rowSpans)) {
     const span = rowSpans[f]
     if (!span) continue
     const cs = spanChars(name, span, delims)
@@ -169,7 +203,7 @@ function deriveAnchor(
   const right: Field[] = []
   let leftEnd = 0 // nearest painted-cond end to the left of the selection (string start if none)
   let rightStart = N // nearest painted-cond start to the right (string end if none)
-  for (const f of FIELDS) {
+  for (const f of Object.keys(rowSpans)) {
     if (f === field) continue
     const span = rowSpans[f]
     if (!span) continue
@@ -211,7 +245,7 @@ function applyAnchor(
   const rightSet = new Set<Field>(desc.right)
   let leftBase = 0
   let rightBase = N
-  for (const f of FIELDS) {
+  for (const f of Object.keys(rowSpans)) {
     if (f === field) continue
     const span = rowSpans[f]
     if (!span) continue
@@ -243,7 +277,7 @@ function applyAnchor(
   b = Math.max(0, Math.min(b, N))
   if (a >= b) return null
   const occupied = new Set<number>()
-  for (const f of FIELDS) {
+  for (const f of Object.keys(rowSpans)) {
     if (f === field) continue
     const span = rowSpans[f]
     if (!span) continue
@@ -253,6 +287,68 @@ function applyAnchor(
   let end = a
   while (end < b && !occupied.has(end)) end++
   return a < end ? [a, end] : null
+}
+
+/** The "+ condition" chip: click to name a new custom condition axis, Enter to add it. Names are
+ *  validated against the engine's rule (lowercase identifier, not a reserved samplesheet column)
+ *  because the name becomes a samplesheet column and a `@name` condition key downstream. */
+function AddConditionChip({
+  taken,
+  onAdd
+}: {
+  taken: Field[]
+  onAdd: (name: string) => string | null
+}): ReactNode {
+  const [open, setOpen] = useState(false)
+  const [text, setText] = useState('')
+  const [err, setErr] = useState<string | null>(null)
+  const close = (): void => {
+    setOpen(false)
+    setText('')
+    setErr(null)
+  }
+  const commit = (): void => {
+    const name = text.trim().toLowerCase()
+    if (name === '') return close()
+    if (taken.includes(name)) {
+      setErr(`“${name}” is already a condition`)
+      return
+    }
+    const problem = onAdd(name)
+    if (problem) setErr(problem)
+    else close()
+  }
+  if (!open)
+    return (
+      <button
+        onClick={() => setOpen(true)}
+        title="Add a condition of your own (e.g. genotype, medium, batch)"
+        style={{ ...styles.chip, borderStyle: 'dashed', color: UI.textMuted }}
+      >
+        + condition
+      </button>
+    )
+  return (
+    <span style={styles.addCondBox}>
+      <input
+        autoFocus
+        value={text}
+        placeholder="custom"
+        title="Lowercase letters, digits and _ (it becomes a samplesheet column)"
+        style={styles.addCondInput}
+        onChange={(e) => {
+          setText(e.target.value)
+          setErr(null)
+        }}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') commit()
+          else if (e.key === 'Escape') close()
+        }}
+        onBlur={commit}
+      />
+      {err && <span style={styles.addCondErr}>{err}</span>}
+    </span>
+  )
 }
 
 /** Split a name into consecutive same-field runs. */
@@ -277,10 +373,12 @@ function fieldRuns(
 function PaintedName({
   name,
   map,
+  colorOf,
   faint
 }: {
   name: string
   map: (Field | null)[]
+  colorOf: ColorOf
   faint?: boolean
 }): ReactNode {
   const alpha = faint ? '2b' : '59'
@@ -290,7 +388,7 @@ function PaintedName({
         r.field ? (
           <mark
             key={i}
-            style={{ background: `${FIELD_COLORS[r.field]}${alpha}`, color: 'inherit', padding: 0 }}
+            style={{ background: `${colorOf(r.field)}${alpha}`, color: 'inherit', padding: 0 }}
           >
             {r.text}
           </mark>
@@ -305,14 +403,22 @@ function PaintedName({
 /** Ruler for the strip above the table: the first sample's text is hidden (reserving identical
  *  monospace widths) and each annotated region gets a centred, visible field label — so labels
  *  live above the table region, aligned to the substring in the first row below. */
-function RulerName({ name, map }: { name: string; map: (Field | null)[] }): ReactNode {
+function RulerName({
+  name,
+  map,
+  colorOf
+}: {
+  name: string
+  map: (Field | null)[]
+  colorOf: ColorOf
+}): ReactNode {
   return (
     <>
       {fieldRuns(name, map).map((r, i) =>
         r.field ? (
           <span key={i} style={{ position: 'relative', visibility: 'hidden' }}>
             {r.text}
-            <span style={{ ...rulerLabel, visibility: 'visible', color: FIELD_COLORS[r.field] }}>
+            <span style={{ ...rulerLabel, visibility: 'visible', color: colorOf(r.field) }}>
               {r.field}
             </span>
           </span>
@@ -349,6 +455,7 @@ function TeacherRow({
   name,
   map,
   armed,
+  colorOf,
   onAnnotate,
   hovered = false,
   delims
@@ -358,6 +465,7 @@ function TeacherRow({
    *  changes another row's highlight). */
   map: (Field | null)[]
   armed: Field | null
+  colorOf: ColorOf
   onAnnotate: (tokStart: number, tokEnd: number) => void
   /** the row is under the mouse — tint the cell to match the rest of the row */
   hovered?: boolean
@@ -383,7 +491,7 @@ function TeacherRow({
   // `fallback` is the idle background: a faint chip for tokens (so token boundaries read as
   // discrete units), transparent for the delimiters between them (the visual gap).
   const bgFor = (applied: Field | null, active: boolean, fallback: string): string =>
-    active && armed ? `${FIELD_COLORS[armed]}80` : applied ? `${FIELD_COLORS[applied]}59` : fallback
+    active && armed ? `${colorOf(armed)}80` : applied ? `${colorOf(applied)}59` : fallback
 
   return (
     <td
@@ -601,21 +709,34 @@ function Roadmap({
   )
 }
 
-/** UniProt fields offered by the annotation fetch (id → display label + resulting DB column).
- *  A fetch always pulls ALL of these and caches them, so toggling which are shown never refetches. */
-const UNIPROT_FIELDS: { id: string; label: string; col: string }[] = [
-  { id: 'protein_name', label: 'Protein name', col: 'proteinName' },
-  { id: 'gene_names', label: 'Gene name', col: 'geneName' },
-  { id: 'go_bp', label: 'GO: biological process', col: 'GO_BP' },
-  { id: 'go_mf', label: 'GO: molecular function', col: 'GO_MF' },
-  { id: 'go_cc', label: 'GO: cellular component', col: 'GO_CC' },
-  { id: 'kegg', label: 'KEGG pathway', col: 'keggPathway' },
-  { id: 'string', label: 'STRING', col: 'stringId' },
-  // Local DEG (Database of Essential Genes) join by UniProt accession — no network.
-  { id: 'essentiality', label: 'Essential gene (DEG)', col: 'essentiality' }
+/** Fields offered by the annotation fetch (id → display label + resulting DB column(s)). Most come
+ *  straight from UniProt; COG, MSigDB and Reactome are resolved in the main process from a UniProt
+ *  cross-reference (see main/annotate.ts). A fetch always pulls ALL of these and caches them, so
+ *  toggling which are shown never refetches. */
+const UNIPROT_FIELDS: { id: string; label: string; cols: string[] }[] = [
+  { id: 'protein_name', label: 'Protein name', cols: ['proteinName'] },
+  { id: 'gene_names', label: 'Gene name', cols: ['geneName'] },
+  // GO as ONE pick: its three aspects are fetched together (UniProt serves them as three fields,
+  // stored as three columns) and pooled by enrichment anyway — see sourceIds.
+  { id: 'go', label: 'GO', cols: ['GO_BP', 'GO_MF', 'GO_CC'] },
+  // Orthologous group via eggNOG → NCBI COG2020 (prokaryotes) / KOG (eukaryotes): the group name
+  // and its functional category.
+  { id: 'cog', label: 'COG / KOG (orthologous group)', cols: ['COG', 'cogCategory', 'cogArea'] },
+  { id: 'msigdb', label: 'MSigDB hallmark', cols: ['msigdbSet'] },
+  { id: 'kegg', label: 'KEGG pathway', cols: ['keggPathway'] },
+  { id: 'reactome', label: 'Reactome pathway', cols: ['reactomePathway'] },
+  { id: 'string', label: 'STRING', cols: ['stringId'] },
+  // Local joins by UniProt accession — no network. DEG is a cross-organism union of screens
+  // (essential-only); CEG/NEG is the curated human gold standard and also reports non-essential.
+  { id: 'essentiality', label: 'Essential gene (DEG)', cols: ['essentiality'] },
+  { id: 'ceg', label: 'Essential / non-essential (CEG–NEG, human)', cols: ['essentialityCEG'] }
 ]
 const colsForIds = (ids: string[]): string[] =>
-  UNIPROT_FIELDS.filter((f) => ids.includes(f.id)).map((f) => f.col)
+  UNIPROT_FIELDS.filter((f) => ids.includes(f.id)).flatMap((f) => f.cols)
+/** The fetch's own field ids for the picked ones: the single GO pick is the three aspects the
+ *  fetch knows separately (main/annotate.ts — go_bp / go_mf / go_cc). */
+const sourceIds = (ids: string[]): string[] =>
+  ids.flatMap((id) => (id === 'go' ? ['go_bp', 'go_mf', 'go_cc'] : [id]))
 
 /** The fetch options grouped by what they annotate. A member is either a fetchable field id from
  *  UNIPROT_FIELDS or a placeholder (`soon`) for a source not wired up yet — listed so the category
@@ -639,11 +760,9 @@ const ANN_GROUPS: AnnGroup[] = [
     id: 'function',
     label: 'Function',
     members: [
-      { id: 'go_bp', label: fieldLabel('go_bp') },
-      { id: 'go_mf', label: fieldLabel('go_mf') },
-      { id: 'go_cc', label: fieldLabel('go_cc') },
-      { id: 'cog', label: 'COG', soon: true },
-      { id: 'msigdb', label: 'MSigDB', soon: true }
+      { id: 'go', label: fieldLabel('go') },
+      { id: 'cog', label: fieldLabel('cog') },
+      { id: 'msigdb', label: fieldLabel('msigdb') }
     ]
   },
   {
@@ -651,15 +770,22 @@ const ANN_GROUPS: AnnGroup[] = [
     label: 'Pathway',
     members: [
       { id: 'kegg', label: fieldLabel('kegg') },
-      { id: 'reactome', label: 'Reactome', soon: true }
+      { id: 'reactome', label: fieldLabel('reactome') }
     ]
   },
   {
     id: 'essentiality',
     label: 'Essentiality',
-    members: [{ id: 'essentiality', label: fieldLabel('essentiality') }]
+    members: [
+      { id: 'essentiality', label: fieldLabel('essentiality') },
+      { id: 'ceg', label: fieldLabel('ceg') }
+    ]
   },
-  { id: 'interactions', label: 'Interactions', members: [{ id: 'string', label: fieldLabel('string') }] }
+  {
+    id: 'interactions',
+    label: 'Interactions',
+    members: [{ id: 'string', label: fieldLabel('string') }]
+  }
 ]
 
 /** Open/close plumbing for a floating menu portalled next to a trigger button: positions it under
@@ -759,7 +885,11 @@ function AnnCategory({
           checked={all}
           disabled={disabled}
           onChange={toggleAll}
-          title={all ? `Deselect all ${group.label.toLowerCase()}` : `Select all ${group.label.toLowerCase()}`}
+          title={
+            all
+              ? `Deselect all ${group.label.toLowerCase()}`
+              : `Select all ${group.label.toLowerCase()}`
+          }
           style={{ margin: 0, cursor: disabled ? 'default' : 'pointer' }}
         />
         <span
@@ -773,7 +903,11 @@ function AnnCategory({
           title="Choose which to fetch"
         >
           {group.label}
-          {on > 0 && !all && <span style={styles.annCatCount}>{on}/{available.length}</span>}
+          {on > 0 && !all && (
+            <span style={styles.annCatCount}>
+              {on}/{available.length}
+            </span>
+          )}
           <span style={styles.dropdownCaret}>{isOpen ? '▲' : '▼'}</span>
         </span>
       </span>
@@ -815,8 +949,16 @@ function AnnCategory({
   )
 }
 
-export function InteractiveImportDialog({ id, onClose }: { id: string; onClose: () => void }): ReactNode {
+export function InteractiveImportDialog({
+  id,
+  onClose
+}: {
+  id: string
+  onClose: () => void
+}): ReactNode {
   const mode = useUiTheme((s) => s.mode)
+  // Docked (the form workflow's details column): rendered into that pane, with no scrim.
+  const dock = useDialogDock()
   const cfg = useGraph((s) => {
     const n = s.nodes.find((x) => x.id === id)
     return n && isStep(n) && n.data.kind === 'load' ? (n.data.config as LoadConfig) : null
@@ -885,7 +1027,9 @@ export function InteractiveImportDialog({ id, onClose }: { id: string; onClose: 
         // every feature row is slow and needless; the full DB is written from the matrix on convert.
         const info = text ? parseMatrix(text) : null
         setAllRows(info?.rows ?? [])
-        setPreview(info ? { rows: info.rows.slice(0, PREVIEW_ROWS), total: info.rows.length } : null)
+        setPreview(
+          info ? { rows: info.rows.slice(0, PREVIEW_ROWS), total: info.rows.length } : null
+        )
       } catch {
         setAllRows([])
         setPreview(null)
@@ -975,10 +1119,60 @@ export function InteractiveImportDialog({ id, onClose }: { id: string; onClose: 
     setInteractive(id, { roles: next })
   }
 
-  const setCell = (i: number, key: keyof InteractiveSampleCond, value: string | boolean): void => {
+  // The custom condition axes the user added beyond the five presets, and the full field list.
+  const customConditions = interactive?.customConditions ?? []
+  const fields: Field[] = [...PRESET_FIELDS, ...customConditions]
+  const colorOf = (f: Field): string => fieldColorIn(f, customConditions)
+
+  /** Add a custom condition. Returns why the name can't be used, or null on success. The name
+   *  becomes a samplesheet column and a `@name` condition key, so it goes through the engine's own
+   *  rule rather than a second copy of it here. */
+  const addCustomCondition = (name: string): string | null => {
+    if (!validCondName(name))
+      return RESERVED_COND_NAMES.includes(name)
+        ? `“${name}” is reserved`
+        : 'Use lowercase letters, digits and _ (starting with a letter)'
+    setInteractive(id, { customConditions: [...customConditions, name] })
+    return null
+  }
+
+  /** Drop a custom condition: the axis itself, every sample's value for it, and its painted spans
+   *  (which are keyed by field name and would otherwise linger and re-highlight a stale region). */
+  const removeCustomCondition = (name: string): void => {
+    const nextConditions: Record<string, InteractiveSampleCond> = {}
+    for (const [sc, c] of Object.entries(conditions)) {
+      if (c.extra?.[name] == null) {
+        nextConditions[sc] = c
+        continue
+      }
+      const extra = { ...c.extra }
+      delete extra[name]
+      nextConditions[sc] = { ...c, extra }
+    }
+    const nextSpans: Record<string, RowSpans> = {}
+    for (const [sc, rs] of Object.entries(spans)) {
+      const next = { ...rs }
+      delete next[name]
+      nextSpans[sc] = next
+    }
+    if (armed === name) setArmed(null)
+    setInteractive(id, {
+      customConditions: customConditions.filter((n) => n !== name),
+      conditions: nextConditions,
+      spans: nextSpans as Record<string, Partial<Record<string, [number, number]>>>
+    })
+  }
+
+  const setCell = (i: number, field: Field, value: string): void => {
     const h = sampleCols[i]
     const cur = conditions[h] ?? blank(h)
-    setInteractive(id, { conditions: { ...conditions, [h]: { ...cur, [key]: value } } })
+    setInteractive(id, { conditions: { ...conditions, [h]: withCond(cur, field, value) } })
+  }
+
+  const setInclude = (i: number, on: boolean): void => {
+    const h = sampleCols[i]
+    const cur = conditions[h] ?? blank(h)
+    setInteractive(id, { conditions: { ...conditions, [h]: { ...cur, include: on } } })
   }
 
   // Refactor (bulk-rename) one condition value across every sample that carries it — e.g. rename
@@ -988,7 +1182,7 @@ export function InteractiveImportDialog({ id, onClose }: { id: string; onClose: 
     const next: Record<string, InteractiveSampleCond> = { ...conditions }
     for (const sc of sampleCols) {
       const cur = conditions[sc] ?? blank(sc)
-      if (String(cur[field] ?? '') === oldVal) next[sc] = { ...cur, [field]: newVal }
+      if (condOf(cur, field) === oldVal) next[sc] = withCond(cur, field, newVal)
     }
     setInteractive(id, { conditions: next })
   }
@@ -1019,12 +1213,12 @@ export function InteractiveImportDialog({ id, onClose }: { id: string; onClose: 
       const rowSpans: RowSpans = { ...(nextSpans[sc] ?? {}) }
       if (same) {
         delete rowSpans[field]
-        nextConditions[sc] = { ...base, [field]: '' }
+        nextConditions[sc] = withCond(base, field, '')
       } else {
         const span = applyAnchor(sc, rowSpans, desc, field, delims)
         if (!span) continue
         rowSpans[field] = span
-        nextConditions[sc] = { ...base, [field]: spanValue(sc, span, delims) }
+        nextConditions[sc] = withCond(base, field, spanValue(sc, span, delims))
         hit++
       }
       nextSpans[sc] = rowSpans
@@ -1047,7 +1241,12 @@ export function InteractiveImportDialog({ id, onClose }: { id: string; onClose: 
     const res = await detectInteractive(id, p)
     setDetecting(false)
     if (!res.ok) setMsg(`Error: ${res.error}`)
-    else setMsg(p === 'none' ? 'Cleared — assign columns or pick a preset.' : `Found ${res.count} sample columns`)
+    else
+      setMsg(
+        p === 'none'
+          ? 'Cleared — assign columns or pick a preset.'
+          : `Found ${res.count} sample columns`
+      )
   }
   // A 'custom' state has no detector — re-reading falls back to 'none' (paint nothing).
   const detectPreset: MatrixPreset = preset === 'custom' ? 'none' : preset
@@ -1124,7 +1323,11 @@ export function InteractiveImportDialog({ id, onClose }: { id: string; onClose: 
         }
         if (spec.min != null || spec.max != null) {
           const x = Number(raw)
-          if (!Number.isFinite(x) || (spec.min != null && x < spec.min) || (spec.max != null && x > spec.max)) {
+          if (
+            !Number.isFinite(x) ||
+            (spec.min != null && x < spec.min) ||
+            (spec.max != null && x > spec.max)
+          ) {
             ok = false
             break
           }
@@ -1142,17 +1345,23 @@ export function InteractiveImportDialog({ id, onClose }: { id: string; onClose: 
   // Toggling which annotation columns are shown just re-slices the cached data — no refetch.
   const setAnnotationFields = (selectedIds: string[]): void => {
     if (!annotations) return
-    setInteractive(id, { annotations: { ...annotations, fields: colsForIds(selectedIds) } })
+    // Only columns the fetched data actually holds: annotations fetched before a column existed
+    // (cogArea, say) would otherwise show it, empty, until the next fetch.
+    const held = new Set(Object.values(annotations.byId).flatMap((rec) => Object.keys(rec)))
+    const fields = colsForIds(selectedIds).filter((c) => held.has(c))
+    setInteractive(id, { annotations: { ...annotations, fields } })
   }
   // Fetch annotations for every kept feature and merge them into the DB (persisted in config,
   // written on convert). Runs in the main process (no renderer CSP) via window.api. Only the
   // SELECTED fields are fetched, but results are MERGED into any previously-fetched columns — so
   // a plain re-slice of already-fetched fields (see setAnnotationFields) never hits the network.
-  const runFetchAnnotations = async (selectedIds: string[]): Promise<void> => {
+  const runFetchAnnotations = async (selectedIds: string[], refresh = false): Promise<void> => {
     if (!idCol || annBusy) return
     const wantsString = selectedIds.includes('string')
     setAnnBusy(true)
-    setAnnMsg(wantsString ? '1/3 Fetching annotations & STRING ids (UniProt)…' : 'Fetching from UniProt…')
+    setAnnMsg(
+      wantsString ? '1/3 Fetching annotations & STRING ids (UniProt)…' : 'Fetching from UniProt…'
+    )
     try {
       const active = filterCols
         .filter((c) => filters[c]?.active)
@@ -1194,13 +1403,20 @@ export function InteractiveImportDialog({ id, onClose }: { id: string; onClose: 
         setAnnMsg('No accessions found in the ID column.')
         return
       }
-      const base = wantsString ? '1/3 Fetching annotations & STRING ids (UniProt)…' : 'Fetching from UniProt…'
+      const base = refresh
+        ? 'Re-querying UniProt (ignoring cache)…'
+        : wantsString
+          ? '1/3 Fetching annotations & STRING ids (UniProt)…'
+          : 'Fetching from UniProt…'
       const offAnn = window.api.onAnnotProgress((p) => {
-        setAnnMsg(p.total > 0 ? `${base} ${p.done}/${p.total}` : base)
+        // A `stage` means the UniProt pass is done and a downstream source is resolving — those
+        // steps have no per-accession count, so show what they're doing instead of a stale 0/0.
+        if (p.stage) setAnnMsg(p.stage)
+        else setAnnMsg(p.total > 0 ? `${base} ${p.done}/${p.total}` : base)
       })
       let res: Awaited<ReturnType<typeof window.api.fetchUniprot>>
       try {
-        res = await window.api.fetchUniprot([...accSet], selectedIds)
+        res = await window.api.fetchUniprot([...accSet], sourceIds(selectedIds), { refresh })
       } finally {
         offAnn()
       }
@@ -1275,9 +1491,13 @@ export function InteractiveImportDialog({ id, onClose }: { id: string; onClose: 
   }
 
   return createPortal(
-    <div style={{ ...cssVars(PALETTES[mode]), ...styles.overlay }}>
-      <div style={styles.scrim} onClick={onClose} />
-      <div style={styles.modal} role="dialog" aria-label="Interactive import">
+    <div style={{ ...cssVars(PALETTES[mode]), ...(dock ? DOCKED_WRAP : styles.overlay) }}>
+      {!dock && <div style={styles.scrim} onClick={onClose} />}
+      <div
+        style={dock ? { ...styles.modal, ...DOCKED_CARD } : styles.modal}
+        role="dialog"
+        aria-label="Interactive import"
+      >
         <div style={styles.head}>
           Interactive import
           <div style={{ flex: 1 }} />
@@ -1327,8 +1547,12 @@ export function InteractiveImportDialog({ id, onClose }: { id: string; onClose: 
               <Stage1
                 samples={samples}
                 spans={spans}
+                fields={fields}
+                colorOf={colorOf}
                 armed={armed}
                 setArmed={setArmed}
+                onAddCustom={addCustomCondition}
+                onRemoveCustom={removeCustomCondition}
                 onAnnotate={annotate}
                 delims={delims}
                 separator={separator}
@@ -1341,8 +1565,11 @@ export function InteractiveImportDialog({ id, onClose }: { id: string; onClose: 
             <Stage2
               samples={samples}
               spans={spans}
+              fields={fields}
+              colorOf={colorOf}
               delims={delims}
               setCell={setCell}
+              setInclude={setInclude}
               onRenameValue={renameConditionValue}
             />
           )}
@@ -1423,7 +1650,7 @@ export function InteractiveImportDialog({ id, onClose }: { id: string; onClose: 
         </div>
       </div>
     </div>,
-    document.body
+    dock ?? document.body
   )
 }
 
@@ -1569,44 +1796,31 @@ function Step1Columns({
           'Custom' lights up automatically once columns are hand-edited. */}
       <div style={styles.row}>
         <span style={styles.label}>Preset</span>
-        <div style={styles.segmented}>
-          {MATRIX_PRESETS.map(({ value, label }) => {
-            const on = preset === value
-            return (
-              <button
-                key={value}
-                onClick={() => onPreset(value)}
-                disabled={!matrix || detecting}
-                title={value === 'none' ? 'Clear all column labels' : `Auto-detect columns as ${label} output`}
-                style={{
-                  ...styles.segment,
-                  background: on ? UI.accent : 'transparent',
-                  color: on ? UI.accentText : UI.text,
-                  borderColor: on ? UI.accent : UI.border,
-                  cursor: !matrix || detecting ? 'default' : 'pointer',
-                  opacity: !matrix || detecting ? 0.6 : 1
-                }}
-              >
-                {label}
-              </button>
-            )
-          })}
-          {/* Indicator only — set automatically on manual edits, not directly clickable. */}
-          <button
-            disabled
-            title="Set automatically when you edit the column labels"
-            style={{
-              ...styles.segment,
-              background: preset === 'custom' ? UI.accent : 'transparent',
-              color: preset === 'custom' ? UI.accentText : UI.textMuted,
-              borderColor: preset === 'custom' ? UI.accent : UI.border,
-              cursor: 'default',
-              opacity: preset === 'custom' ? 1 : 0.6
-            }}
-          >
-            Custom
-          </button>
-        </div>
+        <ToggleSwitch
+          label="Preset"
+          value={preset}
+          disabled={!matrix || detecting}
+          options={[
+            ...MATRIX_PRESETS.map(({ value, label }) => ({
+              value: value as MatrixPreset | 'custom',
+              label,
+              title:
+                value === 'none'
+                  ? 'Clear all column labels'
+                  : `Auto-detect columns as ${label} output`
+            })),
+            // Indicator only — set automatically on manual edits, not directly clickable.
+            {
+              value: 'custom' as const,
+              label: 'Custom',
+              disabled: true,
+              title: 'Set automatically when you edit the column labels'
+            }
+          ]}
+          onChange={(v) => {
+            if (v !== 'custom') onPreset(v)
+          }}
+        />
       </div>
       {columns.length === 0 ? (
         <div style={styles.hint}>
@@ -1780,14 +1994,18 @@ function Step4Metadata({
   annotations?: AnnotationSet
   annBusy: boolean
   annMsg: string | null
-  onFetch: (fields: string[]) => void
+  onFetch: (fields: string[], refresh?: boolean) => void
   onSelectFields: (fields: string[]) => void
   onClearAnnotations: () => void
 }): ReactNode {
   // Which fields are ticked — seeded from an already-fetched set so a reopened wizard matches.
   const [picked, setPicked] = useState<Set<string>>(() =>
     annotations
-      ? new Set(UNIPROT_FIELDS.filter((f) => annotations.fields.includes(f.col)).map((f) => f.id))
+      ? new Set(
+          UNIPROT_FIELDS.filter((f) => f.cols.some((c) => annotations.fields.includes(c))).map(
+            (f) => f.id
+          )
+        )
       : new Set(['protein_name', 'gene_names'])
   )
   const annCols = annotations?.fields ?? []
@@ -1853,7 +2071,7 @@ function Step4Metadata({
       {/* Fetch external annotations (UniProt) by feature accession — merged into the DB and saved
           with the project. */}
       <div style={styles.annPanel}>
-        <span style={styles.annTitle}>Fetch annotations (UniProt)</span>
+        <span style={styles.annTitle}>Fetch annotations</span>
         <div style={styles.annFields}>
           {ANN_GROUPS.map((g) => (
             <AnnCategory
@@ -1869,18 +2087,45 @@ function Step4Metadata({
             />
           ))}
         </div>
-        <button
-          style={{ ...styles.btnPrimary, opacity: annBusy || picked.size === 0 ? 0.5 : 1 }}
-          disabled={annBusy || picked.size === 0}
-          onClick={() => onFetch([...picked])}
-        >
-          {annBusy ? 'Fetching…' : 'Fetch'}
-        </button>
-        {annotations && !annBusy && (
-          <button style={styles.btn} onClick={onClearAnnotations}>
-            Clear
+        {/* The actions as one unit: they wrap to a new line together, never one at a time. */}
+        <span style={styles.annActions}>
+          <button
+            style={{ ...styles.btnPrimary, opacity: annBusy || picked.size === 0 ? 0.5 : 1 }}
+            disabled={annBusy || picked.size === 0}
+            onClick={() => onFetch([...picked])}
+          >
+            {/* Both labels share one grid cell, the idle one hidden: the button is always as wide as
+              "Fetching…", so going busy doesn't widen it and push Re-fetch onto the next row. */}
+            <span style={{ display: 'inline-grid', justifyItems: 'center' }}>
+              <span style={{ gridArea: '1 / 1', visibility: annBusy ? 'hidden' : 'visible' }}>
+                Fetch
+              </span>
+              <span style={{ gridArea: '1 / 1', visibility: annBusy ? 'visible' : 'hidden' }}>
+                Fetching…
+              </span>
+            </span>
           </button>
-        )}
+          {/* Annotations are cached per accession app-wide, so a value can be stale even in a project
+            that has never fetched — hence a re-query that ignores the cache entirely. */}
+          <button
+            style={{ ...styles.btn, opacity: annBusy || picked.size === 0 ? 0.5 : 1 }}
+            disabled={annBusy || picked.size === 0}
+            title="Ignore cached annotations and query every source again"
+            onClick={() => onFetch([...picked], true)}
+          >
+            Re-fetch
+          </button>
+          {/* Disabled rather than hidden during a fetch, so the row doesn't shift as it starts. */}
+          {annotations && (
+            <button
+              style={{ ...styles.btn, opacity: annBusy ? 0.5 : 1 }}
+              disabled={annBusy}
+              onClick={onClearAnnotations}
+            >
+              Clear
+            </button>
+          )}
+        </span>
         {annMsg && (
           <span style={styles.annMsg}>
             {annBusy && (
@@ -1915,7 +2160,9 @@ function Step4Metadata({
                       e.preventDefault()
                       startResize(i, e.clientX)
                     }}
-                    onDoubleClick={() => setWidths((prev) => prev.map((w, k) => (k === i ? null : w)))}
+                    onDoubleClick={() =>
+                      setWidths((prev) => prev.map((w, k) => (k === i ? null : w)))
+                    }
                   />
                 </th>
               ))}
@@ -1951,8 +2198,12 @@ function Step4Metadata({
 function Stage1({
   samples,
   spans,
+  fields,
+  colorOf,
   armed,
   setArmed,
+  onAddCustom,
+  onRemoveCustom,
   onAnnotate,
   delims,
   separator,
@@ -1960,8 +2211,14 @@ function Stage1({
 }: {
   samples: InteractiveSampleCond[]
   spans: Record<string, RowSpans>
+  /** every condition field on offer: the five presets, then the user's custom conditions */
+  fields: Field[]
+  colorOf: ColorOf
   armed: Field | null
   setArmed: (f: Field | null) => void
+  /** add a custom condition; returns an error message when the name isn't usable, else null */
+  onAddCustom: (name: string) => string | null
+  onRemoveCustom: (name: string) => void
   onAnnotate: (refName: string, tokStart: number, tokEnd: number, activeSamples: string[]) => void
   /** effective token separator(s) (never empty) */
   delims: string[]
@@ -2036,12 +2293,13 @@ function Stage1({
       </div>
       <div ref={chipsRef} style={{ ...styles.chips, ...styles.stickyChips, top: titleH }}>
         <span style={styles.chipsLabel}>conditions</span>
-        {FIELDS.map((f) => {
+        {fields.map((f) => {
           const on = armed === f
           // `applied` = at least one sample has this field tagged. An applied chip is tinted in the
           // field colour; the currently-armed chip is the SAME colour but a stronger opacity, so the
           // current selection stands out from the merely-applied ones.
           const applied = samples.some((s) => spans[s.sample]?.[f] != null)
+          const col = colorOf(f)
           return (
             <button
               key={f}
@@ -2049,16 +2307,32 @@ function Stage1({
               title={applied ? `${f} applied — click to re-tag` : `Tag ${f}`}
               style={{
                 ...styles.chip,
-                background: on ? `${FIELD_COLORS[f]}aa` : applied ? `${FIELD_COLORS[f]}26` : 'transparent',
+                background: on ? `${col}aa` : applied ? `${col}26` : 'transparent',
                 color: UI.text,
-                borderColor: on || applied ? FIELD_COLORS[f] : UI.border
+                borderColor: on || applied ? col : UI.border
               }}
             >
-              <span style={{ ...styles.chipDot, background: FIELD_COLORS[f] }} />
+              <span style={{ ...styles.chipDot, background: col }} />
               {f}
+              {/* Only a custom condition can be dropped — the five presets are always on offer. */}
+              {!isPresetField(f) && (
+                <span
+                  role="button"
+                  aria-label={`Remove ${f}`}
+                  title={`Remove the “${f}” condition`}
+                  style={styles.chipX}
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    onRemoveCustom(f)
+                  }}
+                >
+                  ×
+                </span>
+              )}
             </button>
           )
         })}
+        <AddConditionChip taken={fields} onAdd={onAddCustom} />
         {/* Token separator the names are split on. Right-aligned; changing it re-tokenises the
             table and clears the painted spans (they're token indexes). */}
         <label style={styles.sepBox} title="Sample names are split into tokens at this separator">
@@ -2094,7 +2368,9 @@ function Stage1({
                   <input
                     type="checkbox"
                     ref={(el) => {
-                      if (el) el.indeterminate = activeSamples.length > 0 && activeSamples.length < samples.length
+                      if (el)
+                        el.indeterminate =
+                          activeSamples.length > 0 && activeSamples.length < samples.length
                     }}
                     checked={activeSamples.length === samples.length}
                     onChange={() =>
@@ -2112,6 +2388,7 @@ function Stage1({
                 <RulerName
                   name={samples[0].sample}
                   map={fieldMapFromSpans(samples[0].sample, spans[samples[0].sample] ?? {}, delims)}
+                  colorOf={colorOf}
                 />
               </td>
             </tr>
@@ -2151,6 +2428,7 @@ function Stage1({
                       name={s.sample}
                       map={fieldMapFromSpans(s.sample, spans[s.sample] ?? {}, delims)}
                       armed={armed}
+                      colorOf={colorOf}
                       onAnnotate={(st, en) => onAnnotate(s.sample, st, en, activeSamples)}
                       hovered={hovered}
                       delims={delims}
@@ -2158,10 +2436,17 @@ function Stage1({
                   ) : (
                     // Inactive: greyed-out, non-editable, but still shows its ALREADY-painted spans
                     // (faint) — excluded from the paint, its existing tags are left untouched.
-                    <td style={{ ...styles.nameCell, ...styles.dimCell, ...(hovered ? styles.hoverCell : null) }}>
+                    <td
+                      style={{
+                        ...styles.nameCell,
+                        ...styles.dimCell,
+                        ...(hovered ? styles.hoverCell : null)
+                      }}
+                    >
                       <PaintedName
                         name={s.sample}
                         map={fieldMapFromSpans(s.sample, spans[s.sample] ?? {}, delims)}
+                        colorOf={colorOf}
                         faint
                       />
                     </td>
@@ -2180,11 +2465,13 @@ function Stage1({
  *  has it. If a value has been renamed, its original is shown as small grey text below the input. */
 function ValueRefactor({
   field,
+  color,
   values,
   origOf,
   onRename
 }: {
   field: Field
+  color: string
   values: string[]
   origOf: (field: Field, value: string) => string | undefined
   onRename: (field: Field, oldVal: string, newVal: string) => void
@@ -2196,7 +2483,7 @@ function ValueRefactor({
   }
   return (
     <div style={styles.refactorRow}>
-      <span style={{ ...styles.refactorField, color: FIELD_COLORS[field] }}>{field}</span>
+      <span style={{ ...styles.refactorField, color }}>{field}</span>
       {values.map((v) => {
         const orig = origOf(field, v)
         const changed = orig !== undefined && orig !== v
@@ -2239,27 +2526,32 @@ function ValueRefactor({
 function Stage2({
   samples,
   spans,
+  fields,
+  colorOf,
   delims,
   setCell,
+  setInclude,
   onRenameValue
 }: {
   samples: InteractiveSampleCond[]
   /** sample header → field → applied token span (the source of the raw "original" value) */
   spans: Record<string, RowSpans>
+  /** every condition field on offer, presets first */
+  fields: Field[]
+  colorOf: ColorOf
   /** token separators the spans were painted under */
   delims: string[]
-  setCell: (i: number, key: keyof InteractiveSampleCond, value: string | boolean) => void
+  setCell: (i: number, field: Field, value: string) => void
+  setInclude: (i: number, on: boolean) => void
   onRenameValue: (field: Field, oldVal: string, newVal: string) => void
 }): ReactNode {
   // Only show condition columns that carry at least one value — an untagged (inactive) condition
   // is hidden rather than shown as an empty column. `include` + `sample` always show.
-  const activeFields = FIELDS.filter((f) =>
-    samples.some((s) => String(s[f] ?? '').trim() !== '')
-  )
+  const activeFields = fields.filter((f) => samples.some((s) => condOf(s, f).trim() !== ''))
   // Distinct non-empty values per active field, for the refactor panel (numeric-aware order).
   const distinctByField = activeFields.map((f) => ({
     field: f,
-    values: [...new Set(samples.map((s) => String(s[f] ?? '').trim()).filter((v) => v !== ''))].sort(
+    values: [...new Set(samples.map((s) => condOf(s, f).trim()).filter((v) => v !== ''))].sort(
       (a, b) => a.localeCompare(b, undefined, { numeric: true })
     )
   }))
@@ -2271,7 +2563,7 @@ function Stage2({
   for (const f of activeFields) {
     const bucket: Record<string, Set<string>> = {}
     for (const s of samples) {
-      const cur = String(s[f] ?? '').trim()
+      const cur = condOf(s, f).trim()
       if (cur === '') continue
       const span = spans[s.sample]?.[f]
       const orig = span ? spanValue(s.sample, span, delims) : cur
@@ -2345,13 +2637,17 @@ function Stage2({
         </div>
       )}
       {distinctByField.length > 0 && (
-        <div ref={refactorRef} style={{ ...styles.stickyChips, ...styles.stickySection, top: titleH }}>
+        <div
+          ref={refactorRef}
+          style={{ ...styles.stickyChips, ...styles.stickySection, top: titleH }}
+        >
           <div style={styles.tableTitle}>Refactor values</div>
           <div style={styles.refactorPanel}>
             {distinctByField.map(({ field, values }) => (
               <ValueRefactor
                 key={field}
                 field={field}
+                color={colorOf(field)}
                 values={values}
                 origOf={origOf}
                 onRename={onRenameValue}
@@ -2376,7 +2672,7 @@ function Stage2({
             <tr>
               {cols.map((c, i) => {
                 // Every shown field column is active (empty ones are hidden), so colour its header.
-                const active = (FIELDS as readonly string[]).includes(c)
+                const active = c !== 'include' && c !== 'sample'
                 return (
                   <th
                     key={c}
@@ -2386,7 +2682,7 @@ function Stage2({
                     style={{
                       ...styles.th,
                       top: headerH,
-                      ...(active ? { color: FIELD_COLORS[c as Field] } : null)
+                      ...(active ? { color: colorOf(c) } : null)
                     }}
                     aria-label={c === 'include' ? 'include' : undefined}
                   >
@@ -2416,7 +2712,7 @@ function Stage2({
                     <input
                       type="checkbox"
                       checked={on}
-                      onChange={(e) => setCell(i, 'include', e.target.checked)}
+                      onChange={(e) => setInclude(i, e.target.checked)}
                     />
                   </td>
                   <td
@@ -2429,8 +2725,8 @@ function Stage2({
                     <td key={f} style={styles.td}>
                       <input
                         style={{ ...styles.cellInput, ...(fixed ? { width: '100%' } : null) }}
-                        size={Math.max(String(s[f] ?? '').length, f.length, 3)}
-                        value={String(s[f] ?? '')}
+                        size={Math.max(condOf(s, f).length, f.length, 3)}
+                        value={condOf(s, f)}
                         disabled={!on}
                         onChange={(e) => setCell(i, f, e.target.value)}
                       />
@@ -2471,7 +2767,11 @@ function ValueDropdown({
   const [open, setOpen] = useState(false)
   const kept = values.filter((v) => !dropped.has(v)).length
   const summary =
-    kept === values.length ? 'All values' : kept === 0 ? 'None kept' : `${kept}/${values.length} kept`
+    kept === values.length
+      ? 'All values'
+      : kept === 0
+        ? 'None kept'
+        : `${kept}/${values.length} kept`
   // Deactivating the tile closes the menu without a state sync (derive rather than setState-in-effect).
   const isOpen = open && !disabled
   const { btnRef, menuRef, rect } = useFloatingMenu(isOpen, setOpen)
@@ -2552,8 +2852,7 @@ function FilterStage({
   const colKey = filterCols.join(' ')
   // Filter edits sync live: every control writes straight to the import config, and the stats +
   // data table below recompute immediately.
-  const setFilter = (col: string, spec: FilterSpec): void =>
-    setFilters({ ...filters, [col]: spec })
+  const setFilter = (col: string, spec: FilterSpec): void => setFilters({ ...filters, [col]: spec })
   // The per-tile checkbox: activate/deactivate a column's filter (keeping any edited values).
   const setActive = (col: string, on: boolean): void =>
     setFilters({ ...filters, [col]: { ...(filters[col] ?? {}), active: on } })
@@ -2586,7 +2885,11 @@ function FilterStage({
         }
         if (spec.min != null || spec.max != null) {
           const x = Number(raw)
-          if (!Number.isFinite(x) || (spec.min != null && x < spec.min) || (spec.max != null && x > spec.max)) {
+          if (
+            !Number.isFinite(x) ||
+            (spec.min != null && x < spec.min) ||
+            (spec.max != null && x > spec.max)
+          ) {
             ok = false
             break
           }
@@ -2627,17 +2930,24 @@ function FilterStage({
         const isActive = spec?.active === true
         const dropSet = new Set(spec?.drop ?? [])
         return (
-          <div key={col} style={isActive ? styles.filterCard : { ...styles.filterCard, ...styles.filterCardOff }}>
+          <div
+            key={col}
+            style={isActive ? styles.filterCard : { ...styles.filterCard, ...styles.filterCardOff }}
+          >
             {/* Checkbox at the far left turns the filter active; label next; controls at the right. */}
             <div style={styles.filterHead}>
               <input
                 type="checkbox"
                 checked={isActive}
-                title={isActive ? 'Active — uncheck to ignore this filter' : 'Inactive — check to enable'}
+                title={
+                  isActive ? 'Active — uncheck to ignore this filter' : 'Inactive — check to enable'
+                }
                 onChange={(e) => setActive(col, e.target.checked)}
               />
               <span style={{ ...styles.chipDot, background: numColor }} />
-              <span style={{ ...styles.filterName, ...(isActive ? null : styles.offText) }}>{col}</span>
+              <span style={{ ...styles.filterName, ...(isActive ? null : styles.offText) }}>
+                {col}
+              </span>
               <span style={styles.filterMeta}>
                 {facet.numeric
                   ? `numeric · ${facet.min}–${facet.max}`
@@ -2658,7 +2968,9 @@ function FilterStage({
                         placeholder={String(facet.min)}
                         value={spec?.min ?? ''}
                         onChange={(e) => {
-                          const v = e.target.value === '' ? null : Number(e.target.value)
+                          // Blank (or a partial entry like "-") = no bound, never NaN.
+                          const raw = Number(e.target.value)
+                          const v = e.target.value === '' || !Number.isFinite(raw) ? null : raw
                           setFilter(col, { ...spec, active: true, min: v })
                         }}
                       />
@@ -2672,7 +2984,8 @@ function FilterStage({
                         placeholder={String(facet.max)}
                         value={spec?.max ?? ''}
                         onChange={(e) => {
-                          const v = e.target.value === '' ? null : Number(e.target.value)
+                          const raw = Number(e.target.value)
+                          const v = e.target.value === '' || !Number.isFinite(raw) ? null : raw
                           setFilter(col, { ...spec, active: true, max: v })
                         }}
                       />
@@ -2916,6 +3229,32 @@ const styles: Record<string, CSSProperties> = {
     cursor: 'pointer'
   },
   chipDot: { width: 9, height: 9, borderRadius: '50%', flex: '0 0 auto' },
+  // The remove affordance on a custom condition's chip — inside the chip, right of its name.
+  chipX: {
+    marginLeft: 2,
+    marginRight: -4,
+    padding: '0 3px',
+    borderRadius: 8,
+    fontSize: 13,
+    lineHeight: 1,
+    fontWeight: 700,
+    opacity: 0.65,
+    cursor: 'pointer'
+  },
+  // The "+ condition" chip while naming: the input sits where the chip was, error text beside it.
+  addCondBox: { display: 'inline-flex', alignItems: 'center', gap: 6 },
+  addCondInput: {
+    width: 96,
+    background: UI.panelAlt,
+    color: UI.text,
+    border: `1px dashed ${UI.accent}`,
+    borderRadius: 12,
+    padding: '4px 10px',
+    fontSize: 12,
+    fontWeight: 600,
+    outline: 'none'
+  },
+  addCondErr: { fontSize: 11, color: UI.err },
   // ── Filtering stage ──
   filterStats: {
     fontSize: 13,
@@ -2956,7 +3295,13 @@ const styles: Record<string, CSSProperties> = {
   filterActions: { display: 'flex', alignItems: 'center', gap: 8, paddingTop: 2 },
   filterDirty: { fontSize: 11, color: UI.warn, fontStyle: 'italic' },
   // Reason the Next button is disabled, shown just to its left.
-  nextBlock: { fontSize: 11, color: UI.warn, alignSelf: 'center', textAlign: 'right', maxWidth: 320 },
+  nextBlock: {
+    fontSize: 11,
+    color: UI.warn,
+    alignSelf: 'center',
+    textAlign: 'right',
+    maxWidth: 320
+  },
   nextPreview: { fontSize: 12, color: UI.textMuted, alignSelf: 'center', textAlign: 'right' },
   stageTitle: { fontSize: 15, fontWeight: 700, color: UI.text, marginBottom: 2 },
   filterTools: { display: 'flex', gap: 10 },
@@ -3033,7 +3378,13 @@ const styles: Record<string, CSSProperties> = {
     boxShadow: '0 10px 30px rgba(0,0,0,0.45)'
   },
   dropdownTools: { display: 'flex', gap: 12 },
-  dropdownList: { display: 'flex', flexDirection: 'column', gap: 2, maxHeight: 200, overflow: 'auto' },
+  dropdownList: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 2,
+    maxHeight: 200,
+    overflow: 'auto'
+  },
   dropdownItem: {
     display: 'flex',
     alignItems: 'center',
@@ -3113,16 +3464,7 @@ const styles: Record<string, CSSProperties> = {
     padding: '4px 8px',
     fontSize: 12
   },
-  // Segmented toggle for the tool preset (DIA-NN / Spectronaut / MaxQuant).
-  segmented: { display: 'inline-flex', gap: 4, flexWrap: 'wrap' },
-  segment: {
-    border: `1px solid ${UI.border}`,
-    borderRadius: 12,
-    padding: '4px 12px',
-    fontSize: 11,
-    fontWeight: 600,
-    cursor: 'pointer'
-  },
+
   // Chip-style select for swapping the source data file inside the wizard.
   fileChip: {
     flex: '0 1 auto',
@@ -3261,6 +3603,7 @@ const styles: Record<string, CSSProperties> = {
   },
   annTitle: { fontSize: 12, fontWeight: 700, color: UI.text, flex: '0 0 auto' },
   annFields: { display: 'inline-flex', flexWrap: 'wrap', gap: 10 },
+  annActions: { display: 'inline-flex', alignItems: 'center', gap: 10, flex: '0 0 auto' },
   // One annotation category chip: [☐ Label n/m ▾] — the box picks the whole category, the label
   // opens its member list.
   annCatBtn: {

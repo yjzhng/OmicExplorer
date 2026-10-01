@@ -26,7 +26,8 @@ export function ResponseCompareView({
   axis,
   gene,
   title,
-  yLabel = 'log₂FC'
+  yLabel = 'log₂FC',
+  scaleRows
 }: {
   rows: ContrastResultRow[]
   displayMap: Record<string, string>
@@ -37,6 +38,9 @@ export function ResponseCompareView({
   /** y-axis title reflecting what FC1/FC2 represent (log10 abundance vs log2 fold-change); the
    *  tooltip uses it too */
   yLabel?: string
+  /** rows the y RANGE is computed over — the whole contrast, so paging genes (and switching
+   *  facets) keeps one scale and the curves stay comparable. Unset = autorange per gene. */
+  scaleRows?: ContrastResultRow[]
 }): ReactNode {
   const mode = useUiTheme((s) => s.mode)
 
@@ -72,6 +76,29 @@ export function ResponseCompareView({
     }
   }, [rows, gene, axis, displayMap])
 
+  // One shared y range across the whole contrast (error bands included), so the scale doesn't
+  // jump as the pager moves between genes. Memoized on the row array — the contrast's rows are a
+  // stable reference until it re-runs, so this is computed once per result, not per gene.
+  const yRange = useMemo((): [number, number] | null => {
+    if (!scaleRows?.length) return null
+    let lo = Infinity
+    let hi = -Infinity
+    for (const r of scaleRows) {
+      for (const [v, e] of [
+        [r.FC1, r.FC1err],
+        [r.FC2, r.FC2err]
+      ] as const) {
+        if (v == null || !Number.isFinite(v)) continue
+        const err = e != null && Number.isFinite(e) ? Math.abs(e) : 0
+        if (v - err < lo) lo = v - err
+        if (v + err > hi) hi = v + err
+      }
+    }
+    if (!(lo <= hi)) return null
+    const pad = (hi - lo || 1) * 0.05
+    return [lo - pad, hi + pad]
+  }, [scaleRows])
+
   const { data, layout } = useMemo(() => {
     const p = PALETTES[mode]
     const heading = [title, series ? series.gene : null].filter(Boolean).join(' · ')
@@ -89,7 +116,13 @@ export function ResponseCompareView({
         categoryorder: 'array',
         categoryarray: cats
       },
-      yaxis: { ...axisBase(p), title: { text: yLabel }, zeroline: true },
+      // Fixed to the contrast-wide range when one is available (see yRange); otherwise autorange.
+      yaxis: {
+        ...axisBase(p),
+        title: { text: yLabel },
+        zeroline: true,
+        ...(yRange ? { range: yRange, autorange: false } : null)
+      },
       legend: { orientation: 'h', y: -0.2, font: { size: 11 } },
       showlegend: true
     }
@@ -162,7 +195,7 @@ export function ResponseCompareView({
       ],
       layout: lay
     }
-  }, [series, mode, axis, title, yLabel])
+  }, [series, mode, axis, title, yLabel, yRange])
 
   if (!series)
     return (

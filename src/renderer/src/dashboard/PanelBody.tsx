@@ -12,12 +12,28 @@ import {
   buildScatter,
   buildIntensityScatter,
   buildVolcano,
+  enrichSourcesPresent,
+  cogAreasOf,
+  resolveEnrichSource,
+  ENRICH_SOURCE_LABEL,
+  type EnrichSource,
   type CompareResultRow,
+  type ClusterColorBy,
   type ConditionKey,
   type ContrastResultRow,
   type QcMetric,
   type StandardizeResult,
-  VALID_CONDITIONS
+  CLUSTER_COLOR,
+  condLabel,
+  condPresent,
+  condsIn,
+  condValue,
+  ctxValue,
+  customCond,
+  isCustomCond,
+  isNumericCond,
+  VALID_CONDITIONS,
+  presentStd
 } from '../engine'
 import { BubbleView } from '../ui/BubbleView'
 import { EnrichView } from '../ui/EnrichView'
@@ -34,7 +50,7 @@ import { SUBSET_TOGGLE_KINDS } from './subset'
 import { GeneBarTile } from './GeneBarTile'
 import { GeneSwitch } from './GeneSwitch'
 import { ScatterView } from '../ui/ScatterView'
-import { SwitchBar } from './SwitchBar'
+import { SwitchBar, SwitchBarToggle } from './SwitchBar'
 import { TdrTile } from './TdrTile'
 import { divergeStyle, heatStyle, valueRange } from '../ui/colormap'
 import { UI } from '../ui/theme'
@@ -65,6 +81,7 @@ import {
   type LoadConfig,
   type MAConfig,
   type NodeResult,
+  clusterLook,
   type ClusterConfig,
   type CorrConfig,
   type PlotChild,
@@ -109,22 +126,52 @@ function makeValueHeat(std: StandardizeResult): (v: unknown) => CSSProperties | 
   return heatStyle(valueRange(std.rows.map((r) => r.value)))
 }
 
+/** A table row's custom condition values hoisted to flat `@slug` keys. DataTableView addresses a
+ *  cell by one column key, and the `@` prefix (the custom condition key itself) can't collide with
+ *  a result column's name the way a bare slug like `effect` could. */
+function flatConds(r: { extra?: Record<string, string> }): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(r.extra ?? {}).map(([k, v]) => [customCond(k), v]))
+}
+
+/** Add `gene` and the flat custom condition keys to each row, ready for DataTableView. */
+function tableRows<T extends { uniqID: string; extra?: Record<string, string> }>(
+  rows: T[],
+  displayMap: Record<string, string>
+): Record<string, unknown>[] {
+  return groupByGene(rows).map((r) => ({
+    ...r,
+    gene: displayMap[r.uniqID] ?? '',
+    ...flatConds(r)
+  }))
+}
+
+/** The condition columns a table shows: presets in hierarchy order then the custom conditions,
+ *  each included only when the rows carry a value for it. Numeric conditions right-align; the
+ *  column key is the condition key itself (`@slug` for a custom one — see flatConds). `only`
+ *  restricts which PRESETS are eligible (a contrast table carries no cmpd of its own, say);
+ *  custom conditions are always eligible. */
+function condColumns(
+  rows: Array<{ extra?: Record<string, string> }>,
+  only?: ConditionKey[]
+): Column[] {
+  return condsIn(rows)
+    .filter((c) => (only ? only.includes(c) || isCustomCond(c) : true) && condPresent(rows, c))
+    .map((c) => ({
+      key: c,
+      label: condLabel(c),
+      ...(isNumericCond(c) ? { align: 'right' as const } : null)
+    }))
+}
+
 /** Standardized-table columns: each condition/replicate column is shown only when the data
  *  carries a value for it — inactive (empty) conditions are dropped rather than shown blank. */
 function stdColumns(rows: StdRow[]): Column[] {
-  const present = (c: 'cell' | 'cmpd' | 'dose' | 'time' | 'rep'): boolean =>
-    c === 'dose' || c === 'time' || c === 'rep'
-      ? rows.some((r) => r[c] != null)
-      : rows.some((r) => r[c] !== '' && r[c] != null)
   const cols: Column[] = [
     { key: 'uniqID', label: 'uniqID' },
-    { key: 'gene', label: 'gene' }
+    { key: 'gene', label: 'gene' },
+    ...condColumns(rows)
   ]
-  if (present('cell')) cols.push({ key: 'cell', label: 'cell' })
-  if (present('cmpd')) cols.push({ key: 'cmpd', label: 'cmpd' })
-  if (present('dose')) cols.push({ key: 'dose', label: 'dose', align: 'right' })
-  if (present('time')) cols.push({ key: 'time', label: 'time', align: 'right' })
-  if (present('rep')) cols.push({ key: 'rep', label: 'rep', align: 'right' })
+  if (rows.some((r) => r.rep != null)) cols.push({ key: 'rep', label: 'rep', align: 'right' })
   cols.push({ key: 'value', label: 'value', align: 'right', format: fixed(3) })
   return cols
 }
@@ -153,9 +200,9 @@ function standardizeMatrix(std: StandardizeResult): {
   const dm = std.displayMap
   const conds = std.activeConditions
   const combo = (r: StdRow): string =>
-    [...conds.map((c) => String(r[c] ?? '')), `r${r.rep ?? ''}`].join('')
+    [...conds.map((c) => String(condValue(r, c) ?? '')), `r${r.rep ?? ''}`].join('')
   const label = (r: StdRow): string => {
-    const parts = conds.map((c) => String(r[c] ?? '')).filter((x) => x !== '')
+    const parts = conds.map((c) => String(condValue(r, c) ?? '')).filter((x) => x !== '')
     if (r.rep != null) parts.push(`r${r.rep}`)
     return parts.join(' · ') || 'sample'
   }
@@ -212,7 +259,7 @@ function StdTable({
     return {
       // Colour the long view's `value` column with the same viridis heat scale as the matrix.
       columns: stdColumns(std.rows).map((c) => (c.key === 'value' ? { ...c, cellStyle: heat } : c)),
-      rows: groupByGene(std.rows).map((r) => ({ ...r, gene: std.displayMap[r.uniqID] ?? '' }))
+      rows: tableRows(std.rows, std.displayMap)
     }
   }, [std])
   const matrix = useMemo(() => standardizeMatrix(std), [std])
@@ -230,7 +277,7 @@ function StdTable({
           options={['Matrix', 'Long']}
           onChange={(v) => setView(v === 'Matrix' ? 'matrix' : 'long')}
         />
-        <ToggleSwitch label="Colour" on={colored} onChange={setColored} />
+        <SwitchBarToggle label="Colour" on={colored} onChange={setColored} />
       </div>
       <div style={{ flex: 1, minHeight: 0 }}>
         {/* key by view so the table fully remounts on toggle — otherwise its internal sort/filter
@@ -241,71 +288,11 @@ function StdTable({
   )
 }
 
-/** A labelled sliding on/off switch, styled to sit in the SwitchBar row. */
-function ToggleSwitch({
-  label,
-  on,
-  onChange
-}: {
-  label: string
-  on: boolean
-  onChange: (v: boolean) => void
-}): ReactNode {
-  return (
-    <div style={toggle.bar}>
-      <span style={toggle.label}>{label}</span>
-      <button
-        role="switch"
-        aria-checked={on}
-        aria-label={label}
-        onClick={() => onChange(!on)}
-        style={{
-          ...toggle.track,
-          background: on ? UI.accent : UI.border,
-          justifyContent: on ? 'flex-end' : 'flex-start'
-        }}
-      >
-        <span style={toggle.knob} />
-      </button>
-    </div>
-  )
-}
-
-const toggle: Record<string, CSSProperties> = {
-  bar: {
-    display: 'inline-flex',
-    alignItems: 'center',
-    gap: 6,
-    padding: '3px 10px',
-    borderBottom: `1px solid ${UI.border}`,
-    flex: '0 0 auto'
-  },
-  label: {
-    fontSize: 9,
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
-    color: UI.textMuted,
-    flex: '0 0 auto'
-  },
-  track: {
-    display: 'inline-flex',
-    alignItems: 'center',
-    width: 28,
-    height: 15,
-    borderRadius: 8,
-    padding: 2,
-    border: 'none',
-    cursor: 'pointer',
-    boxSizing: 'border-box',
-    transition: 'background 120ms'
-  },
-  knob: {
-    width: 11,
-    height: 11,
-    borderRadius: '50%',
-    background: '#fff',
-    boxShadow: '0 1px 2px rgba(0,0,0,0.4)'
-  }
+/** What the cluster tile's `plot` choice reads as on screen (the stored values are terse). */
+const PLOT_LABEL: Record<NonNullable<ClusterConfig['plot']>, string> = {
+  pc: 'PC plot',
+  loadings: 'loadings',
+  scree: 'scree plot'
 }
 
 /** Columns for a comparison table, adapted to which conditions the rows carry
@@ -316,8 +303,6 @@ function compareColumns(
   labels: EffectLabels,
   statType: 'pP' | 'pQ'
 ): Column[] {
-  const present = (c: 'cell' | 'cmpd' | 'dose' | 'time'): boolean =>
-    rows.some((r) => r[c] !== '' && r[c] != null)
   const cols: Column[] = [
     { key: 'uniqID', label: 'uniqID' },
     { key: 'gene', label: 'gene' }
@@ -326,10 +311,7 @@ function compareColumns(
   if (new Set(rows.map((r) => r.comparison)).size > 1) {
     cols.push({ key: 'comparison', label: 'comparison' })
   }
-  if (present('cell')) cols.push({ key: 'cell', label: 'cell' })
-  if (present('cmpd')) cols.push({ key: 'cmpd', label: 'cmpd' })
-  if (present('dose')) cols.push({ key: 'dose', label: 'dose', align: 'right' })
-  if (present('time')) cols.push({ key: 'time', label: 'time', align: 'right' })
+  cols.push(...condColumns(rows))
   cols.push(
     {
       key: 'log2FC',
@@ -354,7 +336,7 @@ const effectName =
 /** One context value in a matrix column header: dose/time carry their name ("dose 10") since a
  *  bare number is ambiguous; cell/cmpd values speak for themselves ("WT", "Amk"). */
 const ctxLabel = (c: ConditionKey, v: unknown): string =>
-  c === 'dose' || c === 'time' ? `${c} ${v}` : String(v)
+  isNumericCond(c) || isCustomCond(c) ? `${condLabel(c)} ${v}` : String(v)
 
 /** A value column a matrix view can show in its cells. */
 interface MatrixField {
@@ -464,11 +446,11 @@ function compareMatrix(
 ): { columns: Column[]; rows: Record<string, unknown>[] } {
   const consumed = new Set<string>()
   for (const r of rows) for (const p of r.cmp_cond.split(':')) if (p) consumed.add(p)
-  const ctxDims = VALID_CONDITIONS.filter(
-    (c) => !consumed.has(c) && rows.some((r) => r[c] != null && r[c] !== '')
+  const ctxDims = condsIn(rows).filter(
+    (c) => !consumed.has(c) && rows.some((r) => ctxValue(r, c) != null && ctxValue(r, c) !== '')
   )
   return pivotMatrix(rows, displayMap, field, (r) =>
-    [r.comparison, ...ctxDims.map((c) => ctxLabel(c, r[c]))].join(' · ')
+    [r.comparison, ...ctxDims.map((c) => ctxLabel(c, ctxValue(r, c)))].join(' · ')
   )
 }
 
@@ -509,7 +491,7 @@ function CompareTable({
   const long = useMemo(
     () => ({
       columns: compareColumns(rows, analysis, effectLabels, statType),
-      rows: groupByGene(rows).map((r) => ({ ...r, gene: displayMap[r.uniqID] ?? '' }))
+      rows: tableRows(rows, displayMap)
     }),
     [rows, analysis, effectLabels, displayMap, statType]
   )
@@ -537,7 +519,7 @@ function CompareTable({
             onChange={(v) => setFieldKey(fields.find((f) => f.label === v)?.key ?? fieldKey)}
           />
         )}
-        {view === 'matrix' && <ToggleSwitch label="Colour" on={colored} onChange={setColored} />}
+        {view === 'matrix' && <SwitchBarToggle label="Colour" on={colored} onChange={setColored} />}
       </div>
       <div style={{ flex: 1, minHeight: 0 }}>
         {/* key by view + field so the table fully remounts on toggle — its internal sort/filter
@@ -563,15 +545,11 @@ function axisChoices(
 
 /** Columns for a contrast (compare-vs-compare) table. */
 function contrastColumns(rows: ContrastResultRow[]): Column[] {
-  const present = (c: 'cell' | 'dose' | 'time'): boolean =>
-    rows.some((r) => r[c] != null && r[c] !== '')
   const cols: Column[] = [
     { key: 'uniqID', label: 'uniqID' },
-    { key: 'gene', label: 'gene' }
+    { key: 'gene', label: 'gene' },
+    ...condColumns(rows, ['cell', 'dose', 'time'])
   ]
-  if (present('cell')) cols.push({ key: 'cell', label: 'cell' })
-  if (present('dose')) cols.push({ key: 'dose', label: 'dose', align: 'right' })
-  if (present('time')) cols.push({ key: 'time', label: 'time', align: 'right' })
   cols.push(
     { key: 'FC1', label: 'FC1', align: 'right', format: fixed(3) },
     { key: 'FC2', label: 'FC2', align: 'right', format: fixed(3) },
@@ -592,18 +570,16 @@ function contrastMatrix(
   displayMap: Record<string, string>,
   field: MatrixField
 ): { columns: Column[]; rows: Record<string, unknown>[] } {
-  const dims = (['cell', 'cmpd', 'dose', 'time'] as const).filter((c) =>
-    rows.some((r) => r[c] != null && r[c] !== '')
-  )
+  const dims = condsIn(rows).filter((c) => condPresent(rows, c))
   // Column label → its raw context tuple, kept for the numeric-aware ordering below.
   const tupleOf = new Map<string, unknown[]>()
   const colOf = (r: ContrastResultRow): string => {
     if (!dims.length) return field.label
-    const label = dims.map((c) => ctxLabel(c, r[c] ?? '')).join(' · ')
+    const label = dims.map((c) => ctxLabel(c, ctxValue(r, c) ?? '')).join(' · ')
     if (!tupleOf.has(label))
       tupleOf.set(
         label,
-        dims.map((c) => r[c] ?? '')
+        dims.map((c) => ctxValue(r, c) ?? '')
       )
     return label
   }
@@ -650,7 +626,7 @@ function ContrastTable({
   const long = useMemo(
     () => ({
       columns: contrastColumns(rows),
-      rows: groupByGene(rows).map((r) => ({ ...r, gene: displayMap[r.uniqID] ?? '' }))
+      rows: tableRows(rows, displayMap)
     }),
     [rows, displayMap]
   )
@@ -676,7 +652,7 @@ function ContrastTable({
             onChange={(v) => setFieldKey(fields.find((f) => f.label === v)?.key ?? fieldKey)}
           />
         )}
-        {view === 'matrix' && <ToggleSwitch label="Colour" on={colored} onChange={setColored} />}
+        {view === 'matrix' && <SwitchBarToggle label="Colour" on={colored} onChange={setColored} />}
       </div>
       <div style={{ flex: 1, minHeight: 0 }}>
         {/* key by view + field: the table remounts on toggle so sort/filter state doesn't leak. */}
@@ -788,7 +764,8 @@ export function PanelBody({
   if (kind === 'standardize') {
     if (result?.kind !== 'standardize')
       return <Empty text="Run this tile to produce the clean data table." />
-    return <StdTable std={result.std} />
+    // Shown on Clean data's chosen scale (its log-transform); analyses read the linear rows.
+    return <StdTable std={presentStd(result.std)} />
   }
   if (kind === 'compare') {
     if (result?.kind !== 'compare')
@@ -823,7 +800,7 @@ export function PanelBody({
     const view = (cfgSource as TableConfig).view
     if (!upstream) return <Empty text="Connect a Clean data, Compare, or Contrast tile." />
     if (upstream.kind === 'standardize')
-      return <StdTable key={view} std={upstream.std} initialView={view} />
+      return <StdTable key={view} std={presentStd(upstream.std)} initialView={view} />
     if (upstream.kind === 'compare') {
       const upCfg = upStep?.data.config as CompareConfig | undefined
       return (
@@ -917,6 +894,10 @@ export function PanelBody({
             displayMap={upstream.displayMap}
             maxGenes={heatmapCapOn(cfg) ? cfg.maxGenes : 0}
             focus={focus}
+            // Remount on a flip: it swaps which screen axis carries which data, and Plotly's
+            // key-by-key react diff can leave the previous orientation's own keys behind (a
+            // colourbar's placement, an axis side). A fresh div starts clean.
+            key={cfg.orient ?? 'auto'}
             orient={cfg.orient}
           />
         </div>
@@ -927,7 +908,13 @@ export function PanelBody({
       return <Empty text="Connect a Clean data or Compare tile and run it." />
     return (
       <div style={styles.chart}>
-        <HeatmapTile std={upstream.std} log10={cfg.log10} focus={focus} orient={cfg.orient} />
+        <HeatmapTile
+          key={cfg.orient ?? 'auto'}
+          std={upstream.std}
+          log10={cfg.log10}
+          focus={focus}
+          orient={cfg.orient}
+        />
       </div>
     )
   }
@@ -1000,6 +987,7 @@ export function PanelBody({
               topGenes={geneCapOn(cfg) ? cfg.topGenes : 0}
               displayMap={dm}
               focus={focus}
+              key={cfg.orient ?? 'auto'}
               orient={cfg.orient}
               valueKind={upstream.ctr.valueKind}
             />
@@ -1084,6 +1072,9 @@ export function PanelBody({
                         axis={axis}
                         gene={gene}
                         yLabel={yLabel}
+                        // One y scale for the WHOLE contrast, so paging genes (or switching
+                        // facets) doesn't rescale and the curves stay comparable.
+                        scaleRows={upstream.ctr.rows}
                       />
                     )}
                   </FacetedPlot>
@@ -1167,6 +1158,7 @@ export function PanelBody({
                   topGenes={geneCapOn(cfg) ? cfg.topGenes : 0}
                   displayMap={dm}
                   focus={focus}
+                  key={cfg.orient ?? 'auto'}
                   orient={cfg.orient}
                 />
               )}
@@ -1203,26 +1195,66 @@ export function PanelBody({
       return <Empty text="Select a gene to plot its bars." />
     return (
       <div style={styles.chart}>
-        <GeneBarTile std={upstream.std} genes={genes} orient={(cfgSource as BarConfig).orient} />
+        <GeneBarTile
+          key={(cfgSource as BarConfig).orient ?? 'auto'}
+          std={upstream.std}
+          genes={genes}
+          orient={(cfgSource as BarConfig).orient}
+        />
       </div>
     )
   }
   if (kind === 'pca') {
     const cfg = cfgSource as ClusterConfig
-    const display = cfg.display ?? 'centroid'
+    // What marks the data, and the territory outlining it — from old configs too (clusterLook).
+    const { data: display, territory } = clusterLook(cfg)
+    // Every write sets both, so an old combined 'territory' display becomes the two settings.
+    const patchLook = (next: Partial<ReturnType<typeof clusterLook>>): void =>
+      patchConfig({
+        display: next.data ?? display,
+        outline: next.territory ?? territory
+      })
     const legend = cfg.legend ?? 'simple'
+    // All three plots are PCA notions, so the choice is only offered (and only honoured) for PCA.
+    const plot = cfg.method === 'pca' ? (cfg.plot ?? 'pc') : 'pc'
+    const scree = plot === 'scree'
     // Colour-by options are the Standardize's active conditions. Keep the current value
     // selectable if it's off-list.
     const active: ConditionKey[] =
       upstream?.kind === 'standardize'
         ? upstream.std.activeConditions
-        : (['cell', 'cmpd', 'dose', 'time'] as ConditionKey[])
-    const colorOpts = active.includes(cfg.colorBy) ? active : [cfg.colorBy, ...active]
+        : (VALID_CONDITIONS as ConditionKey[])
+    // `cluster` sits alongside the conditions: same question ("what do the colours mean?"), one
+    // control. A stored colorBy that isn't in the upstream's conditions stays selectable.
+    const byCluster = cfg.colorBy === CLUSTER_COLOR
+    const conds: ClusterColorBy[] = active.includes(cfg.colorBy as ConditionKey)
+      ? active
+      : byCluster
+        ? active
+        : [cfg.colorBy, ...active]
+    const colorOpts: string[] = [...conds, CLUSTER_COLOR]
+    const clusterOn = cfg.clusterOn ?? 'coords'
+    const clusterCount = cfg.clusterCount ?? 'fixed'
     const withBar = (body: ReactNode): ReactNode => (
       <div style={styles.chart}>
         <div style={styles.stack}>
           <div style={{ display: 'flex', flexWrap: 'wrap' }}>
-            {quickOn(cfg, 'legend') && (
+            {cfg.method === 'pca' && quickOn(cfg, 'plot', 'pca') && (
+              <SwitchBar
+                label="plot"
+                value={PLOT_LABEL[plot]}
+                options={Object.values(PLOT_LABEL)}
+                onChange={(v) =>
+                  patchConfig({
+                    plot: (Object.keys(PLOT_LABEL) as Array<ClusterConfig['plot'] & string>).find(
+                      (k) => PLOT_LABEL[k] === v
+                    )
+                  })
+                }
+              />
+            )}
+            {/* Everything below styles the embedding scatter, which the scree plot replaces. */}
+            {!scree && quickOn(cfg, 'legend', 'pca') && (
               <SwitchBar
                 label="legend"
                 value={legend}
@@ -1232,20 +1264,46 @@ export function PanelBody({
             )}
             {/* In complex mode colour is driven by every varying condition, so the single
                 colour-by choice no longer applies. */}
-            {legend === 'simple' && quickOn(cfg, 'colorBy') && (
+            {!scree && legend === 'simple' && quickOn(cfg, 'colorBy', 'pca') && (
               <SwitchBar
                 label="colour by"
                 value={cfg.colorBy}
                 options={colorOpts}
+                optionLabel={(o) => (o === CLUSTER_COLOR ? o : condLabel(o as ConditionKey))}
                 onChange={(v) => patchConfig({ colorBy: v })}
               />
             )}
-            {quickOn(cfg, 'display') && (
+            {/* Both cluster knobs only mean anything while the colours ARE clusters. */}
+            {!scree && legend === 'simple' && byCluster && quickOn(cfg, 'clusterOn', 'pca') && (
               <SwitchBar
-                label="show"
-                value={display === 'replicate' ? 'data' : 'centroid'}
-                options={['centroid', 'data']}
-                onChange={(v) => patchConfig({ display: v === 'data' ? 'replicate' : 'centroid' })}
+                label="cluster on"
+                value={clusterOn}
+                options={['coords', 'features']}
+                onChange={(v) => patchConfig({ clusterOn: v as ClusterConfig['clusterOn'] })}
+              />
+            )}
+            {!scree && legend === 'simple' && byCluster && quickOn(cfg, 'clusterCount', 'pca') && (
+              <SwitchBar
+                label="count"
+                value={clusterCount}
+                options={['fixed', 'conditions', 'auto']}
+                onChange={(v) => patchConfig({ clusterCount: v as ClusterConfig['clusterCount'] })}
+              />
+            )}
+            {!scree && quickOn(cfg, 'display', 'pca') && (
+              <SwitchBar
+                label="data"
+                value={display}
+                options={['replicate', 'centroid']}
+                onChange={(v) => patchLook({ data: v as 'replicate' | 'centroid' })}
+              />
+            )}
+            {!scree && quickOn(cfg, 'territory', 'pca') && (
+              <SwitchBar
+                label="territory"
+                value={territory}
+                options={['hull', 'gaussian', 'none']}
+                onChange={(v) => patchLook({ territory: v as 'hull' | 'gaussian' | 'none' })}
               />
             )}
             {/* PCA computation parameters (scaling, missing, normalize, features, transform,
@@ -1261,6 +1319,9 @@ export function PanelBody({
           std={upstream.std}
           method={cfg.method}
           colorBy={cfg.colorBy}
+          clusterOn={cfg.clusterOn}
+          clusterCount={cfg.clusterCount}
+          clusterK={cfg.clusterK}
           scale={cfg.scale}
           missing={cfg.missing}
           center={cfg.center}
@@ -1268,6 +1329,9 @@ export function PanelBody({
           transform={cfg.transform}
           replicates={cfg.replicates}
           display={display}
+          territory={territory}
+          plot={plot}
+          loadings={cfg.loadings}
           legend={legend}
         />
       )
@@ -1276,12 +1340,19 @@ export function PanelBody({
   if (kind === 'enrich') {
     if (upstream?.kind !== 'compare') return <Empty text="Connect a Compare tile and run it." />
     const cfg = cfgSource as EnrichConfig
-    const source = cfg.source ?? 'go'
     const method = cfg.method ?? 'ora'
     // 'ridge' is GSEA-only; fall back to dot if a persisted ridge style meets ORA.
     const style = cfg.style === 'ridge' && method !== 'gsea' ? 'dot' : (cfg.style ?? 'dot')
     const styleOpts = method === 'gsea' ? ['dot', 'bar', 'ridge'] : ['dot', 'bar']
     const ann = upstream.annotationMap ?? {}
+    const cats = upstream.keggCategories ?? NO_CATS
+    // Only offer term sets these genes actually carry. If the saved source isn't one of them the
+    // tile falls back through ENRICH_FALLBACK to one that is, rather than an error the user can't
+    // act on — display only, the config keeps what it had (same as the GSEA-only ridge style
+    // falling back to dot above).
+    const sources = enrichSourcesPresent(ann, cats)
+    const saved = cfg.source ?? 'go'
+    const source = resolveEnrichSource(saved, sources) ?? saved
     const unmet = unmetRequirement('enrich', { ...cfg, source }, factsOf(upstream))
     const withBar = (body: ReactNode): ReactNode => (
       <div style={styles.chart}>
@@ -1295,11 +1366,12 @@ export function PanelBody({
                 onChange={(v) => patchConfig({ method: v })}
               />
             )}
-            {quickOn(cfg, 'source') && (
+            {quickOn(cfg, 'source') && sources.length > 1 && (
               <SwitchBar
                 label="terms"
                 value={source}
-                options={['go', 'kegg']}
+                options={sources}
+                optionLabel={(o) => ENRICH_SOURCE_LABEL[o as EnrichSource] ?? o}
                 onChange={(v) => patchConfig({ source: v })}
               />
             )}
@@ -1328,7 +1400,12 @@ export function PanelBody({
                 topTerms: cfg.topTerms,
                 annotationMap: ann,
                 displayMap: upstream.displayMap,
-                keggCategories: source === 'kegg' ? (upstream.keggCategories ?? NO_CATS) : undefined
+                // The category level's terms, for a tile still saved on it.
+                keggCategories: source.startsWith('kegg') ? cats : undefined,
+                // How the terms are grouped and coloured: KEGG pathways by category, COG
+                // categories by area.
+                termGroups:
+                  source === 'kegg' ? cats : source === 'cog' ? cogAreasOf(ann) : undefined
               })
             }
             deps={[

@@ -5,7 +5,6 @@
 import { Fragment, useMemo, useState, type CSSProperties, type ReactNode } from 'react'
 import type { Edge } from '@xyflow/react'
 
-import { facetDims, type ContextRow } from '../engine'
 import {
   deriveGroups,
   expandMembers,
@@ -13,15 +12,15 @@ import {
   topoStepOrder,
   type AnalysisGroup
 } from '../graph/groups'
-import { NODE_SPECS } from '../graph/registry'
+import { NODE_SPECS, stepTitle } from '../graph/registry'
 import { useGraph } from '../graph/store'
 import { isStep, type NodeResult, type PlotGroupConfig, type StepNode } from '../graph/types'
 import type { PanelLayoutItem } from '../graph/types'
-import { GeneSelectMenu } from '../ui/GeneSelectMenu'
 import { UI } from '../ui/theme'
 import { useAppView } from '../ui/useAppView'
 import { DashboardGrid } from './DashboardGrid'
-import { EMPTY_SEL, resolveFacets, useFacet } from './facet'
+import { EMPTY_SEL, useFacet } from './facet'
+import { FacetContextBar } from './FacetContextBar'
 import { autoLayout, geometryChanged, reconcileLayout, type PanelLayout } from './panels'
 import { PanelTile } from './PanelTile'
 
@@ -34,24 +33,18 @@ function groupComparisons(group: AnalysisGroup, results: Record<string, NodeResu
 }
 
 /** Tab label = the step tile's user-given name if set, else its type label (kind, e.g.
- *  "Compare"). What's actually being compared lives in the hover tooltip (groupTitle). */
-function groupLabel(group: AnalysisGroup, name?: string): string {
-  return name || NODE_SPECS[group.kind].label
+ *  "Compare"). What's actually being compared lives in the hover tooltip (groupTitle).
+ *
+ *  Reads the ROOT NODE's kind, not `group.kind`: the latter is the group's OUTPUT kind, so a Merge
+ *  (which emits a Clean-data result) would otherwise label its tab "Clean data". */
+function groupLabel(group: AnalysisGroup, root?: StepNode): string {
+  return root ? stepTitle(root) : NODE_SPECS[group.kind].label
 }
 
 /** Full comparison list for the tab's hover tooltip (the label itself is trimmed). */
 function groupTitle(group: AnalysisGroup, results: Record<string, NodeResult>): string {
   const comps = groupComparisons(group, results)
   return comps.length ? comps.join(', ') : group.label
-}
-
-/** Pick a gene's protein description from its annotation record: the UniProt `proteinName` column
- *  first, else a data column whose name reads like a protein name / description / product. */
-function pickDesc(rec: Record<string, string> | undefined): string | undefined {
-  if (!rec) return undefined
-  if (rec.proteinName) return rec.proteinName
-  const key = Object.keys(rec).find((c) => /protein[_. ]?name|description|product/i.test(c))
-  return key ? rec[key] : undefined
 }
 
 export function ResultsView(): ReactNode {
@@ -62,12 +55,21 @@ export function ResultsView(): ReactNode {
   const setGroupLayout = useGraph((s) => s.setGroupLayout)
   const groupMeta = useGraph((s) => s.groupMeta)
   const reorderGroups = useGraph((s) => s.reorderGroups)
-  const editMode = useAppView((s) => s.editMode)
-  const toggleEdit = useAppView((s) => s.toggleEdit)
   // Active tab lives in the app-view store (not local state) so it survives Results unmounting
   // when you switch to the canvas — returning lands on the same tab, not the first.
   const activeId = useAppView((s) => s.resultsTab)
   const setResultsTab = useAppView((s) => s.setResultsTab)
+  const setView = useAppView((s) => s.setView)
+  // Back to the canvas — the counterpart of the canvas's "Results →" button.
+  const backToWorkflow = (
+    <button
+      style={styles.backBtn}
+      onClick={() => setView('canvas')}
+      title="Back to the workflow canvas"
+    >
+      ← Workflow
+    </button>
+  )
   // Tab being dragged (rootId) and the insertion index a drop would land at (0..n), for the live
   // placeholder shown between tabs while dragging.
   const [dragId, setDragId] = useState<string | null>(null)
@@ -118,136 +120,10 @@ export function ResultsView(): ReactNode {
 
   const nodeById = useMemo(() => new Map(nodes.filter(isStep).map((n) => [n.id, n])), [nodes])
 
-  // uniqID → display name, merged across every result's displayMap, so the selected-genes chips
-  // can show gene names for the pinned selection (which carries only ids).
-  const geneLabels = useMemo(() => {
-    const m: Record<string, string> = {}
-    for (const r of Object.values(results)) {
-      const dm = r.kind === 'standardize' ? r.std.displayMap : r.displayMap
-      if (dm) for (const k in dm) if (!(k in m)) m[k] = dm[k]
-    }
-    return m
-  }, [results])
-  // Merged per-gene annotations across EVERY result that carries them — Standardize (std) as well as
-  // Compare — so the description (proteinName) and pathway tags show even in a Standardize-only flow
-  // (previously only Compare results were read, so a Standardize-driven menu had no proteinName).
-  const annById = useMemo(() => {
-    const m: Record<string, Record<string, string>> = {}
-    for (const r of Object.values(results)) {
-      const am =
-        r.kind === 'standardize'
-          ? r.std.annotationMap
-          : r.kind === 'compare'
-            ? r.annotationMap
-            : undefined
-      if (!am) continue
-      for (const id in am) {
-        const rec = m[id] ?? (m[id] = {})
-        for (const c in am[id]) if (rec[c] == null) rec[c] = am[id][c]
-      }
-    }
-    return m
-  }, [results])
-  // Pathway → BRITE category, merged the same way (Standardize + Compare).
-  const kcatAll = useMemo(() => {
-    const m: Record<string, string> = {}
-    for (const r of Object.values(results)) {
-      const kc =
-        r.kind === 'standardize'
-          ? r.std.keggCategories
-          : r.kind === 'compare'
-            ? r.keggCategories
-            : undefined
-      if (kc) for (const k in kc) if (!(k in m)) m[k] = kc[k]
-    }
-    return m
-  }, [results])
-  // Genes grouped pathway-CATEGORY → PATHWAY → gene for the multi-select menu. Pathways come from the
-  // merged per-gene annotationMap (keggPathway; ';'/'|'-separated); each pathway's category from the
-  // merged keggCategories map (BRITE top level). A gene appears under every pathway it's annotated
-  // with. Genes with no pathway → "No pathway"; pathways with no known category → "Other".
-  const geneCategories = useMemo(() => {
-    const ann = annById
-    const kcat = kcatAll
-    const NONE = 'No pathway'
-    const OTHER = 'Other'
-    type Gene = { id: string; label: string }
-    // category → pathway → genes
-    const cats = new Map<string, Map<string, Gene[]>>()
-    const put = (cat: string, path: string, gene: Gene): void => {
-      let byPath = cats.get(cat)
-      if (!byPath) cats.set(cat, (byPath = new Map()))
-      const arr = byPath.get(path)
-      if (arr) arr.push(gene)
-      else byPath.set(path, [gene])
-    }
-    for (const id in geneLabels) {
-      const gene = { id, label: geneLabels[id], desc: pickDesc(ann[id]) }
-      const paths = [
-        ...new Set(
-          (ann[id]?.keggPathway ?? '')
-            .split(/[;|]/)
-            .map((s) => s.trim())
-            .filter(Boolean)
-        )
-      ]
-      if (paths.length === 0) put(NONE, NONE, gene)
-      else for (const pw of paths) put(kcat[pw] ?? OTHER, pw, gene)
-    }
-    const byName = (a: string, b: string): number =>
-      a.localeCompare(b, undefined, { numeric: true })
-    // "No pathway"/"Other" sink to the bottom; genes and pathways sorted by name.
-    const rank = (name: string): number => (name === NONE ? 2 : name === OTHER ? 1 : 0)
-    return [...cats.entries()]
-      .sort((a, b) => rank(a[0]) - rank(b[0]) || byName(a[0], b[0]))
-      .map(([name, byPath]) => ({
-        name,
-        pathways: [...byPath.entries()]
-          .sort((a, b) => byName(a[0], b[0]))
-          .map(([pw, genes]) => ({
-            name: pw,
-            genes: genes.sort((x, y) => byName(x.label, y.label))
-          }))
-      }))
-  }, [annById, kcatAll, geneLabels])
-
-  // Genes grouped by essentiality — Essential / NA — a flat two-level tree for the menu's second
-  // tab. Backed by DEG (Database of Essential Genes, essential-only), so the model is binary: a gene
-  // flagged essential lands in Essential; everything else (not in DEG, or unannotated) is NA. The
-  // flag is read from any per-gene annotation column whose name mentions "essential".
-  const geneEssentiality = useMemo(() => {
-    const ann = annById
-    // Which annotation column carries essentiality, if any.
-    const essCol = [...new Set(Object.values(ann).flatMap((rec) => Object.keys(rec)))].find((c) =>
-      /essential/i.test(c)
-    )
-    // DEG is essential-only: a positive flag → Essential, anything else → NA.
-    const isEssential = (v: string | undefined): boolean => {
-      const s = (v ?? '').trim().toLowerCase()
-      if (s === '' || s.startsWith('non')) return false
-      return s.includes('essential') || s === 'e' || s === 'yes' || s === 'true' || s === '1'
-    }
-    const byName = (a: string, b: string): number =>
-      a.localeCompare(b, undefined, { numeric: true })
-    const buckets: Record<'Essential' | 'NA', { id: string; label: string; desc?: string }[]> = {
-      Essential: [],
-      NA: []
-    }
-    for (const id in geneLabels)
-      buckets[essCol && isEssential(ann[id]?.[essCol]) ? 'Essential' : 'NA'].push({
-        id,
-        label: geneLabels[id],
-        desc: pickDesc(ann[id])
-      })
-    return (['Essential', 'NA'] as const).map((name) => ({
-      name,
-      genes: buckets[name].sort((x, y) => byName(x.label, y.label))
-    }))
-  }, [annById, geneLabels])
-
   if (groups.length === 0) {
     return (
       <div style={styles.view}>
+        <div style={styles.tabRow}>{backToWorkflow}</div>
         <div style={styles.empty}>
           No analyses yet. Add a Clean data, Compare, or Contrast step with its plots on the canvas.
         </div>
@@ -259,8 +135,19 @@ export function ResultsView(): ReactNode {
     <div style={styles.view}>
       <div style={styles.header}>
         <div style={styles.tabRow}>
+          {backToWorkflow}
+          {/* Named like the condition switchers below ("DOSE", "TIME", …): this row picks the data. */}
+          <span style={styles.tabLabel}>Data</span>
           <div
+            className="oe-tabscroll"
             style={styles.tabs}
+            // A plain mouse wheel only scrolls vertically; turn it sideways here so a long row of
+            // tabs can be scrolled without a trackpad or shift. Horizontal input passes through.
+            onWheel={(e) => {
+              const el = e.currentTarget
+              if (Math.abs(e.deltaY) > Math.abs(e.deltaX) && el.scrollWidth > el.clientWidth)
+                el.scrollLeft += e.deltaY
+            }}
             // Dropping anywhere in the row uses the last-computed insertion index.
             onDragOver={(e) => {
               if (dragId) e.preventDefault()
@@ -306,7 +193,7 @@ export function ResultsView(): ReactNode {
                     }}
                     title={groupTitle(g, results)}
                   >
-                    {groupLabel(g, nodeById.get(g.rootId)?.data.name)}
+                    {groupLabel(g, nodeById.get(g.rootId))}
                     {/* Real panel count: plot groups unfold into one panel per subcard, so this
                         matches the tiles actually shown (a folded group is not counted as 1). */}
                     <span style={styles.tabCount}>{expandMembers(g.memberIds, nodes).length}</span>
@@ -317,34 +204,11 @@ export function ResultsView(): ReactNode {
             {dropIndex === groups.length && dragId && <div style={styles.dropMark} />}
           </div>
         </div>
-        {/* Controls row below the tabs: the shared condition switchers on the left, the gene
-            selector and layout toggle pinned right. Keeping these off the tab row lets the tabs
-            scroll horizontally on their own when many analyses don't fit, and keeps the gene
-            selector / Edit-layout controls fixed regardless of how far the tabs are scrolled.
-            FacetContextBar renders nothing for a non-faceted group — the right controls remain. */}
+        {/* Controls row below the tabs: the shared condition switchers. Kept off the tab row so
+            the tabs scroll horizontally on their own when many analyses don't fit. The gene
+            selector lives in the top nav, shared with the workflow view. */}
         <div style={styles.controlRow}>
           {active && <FacetContextBar group={active} results={results} />}
-          <div style={styles.controlRight}>
-            {/* Searchable multi-select of all genes (drives the pinned selection). */}
-            <GeneSelectMenu
-              tabs={[
-                { key: 'pathway', label: 'Pathway', categories: geneCategories },
-                { key: 'essentiality', label: 'Essentiality', categories: geneEssentiality }
-              ]}
-            />
-            <button
-              onClick={toggleEdit}
-              title={editMode ? 'Done editing layout' : 'Edit dashboard layout'}
-              style={{
-                ...styles.editBtn,
-                background: editMode ? UI.accent : 'transparent',
-                color: editMode ? UI.accentText : UI.text,
-                borderColor: editMode ? UI.accent : UI.border
-              }}
-            >
-              {editMode ? 'Done' : 'Edit layout'}
-            </button>
-          </div>
         </div>
       </div>
       <div style={styles.panes}>
@@ -369,7 +233,6 @@ export function ResultsView(): ReactNode {
                 edges={edges}
                 results={results}
                 saved={groupLayouts[g.id] as PanelLayout | undefined}
-                editing={editMode}
                 onLayout={setGroupLayout}
               />
             </div>
@@ -379,80 +242,12 @@ export function ResultsView(): ReactNode {
   )
 }
 
-/** The shared facet switcher for one analysis group, shown on the results tab row. Reads
- *  the group's comparison rows for the full context (cell/dose/time) and writes the one
- *  selection every FacetedPlot in the group follows. Renders nothing for a non-faceted
- *  group (e.g. a Standardize's heatmap/bar/cluster). */
-function FacetContextBar({
-  group,
-  results
-}: {
-  group: AnalysisGroup
-  results: Record<string, NodeResult>
-}): ReactNode {
-  const r = results[group.rootId]
-  const rows: ContextRow[] | null =
-    r?.kind === 'compare' ? r.cmp.rows : r?.kind === 'contrast' ? r.ctr.rows : null
-  const sel = useFacet((s) => s.sel[group.id]) ?? EMPTY_SEL
-  const setLevel = useFacet((s) => s.setLevel)
-  const bars = useMemo(() => {
-    if (!rows) return []
-    const dims = facetDims(rows)
-    return dims.length ? resolveFacets(rows, dims, sel).bars : []
-  }, [rows, sel])
-  if (!bars.length) return null
-  return (
-    <div style={styles.facetBar}>
-      {bars.map(({ dim, value, options }) => (
-        <div key={dim} style={styles.facetGroup} role="tablist" aria-label={`${dim} level`}>
-          <span style={styles.facetLabel}>{dim}</span>
-          {/* Fused pill, matching the main-nav Workflow/Results switch and the in-plot
-              SwitchBar: a rounded track whose active level is an accent-filled chip. */}
-          <div style={styles.facetPill}>
-            {options.map(({ value: v, onlyOn }) => {
-              const on = String(v) === String(value)
-              // One-sided contrast level (outer-join rows with nothing to pair): greyed, not
-              // selectable — the tooltip says which side has the data.
-              return (
-                <button
-                  key={String(v)}
-                  role="tab"
-                  aria-selected={on}
-                  aria-disabled={!!onlyOn}
-                  disabled={!!onlyOn}
-                  title={
-                    onlyOn
-                      ? `${dim} = ${v} is only on ${onlyOn} — no partner to contrast`
-                      : undefined
-                  }
-                  onClick={() => setLevel(group.id, dim, String(v))}
-                  style={{
-                    ...styles.facetTab,
-                    ...(onlyOn ? styles.facetTabOff : null),
-                    background: on ? UI.accent : 'transparent',
-                    color: on ? UI.accentText : UI.text
-                  }}
-                >
-                  {String(v)}
-                </button>
-              )
-            })}
-          </div>
-        </div>
-      ))}
-    </div>
-  )
-}
-
-/** One tab's grid. Split out so each pane owns its own layout/handler and a hidden
- *  pane re-renders no more than a visible one. */
 function GroupPane({
   group,
   nodeById,
   edges,
   results,
   saved,
-  editing,
   onLayout
 }: {
   group: AnalysisGroup
@@ -460,7 +255,6 @@ function GroupPane({
   edges: Edge[]
   results: Record<string, NodeResult>
   saved: PanelLayout | undefined
-  editing: boolean
   onLayout: (id: string, layout: PanelLayoutItem[]) => void
 }): ReactNode {
   // Group tiles are transparent in Results: each subcard becomes its own panel.
@@ -474,7 +268,6 @@ function GroupPane({
     <DashboardGrid
       ids={panelIds}
       layout={layout}
-      editing={editing}
       onLayoutChange={(next) => {
         // RGL emits on mount and every drag frame; only persist a real geometry change.
         if (geometryChanged(layout, next)) onLayout(group.id, next as PanelLayoutItem[])
@@ -494,7 +287,8 @@ function GroupPane({
             node={n}
             edges={edges}
             results={results}
-            editing={editing}
+            // The dashboard is always editable: tiles drag by the header and resize at any edge.
+            editing
             child={child}
             facetSel={facetSel}
           />
@@ -517,13 +311,40 @@ const styles: Record<string, CSSProperties> = {
     flex: '0 0 auto',
     borderBottom: `1px solid ${UI.border}`
   },
-  // The tab row: analysis tabs only. They fill the row and scroll horizontally on overflow.
+  // The tab row: the way back to the workflow, then the analysis tabs, which fill the rest of the
+  // row and scroll horizontally on overflow.
   tabRow: {
     display: 'flex',
     alignItems: 'center',
-    padding: '10px 14px 6px'
+    gap: 10,
+    padding: '6px 14px 2px'
   },
-  // Controls row under the tabs: condition switchers (left) + gene selector/Edit-layout (right).
+  // The data switcher's label — FacetContextBar's facetLabel, so it reads like the condition
+  // switchers' labels. Its gap to the tabs matches theirs (7px) via a negative trim of the row gap.
+  tabLabel: {
+    fontSize: 10,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+    color: UI.textMuted,
+    flex: '0 0 auto',
+    marginRight: -3
+  },
+  // A rounded square like the canvas's "Results →", sized to the tabs beside it.
+  backBtn: {
+    flex: '0 0 auto',
+    // Extra space after it: it leaves the dashboard, the rest of the row works within it.
+    marginRight: 14,
+    background: UI.panel,
+    color: UI.text,
+    border: `1px solid ${UI.border}`,
+    borderRadius: 8,
+    padding: '5px 12px',
+    fontSize: 12,
+    fontWeight: 600,
+    cursor: 'pointer',
+    whiteSpace: 'nowrap'
+  },
+  // Controls row under the tabs: the condition switchers.
   controlRow: {
     display: 'flex',
     alignItems: 'flex-start',
@@ -531,22 +352,19 @@ const styles: Record<string, CSSProperties> = {
     padding: '2px 14px 8px',
     minWidth: 0
   },
-  // Gene selector + layout toggle, pinned to the right of the controls row (top-aligned so they
-  // stay put when the condition switchers wrap to multiple lines).
-  controlRight: {
-    display: 'inline-flex',
-    alignItems: 'center',
-    gap: 10,
-    marginLeft: 'auto',
-    flex: '0 0 auto'
-  },
+
   tabs: {
     display: 'flex',
     alignItems: 'center',
     gap: 6,
     flex: 1,
     minWidth: 0,
-    overflowX: 'auto'
+    overflowX: 'auto',
+    // Room under the tabs for the slim scrollbar (.oe-tabscroll in app.css), so it never touches
+    // them — matched above, so the tabs stay centred on the button and label beside them (the
+    // scrollbar itself, when there is one, adds 4px more below). The row's own padding gives
+    // these 4px back.
+    padding: '4px 0'
   },
   // Live insertion marker shown between tabs while dragging one — a thin accent bar. It must not
   // intercept drag events (else the underlying tab's dragOver stops firing), hence pointerEvents.
@@ -560,65 +378,15 @@ const styles: Record<string, CSSProperties> = {
     background: UI.accent,
     pointerEvents: 'none'
   },
-  editBtn: {
-    flex: '0 0 auto',
-    display: 'inline-flex',
-    alignItems: 'center',
-    height: 30,
-    padding: '0 12px',
-    fontSize: 12,
-    fontWeight: 600,
-    border: `1px solid ${UI.border}`,
-    borderRadius: 6,
-    cursor: 'pointer'
-  },
-  // Shared facet control, left side of the controls row: one labelled pill group per context
-  // dim. Grows to fill the space left of the right-pinned controls and wraps to multiple lines
-  // when many switchers don't fit, rather than crowding them.
-  facetBar: {
-    display: 'flex',
-    flexWrap: 'wrap',
-    alignItems: 'center',
-    columnGap: 16,
-    rowGap: 8,
-    flex: 1,
-    minWidth: 0
-  },
-  facetGroup: { display: 'inline-flex', alignItems: 'center', gap: 7, flex: '0 0 auto' },
-  facetLabel: {
-    fontSize: 10,
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
-    color: UI.textMuted,
-    flex: '0 0 auto'
-  },
-  // Fused pill: a rounded track holding the level chips (active = accent fill).
-  facetPill: {
-    display: 'inline-flex',
-    gap: 4,
-    border: `1px solid ${UI.border}`,
-    borderRadius: 999,
-    padding: 2,
-    background: UI.panel,
-    flex: '0 0 auto'
-  },
-  facetTab: {
-    border: 'none',
-    borderRadius: 999,
-    padding: '3px 12px',
-    fontSize: 11,
-    fontWeight: 600,
-    cursor: 'pointer',
-    whiteSpace: 'nowrap',
-    flex: '0 0 auto'
-  },
-  // A level with no paired data (one side of a contrast only): greyed and inert.
-  facetTabOff: { opacity: 0.35, cursor: 'not-allowed' },
   tab: {
     display: 'inline-flex',
     alignItems: 'center',
     gap: 7,
     whiteSpace: 'nowrap',
+    // Never shrink: `overflow: hidden` drops a flex item's minimum width to 0, so without this a
+    // long row squeezed every tab to a sliver instead of overflowing into the scroller. Long names
+    // still ellipsize at the max width.
+    flex: '0 0 auto',
     maxWidth: 260,
     overflow: 'hidden',
     textOverflow: 'ellipsis',

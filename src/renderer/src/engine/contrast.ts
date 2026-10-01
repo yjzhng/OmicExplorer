@@ -9,7 +9,14 @@
  * band; independent → marginal robust per-axis Gaussian.
  */
 import { benjaminiHochberg, madNormal, median, normalSf, studentTppf } from './stats'
-import { VALID_CONDITIONS, type CompareResultRow, type ConditionKey } from './types'
+import {
+  condsIn,
+  customSlug,
+  isCustomCond,
+  type CompareResultRow,
+  type ConditionKey,
+  type CustomConditionKey
+} from './types'
 
 export interface ContrastInput {
   /** pooled primary rows (from one or more veh_norm / direct runs), sliced by `condition` */
@@ -68,6 +75,8 @@ export interface ContrastResultRow {
   cmpd?: string | null
   dose: number | null
   time: number | null
+  /** custom condition slug → value, carried as context like the preset columns */
+  extra?: Record<string, string>
   cmp_cond: string
   cmp1: string
   cmp2: string
@@ -112,6 +121,8 @@ export interface ContrastSideRow {
   cmpd?: string | null
   dose?: number | null
   time?: number | null
+  /** custom condition slug → value */
+  extra?: Record<string, string>
   value: number | null
   signf?: boolean
   effect?: string
@@ -152,7 +163,22 @@ export interface ContrastPairInput {
 }
 
 const cval = (r: CompareResultRow, c: ConditionKey): string | number | null =>
-  (r as unknown as Record<string, string | number | null>)[c] ?? null
+  isCustomCond(c)
+    ? (r.extra?.[customSlug(c)] ?? '')
+    : ((r as unknown as Record<string, string | number | null>)[c] ?? null)
+
+/** Copy the custom condition values `ctx` names off a source row onto a result row. Only the
+ *  context conditions are kept, matching how the preset columns are gated below. */
+const ctxExtra = (
+  r: { extra?: Record<string, string> },
+  ctx: ConditionKey[]
+): { extra?: Record<string, string> } => {
+  const keys = ctx.filter(isCustomCond) as CustomConditionKey[]
+  if (keys.length === 0) return {}
+  const extra: Record<string, string> = {}
+  for (const k of keys) extra[customSlug(k)] = r.extra?.[customSlug(k)] ?? ''
+  return { extra }
+}
 
 const sub = (a: number | null, b: number | null): number | null =>
   a != null && b != null ? a - b : null
@@ -185,8 +211,11 @@ export function runContrast(input: ContrastInput): ContrastResult {
   // otherwise fan out into cartesian-product rows on the join (omicViz drop_duplicates).
   const seen = new Set<string>()
   const pooled: CompareResultRow[] = []
+  // Custom conditions belong in the dedupe key too — two rows differing only in one are distinct
+  // measurements, and dropping one as a duplicate would silently discard a whole context.
+  const allConds = condsIn(input.rows)
   for (const r of input.rows) {
-    const k = [r.uniqID, ...VALID_CONDITIONS.map((c) => String(cval(r, c)))].join('¦')
+    const k = [r.uniqID, ...allConds.map((c) => String(cval(r, c)))].join('¦')
     if (seen.has(k)) continue
     seen.add(k)
     pooled.push(r)
@@ -202,7 +231,7 @@ export function runContrast(input: ContrastInput): ContrastResult {
 
   // Context the result carries: every OTHER condition present in both slices — the
   // contrasted condition is the axis, exactly as omicViz drops `spec.condition`.
-  const ctxConds = VALID_CONDITIONS.filter(
+  const ctxConds = condsIn(input.rows).filter(
     (c) => c !== condition && present(sideA, c) && present(sideB, c)
   )
   // Join on the context the two sides actually share. A condition whose levels don't
@@ -238,6 +267,7 @@ export function runContrast(input: ContrastInput): ContrastResult {
       cmpd: ctxConds.includes('cmpd') ? (cval(a, 'cmpd') as string) : undefined,
       dose: ctxConds.includes('dose') ? (cval(a, 'dose') as number | null) : null,
       time: ctxConds.includes('time') ? (cval(a, 'time') as number | null) : null,
+      ...ctxExtra(a, ctxConds),
       cmp_cond: cmpCond,
       cmp1,
       cmp2,
@@ -269,7 +299,9 @@ export function runContrast(input: ContrastInput): ContrastResult {
 
 /** Read a condition value off a side row (numbers for dose/time), '' / null when absent. */
 const csval = (r: ContrastSideRow, c: ConditionKey): string | number | null =>
-  (r as unknown as Record<string, string | number | null>)[c] ?? null
+  isCustomCond(c)
+    ? (r.extra?.[customSlug(c)] ?? '')
+    : ((r as unknown as Record<string, string | number | null>)[c] ?? null)
 
 /** Collapse a side to one row per (uniqID + matched context): mean of its values (pooling
  *  replicates and any unmatched dims), OR-ed significance, best (largest −log10) p per group. */
@@ -308,6 +340,7 @@ function aggregateSide(rows: ContrastSideRow[], ctx: ConditionKey[]): Map<string
       cmpd: rep.cmpd,
       dose: rep.dose,
       time: rep.time,
+      ...ctxExtra(rep, ctx),
       value: mean,
       se,
       signf: grp.some((r) => r.signf),
@@ -347,7 +380,7 @@ export function runContrastPair(input: ContrastPairInput): ContrastResult {
       `Pick one ${unpinned.map((u) => `${u.cond} on ${u.side === 'a' ? baseA : baseB}`).join(', ')} — a condition is matched or fixed to one slice, never pooled.`
     )
   // Names carry the fixed slices ("KO vs WT (dose 5)") so axis titles say what was contrasted.
-  const fixedConds = VALID_CONDITIONS.filter(
+  const fixedConds = condsIn([...input.sideA, ...input.sideB]).filter(
     (c) => !ctxConds.includes(c) && (present(sideA, c) || present(sideB, c))
   )
   const labelA = `${baseA}${sliceSuffix(sideA, fixedConds, baseA)}`
@@ -368,6 +401,7 @@ export function runContrastPair(input: ContrastPairInput): ContrastResult {
       cmpd: ctxConds.includes('cmpd') ? ((rep.cmpd ?? undefined) as string | undefined) : undefined,
       dose: ctxConds.includes('dose') ? (rep.dose ?? null) : null,
       time: ctxConds.includes('time') ? (rep.time ?? null) : null,
+      ...ctxExtra(rep, ctxConds),
       cmp_cond: 'dataset',
       cmp1: labelA,
       cmp2: labelB,
@@ -480,7 +514,7 @@ export function unpinnedConditions(
   matched: ConditionKey[]
 ): { cond: ConditionKey; side: 'a' | 'b' }[] {
   const out: { cond: ConditionKey; side: 'a' | 'b' }[] = []
-  for (const c of VALID_CONDITIONS) {
+  for (const c of condsIn([...sideA, ...sideB])) {
     if (matched.includes(c)) continue
     if (valueSet(sideA, c).size > 1) out.push({ cond: c, side: 'a' })
     if (valueSet(sideB, c).size > 1) out.push({ cond: c, side: 'b' })
@@ -496,7 +530,7 @@ export function previewContrastPair(
   labels: { a: string; b: string } = { a: 'A', b: 'B' },
   fix: PairFix = { a: {}, b: {} }
 ): ContrastPairPreview {
-  const conditions = VALID_CONDITIONS.filter(
+  const conditions = condsIn([...rawA, ...rawB]).filter(
     (c) => valueSet(rawA, c).size > 0 || valueSet(rawB, c).size > 0
   )
   const candidates = conditions.filter(

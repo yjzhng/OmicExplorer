@@ -21,10 +21,13 @@ import {
 import {
   applyThreshold,
   combineStandardize,
+  outputScale,
+  presentStd,
   crossPairs,
+  condsIn,
+  ctxValue,
   snapStatMin,
-  thresholdLabel,
-  VALID_CONDITIONS
+  thresholdLabel
 } from '../engine'
 import type {
   CompareResultRow,
@@ -34,10 +37,12 @@ import type {
   ContrastResult,
   ContrastSideRow,
   Pair,
+  ScalePreview,
   StandardRow,
   ThresholdConfig
 } from '../engine'
 import { EXAMPLE_LOAD_CONFIG } from './example'
+import { orderedByWiring } from './sequence'
 import {
   deserializeProject,
   emptyWorkflow,
@@ -86,6 +91,7 @@ import {
   type LoadedWorkflow,
   type WorkflowDoc
 } from './workflowDoc'
+import { useAppSettings } from '../ui/useAppSettings'
 import { useAppView } from '../ui/useAppView'
 import { loadLastView, saveLastView } from './lastView'
 
@@ -100,6 +106,21 @@ function rowsToCsv(rows: Array<Record<string, unknown>>): string {
   const head = cols.join(',')
   const body = rows.map((r) => cols.map((c) => esc(r[c])).join(',')).join('\n')
   return `${head}\n${body}\n`
+}
+
+/** Keep the node list consistent with the wiring: a step never sits before one of its inputs. The
+ *  list is the form layout's section order, so it has to agree with the edges no matter which view
+ *  drew them — hence this runs on every edge change rather than inside the form. Returns the SAME
+ *  array when nothing needs moving, so an unaffected edit doesn't churn React Flow's node identity. */
+function sortStepsByWiring(nodes: GraphNode[], edges: Edge[]): GraphNode[] {
+  const order = nodes.map((n) => n.id)
+  const sorted = orderedByWiring(order, edges)
+  if (sorted.every((id, i) => id === order[i])) return nodes
+  const byId = new Map(nodes.map((n) => [n.id, n]))
+  return sorted.flatMap((id) => {
+    const n = byId.get(id)
+    return n ? [n] : []
+  })
 }
 
 interface GraphState {
@@ -156,8 +177,23 @@ interface GraphState {
   setCompareThreshold: (id: string, partial: Partial<ThresholdConfig>) => void
   /** Rename a Compare's effect classes (display-only: the result stays `done`; undoable). */
   setCompareEffectLabels: (id: string, labels: Partial<EffectLabels>) => void
+  /** Set Clean data's log-transform — the scale its values are PRESENTED on. Display-only: its rows
+   *  (and so every analysis) stay linear, so nothing is invalidated; the result's presentation
+   *  scale updates in place. */
+  setStdLogTransform: (id: string, logTransform: 'none' | 'log2' | 'log10') => void
+  /** Clean data's data-scale preview, straight from its upstream Load step's data file — no run
+   *  needed: the detected scale and a value sample. Null when there's no data file to read yet
+   *  (no Load wired, or an interactive import not converted). Cached per file name. */
+  previewStdScale: (id: string) => Promise<ScalePreview | null>
   /** Set (or clear, with '') a tile's user-given name. Label only — never invalidates results. */
   renameNode: (id: string, name: string) => void
+  /** Move a step to sit just before `beforeId` in the node list (null = to the end). The list is
+   *  creation order, which is what the form layout reads as its section order. */
+  moveStep: (id: string, beforeId: string | null) => void
+  /** Copy one plot tile's settings onto EVERY other plot of the same kind — standalone tiles and
+   *  group subcards alike (undoable). `axis` is left alone: it's what makes a dose-response tile a
+   *  dose one, so copying it would retarget the other tiles rather than restyle them. */
+  applyConfigToKind: (kind: NodeKind, config: Record<string, unknown>, exceptId?: string) => void
   /** Patch one subcard's config inside a group tile (display-only keys don't invalidate). */
   updateChildConfig: (groupId: string, childId: string, partial: Record<string, unknown>) => void
   /** Fold plot tiles that share one upstream into a single group tile (undoable). */
@@ -315,12 +351,23 @@ interface GraphState {
   redo: () => void
 }
 
+/** What a NEW tile of `op` starts with: the kind's built-in defaults, then the user's own for that
+ *  kind (Settings → Plots → Defaults), then any caller override. Existing tiles are never touched —
+ *  changing a default only affects what's added next. */
+export function startingConfig(op: NodeKind, override?: Record<string, unknown>): NodeConfig {
+  return {
+    ...NODE_SPECS[op].defaultConfig(),
+    ...(useAppSettings.getState().plotDefaults[op] ?? {}),
+    ...(override ?? {})
+  } as NodeConfig
+}
+
 function makeNode(id: string, op: NodeKind, position: { x: number; y: number }): StepNode {
   return {
     id,
     type: 'step',
     position,
-    data: { kind: op, config: NODE_SPECS[op].defaultConfig(), status: 'idle' }
+    data: { kind: op, config: startingConfig(op), status: 'idle' }
   }
 }
 
@@ -421,6 +468,11 @@ const activeFolder = (s: GraphState): ProjectFolder | undefined =>
  *  then falls back to the shared data-folder root, so a file resolves whether it was written nested
  *  (multi-workflow folder) or flat (single workflow, or a pre-workflow-level project) — which also
  *  makes growing/shrinking the workflow count safe. undefined when no workflow is active. */
+/** Clean data's data-scale previews, per data file (dir | workflow | name) — a file is parsed once
+ *  per session for its preview; a re-converted import writes a new set of rows the next run sees,
+ *  and the preview follows on the next session. */
+const scalePreviews = new Map<string, ScalePreview>()
+
 const readScope = (s: GraphState): string | undefined =>
   activeFolder(s)?.workflows.find((w) => w.id === s.activeWorkflowId)?.name
 
@@ -600,7 +652,8 @@ export const useGraph = create<GraphState>()((set, get) => ({
     // keep the most recent (maxInputs-1) inputs; drop older ones so we stay at capacity
     const keep = maxInputs > 1 ? existing.slice(existing.length - (maxInputs - 1)) : []
     const pruned = edges.filter((e) => e.target !== conn.target || keep.includes(e))
-    set({ edges: addEdge({ ...conn, id: `e-${conn.source}-${conn.target}` }, pruned) })
+    const next = addEdge({ ...conn, id: `e-${conn.source}-${conn.target}` }, pruned)
+    set({ edges: next, nodes: sortStepsByWiring(get().nodes, next) })
     get().invalidateDownstream(conn.source) // new wiring ⇒ downstream stale
   },
 
@@ -619,7 +672,8 @@ export const useGraph = create<GraphState>()((set, get) => ({
     const pruned = edges.filter(
       (e) => e.id === oldEdge.id || e.target !== conn.target || keep.includes(e)
     )
-    set({ edges: reconnectEdge(oldEdge, conn, pruned) })
+    const moved = reconnectEdge(oldEdge, conn, pruned)
+    set({ edges: moved, nodes: sortStepsByWiring(get().nodes, moved) })
     // both the previous and new target lost/changed their input
     for (const t of new Set([oldEdge.target, conn.target])) get().markStale(t)
   },
@@ -711,7 +765,7 @@ export const useGraph = create<GraphState>()((set, get) => ({
     // Either way keep the placeholder's id, position, and incoming edge. A pick's `override` seeds
     // its config (e.g. a dr pick's axis = dose/time), on top of the kind's defaults.
     const configFor = (pick: { kind: NodeKind; override?: Record<string, unknown> }): NodeConfig =>
-      ({ ...NODE_SPECS[pick.kind].defaultConfig(), ...(pick.override ?? {}) }) as NodeConfig
+      startingConfig(pick.kind, pick.override)
     if (picks.length === 1) {
       const pick = picks[0]
       set((s) => ({
@@ -849,6 +903,48 @@ export const useGraph = create<GraphState>()((set, get) => ({
       dirty: true
     }))
   },
+  previewStdScale: async (id) => {
+    const state = get()
+    const upId = state.upstreamId(id)
+    const up = upId ? state.nodes.find((n) => n.id === upId) : undefined
+    const load = up && isStep(up) && up.data.kind === 'load' ? (up.data.config as LoadConfig) : null
+    const dir = state.dataDir
+    if (!load?.data || !dir) return null
+    const wf = readScope(state)
+    const key = `${dir}|${wf ?? ''}|${load.data}`
+    const hit = scalePreviews.get(key)
+    if (hit) return hit
+    const text = await window.api.readDataFile(dir, load.data, wf)
+    if (text == null) return null
+    const preview = await engine.previewScale(text, load.data)
+    scalePreviews.set(key, preview)
+    return preview
+  },
+  setStdLogTransform: (id, logTransform) => {
+    const node = get().nodes.find((n) => n.id === id)
+    if (!node || !isStep(node) || node.data.kind !== 'standardize') return
+    const cfg = node.data.config as StandardizeConfig
+    get().commit()
+    set((s) => {
+      const r = s.results[id]
+      const results =
+        r?.kind === 'standardize' && r.std.inputScale
+          ? {
+              ...s.results,
+              [id]: { ...r, std: { ...r.std, scale: outputScale(logTransform, r.std.inputScale) } }
+            }
+          : s.results
+      return {
+        nodes: s.nodes.map((n) =>
+          n.id === id && isStep(n)
+            ? { ...n, data: { ...n.data, config: { ...cfg, logTransform } as NodeConfig } }
+            : n
+        ),
+        results,
+        dirty: true
+      }
+    })
+  },
   setCompareThreshold: (id, partial) => {
     const node = get().nodes.find((n) => n.id === id)
     if (!node || !isStep(node) || node.data.kind !== 'compare') return
@@ -928,6 +1024,24 @@ export const useGraph = create<GraphState>()((set, get) => ({
     get().invalidateDownstream(id)
   },
 
+  moveStep: (id, beforeId) => {
+    if (id === beforeId) return
+    const nodes = get().nodes
+    const moved = nodes.find((n) => n.id === id)
+    if (!moved) return
+    const rest = nodes.filter((n) => n.id !== id)
+    const at = beforeId === null ? rest.length : rest.findIndex((n) => n.id === beforeId)
+    if (at === -1) return
+    // Normalised, not just inserted: the rule that a step never precedes its input holds for every
+    // caller, so a move that would break it is corrected rather than trusted. The form's drag
+    // already refuses such a drop (see canMoveBefore); this is what makes it true regardless.
+    const next = sortStepsByWiring([...rest.slice(0, at), moved, ...rest.slice(at)], get().edges)
+    // A move that lands where it started changes nothing, and must not take an undo step with it.
+    if (next.every((n, i) => n.id === nodes[i].id)) return
+    get().commit()
+    set(() => ({ nodes: next }))
+  },
+
   renameNode: (id, name) => {
     get().commit()
     // File-name-safe (the name leads downloaded files); the tile's input filters as you type, this
@@ -940,6 +1054,37 @@ export const useGraph = create<GraphState>()((set, get) => ({
     }))
   },
 
+  applyConfigToKind: (kind, config, exceptId) => {
+    get().commit()
+    // The settings a plot tile carries are display-only (look, axes, caps), so this never touches
+    // results or stales anything downstream — it's a restyle of every tile of that kind.
+    const look = { ...config }
+    delete look.axis // a dose tile stays a dose tile; only its look travels
+    set((s) => ({
+      nodes: s.nodes.map((n) => {
+        if (!isStep(n)) return n
+        if (n.data.kind === kind && n.id !== exceptId)
+          return { ...n, data: { ...n.data, config: { ...n.data.config, ...look } as NodeConfig } }
+        if (n.data.kind !== 'plotGroup') return n
+        const cfg = n.data.config as PlotGroupConfig
+        if (!cfg.children.some((c) => c.kind === kind && c.id !== exceptId)) return n
+        return {
+          ...n,
+          data: {
+            ...n.data,
+            config: {
+              children: cfg.children.map((c) =>
+                c.kind === kind && c.id !== exceptId
+                  ? { ...c, config: { ...c.config, ...look } as NodeConfig }
+                  : c
+              )
+            }
+          }
+        }
+      }),
+      dirty: true
+    }))
+  },
   updateChildConfig: (groupId, childId, partial) => {
     get().commit()
     // Children are plot subcards (never `hasRun`), so they re-render live — no result to
@@ -1081,7 +1226,7 @@ export const useGraph = create<GraphState>()((set, get) => ({
     const group = get().nodes.find((n) => n.id === groupId)
     if (!group || !isStep(group) || group.data.kind !== 'plotGroup') return
     get().commit()
-    const config = { ...NODE_SPECS[kind].defaultConfig(), ...(override ?? {}) } as NodeConfig
+    const config = startingConfig(kind, override)
     const [child] = toChildren([{ kind, config }], get().nextId)
     set((s) => ({
       nextId: s.nextId + 1,
@@ -1102,7 +1247,7 @@ export const useGraph = create<GraphState>()((set, get) => ({
     const added = toChildren(
       specs.map((s) => ({
         kind: s.kind,
-        config: { ...NODE_SPECS[s.kind].defaultConfig(), ...(s.override ?? {}) } as NodeConfig
+        config: startingConfig(s.kind, s.override)
       })),
       startId
     )
@@ -1220,12 +1365,7 @@ export const useGraph = create<GraphState>()((set, get) => ({
         n.id === id && isStep(n)
           ? {
               ...n,
-              data: {
-                kind: op,
-                config: NODE_SPECS[op].defaultConfig(),
-                status: 'idle',
-                error: undefined
-              }
+              data: { kind: op, config: startingConfig(op), status: 'idle', error: undefined }
             }
           : n
       )
@@ -1294,6 +1434,9 @@ export const useGraph = create<GraphState>()((set, get) => ({
         // to the shared data-folder root, so a lone workflow's flat files, manual-mode files, and
         // pre-workflow-level projects all still resolve.
         const wf = readScope(state)
+        // The file is being read afresh: drop its cached preview so the settings re-read it too
+        // (a re-converted import keeps the same file name).
+        scalePreviews.delete(`${dir}|${wf ?? ''}|${load.data}`)
         const [dataText, samplesheetText, dbText] = await Promise.all([
           window.api.readDataFile(dir, load.data, wf),
           window.api.readDataFile(dir, load.samplesheet, wf),
@@ -1315,6 +1458,9 @@ export const useGraph = create<GraphState>()((set, get) => ({
           samplesheetText,
           dbText: dbText ?? undefined,
           activeConditions: cfg.activeConditions ?? undefined,
+          // The interactive import knows exactly which samplesheet columns are custom conditions;
+          // a hand-written samplesheet (manual mode) leaves this unset and ingest auto-detects.
+          customConditions: load.interactive?.customConditions,
           minSamplePct: cleanupOn(cfg) ? (cfg.minSamplePct ?? 0) : 0,
           minSamplePctBy: cfg.minSamplePctBy ?? [],
           impute: imputeOn(cfg)
@@ -1326,7 +1472,8 @@ export const useGraph = create<GraphState>()((set, get) => ({
             : undefined,
           // Global (non-per-row) map from the interactive import — passed straight through so
           // enrichment can group KEGG pathways by category.
-          keggCategories: load.interactive?.annotations?.keggCategories
+          keggCategories: load.interactive?.annotations?.keggCategories,
+          logTransform: cfg.logTransform
         })
         if (get().nodes.find((n) => n.id === id)?.data.status !== 'running') return // cancelled
         set((s) => ({ results: { ...s.results, [id]: { kind: 'standardize', std } } }))
@@ -1334,9 +1481,29 @@ export const useGraph = create<GraphState>()((set, get) => ({
         void window.api.writeTempFile(
           dir,
           `${id}.standardized.csv`,
-          rowsToCsv(std.rows as unknown as Array<Record<string, unknown>>),
+          // On its presented scale (the chosen log-transform); the result's own rows stay linear.
+          rowsToCsv(presentStd(std).rows as unknown as Array<Record<string, unknown>>),
           writeScope(state)
         )
+        get().invalidateDownstream(id)
+      } else if (kind === 'merge') {
+        // Pool every upstream Clean data (or Merge — it emits the same result kind) into one
+        // dataset, so downstream tiles see the datasets as a single experiment. Genes are matched
+        // across inputs by uniqID; samples sharing a condition pool as replicates.
+        const stds = state
+          .upstreamIds(id)
+          .map((u) => state.results[u])
+          .filter(
+            (r): r is Extract<NodeResult, { kind: 'standardize' }> => r?.kind === 'standardize'
+          )
+          .map((r) => r.std)
+        if (stds.length === 0) {
+          setStatus('error', 'Connect and run two or more Clean data tiles upstream.')
+          return
+        }
+        const std = combineStandardize(stds)
+        set((s) => ({ results: { ...s.results, [id]: { kind: 'standardize', std } } }))
+        setStatus('done')
         get().invalidateDownstream(id)
       } else if (kind === 'compare') {
         // Compare accepts up to two Standardize inputs; pool them into one dataset (rows matched
@@ -1516,7 +1683,13 @@ export const useGraph = create<GraphState>()((set, get) => ({
                 const groups = new Map<string, { row: StandardRow; logs: number[] }>()
                 for (const row of stds.flatMap((r) => r.std.rows)) {
                   if (row.value == null || !(row.value > 0)) continue
-                  const key = `${row.uniqID}¦${row.cell ?? ''}¦${row.cmpd ?? ''}¦${row.dose ?? ''}¦${row.time ?? ''}`
+                  // Custom conditions join the grouping key — without them two distinct contexts
+                  // would pool into one pseudo-primary row and their abundances average together.
+                  const extraKey = Object.keys(row.extra ?? {})
+                    .sort()
+                    .map((k) => `${k}=${row.extra![k]}`)
+                    .join('¦')
+                  const key = `${row.uniqID}¦${row.cell ?? ''}¦${row.cmpd ?? ''}¦${row.dose ?? ''}¦${row.time ?? ''}¦${extraKey}`
                   let g = groups.get(key)
                   if (!g) groups.set(key, (g = { row, logs: [] }))
                   g.logs.push(Math.log10(row.value))
@@ -1536,6 +1709,7 @@ export const useGraph = create<GraphState>()((set, get) => ({
                     dose: row.dose,
                     time: row.time,
                     cell: row.cell,
+                    ...(row.extra ? { extra: row.extra } : null),
                     cmp_cond: '',
                     comparison: '',
                     mean1: null,
@@ -1565,11 +1739,13 @@ export const useGraph = create<GraphState>()((set, get) => ({
           // matches every pinned condition of that side's selector (others are free). FC1 = num side,
           // FC2 = den side; the two are then joined on the chosen match context (runContrastPair
           // aggregates replicates + unmatched dims), so nothing about the context is inferred.
+          // Every condition a selector could pin, including the custom ones the rows carry.
+          const selConds = condsIn(pooled)
           const matchesSel = (row: CompareResultRow, sel: CondSelector): boolean =>
-            VALID_CONDITIONS.every((c) => {
+            selConds.every((c) => {
               const want = sel[c]
               if (!want || want.length === 0) return true
-              const v = (row as unknown as Record<string, unknown>)[c]
+              const v = ctxValue(row, c)
               return v != null && v !== '' && want.map(String).includes(String(v))
             })
           const toSideRow = (row: CompareResultRow): ContrastSideRow => ({
@@ -1578,6 +1754,7 @@ export const useGraph = create<GraphState>()((set, get) => ({
             cmpd: row.cmpd,
             dose: row.dose,
             time: row.time,
+            ...(row.extra ? { extra: row.extra } : null),
             value: row.log2FC,
             signf: row.signf,
             effect: row.effect,
@@ -1586,9 +1763,9 @@ export const useGraph = create<GraphState>()((set, get) => ({
             se: row.fcSE ?? null
           })
           const selLabel = (sel: CondSelector): string => {
-            const parts = VALID_CONDITIONS.filter((c) => (sel[c]?.length ?? 0) > 0).map((c) =>
-              (sel[c] as string[]).join('/')
-            )
+            const parts = selConds
+              .filter((c) => (sel[c]?.length ?? 0) > 0)
+              .map((c) => (sel[c] as string[]).join('/'))
             return parts.length ? parts.join(' · ') : 'all'
           }
           const num = cfg.num ?? {}
@@ -1956,6 +2133,7 @@ export const useGraph = create<GraphState>()((set, get) => ({
       adapted = buildStandardInputs(matrixText, {
         roles: interactive.roles,
         conditions: interactive.conditions,
+        customConditions: interactive.customConditions,
         filters: interactive.filters,
         annotations: interactive.annotations
           ? {

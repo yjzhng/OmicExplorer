@@ -5,6 +5,7 @@
 import type { ContrastInput, ContrastPairInput, ContrastResult } from './contrast'
 import type { CompareTableResult, DirectInput } from './direct'
 import type { TwoWayInput } from './twoWay'
+import type { ScalePreview } from './ingest'
 import type { EngineRequest, EngineResponse } from './worker'
 import type {
   CompareInput,
@@ -48,6 +49,9 @@ function call<T>(op: EngineRequest['op'], payload: unknown): Promise<T> {
 export const engine = {
   standardize: (input: StandardizeInput): Promise<StandardizeResult> =>
     call<StandardizeResult>('standardize', input),
+  /** A data file's scale and a value sample, for Clean data's preview — no run needed. */
+  previewScale: (dataText: string, dataFilename: string): Promise<ScalePreview> =>
+    call<ScalePreview>('previewScale', { dataText, dataFilename }),
   vehNorm: (input: VehNormInput): Promise<VehNormResult> => call<VehNormResult>('vehNorm', input),
   direct: (input: DirectInput): Promise<CompareTableResult> =>
     call<CompareTableResult>('direct', input),
@@ -55,7 +59,8 @@ export const engine = {
     call<CompareTableResult>('compare', input),
   twoWayAnova: (input: TwoWayInput): Promise<CompareTableResult> =>
     call<CompareTableResult>('twoWayAnova', input),
-  contrast: (input: ContrastInput): Promise<ContrastResult> => call<ContrastResult>('contrast', input),
+  contrast: (input: ContrastInput): Promise<ContrastResult> =>
+    call<ContrastResult>('contrast', input),
   contrastPair: (input: ContrastPairInput): Promise<ContrastResult> =>
     call<ContrastResult>('contrastPair', input),
   /** Terminate the worker and reject any in-flight calls (backs the Stop button). */

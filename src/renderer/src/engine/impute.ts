@@ -56,8 +56,20 @@ function gauss(rand: () => number): number {
   return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v)
 }
 
+/** Identity of one physical sample. Custom conditions are part of it — two rows differing only in
+ *  a custom condition are different samples, and merging them would let one's values fill the
+ *  other's holes. Slugs are sorted so the key doesn't depend on key-insertion order. */
 const sampleKey = (r: StandardRow): string =>
-  [r.cell, r.cmpd, r.dose ?? '', r.time ?? '', r.rep ?? ''].join('¦')
+  [
+    r.cell,
+    r.cmpd,
+    r.dose ?? '',
+    r.time ?? '',
+    r.rep ?? '',
+    ...Object.keys(r.extra ?? {})
+      .sort()
+      .map((k) => `${k}=${r.extra![k]}`)
+  ].join('¦')
 
 /**
  * Fill every missing (gene × sample) cell. Cells present as rows with a null value are filled in
@@ -145,6 +157,7 @@ export function imputeMissing(
         dose: meta.dose,
         time: meta.time,
         rep: meta.rep,
+        ...(meta.extra ? { extra: meta.extra } : null),
         value: v,
         imputed: true
       })

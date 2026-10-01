@@ -14,6 +14,8 @@ interface Dendrogram {
   order: number[]
   childA: number[]
   childB: number[]
+  /** the distance each merge happened at, in merge order (UPGMA linkage height) */
+  height: number[]
   /** number of leaves */
   n: number
 }
@@ -36,7 +38,18 @@ export function clusterRowGroups(rows: number[][], k: number): number[][] {
   const d = buildDendrogram(rows)
   const merges = d.childA.length // = n − 1
   const target = Math.min(k, n)
-  const keep = merges - (target - 1) // perform only the first `keep` merges → `target` components
+  const keep = merges - (target - 1) // perform only the `keep` LOWEST merges → `target` components
+  // Cut by merge HEIGHT, not by the order merges were recorded in. The nearest-neighbour-chain
+  // algorithm doesn't emit merges in ascending height, so "undo the last k−1 recorded merges" can
+  // undo a merge from deep inside the tree — with tied heights it visibly splits two identical
+  // points while leaving two distant groups together. Average linkage is monotonic (a parent is
+  // never lower than its children), so selecting the lowest `keep` heights always cuts the tree at
+  // one level. Ties break by merge index, so the result is deterministic.
+  const applied = new Uint8Array(merges)
+  const byHeight = Array.from({ length: merges }, (_, i) => i).sort(
+    (x, y) => d.height[x] - d.height[y] || x - y
+  )
+  for (let i = 0; i < keep; i++) applied[byHeight[i]] = 1
   // Union-find over the ORIGINAL leaves, applying just the kept (lower) merges.
   const parent = new Int32Array(n)
   for (let i = 0; i < n; i++) parent[i] = i
@@ -47,11 +60,13 @@ export function clusterRowGroups(rows: number[][], k: number): number[][] {
   // A representative original leaf for each node id (leaf → itself; internal → its A-child's rep).
   const rep = new Int32Array(2 * n - 1)
   for (let i = 0; i < n; i++) rep[i] = i
+  // Recorded order still drives the `rep` walk: a merge's children always have lower ids, so each
+  // node's representative leaf is known before any parent needs it.
   for (let i = 0; i < merges; i++) {
     const a = d.childA[i]
     const b = d.childB[i]
     rep[n + i] = rep[a]
-    if (i < keep) {
+    if (applied[i]) {
       const ra = find(rep[a])
       const rb = find(rep[b])
       if (ra !== rb) parent[ra] = rb
@@ -70,7 +85,7 @@ export function clusterRowGroups(rows: number[][], k: number): number[][] {
 
 function buildDendrogram(rows: number[][]): Dendrogram {
   const n = rows.length
-  if (n <= 2) return { order: rows.map((_, i) => i), childA: [], childB: [], n }
+  if (n <= 2) return { order: rows.map((_, i) => i), childA: [], childB: [], height: [], n }
   const m = rows[0]?.length ?? 0
 
   // Full symmetric euclidean distance matrix.
@@ -96,6 +111,7 @@ function buildDendrogram(rows: number[][]): Dendrogram {
   for (let i = 0; i < n; i++) node[i] = i
   const childA: number[] = [] // per internal node (id − n): its two children
   const childB: number[] = []
+  const height: number[] = [] // the distance each merge happened at
   let nextId = n
 
   const chain: number[] = []
@@ -132,6 +148,7 @@ function buildDendrogram(rows: number[][]): Dendrogram {
       const hi = a < b ? b : a
       childA.push(node[lo])
       childB.push(node[hi])
+      height.push(bd)
       node[lo] = nextId++
       const nl = size[lo]
       const nh = size[hi]
@@ -165,5 +182,35 @@ function buildDendrogram(rows: number[][]): Dendrogram {
     stack.push(childB[idx]) // push B then A so A is visited first
     stack.push(childA[idx])
   }
-  return { order, childA, childB, n }
+  return { order, childA, childB, height, n }
+}
+
+/**
+ * Suggest a cluster count from where the dendrogram jumps: sort the merge heights ascending and
+ * find the largest gap between consecutive merges in the upper part of the tree. Merging across a
+ * big gap joins two groups that are much further apart than anything joined so far, so the number
+ * of components still standing just below it is a natural k.
+ *
+ * Only the top `maxK - 1` merges are considered — the biggest gap in a dendrogram is often the very
+ * last merge (k = 2), which is a true answer but rarely a useful one, and low merges are noise
+ * between near-identical replicates.
+ */
+export function suggestClusterCount(rows: number[][], maxK = 8): number {
+  const n = rows.length
+  if (n <= 2) return 1
+  const heights = [...buildDendrogram(rows).height].sort((a, b) => a - b)
+  if (heights.length < 2) return 1
+  // heights[i] is the merge that takes the tree from (n - i) components to (n - i - 1).
+  const top = Math.min(maxK - 1, heights.length - 1)
+  let bestGap = -Infinity
+  let bestK = 1
+  for (let i = heights.length - top; i < heights.length; i++) {
+    const gap = heights[i] - heights[i - 1]
+    if (gap > bestGap) {
+      bestGap = gap
+      // Cutting BELOW merge i leaves (n - i) components standing.
+      bestK = n - i
+    }
+  }
+  return Math.max(1, Math.min(bestK, n))
 }

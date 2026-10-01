@@ -10,7 +10,8 @@ import {
   runDirect,
   runTwoWayAnova,
   runVehNorm,
-  standardize
+  standardize,
+  previewScale
 } from './index'
 import type { ContrastInput, ContrastPairInput } from './contrast'
 import type { DirectInput } from './direct'
@@ -19,6 +20,7 @@ import type { CompareInput, StandardizeInput, VehNormInput } from './types'
 
 export type EngineRequest =
   | { id: number; op: 'standardize'; payload: StandardizeInput }
+  | { id: number; op: 'previewScale'; payload: { dataText: string; dataFilename: string } }
   | { id: number; op: 'vehNorm'; payload: VehNormInput }
   | { id: number; op: 'direct'; payload: DirectInput }
   | { id: number; op: 'compare'; payload: CompareInput }
@@ -27,8 +29,7 @@ export type EngineRequest =
   | { id: number; op: 'contrastPair'; payload: ContrastPairInput }
 
 export type EngineResponse =
-  | { id: number; ok: true; result: unknown }
-  | { id: number; ok: false; error: string }
+  { id: number; ok: true; result: unknown } | { id: number; ok: false; error: string }
 
 // Cast the worker global to a minimal interface to avoid pulling the conflicting
 // webworker/DOM lib typings into this file.
@@ -43,6 +44,8 @@ ctx.addEventListener('message', (e) => {
   try {
     let result: unknown
     if (msg.op === 'standardize') result = standardize(msg.payload)
+    else if (msg.op === 'previewScale')
+      result = previewScale(msg.payload.dataText, msg.payload.dataFilename)
     else if (msg.op === 'vehNorm') result = runVehNorm(msg.payload)
     else if (msg.op === 'direct') result = runDirect(msg.payload)
     else if (msg.op === 'compare') result = runCompare(msg.payload)

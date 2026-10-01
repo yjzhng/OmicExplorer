@@ -41,8 +41,8 @@ export function VolcanoView({
   onThresholdChange?: (partial: Partial<ThresholdConfig>) => void
 }) {
   const mode = useUiTheme((s) => s.mode)
-  // Pinned (linked-selection) genes become their own trace. Subscribe to
-  // pinnedIds only (not hoverId), so the plot rebuilds on a click-select, not on every hover.
+  // The linked selection, read only to tell whether it IS a saved geneset (selIds below) — not
+  // hoverId, and not per click: an ordinary pick is drawn by PlotlyChart's overlay.
   const pinnedIds = useSelection((s) => s.pinnedIds)
   // A selection that IS a saved geneset gets a legend entry under that geneset's name; an ad-hoc
   // pick gets none (the overlay already marks and names each pinned gene).
@@ -51,6 +51,11 @@ export function VolcanoView({
   const selName = selSet?.name ?? null
   // A geneset's own colour (set in the gene selector) replaces the effect colours for its points.
   const selColor = selSet?.color ?? null
+  // The selection trace exists only for a saved geneset (its legend entry and colour), so the plot's
+  // data follows the MATCHED geneset, not every click: an ad-hoc pick is marked by PlotlyChart's
+  // shared overlay alone, restyled in place. Keyed on pinnedIds directly, each click-select anywhere
+  // in the app rebuilt this plot from scratch (a full redraw — the lag after a click).
+  const selIds = useMemo(() => (selSet ? new Set(selSet.genes.map((g) => g.id)) : null), [selSet])
   const yLabel = volcano.statType === 'pP' ? '−log P-value' : '−log Q-value'
   // Resolved once per config change (stable objects, so PlotlyChart doesn't re-render per hover).
   // Memo inputs are kept PRIMITIVE / stable: the parent hands a fresh `effectLabels` object and
@@ -90,17 +95,25 @@ export function VolcanoView({
         mode: 'markers',
         name: `${g.name} (${pts.length})`,
         showlegend: g.legend,
+        // This group's own highlight look (see PlotlyChart's EMPH_KEY): the emphasis overlay and
+        // the dim read it per trace, so each group can bump/ring/label/fade differently.
+        __oeEmph: g.highlight,
         x: pts.map((pt) => pt.x),
         y: pts.map((pt) => pt.y),
         text: pts.map((pt) => pt.label),
         customdata: pts.map((pt) => pt.uniqID),
         hovertemplate: hover,
-        marker: { color: g.color, size: g.size, opacity: g.opacity }
+        marker: {
+          color: g.color,
+          size: g.size,
+          opacity: g.opacity,
+          line: { width: g.outline, color: g.outlineColor ?? p.text }
+        }
       }
     })
-    // Pinned genes → their own trace (kept fully opaque; a legend entry only when they form a saved
-    // geneset); their visual emphasis — enlarged, ringed, labelled — is PlotlyChart's shared overlay.
-    const sel = volcano.points.filter((pt) => pinnedIds.has(pt.uniqID))
+    // A selection that is a saved geneset → its own trace (fully opaque, its legend entry and colour);
+    // any pinned gene's emphasis — enlarged, ringed, labelled — is PlotlyChart's shared overlay.
+    const sel = selIds ? volcano.points.filter((pt) => selIds.has(pt.uniqID)) : []
     if (sel.length) {
       traces.push({
         type: 'scatter',
@@ -119,7 +132,11 @@ export function VolcanoView({
         marker: {
           color: selColor ?? sel.map((pt) => look(pt.effect).color),
           size: sel.map((pt) => look(pt.effect).size),
-          opacity: 1
+          opacity: 1,
+          line: {
+            width: sel.map((pt) => look(pt.effect).outline),
+            color: sel.map((pt) => look(pt.effect).outlineColor ?? p.text)
+          }
         }
       })
     }
@@ -476,7 +493,7 @@ export function VolcanoView({
     title,
     yLabel,
     mode,
-    pinnedIds,
+    selIds,
     selName,
     selColor,
     threshold,

@@ -11,7 +11,12 @@
  * ruled out before running; response axes always resolve (declared conditions), so they're enforced
  * even through a stale upstream (see axisAvailFor).
  */
-import { enrichTermsOf } from '../engine'
+import {
+  enrichSourcesPresent,
+  ENRICH_FALLBACK,
+  ENRICH_SOURCE_LABEL,
+  resolveEnrichSource
+} from '../engine'
 import {
   axisAvailFor,
   axisAvailFromResult,
@@ -62,14 +67,14 @@ const REQUIREMENTS: Partial<Record<NodeKind, Requirement>> = {
   tdr: (u) =>
     u.axes.dose && u.axes.time ? null : 'Needs both dose and time conditions in the data',
   bubble: (u) => (u.axes.dose || u.axes.time ? null : 'Needs a dose or time condition in the data'),
+  // Met by ANY term set the genes carry, not just the saved one: the plot falls back through
+  // ENRICH_FALLBACK to one they have (resolveEnrichSource), so only no annotations at all blocks it.
   enrich: (u, cfg) => {
     if (u.result?.kind !== 'compare') return null // unknown until run
-    const source = (cfg as EnrichConfig)?.source ?? 'go'
-    const ann = u.result.annotationMap ?? {}
-    const has = Object.keys(ann).some((uid) => enrichTermsOf(ann, source, uid).length > 0)
-    return has
-      ? null
-      : `No ${source === 'go' ? 'GO' : 'KEGG'} annotations on these genes — fetch them in the interactive import (Metadata step), then re-run Standardize and Compare.`
+    const present = enrichSourcesPresent(u.result.annotationMap ?? {}, u.result.keggCategories)
+    if (resolveEnrichSource((cfg as EnrichConfig)?.source, present)) return null
+    const names = ENRICH_FALLBACK.map((s) => ENRICH_SOURCE_LABEL[s]).join(', ')
+    return `No enrichment annotations on these genes (${names}) — fetch them in the interactive import (Metadata step), then re-run Clean data and Compare.`
   },
   string: (u, cfg) => {
     if (u.result?.kind !== 'compare') return null

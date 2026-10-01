@@ -36,11 +36,47 @@ describe('tile requirements', () => {
     )
   })
 
+  it('enrichment is met by any term set the genes carry, not only the saved one', () => {
+    // GO (the default) never fetched, KEGG was: the plot falls back to KEGG, so it isn't blocked.
+    const keggOnly = facts({
+      kind: 'compare',
+      result: cmpResult({ g1: { keggPathway: 'Cell cycle' } })
+    })
+    expect(unmetRequirement('enrich', { source: 'go' }, keggOnly)).toBeNull()
+    expect(unmetRequirement('enrich', {}, keggOnly)).toBeNull()
+  })
+
+  it('enrichment is enabled by any ONE term set on its own', () => {
+    // One gene, one annotation column each — every source alone is enough.
+    const single: Record<string, string> = {
+      GO_BP: 'apoptotic process',
+      GO_MF: 'kinase activity',
+      GO_CC: 'nucleus',
+      GO: 'DNA repair',
+      keggPathway: 'Cell cycle',
+      reactomePathway: 'Apoptosis',
+      msigdbSet: 'HALLMARK_APOPTOSIS',
+      cogCategory: 'Transcription'
+    }
+    for (const [col, term] of Object.entries(single)) {
+      const u = facts({ kind: 'compare', result: cmpResult({ g1: { [col]: term } }) })
+      for (const source of ['go', 'kegg', 'reactome', 'msigdb', 'cog', 'cog_group'])
+        expect(unmetRequirement('enrich', { source }, u), `${col} with ${source} saved`).toBeNull()
+    }
+  })
+
+  it('is not enabled by COG groups alone — that level is not offered', () => {
+    const u = facts({ kind: 'compare', result: cmpResult({ g1: { COG: 'RecA' } }) })
+    expect(unmetRequirement('enrich', { source: 'cog_group' }, u)).toMatch(
+      /No enrichment annotations/
+    )
+  })
+
   it('annotation-based requirements are unknown (satisfied) until a result exists', () => {
     expect(unmetRequirement('enrich', { source: 'go' }, facts({ kind: 'compare' }))).toBeNull()
     expect(unmetRequirement('string', {}, facts({ kind: 'compare' }))).toBeNull()
     const noAnn = facts({ kind: 'compare', result: cmpResult({}) })
-    expect(unmetRequirement('enrich', { source: 'go' }, noAnn)).toMatch(/No GO annotations/)
+    expect(unmetRequirement('enrich', { source: 'go' }, noAnn)).toMatch(/No enrichment annotations/)
     expect(unmetRequirement('string', {}, noAnn)).toMatch(/No species/)
     // a manual species override satisfies STRING without annotations
     expect(unmetRequirement('string', { species: 9606 }, noAnn)).toBeNull()

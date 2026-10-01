@@ -1,6 +1,6 @@
 import { useLayoutEffect, useMemo, useRef, useState } from 'react'
 
-import type { ConditionKey, HeatmapData } from '../engine'
+import { condLabel, isNumericCond, metaValue, type ConditionKey, type HeatmapData } from '../engine'
 import { PlotlyChart } from './PlotlyChart'
 import { axisBase, CATEGORICAL, CATEGORICAL_ALT, PALETTES, plotBase } from './theme'
 import { useUiTheme } from './useUiTheme'
@@ -11,10 +11,10 @@ const TRACK_GAP = 3
 /** Monochrome [light, dark] endpoints for the numeric conditions — low value → light,
  *  high value → dark. Both dose and time use the same neutral grey ramp. */
 const MONO_RAMP: readonly [string, string] = ['#eeeeee', '#222222']
-const SEQ_RAMPS: Partial<Record<ConditionKey, readonly [string, string]>> = {
-  dose: MONO_RAMP,
-  time: MONO_RAMP
-}
+/** The ramp for a condition, or null when it's categorical. Only dose and time are numeric —
+ *  a custom condition is always categorical, so it never gets the ordered grey ramp. */
+const seqRamp = (c: ConditionKey): readonly [string, string] | null =>
+  isNumericCond(c) ? MONO_RAMP : null
 /** Keep the ramp off its extremes so the lightest/darkest steps stay visible on the panel. */
 const SEQ_LO = 0.2
 const SEQ_HI = 0.8
@@ -41,14 +41,20 @@ function transpose<T>(m: T[][]): T[][] {
 
 /** Distinct values of a condition → track colour. Numeric conditions (dose, time) use a
  *  monochrome grey ramp keyed to the sorted value (low = light, high = dark), kept off its
- *  extremes; categorical conditions cycle a palette — cell uses CATEGORICAL, cmpd a distinct
- *  one so the two never read as the same colour scheme. */
-function condColours(samples: HeatmapData['samples'], c: ConditionKey): Map<string, string> {
-  const ramp = SEQ_RAMPS[c]
+ *  extremes; categorical ones cycle a palette. `catIndex` is the condition's position among the
+ *  categorical tracks: even takes CATEGORICAL, odd CATEGORICAL_ALT, and each further pair rotates
+ *  the palette one step, so no two tracks (cell, cmpd, or any custom condition) read as the same
+ *  colour scheme. */
+function condColours(
+  samples: HeatmapData['samples'],
+  c: ConditionKey,
+  catIndex: number
+): Map<string, string> {
+  const ramp = seqRamp(c)
   const seen = new Set<string>()
   const vals: string[] = []
   for (const m of samples) {
-    const raw = m[c]
+    const raw = metaValue(m, c)
     if (raw == null || raw === '') continue
     const key = String(raw)
     if (!seen.has(key)) {
@@ -65,8 +71,9 @@ function condColours(samples: HeatmapData['samples'], c: ConditionKey): Map<stri
       map.set(v, lerpHex(ramp[0], ramp[1], SEQ_LO + span * (n <= 1 ? 0.5 : i / (n - 1))))
     )
   } else {
-    const palette = c === 'cmpd' ? CATEGORICAL_ALT : CATEGORICAL
-    vals.forEach((v, i) => map.set(v, palette[i % palette.length]))
+    const base = catIndex % 2 === 0 ? CATEGORICAL : CATEGORICAL_ALT
+    const rot = Math.floor(catIndex / 2)
+    vals.forEach((v, i) => map.set(v, base[(i + rot) % base.length]))
   }
   return map
 }
@@ -97,7 +104,11 @@ function buildTracks(
     return i
   }
   const valColour = new Map<ConditionKey, Map<string, string>>()
-  for (const c of conds) valColour.set(c, condColours(heatmap.samples, c))
+  // Numbered in the data's own condition order (not the reversed draw order) so a portrait and a
+  // landscape heatmap of the same data give each track the same palette.
+  let catIndex = 0
+  for (const c of heatmap.conds)
+    valColour.set(c, condColours(heatmap.samples, c, seqRamp(c) ? 0 : catIndex++))
   // cond-major matrices: z = palette index (+0.5 to land mid-block), customdata = "cond: value",
   // keys = the raw value string per cell ('' = missing), used to find group boundaries.
   const z: Array<Array<number | null>> = []
@@ -108,7 +119,7 @@ function buildTracks(
     const cr: string[] = []
     const kr: string[] = []
     for (let s = 0; s < nS; s++) {
-      const raw = heatmap.samples[s][c]
+      const raw = metaValue(heatmap.samples[s], c)
       if (raw == null || raw === '') {
         zr.push(null)
         cr.push('')
@@ -116,7 +127,7 @@ function buildTracks(
       } else {
         const key = String(raw)
         zr.push(colourIndex(valColour.get(c)!.get(key)!) + 0.5)
-        cr.push(`${c}: ${key}`)
+        cr.push(`${condLabel(c)}: ${key}`)
         kr.push(key)
       }
     }
@@ -165,8 +176,8 @@ function buildTracks(
   const trace: Record<string, unknown> = {
     type: 'heatmap',
     z: landscape ? transpose(z) : z,
-    x: landscape ? (conds as string[]) : heatmap.x,
-    y: landscape ? heatmap.x : (conds as string[]),
+    x: landscape ? conds.map(condLabel) : heatmap.x,
+    y: landscape ? heatmap.x : conds.map(condLabel),
     customdata: landscape ? transpose(cd) : cd,
     hovertemplate: '%{customdata}<extra></extra>',
     colorscale,

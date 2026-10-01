@@ -53,12 +53,7 @@ describe('parseMatrix / guessRoles', () => {
 
 describe('guessRolesPreset', () => {
   it('lists None + the three tool presets in menu order', () => {
-    expect(MATRIX_PRESETS.map((p) => p.value)).toEqual([
-      'none',
-      'diann',
-      'spectronaut',
-      'maxquant'
-    ])
+    expect(MATRIX_PRESETS.map((p) => p.value)).toEqual(['none', 'diann', 'spectronaut', 'maxquant'])
   })
 
   it('none paints nothing (all columns Ignore)', () => {
@@ -79,7 +74,13 @@ describe('guessRolesPreset', () => {
 
   it('classifies a Spectronaut pivot report (.PG.Quantity → sample)', () => {
     const SN = [
-      ['PG.ProteinGroups', 'PG.Genes', 'PG.ProteinNames', '[1] S1.raw.PG.Quantity', '[2] S2.raw.PG.Quantity'].join('\t'),
+      [
+        'PG.ProteinGroups',
+        'PG.Genes',
+        'PG.ProteinNames',
+        '[1] S1.raw.PG.Quantity',
+        '[2] S2.raw.PG.Quantity'
+      ].join('\t'),
       ['P1', 'G1', 'name one', '100', '200'].join('\t'),
       ['P2', 'G2', 'name two', '150', '250'].join('\t')
     ].join('\n')
@@ -93,7 +94,15 @@ describe('guessRolesPreset', () => {
 
   it('classifies a MaxQuant proteinGroups table (LFQ intensity → sample, bare Intensity → meta)', () => {
     const MQ = [
-      ['Protein IDs', 'Majority protein IDs', 'Gene names', 'Intensity', 'LFQ intensity S1', 'LFQ intensity S2', 'Q-value'].join('\t'),
+      [
+        'Protein IDs',
+        'Majority protein IDs',
+        'Gene names',
+        'Intensity',
+        'LFQ intensity S1',
+        'LFQ intensity S2',
+        'Q-value'
+      ].join('\t'),
       ['P1', 'P1', 'G1', '900', '100', '200', '0.01'].join('\t'),
       ['P2', 'P2', 'G2', '800', '150', '250', '0.02'].join('\t')
     ].join('\n')

@@ -1,6 +1,7 @@
 /** Contrast-input helpers shared by the run path (store), the selector window, and the canvas. */
 import {
-  VALID_CONDITIONS,
+  condPresent,
+  condsIn,
   type ConditionKey,
   type ContrastSideRow,
   type StandardRow
@@ -18,6 +19,7 @@ export function toContrastSide(r: NodeResult | undefined): ContrastSideRow[] {
       cmpd: row.cmpd,
       dose: row.dose,
       time: row.time,
+      ...(row.extra ? { extra: row.extra } : null),
       value: row.log2FC,
       signf: row.signf,
       effect: row.effect,
@@ -32,6 +34,7 @@ export function toContrastSide(r: NodeResult | undefined): ContrastSideRow[] {
       cmpd: row.cmpd,
       dose: row.dose,
       time: row.time,
+      ...(row.extra ? { extra: row.extra } : null),
       value: row.value != null && row.value > 0 ? Math.log10(row.value) : null
     }))
   return []
@@ -83,7 +86,8 @@ export function selectorRowsOf(r: NodeResult | undefined): {
           cell: x.cell ?? '',
           cmpd: x.cmpd,
           dose: x.dose,
-          time: x.time
+          time: x.time,
+          ...(x.extra ? { extra: x.extra } : null)
         }))
       : r?.kind === 'standardize'
         ? r.std.rows.map((x) => ({
@@ -91,9 +95,11 @@ export function selectorRowsOf(r: NodeResult | undefined): {
             cell: x.cell,
             cmpd: x.cmpd,
             dose: x.dose,
-            time: x.time
+            time: x.time,
+            ...(x.extra ? { extra: x.extra } : null)
           }))
         : []
-  const present = VALID_CONDITIONS.filter((c) => raw.some((row) => row[c] !== '' && row[c] != null))
-  return { rows: raw as unknown as StandardRow[], present }
+  const rows = raw as unknown as StandardRow[]
+  const present = condsIn(rows).filter((c) => condPresent(rows, c))
+  return { rows, present }
 }

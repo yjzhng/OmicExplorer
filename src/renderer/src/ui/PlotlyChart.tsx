@@ -10,7 +10,13 @@ import {
 import { createPortal } from 'react-dom'
 import Plotly, { type PlotlyGraphDiv } from 'plotly.js-dist-min'
 
-import { applyPlotAxes, PlotAxesContext } from './plotAxes'
+import {
+  applyPlotAxes,
+  axisTitleText,
+  PlotAxesContext,
+  type AxisDefault,
+  type AxisDefaults
+} from './plotAxes'
 import { DEFAULT_HIGHLIGHT, type ResolvedHighlight } from './pointStyle'
 import { Spinner } from './Spinner'
 import { PALETTES } from './theme'
@@ -282,8 +288,15 @@ function parseShapePath(d: string): Array<[number, number]> {
 const GUIDE_DIM = DEFAULT_HIGHLIGHT.dim
 /** Marks the emphasis trace so it can be found again on the live graph div. */
 const OVERLAY_FLAG = '__oeOverlay'
+/** A trace may carry its OWN highlight look (a point plot's per-group settings) under this key;
+ *  traces without one use the chart's `emphasis` prop. */
+const EMPH_KEY = '__oeEmph'
+/** That trace's highlight look, or the chart-wide one. */
+const emphOf = (t: Trace, fallback: ResolvedHighlight): ResolvedHighlight =>
+  ((t as Record<string, unknown>)[EMPH_KEY] as ResolvedHighlight | undefined) ?? fallback
 
 type Trace = Record<string, unknown> & {
+  textfont?: unknown
   customdata?: unknown
   mode?: unknown
   opacity?: number
@@ -372,6 +385,11 @@ function buildOverlay(data: unknown[], active: Set<string>, emph: ResolvedHighli
   const size: number[] = []
   const color: (string | number)[] = []
   const text: string[] = []
+  // Per-point, since each source trace may carry its own highlight look (see EMPH_KEY): the ring's
+  // width and the name's size travel with the point, not with the overlay.
+  const ringW: number[] = []
+  const ringC: string[] = []
+  const fontSize: number[] = []
   // uniqID per overlay point, so a click on the (larger, on-top) emphasis marker can toggle the right
   // gene (see the click handler; the base dot underneath is smaller so its hit area misses the edge).
   const cd: string[] = []
@@ -398,14 +416,16 @@ function buildOverlay(data: unknown[], active: Set<string>, emph: ResolvedHighli
     const mk = t.marker
     const numeric = Array.isArray(mk?.color) && typeof (mk.color as unknown[])[0] === 'number'
     if (numeric && mk && !cmap) cmap = colorScaleOf(mk)
+    const em = emphOf(t, emph)
     ids.forEach((id, k) => {
       if (!active.has(id)) return
       const xk = (t.x as unknown[])[k]
       const yk = (t.y as unknown[])[k]
       const posKey = `${id}|${String(xk)}|${String(yk)}`
-      // Sized from the SMALLEST marker drawn at this spot — the cloud's own dot — plus the bump,
-      // so emphasis is the same size on every plot regardless of any larger view-level marker.
-      const sz = at(t.marker?.size, k, 6) + emph.bump
+      // An explicit emphasis size wins; otherwise size from the SMALLEST marker drawn at this spot
+      // — the cloud's own dot — plus the bump, so emphasis is the same size on every plot
+      // regardless of any larger view-level marker.
+      const sz = em.size ?? at(t.marker?.size, k, 6) + em.bump
       const prev = seen.get(posKey)
       if (prev != null) {
         size[prev] = Math.min(size[prev], sz)
@@ -420,6 +440,9 @@ function buildOverlay(data: unknown[], active: Set<string>, emph: ResolvedHighli
       y.push(yk)
       cd.push(id)
       size.push(sz)
+      ringW.push(em.ring)
+      ringC.push(em.ringColor ?? ink)
+      fontSize.push(em.labelSize)
       // Numeric → keep the raw value so the overlay's colorscale maps it; else the
       // point's own colour string.
       color.push(
@@ -430,7 +453,7 @@ function buildOverlay(data: unknown[], active: Set<string>, emph: ResolvedHighli
       // whose gene names already sit on the axis) via __oeNoLabel, and a tile's highlight
       // config can switch the names off altogether.
       text.push(
-        !emph.label || (t as { __oeNoLabel?: boolean }).__oeNoLabel
+        !em.label || (t as { __oeNoLabel?: boolean }).__oeNoLabel
           ? ''
           : at(t.text as string | string[] | undefined, k, '')
       )
@@ -449,7 +472,7 @@ function buildOverlay(data: unknown[], active: Set<string>, emph: ResolvedHighli
     // Selected/hovered gene names in the theme's text colour (black was invisible on the dark
     // theme — plots draw on a transparent paper over the dark panel), bold so they read as the
     // emphasised labels.
-    textfont: { size: emph.labelSize, color: ink, weight: 700 },
+    textfont: { size: fontSize, color: ink, weight: 700 },
     cliponaxis: false,
     // The underlying point still answers hover; the overlay stays inert to avoid doubled tooltips.
     hoverinfo: 'skip',
@@ -460,7 +483,7 @@ function buildOverlay(data: unknown[], active: Set<string>, emph: ResolvedHighli
       size,
       color,
       opacity: 1,
-      line: { width: emph.ring, color: emph.ringColor ?? ink },
+      line: { width: ringW, color: ringC },
       ...(cmap ?? {})
     }
   }
@@ -534,7 +557,9 @@ function sameOverlay(a: Trace | undefined, b: Trace): boolean {
 
 /** The restyle payload that moves the (single, permanent) overlay trace to a new set of points. */
 function overlayRestyle(top: Trace): Record<string, unknown[]> {
-  const mk = top.marker as Record<string, unknown> & { line?: { color?: string; width?: number } }
+  const mk = top.marker as Record<string, unknown> & {
+    line?: { color?: string | string[]; width?: number | number[] }
+  }
   const u: Record<string, unknown[]> = {
     x: [top.x],
     y: [top.y],
@@ -543,7 +568,8 @@ function overlayRestyle(top: Trace): Record<string, unknown[]> {
     'marker.size': [mk.size],
     'marker.color': [mk.color],
     'marker.line.color': [mk.line?.color],
-    'marker.line.width': [mk.line?.width]
+    'marker.line.width': [mk.line?.width],
+    'textfont.size': [(top.textfont as { size?: unknown } | undefined)?.size]
   }
   // A colorscale (bubble) travels with the points so numeric colours map the same way.
   for (const key of ['colorscale', 'cmid', 'cmin', 'cmax'])
@@ -570,7 +596,12 @@ function decorateData(
   const traces = data.map((raw, i) => {
     const t = raw as Trace
     if (!sigs[i]) return raw
-    const op = opacityFor(sigs[i], isLine(t), bases[i] ?? { marker: 0.85, line: 1 }, emph.dim)
+    const op = opacityFor(
+      sigs[i],
+      isLine(t),
+      bases[i] ?? { marker: 0.85, line: 1 },
+      emphOf(t, emph).dim
+    )
     return isLine(t)
       ? { ...t, opacity: op }
       : { ...t, marker: { ...(t.marker ?? {}), opacity: op } }
@@ -616,7 +647,12 @@ function applyHighlight(
     data.forEach((raw, i) => {
       const t = raw as Trace
       if (!sigs[i] || sigs[i] === applied.current[i]) return
-      const op = opacityFor(sigs[i], isLine(t), bases[i] ?? { marker: 0.85, line: 1 }, emph.dim)
+      const op = opacityFor(
+        sigs[i],
+        isLine(t),
+        bases[i] ?? { marker: 0.85, line: 1 },
+        emphOf(t, emph).dim
+      )
       void Plotly.restyle(el, { [isLine(t) ? 'opacity' : 'marker.opacity']: op }, [i])
     })
     applied.current = sigs
@@ -1045,7 +1081,47 @@ export function PlotlyChart({
   const ref = useRef<HTMLDivElement>(null)
   // The tile's per-axis overrides (title, fonts, range, ticks, …), merged over the view's layout
   // at render (see plotAxes.ts). Provided by the tile so no view has to thread it.
-  const axes = useContext(PlotAxesContext)
+  const axesCtx = useContext(PlotAxesContext)
+  const axes = axesCtx?.axes
+  // Report what each axis shows WITHOUT an override — the view's own title and the range actually
+  // drawn — so the tile's settings can use them as placeholders. The tile only supplies the
+  // callback while its settings window is open, so a plot nobody is configuring never pays for it;
+  // a signature check means an unchanged report can't loop with the tile's re-render.
+  const reportDefaults = axesCtx?.onDefaults
+  const reportedRef = useRef('')
+  const publishDefaults = useCallback((): void => {
+    const el = ref.current as PlotlyGraphDiv | null
+    if (!reportDefaults || !el) return
+    const fl = (el as unknown as { _fullLayout?: Record<string, unknown> })._fullLayout
+    const axisOf = (key: 'xaxis' | 'yaxis'): AxisDefault => {
+      // Range from the LIVE layout (an autoranged axis only resolves at draw time); the title from
+      // the view's own layout, since the live one may already carry an override.
+      const live = fl?.[key] as
+        { range?: unknown; showgrid?: unknown; zeroline?: unknown; showline?: unknown } | undefined
+      const r = Array.isArray(live?.range) ? (live.range as unknown[]) : []
+      const num = (v: unknown): number | undefined => (typeof v === 'number' ? v : undefined)
+      const bool = (v: unknown): boolean | undefined => (typeof v === 'boolean' ? v : undefined)
+      return {
+        title: axisTitleText(layout?.[key]),
+        min: num(r[0]),
+        max: num(r[1]),
+        grid: bool(live?.showgrid),
+        zeroline: bool(live?.zeroline),
+        line: bool(live?.showline)
+      }
+    }
+    const next: AxisDefaults = { x: axisOf('xaxis'), y: axisOf('yaxis') }
+    const sig = JSON.stringify(next)
+    if (sig === reportedRef.current) return
+    reportedRef.current = sig
+    reportDefaults(next)
+  }, [layout, reportDefaults])
+  useEffect(publishDefaults, [publishDefaults])
+  // Zoom/pan changes the drawn range, so re-publish (cheap: it no-ops unless something changed).
+  const publishRef = useRef(publishDefaults)
+  useEffect(() => {
+    publishRef.current = publishDefaults
+  }, [publishDefaults])
   // Floating tooltip that previews a guide's value while it's being dragged.
   const tipRef = useRef<HTMLDivElement>(null)
   // Buffering: show a spinner until the FIRST Plotly render resolves, then never again (updates
@@ -1106,6 +1182,11 @@ export function PlotlyChart({
   // never replacing them.
   const baseAnnotsRef = useRef<unknown[]>([])
   const labelRaf = useRef(0)
+  // True while the left margin is pinned for bold tick labels (see reserveBoldMargin) — the pin is
+  // imperative, so it must be released when the plot stops needing it.
+  const pinnedMarginRef = useRef(false)
+  // The layout this chart was last rendered with, for restoring a margin the pin overwrote.
+  const layoutRef = useRef(layout)
   /** True from the start of a Plotly.react until it resolves (see the react effect). */
   const reactPendingRef = useRef(false)
   // Detaches the current legend-hover listeners (rebound after each render, since Plotly
@@ -1166,12 +1247,26 @@ export function PlotlyChart({
   const BOLD_MARGIN_PAD = 1.12
   const reserveBoldMargin = useCallback((): void => {
     const el = ref.current as PlotlyGraphDiv | null
-    // Only the y-axis (enrichment) case needs the left-margin reserve; an x-axis gene tick (bubble
-    // landscape) relies on automargin and must not have its left margin pinned.
-    if (!el || !boldTicksRef.current || (boldTicksRef.current.axis ?? 'y') !== 'y') return
+    if (!el) return
     const R = Plotly as unknown as {
       relayout: (e: PlotlyGraphDiv, u: Record<string, unknown>) => Promise<unknown>
     }
+    // Only the y-axis (enrichment, portrait bubble) case needs the left-margin reserve; an x-axis
+    // gene tick (landscape bubble) relies on automargin and must not have its left margin pinned.
+    // The pin is IMPERATIVE, so it outlives a re-render — when the gene ticks move to x (the
+    // orientation toggle) it has to be undone here, or the old reserve keeps squeezing the plot.
+    if (!boldTicksRef.current || (boldTicksRef.current.axis ?? 'y') !== 'y') {
+      if (!pinnedMarginRef.current) return
+      pinnedMarginRef.current = false
+      void R.relayout(el, {
+        'yaxis.automargin': true,
+        'margin.l': (layoutRef.current?.margin as { l?: number } | undefined)?.l ?? 55
+      })
+        .then(() => scheduleLabels())
+        .catch(() => {})
+      return
+    }
+    pinnedMarginRef.current = true
     const readL = (): number | undefined =>
       (el as unknown as { _fullLayout?: { _size?: { l: number } } })._fullLayout?._size?.l
     // MUST measure from automargin each time (idempotent). Plotly.react's minimal diff compares the
@@ -1200,6 +1295,9 @@ export function PlotlyChart({
   useEffect(() => {
     emphRef.current = emphasis
   }, [emphasis])
+  useEffect(() => {
+    layoutRef.current = layout
+  }, [layout])
 
   useEffect(() => {
     const el = ref.current as PlotlyGraphDiv | null
@@ -1277,18 +1375,75 @@ export function PlotlyChart({
             useSelection.getState().clearHover()
             setDragCursor('')
           })
-          // Plotly reliably fires plotly_click for MARKER points. For pure LINE traces (DR/TR
-          // curves) it often doesn't, so a native-click fallback pins whatever gene is currently
-          // hovered — guarded by `clickHandled` so a marker click never toggles twice.
-          let clickHandled = false
+          // One selection toggle per click, whichever path finds the gene. plotly_click is exact, but
+          // it only fires while Plotly still holds the hovered point — and the plots that change on
+          // hover (the enrichment ridge bolds its labels, the STRING network adds highlight traces)
+          // could lose it between the hover and the click, so a click went unregistered. The
+          // native-click fallback below then resolves the gene from the click POSITION, not from
+          // hover state. `plotlyClickAt` marks a click plotly_click already handled (a timestamp,
+          // not a flag, so a stale value can't swallow a later click).
+          let plotlyClickAt = -Infinity
           el.on('plotly_click', (e) => {
             if (guideDragging) return // a guide drag, not a gene click
             const id = idAt(e)
             if (id) {
-              clickHandled = true
+              plotlyClickAt = performance.now()
               useSelection.getState().togglePin(id)
             }
           })
+          // The gene point under a click, from the live figure: the nearest point of any trace that
+          // carries uniqIDs, within its marker radius plus a few px. Null when none is that close.
+          const pointAt = (clientX: number, clientY: number): string | null => {
+            const gdx = el as unknown as {
+              data?: Trace[]
+              _fullLayout?: Record<string, unknown>
+              getBoundingClientRect: () => DOMRect
+            }
+            const fl = gdx._fullLayout
+            if (!fl) return null
+            const box = gdx.getBoundingClientRect()
+            type Ax = { _offset: number; d2p?: (v: unknown) => number; l2p: (v: number) => number }
+            const axisOf = (ref: unknown, kind: 'x' | 'y'): Ax | undefined => {
+              const id = typeof ref === 'string' ? ref : kind
+              return fl[`${kind}axis${id.slice(1)}`] as Ax | undefined
+            }
+            let best: string | null = null
+            let bestD = Infinity
+            for (const t of gdx.data ?? []) {
+              const tt = t as Trace & {
+                xaxis?: string
+                yaxis?: string
+                visible?: unknown
+                marker?: { size?: unknown }
+              }
+              if (
+                tt.visible === false ||
+                typeof tt.mode !== 'string' ||
+                !tt.mode.includes('markers')
+              )
+                continue
+              const ids = traceIds(t)
+              const xs = tt.x as unknown[] | undefined
+              const ys = tt.y as unknown[] | undefined
+              const xa = axisOf(tt.xaxis, 'x')
+              const ya = axisOf(tt.yaxis, 'y')
+              if (!ids || !Array.isArray(xs) || !Array.isArray(ys) || !xa || !ya) continue
+              const toPx = (a: Ax, v: unknown): number =>
+                a.d2p ? a.d2p(v) : typeof v === 'number' ? a.l2p(v) : NaN
+              for (let k = 0; k < ids.length; k++) {
+                if (typeof ids[k] !== 'string') continue
+                const dx = box.left + xa._offset + toPx(xa, xs[k]) - clientX
+                const dy = box.top + ya._offset + toPx(ya, ys[k]) - clientY
+                const d = Math.hypot(dx, dy)
+                const reach = at(tt.marker?.size as number | number[] | undefined, k, 6) / 2 + 4
+                if (d <= reach && d < bestD) {
+                  bestD = d
+                  best = ids[k]
+                }
+              }
+            }
+            return best
+          }
           el.addEventListener(
             'click',
             (ev) => {
@@ -1298,15 +1453,17 @@ export function PlotlyChart({
               if (guideDragging) return
               // Legend clicks are handled by plotly_legendclick — don't double-fire.
               if ((ev.target as Element | null)?.closest?.('.legend')) return
-              // Snapshot the hovered gene NOW — the deferred check might run after hover cleared.
+              // Snapshot NOW — the deferred check might run after hover cleared. The hovered gene is
+              // the last resort: for pure LINE traces (DR/TR curves) Plotly often fires no
+              // plotly_click and there is no marker to hit-test.
               const hoverAtClick = useSelection.getState().hoverId
-              // Defer so a (bubble-phase) plotly_click, if any, sets the flag first.
+              const clickedAt = performance.now()
+              const { clientX, clientY } = ev
+              // Defer so a (bubble-phase) plotly_click, if any, is recorded first.
               setTimeout(() => {
-                if (clickHandled) {
-                  clickHandled = false
-                  return
-                }
-                if (hoverAtClick) useSelection.getState().togglePin(hoverAtClick)
+                if (plotlyClickAt >= clickedAt - 500) return // plotly_click handled this click
+                const id = pointAt(clientX, clientY) ?? hoverAtClick
+                if (id) useSelection.getState().togglePin(id)
               }, 0)
             },
             true // capture phase: fires even if Plotly's drag layer stops the bubbling click
@@ -1347,6 +1504,7 @@ export function PlotlyChart({
             if (Object.keys(ed ?? {}).some((k) => k.includes('range'))) {
               scheduleLabels()
               rebindDom() // ticks (and legend) re-render on zoom/pan → reattach hover listeners
+              publishRef.current()
             }
           })
 
@@ -1765,6 +1923,7 @@ export function PlotlyChart({
         mountCleanupRef.current?.()
         mountCleanupRef.current = onGraphMountRef.current?.(el) ?? null
         setReady(true)
+        publishRef.current()
       })
       // A failed render must not leave placement deferred forever.
       .catch(() => {

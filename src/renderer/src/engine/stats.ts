@@ -121,7 +121,9 @@ export function erfc(x: number): number {
                       (-0.18628806 +
                         t *
                           (0.27886807 +
-                            t * (-1.13520398 + t * (1.48851587 + t * (-0.82215223 + t * 0.17087277))))))))
+                            t *
+                              (-1.13520398 +
+                                t * (1.48851587 + t * (-0.82215223 + t * 0.17087277))))))))
     )
   return x >= 0 ? ans : 2 - ans
 }
@@ -170,7 +172,15 @@ export function jacobiEigenSymmetric(input: number[][]): { values: number[]; vec
     z[i] = 0
   }
   // In-place Givens rotation of the (i,j) and (k,l) entries (NR's ROTATE macro).
-  const rot = (m: number[][], s: number, tau: number, i: number, j: number, k: number, l: number): void => {
+  const rot = (
+    m: number[][],
+    s: number,
+    tau: number,
+    i: number,
+    j: number,
+    k: number,
+    l: number
+  ): void => {
     const g = m[i][j]
     const h = m[k][l]
     m[i][j] = g - s * (h + g * tau)
@@ -239,7 +249,9 @@ export interface GeneAgg {
  * groupby(uniqID)['value'].agg(count, mean, var(ddof=1)). Non-finite values are
  * dropped before aggregation.
  */
-export function aggregatePerGene(rows: Array<{ uniqID: string; value: number }>): Map<string, GeneAgg> {
+export function aggregatePerGene(
+  rows: Array<{ uniqID: string; value: number }>
+): Map<string, GeneAgg> {
   const buckets = new Map<string, number[]>()
   for (const r of rows) {
     const v = r.value
@@ -400,30 +412,12 @@ export function bonferroni(pvals: number[]): number[] {
   return pvals.map((p) => (Number.isFinite(p) ? Math.min(1, p * m) : p))
 }
 
-/** Holm step-down (family-wise error rate, uniformly more powerful than Bonferroni). */
-export function holm(pvals: number[]): number[] {
-  const q = pvals.slice()
-  const idx = pvals.map((_, i) => i).filter((i) => Number.isFinite(pvals[i]))
-  const m = idx.length
-  if (m === 0) return q
-  const order = idx.slice().sort((i, j) => pvals[i] - pvals[j])
-  let prev = 0
-  for (let rank = 1; rank <= m; rank++) {
-    const i = order[rank - 1]
-    const val = Math.min(1, Math.max(prev, pvals[i] * (m - rank + 1)))
-    q[i] = val
-    prev = val
-  }
-  return q
-}
-
 /** Multiple-testing correction applied to a comparison's p-values. `none` = raw p drives calls. */
-export type FdrMethod = 'none' | 'bh' | 'bonferroni' | 'holm'
+export type FdrMethod = 'none' | 'bh' | 'bonferroni'
 export const FDR_LABEL: Record<FdrMethod, string> = {
   none: '−log P-value',
   bh: '−log Q-value (FDR)',
-  bonferroni: '−log Q-value (FWER)',
-  holm: '−log Q-value (Holm FWER)'
+  bonferroni: '−log Q-value (FWER)'
 }
 /** Adjusted p-values by method; `none` returns the raw p-values. */
 export function adjustPValues(pvals: number[], method: FdrMethod): number[] {
@@ -432,8 +426,6 @@ export function adjustPValues(pvals: number[], method: FdrMethod): number[] {
       return benjaminiHochberg(pvals)
     case 'bonferroni':
       return bonferroni(pvals)
-    case 'holm':
-      return holm(pvals)
     default:
       return pvals.slice()
   }
@@ -504,7 +496,8 @@ export function thresholdLabel(cfg: ThresholdConfig): string {
   }
   // SAM hyperbola with a positive FC asymptote FC_lim = −s0 and P asymptote P_lim = statMin.
   // An asymmetric down-side asymptote is spelled out only when it differs (keeps legacy labels).
-  const down = cfg.s0Down != null && cfg.s0Down !== cfg.s0 ? `, FC_lim_down=${pyFloat(-cfg.s0Down)}` : ''
+  const down =
+    cfg.s0Down != null && cfg.s0Down !== cfg.s0 ? `, FC_lim_down=${pyFloat(-cfg.s0Down)}` : ''
   return `non-linear (SAM), ${sc} > P_lim + b/(|FC| − FC_lim)  [P_lim=${pyFloat(cfg.statMin)}, FC_lim=${pyFloat(-cfg.s0)}${down}, b=${pyFloat(cfg.b)}]`
 }
 

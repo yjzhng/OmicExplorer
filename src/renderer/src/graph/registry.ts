@@ -13,6 +13,7 @@ import type {
   HeatmapConfig,
   LoadConfig,
   MAConfig,
+  MergeConfig,
   NodeCategory,
   NodeConfig,
   NodeKind,
@@ -67,6 +68,17 @@ export const NODE_SPECS: Record<NodeKind, NodeSpec> = {
       activeConditions: null,
       minSamplePct: 0
     })
+  },
+  merge: {
+    kind: 'merge',
+    label: 'Merge',
+    subtitle: 'pool datasets into one',
+    category: 'processing',
+    // Chaining works without listing 'merge' here: outputKindOf resolves a Merge to the
+    // standardize result it emits.
+    acceptsFrom: ['standardize'],
+    hasRun: true,
+    defaultConfig: (): MergeConfig => ({})
   },
   compare: {
     kind: 'compare',
@@ -152,7 +164,7 @@ export const NODE_SPECS: Record<NodeKind, NodeSpec> = {
     // BOTH contrasted sides (FC1 vs FC2), for comparing profiles between two datasets/contrasts.
     acceptsFrom: ['compare', 'contrast'],
     hasRun: false,
-    defaultConfig: (): DRConfig => ({ axis: 'dose', capEnabled: true, topGenes: 1 })
+    defaultConfig: (): DRConfig => ({ axis: 'dose', capEnabled: true, topGenes: 20 })
   },
   bubble: {
     kind: 'bubble',
@@ -160,7 +172,7 @@ export const NODE_SPECS: Record<NodeKind, NodeSpec> = {
     category: 'plotting',
     acceptsFrom: ['compare'],
     hasRun: false,
-    defaultConfig: (): BubbleConfig => ({ axis: 'dose', capEnabled: true, topGenes: 1 })
+    defaultConfig: (): BubbleConfig => ({ axis: 'dose', capEnabled: true, topGenes: 20 })
   },
   dumbbell: {
     kind: 'dumbbell',
@@ -196,11 +208,18 @@ export const NODE_SPECS: Record<NodeKind, NodeSpec> = {
     hasRun: false,
     // Defaults chosen to match a standard tool's PCA (e.g. Spectronaut): covariance (no per-gene
     // scaling), complete cases only (no imputation), log2, individual replicates, no per-sample
-    // normalization.
+    // normalization. `display: 'replicate'` shows every data point — the raw scatter is what a PCA
+    // is usually read from; the centroid + territory view is a summary to switch up to.
     defaultConfig: (): ClusterConfig => ({
       method: 'pca',
       colorBy: 'cmpd',
-      display: 'centroid',
+      display: 'replicate',
+      territory: 'hull',
+      plot: 'pc',
+      loadings: 10,
+      clusterOn: 'coords',
+      clusterCount: 'fixed',
+      clusterK: 3,
       legend: 'simple',
       scale: 'none',
       missing: 'complete',
@@ -286,7 +305,7 @@ export const CATEGORIES: Record<NodeCategory, CategorySpec> = {
     category: 'processing',
     label: 'Processing',
     accent: '#8a7fe0',
-    ops: ['standardize', 'compare', 'contrast']
+    ops: ['standardize', 'merge', 'compare', 'contrast']
   },
   plotting: {
     category: 'plotting',
@@ -329,6 +348,7 @@ export const PLOT_SECTIONS: { label: string; kinds: NodeKind[] }[] = [
 export const ALL_OPS: NodeKind[] = [
   'load',
   'standardize',
+  'merge',
   'compare',
   'contrast',
   'volcano',
@@ -386,6 +406,20 @@ export function plotLabel(kind: NodeKind, config?: unknown): string {
     return axis === 'time' ? 'Time-response' : 'Dose-response'
   }
   return NODE_SPECS[kind].label
+}
+
+/** A tile name leads downloaded plot/table filenames (see PanelTile), so it's filtered to
+ *  file-name-safe characters as it's typed. Shared so every rename field — the canvas tile and the
+ *  form workflow's step header — filters identically; `renameNode` re-applies it as a backstop. */
+export const safeTileName = (v: string): string => v.replace(/[^A-Za-z0-9 ._-]+/g, '')
+
+/** What to call a step: the user's own name if it has one, else its type label. The single rule
+ *  behind every surface that shows a step — canvas tile, form section, results tab, paged nav — so
+ *  renaming a tile reads the same everywhere. */
+export function stepTitle(node: {
+  data: { kind: NodeKind; name?: string; config: NodeConfig }
+}): string {
+  return node.data.name?.trim() || plotLabel(node.data.kind, node.data.config)
 }
 
 /** One selectable entry in a plot picker. Usually one per plotting kind, but a kind with a
@@ -446,24 +480,46 @@ export interface AxisGraph {
 export function axisAvailFor(g: AxisGraph, upstreamId: string | undefined): AxisAvail {
   if (!upstreamId) return { dose: true, time: true }
   const seen = new Set<string>()
-  let id: string | undefined = upstreamId
-  while (id && !seen.has(id)) {
-    seen.add(id)
-    const r = g.results[id]
-    if (r) return axisAvailFromResult(r)
-    const n = g.nodes.find((x) => x.id === id)
-    if (n && isStep(n) && n.data.kind === 'standardize') {
-      const ac = (n.data.config as StandardizeConfig).activeConditions
-      if (ac) return { dose: ac.includes('dose'), time: ac.includes('time') }
-      return { dose: false, time: false }
+  const walk = (id: string | undefined): AxisAvail => {
+    while (id && !seen.has(id)) {
+      seen.add(id)
+      const r = g.results[id]
+      if (r) return axisAvailFromResult(r)
+      const n = g.nodes.find((x) => x.id === id)
+      if (n && isStep(n) && n.data.kind === 'standardize') {
+        const ac = (n.data.config as StandardizeConfig).activeConditions
+        if (ac) return { dose: ac.includes('dose'), time: ac.includes('time') }
+        return { dose: false, time: false }
+      }
+      // A Merge pools several inputs and its conditions are their union, so an unrun one has to
+      // branch rather than follow whichever edge happens to be first.
+      if (n && isStep(n) && n.data.kind === 'merge') {
+        const ups = g.edges.filter((e) => e.target === id).map((e) => e.source)
+        return ups.reduce<AxisAvail>(
+          (acc, u) => {
+            const a = walk(u)
+            return { dose: acc.dose || a.dose, time: acc.time || a.time }
+          },
+          { dose: false, time: false }
+        )
+      }
+      id = g.edges.find((e) => e.target === id)?.source
     }
-    id = g.edges.find((e) => e.target === id)?.source
+    return { dose: false, time: false }
   }
-  return { dose: false, time: false }
+  return walk(upstreamId)
+}
+/** The node kind an op's OUTPUT behaves as, for wiring. Merge pools Clean data into one more
+ *  Clean-data result, so anything that accepts `standardize` accepts a Merge — expressing that here
+ *  rather than adding 'merge' to a dozen `acceptsFrom` lists means a tile added later can't
+ *  accidentally omit it. */
+const OUTPUT_KIND: Partial<Record<NodeKind, NodeKind>> = { merge: 'standardize' }
+export function outputKindOf(op: NodeKind): NodeKind {
+  return OUTPUT_KIND[op] ?? op
 }
 /** True if an edge from `source` op into `target` op is allowed. */
 export function canConnect(source: NodeKind, target: NodeKind): boolean {
-  return NODE_SPECS[target].acceptsFrom.includes(source)
+  return NODE_SPECS[target].acceptsFrom.includes(outputKindOf(source))
 }
 /** Nodes that accept TWO upstream inputs; every other node accepts one. `contrast` pools two
  *  comparisons; `compare` pools two datasets so conditions can be drawn from either (joined by
@@ -471,9 +527,9 @@ export function canConnect(source: NodeKind, target: NodeKind): boolean {
 /** Nodes that accept several upstream inputs; every other node accepts one. Contrast can take
  *  any number (the selector picks the two datasets to contrast); Compare pools two. */
 export function maxInputsFor(kind: NodeKind): number {
-  return kind === 'contrast' ? Infinity : kind === 'compare' ? 2 : 1
+  return kind === 'contrast' || kind === 'merge' ? Infinity : kind === 'compare' ? 2 : 1
 }
 /** True if any op accepts `op` as an input (i.e. the node can be a source). */
 export function hasSourceHandle(op: NodeKind): boolean {
-  return ALL_OPS.some((k) => NODE_SPECS[k].acceptsFrom.includes(op))
+  return ALL_OPS.some((k) => NODE_SPECS[k].acceptsFrom.includes(outputKindOf(op)))
 }

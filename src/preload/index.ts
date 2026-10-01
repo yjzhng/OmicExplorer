@@ -145,10 +145,12 @@ const api = {
   revealFolder: (dir: string): Promise<void> => ipcRenderer.invoke('plots:reveal', dir),
 
   // ── external annotation ────────────────────────────────────────────────────────
-  /** Fetch UniProt annotations for a list of accessions; returns {byId, fields, found, taxon, error?}. */
+  /** Fetch UniProt annotations for a list of accessions; returns {byId, fields, found, taxon, error?}.
+   *  `refresh` bypasses the app-wide accession cache and re-queries every source. */
   fetchUniprot: (
     accessions: string[],
-    fields: string[]
+    fields: string[],
+    opts?: { refresh?: boolean }
   ): Promise<{
     byId: Record<string, Record<string, string>>
     fields: string[]
@@ -157,11 +159,16 @@ const api = {
     keggOrg?: string
     keggCategories?: Record<string, string>
     error?: string
-  }> => ipcRenderer.invoke('annot:uniprot', accessions, fields),
+  }> => ipcRenderer.invoke('annot:uniprot', accessions, fields, opts),
 
-  /** Subscribe to UniProt fetch progress (accessions done / total); returns an unsubscribe fn. */
-  onAnnotProgress: (cb: (p: { done: number; total: number }) => void): (() => void) => {
-    const listener = (_e: unknown, p: { done: number; total: number }): void => cb(p)
+  /** Subscribe to annotation fetch progress: accessions done / total during the UniProt pass, and
+   *  a `stage` message while a downstream source (KEGG, COG, MSigDB, Reactome) resolves. Returns an
+   *  unsubscribe fn. */
+  onAnnotProgress: (
+    cb: (p: { done: number; total: number; stage?: string }) => void
+  ): (() => void) => {
+    const listener = (_e: unknown, p: { done: number; total: number; stage?: string }): void =>
+      cb(p)
     ipcRenderer.on('annot:progress', listener)
     return () => ipcRenderer.removeListener('annot:progress', listener)
   },

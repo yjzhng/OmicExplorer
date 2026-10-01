@@ -4,6 +4,7 @@
 import {
   memo,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type CSSProperties,
@@ -18,7 +19,7 @@ import { sanitize } from '../export/paths'
 import { collectTableExports } from '../export/tables'
 import { accentOf, categoryOf, PLOT_CONFIG_KINDS, plotLabel } from '../graph/registry'
 import { IconGear } from '../ui/icons'
-import { PlotAxesContext } from '../ui/plotAxes'
+import { PlotAxesContext, swapAxes, type AxisDefaults } from '../ui/plotAxes'
 import { useGraph } from '../graph/store'
 import { UI } from '../ui/theme'
 import { useAppSettings } from '../ui/useAppSettings'
@@ -143,17 +144,35 @@ export const PanelTile = memo(function PanelTile({
   const canDownload = isPlot || isTable
   const plotConfig: TilePlotConfig | undefined =
     categoryOf(kind) === 'plotting' && PLOT_CONFIG_KINDS.has(kind)
-      ? { kind, config: cfg, update: patchConfig, edgeNodeId: node.id }
+      ? {
+          kind,
+          config: cfg,
+          update: patchConfig,
+          edgeNodeId: node.id,
+          selfId: child?.id ?? node.id
+        }
       : undefined
   const hasSettings = canToggle || canOrient || !!plotConfig
-  // The popovers hang below the header, right-aligned to the tile's edge: each open state holds
-  // that anchor (the button's vertical extent, the tile's right edge).
+  // The popovers open beside the tile: each open state holds the tile's box as the anchor.
   const tileRef = useRef<HTMLDivElement>(null)
   const [settingsAt, setSettingsAt] = useState<Anchor | null>(null)
+  // What the plot draws on each axis with no override (title + the range actually drawn). The
+  // charts report it only while the settings window is open — it's just for its placeholders, so
+  // a plot nobody is configuring never pays for the reporting.
+  const [axisDefaults, setAxisDefaults] = useState<AxisDefaults>({})
+  const axes = (cfg as { axes?: PlotAxes }).axes
+  const axesCtx = useMemo(
+    () => ({ axes, ...(settingsAt ? { onDefaults: setAxisDefaults } : null) }),
+    [axes, settingsAt]
+  )
+  // The window opens BESIDE the tile (see TileDialog), so it anchors to the tile's box — falling
+  // back to the button's own when the tile ref hasn't attached.
   const rectOf = (e: MouseEvent<HTMLButtonElement>): Anchor => {
     const r = e.currentTarget.getBoundingClientRect()
-    const right = tileRef.current?.getBoundingClientRect().right ?? r.right
-    return { top: r.top, bottom: r.bottom, left: r.left, right }
+    const t = tileRef.current?.getBoundingClientRect()
+    return t
+      ? { top: t.top, bottom: t.bottom, left: t.left, right: t.right }
+      : { top: r.top, bottom: r.bottom, left: r.left, right: r.right }
   }
   const [busy, setBusy] = useState(false)
   // Button feedback for 1 s: accent fill + a tick on success, red fill (reason in the tooltip) on
@@ -224,11 +243,11 @@ export const PanelTile = memo(function PanelTile({
           : undefined
     const dims = facetDims(rows, exclude)
     const bars = dims.length ? resolveFacets(rows, dims, facetSel ?? EMPTY_SEL).bars : []
-    const ORDER = ['cell', 'cmpd', 'dose', 'time']
     const context = bars
       .filter((b) => b.dim !== 'comparison')
-      .sort((a, b) => ORDER.indexOf(a.dim) - ORDER.indexOf(b.dim))
-      // Bare values in hierarchy order (cell, cmpd, dose, time) — the order says which is which.
+      // Bare values in hierarchy order (cell, cmpd, dose, time, then any custom condition) — the
+      // order says which is which. `facetDims` already returns them in that order, so no re-sort:
+      // a fixed key list would put an unlisted custom condition first instead of last.
       .map((b) => fileSafe(String(b.value)))
     const onView = bars.find((b) => b.dim === 'comparison')?.value
     const comparison =
@@ -414,8 +433,14 @@ export const PanelTile = memo(function PanelTile({
           onSelectedOnly={setSelectedOnly}
           canOrient={canOrient}
           orient={orient}
-          onOrient={(o) => patchConfig({ orient: o })}
+          // Flipping swaps which screen axis carries the genes, so the axis overrides travel with
+          // their data — otherwise a gene-axis range would land on the level axis and break the
+          // layout.
+          onOrient={(o) =>
+            patchConfig({ orient: o, axes: swapAxes((cfg as { axes?: PlotAxes }).axes) })
+          }
           plotConfig={plotConfig}
+          axisDefaults={axisDefaults}
           onClose={() => setSettingsAt(null)}
         />
       )}
@@ -423,7 +448,7 @@ export const PanelTile = memo(function PanelTile({
         {inView ? (
           <DeferredMount>
             {/* The tile's axis overrides reach every PlotlyChart inside (faceted plots too). */}
-            <PlotAxesContext.Provider value={(cfg as { axes?: PlotAxes }).axes}>
+            <PlotAxesContext.Provider value={axesCtx}>
               <PanelBody
                 node={node}
                 edges={edges}
