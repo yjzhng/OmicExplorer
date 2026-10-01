@@ -3,6 +3,7 @@
  * framework/library-free so the engine has no plotly dependency — the renderer
  * component assembles the actual Plotly traces from these.
  */
+import { pairsOf } from './accession'
 import { condValue } from './compare'
 import { clusterRowGroups, clusterRowOrder, suggestClusterCount } from './cluster'
 import type { ContrastResultRow } from './contrast'
@@ -303,6 +304,9 @@ export interface ScatterData {
   xLabel: string
   yLabel: string
   guide?: ScatterGuide
+  /** what the axes hold: fold changes (0 = no change, so the view keeps the origin in range) or
+   *  log abundances (the view fits the data — 0 means nothing there). Unset → fold changes. */
+  valueKind?: 'abundance' | 'fc'
 }
 
 export interface ScatterOptions {
@@ -446,7 +450,8 @@ export function buildScatter(rows: ContrastResultRow[], opts: ScatterOptions = {
     points,
     xLabel: `${unit} · ${rows[0]?.cmp2 ?? 'group B'}`,
     yLabel: `${unit} · ${rows[0]?.cmp1 ?? 'group A'}`,
-    guide: scatterGuide(points, thrsh)
+    guide: scatterGuide(points, thrsh),
+    valueKind: opts.valueKind ?? 'fc'
   }
 }
 
@@ -484,7 +489,8 @@ export function buildIntensityScatter(
     points,
     // "abundance" (with its log base) — the same word the MA plot and contrast scatter use.
     xLabel: `log abundance · ${den || 'denominator'}`,
-    yLabel: `log abundance · ${num || 'numerator'}`
+    yLabel: `log abundance · ${num || 'numerator'}`,
+    valueKind: 'abundance'
   }
 }
 
@@ -2063,23 +2069,25 @@ export function buildSampleCorr(
 // ── enrichment (over-representation analysis) ────────────────────────────────────
 
 /** Which annotation term set to test. KEGG and COG each offer two levels — the specific one
- *  (pathway / orthologous group) and the broad one it rolls up into (BRITE top level / functional
+ *  (pathway / orthologous group) and the broad one it rolls up into (pathway category / functional
  *  category). Specific sets resolve finer biology but are small, so they need a deeper dataset to
  *  clear an FDR cut; broad sets almost always have the counts but say less. The plain `kegg` and
- *  `cog` ids keep their original meaning so saved projects still open. */
+ *  `cog` ids keep their original meaning so saved projects still open. KOG is COG's eukaryotic half
+ *  — the same functional categories, its own groups — tested as its own set. */
 export type EnrichSource =
-  'go' | 'kegg' | 'kegg_category' | 'cog' | 'cog_group' | 'msigdb' | 'reactome'
+  'go' | 'kegg' | 'kegg_category' | 'cog' | 'cog_group' | 'kog' | 'msigdb' | 'reactome'
 /** Display name per source, for axis titles, selectors and unmet-requirement messages. */
 export const ENRICH_SOURCE_LABEL: Record<EnrichSource, string> = {
-  // Named for the source alone: a source's levels are its grouping (KEGG category → pathway, COG
-  // area → category), not separate choices.
+  // Named for the source alone: a source's levels are its grouping (KEGG pathway category › group
+  // → pathway, COG/KOG area → category), not separate choices.
   go: 'GO',
   kegg: 'KEGG',
-  kegg_category: 'KEGG category',
+  kegg_category: 'KEGG pathway category',
   cog: 'COG',
   cog_group: 'COG group',
+  kog: 'KOG (human)',
   msigdb: 'MSigDB',
-  reactome: 'Reactome'
+  reactome: 'Reactome (human)'
 }
 /** Enrichment method. `ora` is over-representation (hypergeometric on the significant set);
  *  `gsea` is ranked gene-set enrichment (weighted running-sum over the log2FC-ranked list with
@@ -2091,14 +2099,14 @@ export type EnrichMethod = 'ora' | 'gsea'
  *  older projects still enrich. */
 export const ENRICH_COLS: Record<EnrichSource, string[]> = {
   go: ['GO_BP', 'GO_MF', 'GO_CC', 'GO'],
-  kegg: ['keggPathway'],
-  // Same column as `kegg`: a pathway's BRITE top level is a lookup, not a column of its own, so
-  // enrichTermsOf maps the names up (see `categories`).
-  kegg_category: ['keggPathway'],
-  cog: ['cogCategory'],
+  kegg: ['KEGG'],
+  // Same column as `kegg`: enrichTermsOf maps each pathway up to its category (see `categories`).
+  kegg_category: ['KEGG'],
+  cog: ['COG_cat'],
   cog_group: ['COG'],
-  msigdb: ['msigdbSet'],
-  reactome: ['reactomePathway']
+  kog: ['KOG_cat'],
+  msigdb: ['MSigDB'],
+  reactome: ['Reactome']
 }
 /** A gene's distinct terms for a source, pooled over that source's columns. `categories` is the
  *  pathway → BRITE top-level map, needed only by `kegg_category`; without it that source has no
@@ -2132,13 +2140,13 @@ export function enrichTermsOf(
  *  Left out, though the engine still reads them: COG group (one set per orthologous group — too
  *  fine to test or browse by) and KEGG category. A KEGG category, like a COG area, is a GROUPING of
  *  terms, not a term set: it colours and groups KEGG pathways / COG categories (see termGroups). */
-export const ENRICH_FALLBACK: EnrichSource[] = ['go', 'kegg', 'reactome', 'msigdb', 'cog']
+export const ENRICH_FALLBACK: EnrichSource[] = ['go', 'kegg', 'reactome', 'msigdb', 'cog', 'kog']
 
 /** How the offered sources are presented, as the import groups the annotations: what a gene DOES
  *  (Function) and what it takes part in (Pathway). The enrichment terms dropdown lists them under
  *  these headings; the gene selector makes them its Function and Pathway tabs. */
 export const ENRICH_GROUPS: { label: 'Function' | 'Pathway'; sources: EnrichSource[] }[] = [
-  { label: 'Function', sources: ['go', 'cog', 'msigdb'] },
+  { label: 'Function', sources: ['go', 'cog', 'kog', 'msigdb'] },
   { label: 'Pathway', sources: ['kegg', 'reactome'] }
 ]
 
@@ -2152,21 +2160,111 @@ export function resolveEnrichSource(
   return ENRICH_FALLBACK.find((s) => present.includes(s)) ?? null
 }
 
-/** COG functional category → the area NCBI files it under, from the data: the annotation fetch
- *  writes `cogArea` aligned with `cogCategory` (one area per category, '; '-joined in the same
- *  order). Empty for data fetched before that column existed. */
-export function cogAreasOf(ann: Record<string, Record<string, string>>): Record<string, string> {
-  const areaOf: Record<string, string> = {}
-  for (const uid in ann) {
-    const rec = ann[uid]
-    if (!rec.cogCategory || !rec.cogArea) continue
-    const cats = rec.cogCategory.split(';').map((t) => t.trim())
-    const areas = rec.cogArea.split(';').map((t) => t.trim())
-    cats.forEach((c, i) => {
-      if (c && areas[i] && !(c in areaOf)) areaOf[c] = areas[i]
-    })
+/** Functional category → the area NCBI files it under, from the data: the annotation fetch writes
+ *  `COG_area` aligned with `COG_cat` and `KOG_area` with `KOG_cat` (one area per category, same
+ *  order). Empty for data fetched before areas existed. */
+export function cogAreasOf(
+  ann: Record<string, Record<string, string>>,
+  kind: 'COG' | 'KOG' = 'COG'
+): Record<string, string> {
+  return pairsOf(ann, `${kind}_cat`, `${kind}_area`)
+}
+
+/** GO's three aspects, by the column each is fetched into. */
+export const GO_ASPECTS: [col: string, name: string][] = [
+  ['GO_BP', 'Biological process'],
+  ['GO_MF', 'Molecular function'],
+  ['GO_CC', 'Cellular component']
+]
+/** GO term → its aspect ("Biological process" / "Molecular function" / "Cellular component"), from
+ *  the column the data carries it in — the grouping GO terms are shown under. Terms from the older
+ *  single `GO` column have no aspect and stay ungrouped. */
+export function goAspectsOf(ann: Record<string, Record<string, string>>): Record<string, string> {
+  const out: Record<string, string> = {}
+  for (const uid in ann)
+    for (const [col, name] of GO_ASPECTS)
+      for (const t of splitTerms(ann[uid][col])) if (!(t in out)) out[t] = name
+  return out
+}
+
+/** A facet's label for a table: "comparison=E28 | DMSO · dose=10". */
+export const facetLabel = (values: { dim: string; value: string | number }[]): string =>
+  values.map((v) => `${v.dim}=${v.value}`).join(' · ')
+
+/** How a source's terms are grouped and coloured: KEGG pathways by pathway category (`categories`,
+ *  over the data's KEGG_cat), Reactome terms by top-level pathway, COG / KOG categories by area,
+ *  GO terms by aspect; none for the rest. Shared by the enrichment tile and its background export. */
+export function enrichTermGroups(
+  source: EnrichSource,
+  ann: Record<string, Record<string, string>>,
+  categories?: Record<string, string>
+): Record<string, string> | undefined {
+  switch (source) {
+    case 'kegg':
+      return categories
+    case 'reactome':
+      return reactomeCategoriesOf(ann)
+    case 'go':
+      return goAspectsOf(ann)
+    case 'cog':
+      return cogAreasOf(ann, 'COG')
+    case 'kog':
+      return cogAreasOf(ann, 'KOG')
+    default:
+      return undefined
   }
-  return areaOf
+}
+
+/** Enrichment as a table — what the enrichment tile's background export writes to the project's
+ *  temp folder. Facets are the tile's own (facetDims / facetCompareRows over the Compare rows), or,
+ *  with `facet`, `rows` are already one facet so labelled. Every tested term is kept, not just the
+ *  top few the plot shows. */
+export function enrichmentTable(
+  rows: CompareResultRow[],
+  opts: Omit<EnrichOptions, 'topTerms'>,
+  facet?: string
+): Record<string, string | number | null>[] {
+  const out: Record<string, string | number | null>[] = []
+  const gsea = (opts.method ?? 'ora') === 'gsea'
+  const groups =
+    facet != null
+      ? [{ label: facet, rows }]
+      : facetCompareRows(rows, facetDims(rows)).map((g) => ({
+          label: facetLabel(g.values),
+          rows: g.rows
+        }))
+  for (const g of groups) {
+    const e = buildEnrichment(g.rows, { ...opts, topTerms: Number.MAX_SAFE_INTEGER })
+    const facet = g.label
+    for (const [direction, terms] of [
+      ['up', e.up],
+      ['down', e.down]
+    ] as const)
+      for (const t of terms)
+        out.push({
+          facet,
+          method: gsea ? 'GSEA' : 'ORA',
+          source: ENRICH_SOURCE_LABEL[e.source],
+          direction,
+          term: t.term,
+          group: t.category ?? null,
+          setSize: t.setSize,
+          count: t.count,
+          geneRatio: t.geneRatio,
+          ...(gsea ? { NES: t.nes ?? null } : { bgRatio: t.bgRatio, fold: t.fold }),
+          pValue: t.pValue,
+          pAdjust: t.pAdjust,
+          genes: t.genes.join(';')
+        })
+  }
+  return out
+}
+
+/** Reactome term → its top-level pathway alone — what enrichment colours Reactome terms by. */
+export function reactomeCategoriesOf(
+  ann: Record<string, Record<string, string>>
+): Record<string, string> {
+  return pairsOf(ann, 'Reactome', 'Reactome_cat')
 }
 
 /** The sources these genes actually carry terms for, in ENRICH_FALLBACK order — so a selector can
@@ -2256,7 +2354,7 @@ export interface EnrichOptions {
   source: EnrichSource
   /** how many top terms to keep per direction (<= 0 → default 15) */
   topTerms: number
-  /** uniqID → { column → value } from the ID-map DB (carries GO / keggPathway) */
+  /** uniqID → { column → value } from the ID-map DB (carries GO / KEGG / COG …) */
   annotationMap: Record<string, Record<string, string>>
   /** uniqID → display name (for the per-term gene lists) */
   displayMap?: Record<string, string>
@@ -2470,6 +2568,26 @@ function runningEs(
   return { es, peakAt }
 }
 
+/** Fewest same-sign null scores that make a usable normaliser (see gseaNormalize). */
+const GSEA_MIN_SAME_SIGN = 10
+
+/** A set's NES and nominal p from its observed ES and the null ES of random sets its size. The
+ *  standard way: divide by the mean of the SAME-sign null scores, and take p among them. When fewer
+ *  than GSEA_MIN_SAME_SIGN null scores share the sign — common for large sets, whose random scores
+ *  all lean one way — that mean can't be estimated (with none at all it was a near-zero placeholder,
+ *  blowing NES up to ~10⁸), so fall back to the mean |ES| of the whole null, and to p over every
+ *  permutation: an ES no random set matched in sign is significant, not p = 1. */
+export function gseaNormalize(es: number, nullEs: number[]): { nes: number; p: number } {
+  const same = nullEs.filter((e) => (es >= 0 ? e >= 0 : e < 0))
+  const enough = same.length >= GSEA_MIN_SAME_SIGN
+  const ref = enough ? same : nullEs
+  const mean = ref.length ? ref.reduce((a, e) => a + Math.abs(e), 0) / ref.length : 0
+  const nes = mean > 0 ? es / mean : 0
+  const asExtreme = same.filter((e) => Math.abs(e) >= Math.abs(es)).length
+  const p = (asExtreme + 1) / ((enough ? same.length : nullEs.length) + 1)
+  return { nes, p: Math.min(1, p) }
+}
+
 /** Ranked gene-set enrichment. Genes are ranked by log2FC (descending); each GO term / KEGG
  *  pathway is scored by the weighted running-sum ES, with significance from gene-label
  *  permutation (sets of random genes of the same size). Positive-NES sets (enriched at the
@@ -2531,7 +2649,7 @@ function runGsea(rows: CompareResultRow[], opts: EnrichOptions): EnrichData {
 
   // Null ES per set size (permutations depend only on K), reused across sets of equal size.
   const rand = mulberry32(0x9e3779b9 ^ N ^ (sets.length << 8))
-  const nullBySize = new Map<number, { es: number[]; posMean: number; negMean: number }>()
+  const nullBySize = new Map<number, number[]>()
   const sample = (k: number): number[] => {
     // Partial Fisher–Yates over an index pool for k distinct ranked positions.
     const pool = new Set<number>()
@@ -2545,32 +2663,13 @@ function runGsea(rows: CompareResultRow[], opts: EnrichOptions): EnrichData {
     }
     return out.sort((a, b) => a - b)
   }
-  const nullFor = (k: number): { es: number[]; posMean: number; negMean: number } => {
+  const nullFor = (k: number): number[] => {
     const cached = nullBySize.get(k)
     if (cached) return cached
     const es: number[] = []
-    let posSum = 0
-    let posN = 0
-    let negSum = 0
-    let negN = 0
-    for (let i = 0; i < nPerm; i++) {
-      const e = runningEs(sample(k), wAt, N).es
-      es.push(e)
-      if (e >= 0) {
-        posSum += e
-        posN++
-      } else {
-        negSum += -e
-        negN++
-      }
-    }
-    const rec = {
-      es,
-      posMean: posN > 0 ? posSum / posN : 1e-9,
-      negMean: negN > 0 ? negSum / negN : 1e-9
-    }
-    nullBySize.set(k, rec)
-    return rec
+    for (let i = 0; i < nPerm; i++) es.push(runningEs(sample(k), wAt, N).es)
+    nullBySize.set(k, es)
+    return es
   }
 
   interface Scored {
@@ -2589,19 +2688,7 @@ function runGsea(rows: CompareResultRow[], opts: EnrichOptions): EnrichData {
   for (const s of sets) {
     const { es, peakAt } = runningEs(s.pos, wAt, N)
     if (es === 0) continue
-    const nul = nullFor(s.pos.length)
-    const mean = es >= 0 ? nul.posMean : nul.negMean
-    const nes = mean > 0 ? es / mean : 0
-    // Nominal p: fraction of same-sign null ES at least as extreme.
-    let as = 0
-    let tot = 0
-    for (const e of nul.es) {
-      if (es >= 0 ? e >= 0 : e < 0) {
-        tot++
-        if (Math.abs(e) >= Math.abs(es)) as++
-      }
-    }
-    const p = tot > 0 ? (as + 1) / (tot + 1) : 1
+    const { nes, p } = gseaNormalize(es, nullFor(s.pos.length))
     // Leading edge: members up to (positive) / from (negative) the peak position, ordered by
     // |log2FC| so the most extreme drivers come first (names + values kept aligned).
     const leadPos = s.pos

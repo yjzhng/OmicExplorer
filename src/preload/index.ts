@@ -76,6 +76,10 @@ const api = {
   /** Write processed data under <dir>/[scope/]temp. */
   writeTempFile: (dir: string, name: string, content: string, scope?: string): Promise<void> =>
     ipcRenderer.invoke('wf:writeTemp', dir, name, content, scope),
+  /** A generated file back from temp/ (under the workflow subfolder when `scope` is set); null
+   *  when it isn't there. */
+  readTempFile: (dir: string, name: string, scope?: string): Promise<string | null> =>
+    ipcRenderer.invoke('wf:readTemp', dir, name, scope),
 
   // ── projects (.omicexplorer) ─────────────────────────────────────────────────
   /** Open a project via native picker; returns its path + JSON text (null if cancelled). */

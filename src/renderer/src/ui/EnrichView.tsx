@@ -1,5 +1,7 @@
 import { useMemo } from 'react'
 
+import { useElementSize } from '../dashboard/useElementSize'
+
 import type { EnrichData, EnrichTerm } from '../engine'
 import { PlotlyChart, type PlotLabel } from './PlotlyChart'
 import { axisBase, CATEGORICAL, EFFECT_COLOR, plotBase, PALETTES } from './theme'
@@ -44,6 +46,12 @@ export function EnrichView({
   title?: string
 }) {
   const mode = useUiTheme((s) => s.mode)
+  // The tile's width, so the group legend wraps to what fits instead of running off the edge (it
+  // stays in the plot — not HTML beside it — so copies and downloads carry it).
+  const { ref: boxRef, width: boxW } = useElementSize<HTMLDivElement>()
+  // Room for the legend: the figure's width less the inset either side; a fallback before measuring.
+  // In 20px steps, so dragging a tile's edge rebuilds the figure only when the wrap could change.
+  const legendBudget = boxW > 0 ? Math.max(160, Math.floor((boxW - 40) / 20) * 20) : 520
 
   const { data, layout, labels, labelColor, boldTicks } = useMemo(() => {
     const p = PALETTES[mode]
@@ -199,8 +207,18 @@ export function EnrichView({
         const col = anyActive && !active ? hexA(base, 0.3) : base
         return `<span style="color:${col}">■ ${active ? `<b>${c}</b>` : c}</span>`
       }
+      // Items flow left to right and wrap onto further rows (stacked upward from the plot) when the
+      // next would pass the tile's edge.
       let legendX = 0
+      let legendRow = 0
+      const ROW_H = LEGEND_FS + 5
       const legend = cats.map((c) => {
+        const itemW =
+          Math.ceil(measureText(`■ ${c}`, `bold ${LEGEND_FS}px sans-serif`)) + LEGEND_PAD
+        if (legendX > 0 && legendX + itemW > legendBudget) {
+          legendX = 0
+          legendRow++
+        }
         const ann = {
           // Align each item's left edge to the figure's left edge (the pathway-label margin) via the
           // shared container-left recompute in PlotlyChart; __oeLegendCat tags it for hover re-texting.
@@ -213,14 +231,17 @@ export function EnrichView({
           y: 1.0,
           yref: 'paper',
           yanchor: 'bottom',
+          yshift: legendRow * ROW_H,
           showarrow: false,
           text: legendItemText(c, false, false),
           font: { size: LEGEND_FS },
           captureevents: false
         }
-        legendX += Math.ceil(measureText(`■ ${c}`, `bold ${LEGEND_FS}px sans-serif`)) + LEGEND_PAD
+        legendX += itemW
         return ann
       })
+      // Rows ABOVE the first, so the plot's top margin grows to hold them.
+      const legendRows = cats.length ? legendRow + 1 : 0
       // The left margin, sized for every label at its WIDEST — bold, with its group square — and
       // fixed. Hovering a leading-edge gene bolds its pathways' labels (boldTicks); with an
       // auto-sized margin that widened the margin and slid the whole plot right under the cursor,
@@ -240,7 +261,12 @@ export function EnrichView({
         showlegend: false,
         title: title ? { text: title, font: { size: 13 } } : undefined,
         // + the tick labels' gap from the axis, and a little slack for font metrics.
-        margin: { l: Math.ceil(labelW) + 16, r: 12, t: cats.length ? 40 : 24, b: 40 },
+        margin: {
+          l: Math.ceil(labelW) + 16,
+          r: 12,
+          t: cats.length ? 40 + (legendRows - 1) * ROW_H : 24,
+          b: 40
+        },
         annotations: legend,
         xaxis: {
           ...axisBase(p),
@@ -300,6 +326,41 @@ export function EnrichView({
     const best = new Map<string, number>()
     for (const t of both) best.set(t.term, Math.max(best.get(t.term) ?? 0, negLog(t.pAdjust)))
     const order = [...best.entries()].sort((a, b) => a[1] - b[1]).map((e) => e[0])
+
+    // Term group → colour (a KEGG pathway's category, a Reactome term's top-level pathway, a
+    // COG/KOG category's area), as the ridge style shows it: a square in the group's colour right of
+    // each term's label, and the groups present listed above. Ordered top→bottom by first appearance.
+    const catOf = new Map<string, string>()
+    for (const t of both) if (t.category && !catOf.has(t.term)) catOf.set(t.term, t.category)
+    const groups: string[] = []
+    for (const term of [...order].reverse()) {
+      const c = catOf.get(term)
+      if (c && !groups.includes(c)) groups.push(c)
+    }
+    const groupColor = new Map(groups.map((c, i) => [c, CATEGORICAL[i % CATEGORICAL.length]]))
+    const termTick = (term: string): string => {
+      const c = catOf.get(term)
+      return c ? `${term} <span style="color:${groupColor.get(c)}">■</span>` : term
+    }
+    // The group legend, wrapped onto lines that fit the tile (measured, like the ridge's).
+    const LEGEND_FS = 10
+    const legendLines: string[][] = []
+    {
+      let line: string[] = []
+      let w = 0
+      for (const c of groups) {
+        const cw = measureText(`■ ${c}`, `${LEGEND_FS}px sans-serif`) + 14
+        if (line.length && w + cw > legendBudget) {
+          legendLines.push(line)
+          line = []
+          w = 0
+        }
+        line.push(`<span style="color:${groupColor.get(c)}">■ ${c}</span>`)
+        w += cw
+      }
+      if (line.length) legendLines.push(line)
+    }
+    const legendH = legendLines.length * (LEGEND_FS + 4)
 
     const maxCount = Math.max(1, ...both.map((t) => t.count))
     const maxNegLog = Math.max(1e-6, ...both.map((t) => negLog(t.pAdjust)))
@@ -427,7 +488,7 @@ export function EnrichView({
       barmode: 'overlay',
       bargap: 0.35,
       title: heading ? { text: heading, font: { size: 13 } } : undefined,
-      margin: { l: 6, r: style === 'dot' ? 66 : 12, t: 44, b: 44 },
+      margin: { l: 6, r: style === 'dot' ? 66 : 12, t: 44 + legendH, b: 44 },
       xaxis: {
         ...axisBase(p),
         title: { text: `← down    ${xTitle}    up →`, font: { size: 11 } },
@@ -443,6 +504,10 @@ export function EnrichView({
         type: 'category',
         categoryorder: 'array',
         categoryarray: order,
+        // Each term's label with its group's square (the values stay the term names).
+        tickmode: 'array',
+        tickvals: order,
+        ticktext: order.map(termTick),
         automargin: true,
         tickfont: { size: 10 }
       },
@@ -457,7 +522,27 @@ export function EnrichView({
               EFFECT_COLOR.down,
               11,
               'left'
-            )
+            ),
+            // The groups, above the up/down counts, from the figure's left edge (the shared
+            // container-left alignment, as the ridge's legend).
+            ...(legendLines.length
+              ? [
+                  {
+                    ...note(
+                      legendLines.map((l) => l.join('   ')).join('<br>'),
+                      0,
+                      1.05,
+                      p.text,
+                      LEGEND_FS,
+                      'left'
+                    ),
+                    __oeAlignContainerLeft: true,
+                    align: 'left',
+                    yanchor: 'bottom',
+                    yshift: 16
+                  }
+                ]
+              : [])
           ]
     }
     if (empty) {
@@ -471,17 +556,20 @@ export function EnrichView({
       labelColor: p.text,
       boldTicks: undefined as undefined
     }
-  }, [enrich, style, title, mode])
+  }, [enrich, style, title, mode, legendBudget])
 
   return (
-    <PlotlyChart
-      data={data}
-      layout={layout}
-      labels={labels}
-      labelColor={labelColor}
-      labelsAbove
-      boldTicks={boldTicks}
-    />
+    // Measured (for the legend's wrap width) and otherwise invisible — the chart fills it as before.
+    <div ref={boxRef} style={{ width: '100%', height: '100%' }}>
+      <PlotlyChart
+        data={data}
+        layout={layout}
+        labels={labels}
+        labelColor={labelColor}
+        labelsAbove
+        boldTicks={boldTicks}
+      />
+    </div>
   )
 }
 

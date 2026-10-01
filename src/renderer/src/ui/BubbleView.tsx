@@ -2,6 +2,7 @@ import { useMemo } from 'react'
 
 import { buildBubble, type CompareResultRow } from '../engine'
 import { PlotlyChart } from './PlotlyChart'
+import { truncateLabel } from './plotAxes'
 import { axisBase, EFFECT_COLOR, PALETTES, plotBase } from './theme'
 import { useSelection } from './useSelection'
 import { useUiTheme } from './useUiTheme'
@@ -118,7 +119,9 @@ export function BubbleView({
       // Category values are uniqIDs; show the display names as tick labels (value→label by pairing).
       tickmode: 'array',
       tickvals: bubble.genes,
-      ticktext: bubble.geneLabels,
+      // Capped in length (the full name is in the hover); the values stay uniqIDs, so two genes
+      // whose names cut short alike remain separate rows.
+      ticktext: bubble.geneLabels.map((l) => truncateLabel(l)),
       showgrid: true, // grid helps track genes across the row/column
       tickangle: landscape ? -45 : 0,
       automargin: true,
@@ -157,7 +160,9 @@ export function BubbleView({
     const boldTicks = {
       genesByTick: bubble.genes.map((g) => [g]),
       tickLabel: (i: number, active: boolean): string =>
-        active ? `<b>${bubble.geneLabels[i]}</b>` : bubble.geneLabels[i],
+        active
+          ? `<b>${truncateLabel(bubble.geneLabels[i])}</b>`
+          : truncateLabel(bubble.geneLabels[i]),
       axis: (landscape ? 'x' : 'y') as 'x' | 'y'
     }
     return { data: [trace], layout: lay, boldTicks }

@@ -95,6 +95,37 @@ export function outputScale(choice: LogTransform | undefined, input: ValueScale)
 export const defaultTransform = (input: ValueScale): LogTransform =>
   input === 'linear' ? 'log10' : 'none'
 
+/** Whether a distribution looks roughly normal, judged from its histogram's shape: sample skewness
+ *  (from the bin centres, weighted by count) within ±1. A quick read of symmetry beside the plot, not
+ *  a normality test — raw intensities, with their pile near zero and long right tail, fail it;
+ *  logged ones, a roughly symmetric hump, pass. Undefined when there's too little to judge. */
+export type Shape = 'normal' | 'non-normal'
+export const SHAPE_SKEW_LIMIT = 1
+export function histogramShape(h: ValueHistogram): Shape | undefined {
+  const k = h.counts.length
+  if (k === 0 || h.n < 3) return undefined
+  const w = (h.max - h.min) / k
+  let n = 0
+  let mean = 0
+  h.counts.forEach((c, i) => {
+    n += c
+    mean += c * (h.min + (i + 0.5) * w)
+  })
+  if (n < 3) return undefined
+  mean /= n
+  let m2 = 0
+  let m3 = 0
+  h.counts.forEach((c, i) => {
+    const d = h.min + (i + 0.5) * w - mean
+    m2 += c * d * d
+    m3 += c * d * d * d
+  })
+  m2 /= n
+  m3 /= n
+  if (!(m2 > 0)) return undefined
+  return Math.abs(m3 / m2 ** 1.5) <= SHAPE_SKEW_LIMIT ? 'normal' : 'non-normal'
+}
+
 /** A histogram of values, for a preview: `bins` equal-width bins over [min, max]. */
 export interface ValueHistogram {
   min: number
@@ -128,22 +159,35 @@ export function sampleValues(values: number[], cap = 50000): number[] {
   return out
 }
 
-const presented = new WeakMap<StandardizeResult, StandardizeResult>()
-/** A Clean data result with its values on its output scale (`scale`), for display and export —
- *  its own rows stay linear for every analysis. Cached per result. */
-export function presentStd(std: StandardizeResult): StandardizeResult {
-  const scale = std.scale ?? 'linear'
+/** The scale a Clean data result is presented on, from its step's log-transform choice — computed
+ *  where it's shown rather than stored in the result, so flipping the choice leaves the result (and
+ *  every plot built from it) untouched. A result from before `inputScale` existed keeps its own. */
+export function presentScaleOf(std: StandardizeResult, logTransform?: LogTransform): ValueScale {
+  return std.inputScale ? outputScale(logTransform, std.inputScale) : (std.scale ?? 'linear')
+}
+
+const presented = new WeakMap<StandardizeResult, Map<ValueScale, StandardizeResult>>()
+/** A Clean data result with its values on `scale` (default: the scale it was run with), for display
+ *  and export — its own rows stay linear for every analysis. Cached per result and scale, so
+ *  switching back and forth is instant. */
+export function presentStd(
+  std: StandardizeResult,
+  scale: ValueScale = std.scale ?? 'linear'
+): StandardizeResult {
   if (scale === 'linear') return std
-  let out = presented.get(std)
+  let byScale = presented.get(std)
+  if (!byScale) presented.set(std, (byScale = new Map()))
+  let out = byScale.get(scale)
   if (!out) {
     out = {
       ...std,
+      scale,
       rows: std.rows.map((r): StandardRow => ({
         ...r,
         value: r.value == null ? null : fromLinear(r.value, scale)
       }))
     }
-    presented.set(std, out)
+    byScale.set(scale, out)
   }
   return out
 }

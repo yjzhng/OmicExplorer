@@ -18,12 +18,13 @@ import {
   enrichSourcesPresent,
   ENRICH_GROUPS,
   defaultTransform,
-  detectScale,
+  histogramShape,
   fromLinear,
   histogram,
   outputScale,
   toLinear,
   type LogTransform,
+  type Shape,
   type ScalePreview,
   type ValueHistogram,
   ENRICH_SOURCE_LABEL,
@@ -871,25 +872,15 @@ function LoadPanel({ id, config }: { id: string; config: LoadConfig }) {
       {/* Import mode: Manual = pick the three standard files; Interactive = pick one raw data
           matrix and configure samples in a dialog, which materializes the standard files. */}
       <Section title="Import mode">
-        <div style={styles.subTabs}>
-          {(['interactive', 'manual'] as const).map((m) => {
-            const on = m === mode
-            return (
-              <button
-                key={m}
-                onClick={() => update(id, { mode: m })}
-                style={{
-                  ...styles.subTab,
-                  background: on ? UI.accent : 'transparent',
-                  color: on ? UI.accentText : UI.text,
-                  borderColor: on ? UI.accent : UI.border
-                }}
-              >
-                {m === 'manual' ? 'Manual' : 'Interactive'}
-              </button>
-            )
-          })}
-        </div>
+        <ToggleSwitch
+          label="Import mode"
+          value={mode}
+          options={[
+            { value: 'interactive' as const, label: 'Interactive' },
+            { value: 'manual' as const, label: 'Manual' }
+          ]}
+          onChange={(m) => update(id, { mode: m })}
+        />
         <div style={styles.hint}>
           {mode === 'manual'
             ? 'Provide the three standard input files.'
@@ -1038,8 +1029,7 @@ function DataScaleSection({
       const t = fromLinear(toLinear(v, detected), out)
       if (t != null) vals.push(t)
     }
-    // …and what those transformed values read as, judged the same way as the input.
-    return { hist: histogram(vals), scale: detectScale(vals).scale }
+    return histogram(vals)
   }, [ready, detected, out])
   const fmt = (v: number): string =>
     !Number.isFinite(v)
@@ -1072,8 +1062,8 @@ function DataScaleSection({
           hist={histIn}
           fmt={fmt}
           caption="as loaded"
-          // A warning: the scale is a guess, to check against the histogram it heads.
-          note={detected ? scaleNote(detected) : undefined}
+          // Whether the shape looks normal — to check against the histogram it heads.
+          note={shapeNote(histogramShape(histIn))}
         />
       ) : (
         <div style={styles.hint}>
@@ -1084,10 +1074,10 @@ function DataScaleSection({
       {histOut && (
         <>
           <ValueHistogramView
-            hist={histOut.hist}
+            hist={histOut}
             fmt={fmt}
             caption={`after ${out}`}
-            note={scaleNote(histOut.scale)}
+            note={shapeNote(histogramShape(histOut))}
           />
         </>
       )}
@@ -1095,12 +1085,14 @@ function DataScaleSection({
   )
 }
 
-/** The detected-scale warning beside a histogram, under its caption. */
-const scaleNote = (scale: string): ReactNode => (
-  <StatusNote kind="warn" inline>
-    Detected: <b>{scale}</b>
-  </StatusNote>
-)
+/** Whether a histogram looks normal, under its caption: a symmetric hump reads fine; a skewed
+ *  shape — raw intensities' pile near zero and long tail — is a warning. */
+const shapeNote = (shape: Shape | undefined): ReactNode =>
+  shape ? (
+    <StatusNote kind={shape === 'normal' ? 'ok' : 'warn'} inline>
+      Detected: <b>{shape}</b>
+    </StatusNote>
+  ) : undefined
 
 /** A compact histogram of values (SVG), with the range beneath — enough to see the shape: raw
  *  intensities pile up near zero with a long tail, logged values sit in a hump. */
@@ -4027,16 +4019,6 @@ const styles: Record<string, CSSProperties> = {
     flex: 1
   },
   hint: { color: UI.textMuted, fontSize: 11, marginBottom: 8, lineHeight: 1.4 },
-  subTabs: { display: 'flex', flexWrap: 'wrap', gap: 4, marginBottom: 6 },
-  subTab: {
-    border: `1px solid ${UI.border}`,
-    borderRadius: 5,
-    padding: '3px 8px',
-    fontSize: 11,
-    fontWeight: 600,
-    color: UI.text,
-    cursor: 'pointer'
-  },
   subActions: { display: 'flex', alignItems: 'center', gap: 6 },
   /** one decoration's controls: switch · style dropdown · width, wrapping in a narrow dialog */
   lineRow: { display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', minWidth: 0 },

@@ -36,6 +36,7 @@ import { RELEASES_URL, useUpdateCheck, type UpdateInfo } from './ui/useUpdateChe
 import { edgeTypes } from './graph/GraphEdge'
 import { nodeTypes } from './graph/GraphNode'
 import { useGraph } from './graph/store'
+import { useTempResultExports } from './export/tempResults'
 import {
   accentOf,
   ALL_OPS,
@@ -1648,6 +1649,8 @@ function Home() {
 
 export default function App() {
   const mode = useUiTheme((s) => s.mode)
+  // Keep the temp folder's Enrichment / STRING tables current in the background.
+  useTempResultExports()
   const view = useAppView((s) => s.view)
   const uiStyle = useAppSettings((s) => s.uiStyle)
   const [settingsOpen, setSettingsOpen] = useState(false)

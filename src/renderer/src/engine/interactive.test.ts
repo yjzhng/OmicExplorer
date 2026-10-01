@@ -167,6 +167,31 @@ describe('buildStandardInputs', () => {
     expect(a.dbText).toContain('PRT001,G1,') // gene from the label (Genes) column
   })
 
+  it('writes one db row per protein — unique, keyed by accession — each with its own annotation', () => {
+    const matrix = [
+      'Protein.Group,Genes,s1,s2',
+      'sp|Q13547|HDAC1_HUMAN;Q92769-2,,10,20',
+      // a second group naming HDAC2 again: still one HDAC2 row
+      'Q92769;Q92769-3,,30,40'
+    ].join('\n')
+    const a = buildStandardInputs(matrix, {
+      roles: { 'Protein.Group': 'id', Genes: 'label', s1: 'sample', s2: 'sample' },
+      conditions: {},
+      annotations: {
+        fields: ['keggPathway'],
+        byId: {
+          Q13547: { geneName: 'HDAC1', keggPathway: 'A' },
+          Q92769: { geneName: 'HDAC2', keggPathway: 'B' }
+        }
+      }
+    })
+    expect(a.dbText.split(/\r?\n/)).toEqual([
+      'uniqID,gene,keggPathway',
+      'Q13547,HDAC1,A',
+      'Q92769,HDAC2,B'
+    ])
+  })
+
   it('drops a sample marked include:false', () => {
     const conditions: Record<string, InteractiveSampleCond> = {
       [RX2]: { sample: RX2, include: false, cell: '', cmpd: '', dose: '', time: '', rep: '' }

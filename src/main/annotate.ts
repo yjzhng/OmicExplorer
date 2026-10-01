@@ -28,26 +28,41 @@ const UNIPROT_FIELD: Record<string, { uni: string; col: string }> = {
   go_cc: { uni: 'go_c', col: 'GO_CC' },
   string: { uni: 'xref_string', col: 'stringId' }
 }
-const KEGG_COL = 'keggPathway'
-/** Name(s) of the accession's orthologous group(s), e.g. 'ATP-dependent protease HslVU'. Names
- *  only — the COG/KOG id is a lookup key, not something to read off a plot or a table.
- *  Prokaryotic proteins land in COGs, eukaryotic ones in KOGs — the two halves of the same scheme. */
-const COG_COL = 'COG'
-/** The COG functional category description(s) — the level COG enrichment is normally read at. */
-const COG_CAT_COL = 'cogCategory'
-/** The functional area each of those categories sits under, '; '-joined in the SAME order (one per
- *  category; empty where NCBI gives none) — NCBI's own grouping, read from cog-24.fun.tab. */
-const COG_AREA_COL = 'cogArea'
-const MSIG_COL = 'msigdbSet'
-const REACTOME_COL = 'reactomePathway'
+/** KEGG pathway name(s), with each one's pathway category and pathway group (BRITE br08901's top
+ *  two levels) in KEGG_cat / KEGG_grp, '; '-joined in the SAME order — one per pathway, so a reader
+ *  can pair them up (empty where KEGG files a pathway under none). */
+const KEGG_COL = 'KEGG'
+const KEGG_CAT_COL = 'KEGG_cat'
+const KEGG_GRP_COL = 'KEGG_grp'
+/** Orthologous groups, as two parallel column sets: prokaryotic proteins land in COGs, eukaryotic
+ *  ones in KOGs — the two halves of one scheme, sharing the functional-category letters and areas.
+ *  Each set: the group name(s), e.g. 'ATP-dependent protease HslVU' (names only — the id is a lookup
+ *  key, not something to read off a plot); the functional category description(s), the level
+ *  enrichment is normally read at; and the functional area each category sits under, '; '-joined in
+ *  the SAME order (one per category; empty where NCBI gives none), read from cog-24.fun.tab. */
+const OG_COLS = {
+  COG: { group: 'COG', cat: 'COG_cat', area: 'COG_area' },
+  KOG: { group: 'KOG', cat: 'KOG_cat', area: 'KOG_area' }
+} as const
+const MSIG_COL = 'MSigDB'
+/** Reactome at three levels of its hierarchy. The TERM (`Reactome`) is the level-3 pathway — e.g.
+ *  "Signaling by EGFR", "Interferon Signaling", "G2/M Checkpoints": Reactome maps a protein to its
+ *  lowest-level pathways, ~2,000 small sets too thin to enrich on, so each is rolled up to its
+ *  level-3 ancestor (a pathway that stops above level 3 stays itself). `Reactome_grp` is that
+ *  term's level-2 parent ("Signaling by Receptor Tyrosine Kinases"), `Reactome_cat` its top-level
+ *  pathway ("Signal Transduction"), each '; '-joined in the SAME order as the terms — one per term,
+ *  so a reader can pair them up; the rare term under two parents carries both, ' / '-joined. */
+const REACTOME_COL = 'Reactome'
+const REACTOME_GRP_COL = 'Reactome_grp'
+const REACTOME_CAT_COL = 'Reactome_cat'
 /** DB column stamped 'essential' for genes whose UniProt accession is in DEG (Database of Essential
- *  Genes). Locally derived — never fetched. The results menu buckets any /essential/i column. */
-const ESSENTIAL_COL = 'essentiality'
+ *  Genes). Locally derived — never fetched. The results menu's Essentiality tab reads it. */
+const ESSENTIAL_COL = 'DEG'
 /** DB column stamped 'essential' / 'non-essential' from the Hart gold-standard human sets. Also a
  *  purely local join. Separate from DEG rather than merged: the two disagree (DEG is a union of
  *  screens, so it calls context-specific hits essential), and folding them together would bury
  *  that behind a single verdict. */
-const CEG_COL = 'essentialityCEG'
+const CEG_COL = 'CEG_NEG'
 /** Internal (never returned) column holding the accession's NCBI taxon, cached for STRING. */
 const TAXON_COL = '_taxon'
 /** Internal column holding the accession's KEGG organism code (e.g. 'hsa'), for STRING pathway mode. */
@@ -64,9 +79,13 @@ const KEGGORG_COL = '_keggOrg'
  *  cog:3 — v2 prefixed each group name with its id ('COG5405 …'); the names now stand alone. */
 export const RESOLVER_TOKEN = {
   // 4: categories now come with their functional area (cogArea), so earlier fetches are redone.
-  cog: '@cog:4',
+  // 5: COGs and KOGs split into their own column sets (COG_* / KOG_*).
+  cog: '@cog:5',
+  // 2: each pathway now carries its pathway category and group (KEGG_cat / KEGG_grp).
+  kegg: '@kegg:2',
   msigdb: '@msigdb:1',
-  reactome: '@reactome:1'
+  // 3: terms are level-3 pathways, with their level-2 group and top-level category.
+  reactome: '@reactome:3'
 } as const
 
 export interface AnnotResult {
@@ -173,77 +192,133 @@ async function fetchUniprotChunk(
   }
 }
 
-/** map number (5 digits) → top-level KEGG pathway category, parsed from the br08901 BRITE hierarchy.
- *  Organism-independent (keyed by the shared map number), so it's fetched + memoised once. */
-let briteCache: Record<string, string> | null = null
-async function loadBriteCategories(): Promise<Record<string, string>> {
+/** map number (5 digits) → its pathway category and pathway group, parsed from the br08901 BRITE
+ *  hierarchy. Organism-independent (keyed by the shared map number), so it's fetched + memoised once. */
+interface BriteLevels {
+  cat: string
+  grp: string
+}
+let briteCache: Record<string, BriteLevels> | null = null
+async function loadBrite(): Promise<Record<string, BriteLevels>> {
   if (briteCache) return briteCache
-  const out: Record<string, string> = {}
+  const out: Record<string, BriteLevels> = {}
   try {
     const res = await fetchT('https://rest.kegg.jp/get/br:br08901')
     if (res.ok) {
       let cat = ''
+      let grp = ''
+      // htext levels: A = pathway category, B = pathway group, C = "<mapNumber>  <pathway name>".
+      // A/B lines may be "A<b>Metabolism</b>" or "A09100 Metabolism" — strip markup + any code.
+      const label = (line: string): string =>
+        line
+          .slice(1)
+          .replace(/<[^>]+>/g, '')
+          .trim()
+          .replace(/^\d+\s+/, '')
+          .trim()
       for (const line of (await res.text()).split('\n')) {
         if (!line) continue
-        // htext levels: A = top category, B = subcategory, C = "<mapNumber>  <pathway name>".
-        // A-lines may be "A<b>Metabolism</b>" or "A09100 Metabolism" — strip markup + any leading code.
-        if (line[0] === 'A')
-          cat = line
-            .slice(1)
-            .replace(/<[^>]+>/g, '')
-            .replace(/^\d+\s+/, '')
-            .trim()
+        if (line[0] === 'A') {
+          cat = label(line)
+          grp = ''
+        } else if (line[0] === 'B') grp = label(line)
         else if (line[0] === 'C') {
           const m = line
             .slice(1)
             .trim()
             .match(/^(\d{5})\s+(.*)$/)
-          if (m && cat) out[m[1]] = cat
+          if (m && cat) out[m[1]] = { cat, grp }
         }
       }
     }
   } catch {
-    /* best-effort — no categories just means uncoloured labels */
+    /* best-effort — no levels just means ungrouped pathways */
   }
   briteCache = out
   return out
 }
 
 /** Clean KEGG's `list/pathway` name ("… - Homo sapiens (human)") to the bare pathway name. Must
- *  match the cleaning in addKeggPathways so category keys line up with the stored keggPathway names. */
+ *  match the cleaning in addKeggPathways so category keys line up with the stored KEGG pathway names. */
 const cleanPathwayName = (name: string): string => name.replace(/\s*-\s*[^-]+$/, '').trim()
 
-/** KEGG pathway names for each accession's KEGG gene id: link genes→pathways, then name them. */
+/** KEGG pathway names for each accession's KEGG gene id: link genes→pathways, then name them —
+ *  each with its pathway category and group from BRITE, in aligned columns. */
 async function addKeggPathways(
   keggByAcc: Record<string, string>,
-  byId: Record<string, Record<string, string>>
+  byId: Record<string, Record<string, string>>,
+  onProgress?: (done: number, total: number) => void
 ): Promise<void> {
-  const genes = [...new Set(Object.values(keggByAcc))]
+  // UniProt's KEGG cross-reference is a ';'-terminated list ("hsa:7157;"), possibly of several
+  // gene ids — split it, so each id matches the bare ids KEGG's own replies use.
+  const genesOf = (raw: string): string[] =>
+    raw
+      .split(';')
+      .map((g) => g.trim())
+      .filter(Boolean)
+  const genes = [...new Set(Object.values(keggByAcc).flatMap(genesOf))]
   if (genes.length === 0) return
   const norm = (p: string): string => p.replace(/^path:/, '').trim()
   const pathByGene: Record<string, string[]> = {}
-  for (let i = 0; i < genes.length; i += 100) {
-    const chunk = genes.slice(i, i + 100)
-    const res = await fetchT(`https://rest.kegg.jp/link/pathway/${chunk.join('+')}`)
-    if (!res.ok) continue
-    for (const line of (await res.text()).split('\n')) {
-      const [g, p] = line.split('\t')
-      if (g && p) (pathByGene[g.trim()] ??= []).push(norm(p))
+  // One request per 100 genes — a few in flight at once (KEGG serves them one by one, and a large
+  // dataset needs dozens), each reported, and a failed chunk skipped rather than sinking the rest.
+  const chunks: string[][] = []
+  for (let i = 0; i < genes.length; i += 100) chunks.push(genes.slice(i, i + 100))
+  let done = 0
+  onProgress?.(0, chunks.length)
+  const linkChunk = async (chunk: string[]): Promise<void> => {
+    try {
+      const res = await fetchT(`https://rest.kegg.jp/link/pathway/${chunk.join('+')}`)
+      if (!res.ok) return
+      for (const line of (await res.text()).split('\n')) {
+        const [g, p] = line.split('\t')
+        if (g && p) (pathByGene[g.trim()] ??= []).push(norm(p))
+      }
+    } catch {
+      /* this chunk's genes go without pathways */
+    } finally {
+      onProgress?.(++done, chunks.length)
     }
   }
+  const KEGG_PARALLEL = 3
+  let next = 0
+  await Promise.all(
+    Array.from({ length: Math.min(KEGG_PARALLEL, chunks.length) }, async () => {
+      while (next < chunks.length) await linkChunk(chunks[next++])
+    })
+  )
   const orgs = [...new Set(genes.map((g) => g.split(':')[0]))]
   const nameByPath: Record<string, string> = {}
   for (const org of orgs) {
-    const res = await fetchT(`https://rest.kegg.jp/list/pathway/${org}`)
-    if (!res.ok) continue
-    for (const line of (await res.text()).split('\n')) {
-      const [p, name] = line.split('\t')
-      if (p && name) nameByPath[norm(p)] = cleanPathwayName(name)
+    try {
+      const res = await fetchT(`https://rest.kegg.jp/list/pathway/${org}`)
+      if (!res.ok) continue
+      for (const line of (await res.text()).split('\n')) {
+        const [p, name] = line.split('\t')
+        if (p && name) nameByPath[norm(p)] = cleanPathwayName(name)
+      }
+    } catch {
+      /* best-effort — unnamed pathways fall back to their id */
     }
   }
-  for (const [acc, gene] of Object.entries(keggByAcc)) {
-    const names = (pathByGene[gene] ?? []).map((p) => nameByPath[p] ?? p).filter(Boolean)
-    if (names.length) (byId[acc] ??= {})[KEGG_COL] = [...new Set(names)].join('; ')
+  const brite = await loadBrite()
+  for (const [acc, raw] of Object.entries(keggByAcc)) {
+    // One entry per distinct pathway name, its levels from the map number the pathway id carries.
+    const seen = new Map<string, BriteLevels | undefined>()
+    for (const p of genesOf(raw).flatMap((g) => pathByGene[g] ?? [])) {
+      const name = nameByPath[p] ?? p
+      if (!name || seen.has(name)) continue
+      const mapNum = p.match(/(\d{5})/)?.[1]
+      seen.set(name, mapNum ? brite[mapNum] : undefined)
+    }
+    if (seen.size === 0) continue
+    const rec = (byId[acc] ??= {})
+    const levels = [...seen.values()]
+    rec[KEGG_COL] = [...seen.keys()].join('; ')
+    if (levels.some(Boolean)) {
+      rec[KEGG_CAT_COL] = levels.map((l) => l?.cat ?? '').join('; ')
+      rec[KEGG_GRP_COL] = levels.map((l) => l?.grp ?? '').join('; ')
+    }
   }
 }
 
@@ -254,7 +329,7 @@ async function buildKeggCategories(orgs: string[]): Promise<Record<string, strin
   const out: Record<string, string> = {}
   if (orgs.length === 0) return out
   const norm = (p: string): string => p.replace(/^path:/, '').trim()
-  const brite = await loadBriteCategories()
+  const brite = await loadBrite()
   if (Object.keys(brite).length === 0) return out
   for (const org of orgs) {
     try {
@@ -264,7 +339,7 @@ async function buildKeggCategories(orgs: string[]): Promise<Record<string, strin
         const [p, name] = line.split('\t')
         if (!p || !name) continue
         const mapNum = norm(p).match(/(\d{5})/)?.[1]
-        const cat = mapNum ? brite[mapNum] : undefined
+        const cat = mapNum ? brite[mapNum]?.cat : undefined
         if (cat) out[cleanPathwayName(name)] = cat
       }
     } catch {
@@ -357,18 +432,20 @@ async function loadCogDefs(): Promise<CogDefs> {
   return defs
 }
 
-/** Turn each accession's eggNOG cross-reference into an orthologous-group name + functional
- *  category. Proteins whose only group is an eggNOG-native `ENOG…` get no COG columns. */
+/** Turn each accession's eggNOG cross-reference into orthologous-group names + functional
+ *  categories — COGs into the COG_* columns, KOGs into the KOG_* ones. Proteins whose only group is
+ *  an eggNOG-native `ENOG…` get neither. */
 async function addCogGroups(
   eggnogByAcc: Record<string, string>,
-  byId: Record<string, Record<string, string>>
+  byId: Record<string, Record<string, string>>,
+  kinds: ('COG' | 'KOG')[]
 ): Promise<void> {
   const idsOf = (acc: string): string[] => [
     ...new Set(
       eggnogByAcc[acc]
         .split(/[;,]/)
         .map((t) => t.trim())
-        .filter((t) => COG_ID.test(t))
+        .filter((t) => COG_ID.test(t) && kinds.some((k) => t.startsWith(k)))
     )
   ]
   const accs = Object.keys(eggnogByAcc)
@@ -376,17 +453,24 @@ async function addCogGroups(
   if (!accs.some((a) => idsOf(a).length > 0)) return
   const defs = await loadCogDefs()
   for (const acc of accs) {
-    const ids = idsOf(acc)
-    if (ids.length === 0) continue
+    const all = idsOf(acc)
+    if (all.length === 0) continue
     const rec = (byId[acc] ??= {})
-    // Names, not ids — falling back to the id only for a group NCBI doesn't name, where it's the
-    // only thing left to show. Two ids can share a name, so dedupe after resolving.
-    rec[COG_COL] = [...new Set(ids.map((i) => defs.name[i] || i))].join('; ')
-    const cats = [...new Set(ids.flatMap((i) => (defs.cats[i] ?? '').split('; ').filter(Boolean)))]
-    if (cats.length) {
-      rec[COG_CAT_COL] = cats.join('; ')
-      // Aligned with the categories, one area each, so a reader can pair them up.
-      rec[COG_AREA_COL] = cats.map((c) => defs.area[c] ?? '').join('; ')
+    for (const kind of kinds) {
+      const ids = all.filter((i) => i.startsWith(kind))
+      if (ids.length === 0) continue
+      const cols = OG_COLS[kind]
+      // Names, not ids — falling back to the id only for a group NCBI doesn't name, where it's
+      // the only thing left to show. Two ids can share a name, so dedupe after resolving.
+      rec[cols.group] = [...new Set(ids.map((i) => defs.name[i] || i))].join('; ')
+      const cats = [
+        ...new Set(ids.flatMap((i) => (defs.cats[i] ?? '').split('; ').filter(Boolean)))
+      ]
+      if (cats.length) {
+        rec[cols.cat] = cats.join('; ')
+        // Aligned with the categories, one area each, so a reader can pair them up.
+        rec[cols.area] = cats.map((c) => defs.area[c] ?? '').join('; ')
+      }
     }
   }
 }
@@ -477,15 +561,87 @@ async function addMsigdbSets(
  *  batch lookup endpoint, so one pass over it beats thousands of per-accession requests. Scanned
  *  line by line and discarded — only the requested accessions are kept. */
 const REACTOME_URL = 'https://reactome.org/download/current/UniProt2Reactome.txt'
+/** Reactome's pathway hierarchy (`parent stId \t child stId`, every species) and its pathway list
+ *  (`stId \t name \t species`) — together, every pathway's paths from the top level down. */
+const REACTOME_REL_URL = 'https://reactome.org/download/current/ReactomePathwaysRelation.txt'
+const REACTOME_NAMES_URL = 'https://reactome.org/download/current/ReactomePathways.txt'
+/** One pathway's level 3 / 2 / 1 names along one path from the top (the pathway itself standing in
+ *  for a level it doesn't reach). */
+interface ReactomeLevels {
+  term: string
+  grp: string
+  cat: string
+}
+let reactomeLevelCache: Map<string, ReactomeLevels[]> | null = null
+/** stId → its levels along every path from the top (a pathway can sit under two parents).
+ *  Best-effort: a failure leaves the pathways unannotated rather than mislabelled. */
+async function loadReactomeLevels(): Promise<Map<string, ReactomeLevels[]>> {
+  if (reactomeLevelCache) return reactomeLevelCache
+  const levels = new Map<string, ReactomeLevels[]>()
+  try {
+    const [relRes, namesRes] = await Promise.all([
+      fetchT(REACTOME_REL_URL, BULK_TIMEOUT),
+      fetchT(REACTOME_NAMES_URL, BULK_TIMEOUT)
+    ])
+    if (relRes.ok && namesRes.ok) {
+      const parents = new Map<string, string[]>()
+      for (const line of (await relRes.text()).split('\n')) {
+        const [p, c] = line.split('\t').map((t) => t?.trim())
+        if (p && c) (parents.get(c) ?? parents.set(c, []).get(c)!).push(p)
+      }
+      const name = new Map<string, string>()
+      for (const line of (await namesRes.text()).split('\n')) {
+        const [id, nm] = line.split('\t')
+        if (id && nm) name.set(id.trim(), nm.trim())
+      }
+      // Every path from a top-level pathway down to `id`, memoised (the hierarchy is a DAG).
+      const pathMemo = new Map<string, string[][]>()
+      const pathsTo = (id: string, seen: Set<string>): string[][] => {
+        const hit = pathMemo.get(id)
+        if (hit) return hit
+        const ps = (parents.get(id) ?? []).filter((p) => !seen.has(p))
+        const next = new Set(seen).add(id)
+        const paths = ps.length
+          ? ps.flatMap((p) => pathsTo(p, next).map((path) => [...path, id]))
+          : [[id]]
+        pathMemo.set(id, paths)
+        return paths
+      }
+      for (const id of name.keys()) {
+        const seen = new Set<string>()
+        const out: ReactomeLevels[] = []
+        for (const path of pathsTo(id, new Set())) {
+          const at = (i: number): string => name.get(path[Math.min(i, path.length - 1)]) ?? ''
+          const lv = { term: at(2), grp: at(1), cat: at(0) }
+          const key = `${lv.term}\t${lv.grp}\t${lv.cat}`
+          if (lv.term && !seen.has(key)) {
+            seen.add(key)
+            out.push(lv)
+          }
+        }
+        levels.set(id, out)
+      }
+    }
+  } catch {
+    /* best-effort */
+  }
+  reactomeLevelCache = levels
+  return levels
+}
+
 async function addReactomePathways(
   accs: string[],
   byId: Record<string, Record<string, string>>
 ): Promise<void> {
   if (accs.length === 0) return
   const need = new Set(accs)
-  const res = await fetchT(REACTOME_URL, BULK_TIMEOUT)
+  const [res, levels] = await Promise.all([
+    fetchT(REACTOME_URL, BULK_TIMEOUT),
+    loadReactomeLevels()
+  ])
   if (!res.ok) throw new Error(`Reactome HTTP ${res.status}`)
   const text = await res.text()
+  // accession → the stIds of its (lowest-level) pathways
   const hits: Record<string, Set<string>> = {}
   for (let pos = 0; pos < text.length;) {
     let end = text.indexOf('\n', pos)
@@ -494,13 +650,27 @@ async function addReactomePathways(
     // Check the accession before slicing the rest of the line — most lines are other species.
     if (tab > pos && tab < end && need.has(text.slice(pos, tab))) {
       const cells = text.slice(pos, end).split('\t')
-      const name = cells[3]?.trim()
-      if (name) (hits[cells[0]] ??= new Set()).add(name)
+      const id = cells[1]?.trim()
+      if (id) (hits[cells[0]] ??= new Set()).add(id)
     }
     pos = end + 1
   }
-  for (const [acc, names] of Object.entries(hits))
-    (byId[acc] ??= {})[REACTOME_COL] = [...names].join('; ')
+  for (const [acc, ids] of Object.entries(hits)) {
+    // Roll each pathway up to its level-3 term; a term reached along two paths keeps both parents.
+    const terms = new Map<string, { grp: Set<string>; cat: Set<string> }>()
+    for (const id of ids)
+      for (const lv of levels.get(id) ?? []) {
+        const t =
+          terms.get(lv.term) ?? terms.set(lv.term, { grp: new Set(), cat: new Set() }).get(lv.term)!
+        t.grp.add(lv.grp)
+        t.cat.add(lv.cat)
+      }
+    if (terms.size === 0) continue
+    const rec = (byId[acc] ??= {})
+    rec[REACTOME_COL] = [...terms.keys()].join('; ')
+    rec[REACTOME_GRP_COL] = [...terms.values()].map((t) => [...t.grp].join(' / ')).join('; ')
+    rec[REACTOME_CAT_COL] = [...terms.values()].map((t) => [...t.cat].join(' / ')).join('; ')
+  }
 }
 
 /** Drop the per-session reference memos so a forced refresh re-pulls them. Without this a table
@@ -508,6 +678,7 @@ async function addReactomePathways(
  *  would be reused, and "re-query the sources" wouldn't actually re-query them. */
 function resetReferenceMemos(): void {
   briteCache = null
+  reactomeLevelCache = null
   cogCache = null
   msigVersions = null
   for (const sp of Object.keys(msigCache) as ('Hs' | 'Mm')[]) delete msigCache[sp]
@@ -531,6 +702,8 @@ export function registerAnnotate(): void {
         .map((id) => UNIPROT_FIELD[id])
       const withKegg = want.has('kegg')
       const withCog = want.has('cog')
+      const withKog = want.has('kog')
+      const ogKinds = [...(withCog ? ['COG' as const] : []), ...(withKog ? ['KOG' as const] : [])]
       const withMsig = want.has('msigdb')
       const withReactome = want.has('reactome')
       // Species is fetched alongside STRING ids, and for MSigDB to pick the hallmark collection.
@@ -547,15 +720,15 @@ export function registerAnnotate(): void {
       const extras: ExtraKey[] = [
         ...(withKegg ? (['kegg'] as const) : []),
         ...(withTaxon ? (['organism'] as const) : []),
-        ...(withCog ? (['eggnog'] as const) : []),
+        ...(ogKinds.length ? (['eggnog'] as const) : []),
         ...(needSymbol ? (['symbol'] as const) : [])
       ]
       const outFields = [
         ...outCols,
-        ...(withKegg ? [KEGG_COL] : []),
-        ...(withCog ? [COG_COL, COG_CAT_COL, COG_AREA_COL] : []),
+        ...(withKegg ? [KEGG_COL, KEGG_CAT_COL, KEGG_GRP_COL] : []),
+        ...ogKinds.flatMap((k) => [OG_COLS[k].group, OG_COLS[k].cat, OG_COLS[k].area]),
         ...(withMsig ? [MSIG_COL] : []),
-        ...(withReactome ? [REACTOME_COL] : [])
+        ...(withReactome ? [REACTOME_COL, REACTOME_GRP_COL, REACTOME_CAT_COL] : [])
       ]
       const resultFields = [
         ...outFields,
@@ -567,8 +740,8 @@ export function registerAnnotate(): void {
       const requiredCols = [
         ...outFields,
         ...(withTaxon ? [TAXON_COL] : []),
-        ...(withKegg ? [KEGGORG_COL] : []),
-        ...(withCog ? [RESOLVER_TOKEN.cog] : []),
+        ...(withKegg ? [KEGGORG_COL, RESOLVER_TOKEN.kegg] : []),
+        ...(ogKinds.length ? [RESOLVER_TOKEN.cog] : []),
         ...(withMsig ? [RESOLVER_TOKEN.msigdb] : []),
         ...(withReactome ? [RESOLVER_TOKEN.reactome] : [])
       ]
@@ -609,16 +782,18 @@ export function registerAnnotate(): void {
         for (const [acc, t] of Object.entries(extra.organism)) (byId[acc] ??= {})[TAXON_COL] = t
         if (withKegg) {
           onProg(0, 0, 'Resolving KEGG pathways…')
-          await addKeggPathways(extra.kegg, byId)
+          await addKeggPathways(extra.kegg, byId, (d, t) =>
+            onProg(0, 0, `Resolving KEGG pathways… ${d}/${t}`)
+          )
           // Stash each accession's KEGG organism code (the 'hsa' of 'hsa:7157') for STRING pathway mode.
           for (const [acc, kg] of Object.entries(extra.kegg)) {
-            const org = kg.split(':')[0]
+            const org = kg.split(':')[0].trim()
             if (org) (byId[acc] ??= {})[KEGGORG_COL] = org
           }
         }
-        if (withCog) {
-          onProg(0, 0, 'Resolving COG groups…')
-          await addCogGroups(extra.eggnog, byId)
+        if (ogKinds.length) {
+          onProg(0, 0, `Resolving ${ogKinds.join(' / ')} groups…`)
+          await addCogGroups(extra.eggnog, byId, ogKinds)
         }
         if (withMsig) {
           onProg(0, 0, 'Loading MSigDB hallmark sets…')
@@ -636,6 +811,9 @@ export function registerAnnotate(): void {
         for (const acc of accs) {
           const e = (store.byAcc[acc] ??= { got: [], fields: {}, release: meta.release })
           for (const c of requiredCols) if (!e.got.includes(c)) e.got.push(c)
+          // This fetch REPLACES what it re-resolved: a value it no longer produces (a stale group
+          // from an older resolver, a pathway since dropped) must not outlive it in the cache.
+          for (const c of outFields) delete e.fields[c]
           const rec = byId[acc]
           if (rec) for (const [c, v] of Object.entries(rec)) if (v) e.fields[c] = v
           if (meta.release) e.release = meta.release

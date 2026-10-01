@@ -135,9 +135,15 @@ export function MAView({
       })
     }
 
-    const xs = ma.points.map((pt) => pt.x)
-    const lo = Math.min(0, ...xs)
-    const hi = Math.max(1, ...xs)
+    // The abundance axis fits the data: 0 log abundance has no meaning here, and forcing it in
+    // would squeeze the cloud into the right of the plot.
+    let lo = Infinity
+    let hi = -Infinity
+    for (const pt of ma.points) {
+      if (pt.x < lo) lo = pt.x
+      if (pt.x > hi) hi = pt.x
+    }
+    if (!Number.isFinite(lo) || !Number.isFinite(hi)) [lo, hi] = [0, 1]
     const guide = (y: number) => ({
       type: 'line',
       x0: lo,

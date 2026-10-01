@@ -109,8 +109,22 @@ interface Gene {
 /** A pathway group of genes. */
 export interface GenePathway {
   name: string
+  /** the middle level it sits under within its category (KEGG pathway group, Reactome level 2) —
+   *  pathways sharing one are shown together under its own header; none = directly in the category */
+  group?: string
   genes: Gene[]
 }
+/** A category's pathways as consecutive runs sharing a middle-level group (or none). */
+function runsByGroup(pathways: GenePathway[]): { group?: string; pathways: GenePathway[] }[] {
+  const runs: { group?: string; pathways: GenePathway[] }[] = []
+  for (const pw of pathways) {
+    const last = runs[runs.length - 1]
+    if (last && last.group === pw.group) last.pathways.push(pw)
+    else runs.push({ group: pw.group, pathways: [pw] })
+  }
+  return runs
+}
+
 /** A gene category. Either nested (`pathways`, e.g. a KEGG BRITE top level holding pathways) or
  *  flat (`genes` directly, e.g. an essentiality class with no pathway sublevel). */
 export interface GeneCategory {
@@ -353,9 +367,12 @@ export function GeneSelectMenu({ tabs }: { tabs: GeneGroupTab[] }): ReactNode {
         }
         const pathways = (c.pathways ?? [])
           .map((pw) => {
-            const pwMatch = needle && pw.name.toLowerCase().includes(needle)
+            const pwMatch =
+              needle &&
+              (pw.name.toLowerCase().includes(needle) ||
+                (pw.group?.toLowerCase().includes(needle) ?? false))
             const genes = !needle || catMatch || pwMatch ? pw.genes : pw.genes.filter(matchGene)
-            return { name: pw.name, genes }
+            return { name: pw.name, group: pw.group, genes }
           })
           .filter((pw) => pw.genes.length > 0)
         return { name: c.name, pathways, genes: [] as Gene[] }
@@ -386,6 +403,12 @@ export function GeneSelectMenu({ tabs }: { tabs: GeneGroupTab[] }): ReactNode {
       for (const c of t.categories) {
         if (c.genes && same(c.genes.map((g) => g.id))) return c.name
         for (const pw of c.pathways ?? []) if (same(pw.genes.map((g) => g.id))) return pw.name
+        // a middle-level group: the union of its pathways
+        const byGroup = new Map<string, string[]>()
+        for (const pw of c.pathways ?? [])
+          if (pw.group)
+            byGroup.set(pw.group, [...(byGroup.get(pw.group) ?? []), ...pw.genes.map((g) => g.id)])
+        for (const [g, ids] of byGroup) if (same(ids)) return g
         if (c.pathways && same(c.pathways.flatMap((pw) => pw.genes.map((g) => g.id)))) return c.name
       }
     return null
@@ -419,6 +442,40 @@ export function GeneSelectMenu({ tabs }: { tabs: GeneGroupTab[] }): ReactNode {
       {sel}/{total}
     </span>
   )
+  // One pathway: its header (box, toggle, count) and, open, its genes — at a given indent (deeper
+  // when it sits under a middle-level group).
+  const pathwayRows = (
+    catName: string,
+    pw: GenePathway,
+    headIndent: number,
+    geneIndent: number
+  ): ReactNode => {
+    const key = `${catName}::${pw.name}`
+    const ids = pw.genes.map((g) => g.id)
+    const sel = ids.filter((id) => checkedIds.has(id)).length
+    const pwOpen = searching || openPath.has(key)
+    return (
+      <div key={key}>
+        <div style={{ ...styles.pathHead, paddingLeft: headIndent }}>
+          {box(
+            sel,
+            ids.length,
+            () => toggleIds(ids),
+            editSet ? 'Add all in pathway to the geneset' : 'Select all in pathway'
+          )}
+          <button
+            onClick={() => toggleIn(openPath, setOpenPath, key)}
+            style={{ ...styles.headBtn, color: p.text, fontWeight: 600 }}
+          >
+            <Chevron deg={pwOpen ? 90 : 0} size={9} color={p.textMuted} />
+            <span style={styles.label}>{pw.name}</span>
+          </button>
+          {chip(sel, ids.length)}
+        </div>
+        {pwOpen && geneRows(pw.genes, geneIndent)}
+      </div>
+    )
+  }
   // Gene checkbox rows, shared by flat categories and pathways (differing only in left indent).
   // Checking a gene pins it into the shared selection.
   const geneRows = (genes: Gene[], indent: number): ReactNode => (
@@ -926,32 +983,33 @@ export function GeneSelectMenu({ tabs }: { tabs: GeneGroupTab[] }): ReactNode {
                     {catOpen && flat && geneRows(c.genes, 26)}
                     {catOpen &&
                       !flat &&
-                      c.pathways.map((pw) => {
-                        const key = `${c.name}::${pw.name}`
-                        const ids = pw.genes.map((g) => g.id)
-                        const sel = ids.filter((id) => checkedIds.has(id)).length
-                        const pwOpen = searching || openPath.has(key)
+                      // Pathways in order, a run sharing a middle-level group gathered under its own
+                      // header (one more indent level); ungrouped ones sit directly in the category.
+                      runsByGroup(c.pathways).map((run) => {
+                        if (!run.group)
+                          return run.pathways.map((pw) => pathwayRows(c.name, pw, 18, 40))
+                        const gKey = `${c.name}::grp::${run.group}`
+                        const g = tally(run.pathways.map((pw) => pw.genes.map((x) => x.id)))
+                        const gOpen = searching || openPath.has(gKey)
                         return (
-                          <div key={key}>
+                          <div key={gKey}>
                             <div style={styles.pathHead}>
                               {box(
-                                sel,
-                                ids.length,
-                                () => toggleIds(ids),
-                                editSet
-                                  ? 'Add all in pathway to the geneset'
-                                  : 'Select all in pathway'
+                                g.sel,
+                                g.ids.length,
+                                () => toggleIds(g.ids),
+                                editSet ? 'Add all in group to the geneset' : 'Select all in group'
                               )}
                               <button
-                                onClick={() => toggleIn(openPath, setOpenPath, key)}
-                                style={{ ...styles.headBtn, color: p.text, fontWeight: 600 }}
+                                onClick={() => toggleIn(openPath, setOpenPath, gKey)}
+                                style={{ ...styles.headBtn, color: p.text, fontWeight: 700 }}
                               >
-                                <Chevron deg={pwOpen ? 90 : 0} size={9} color={p.textMuted} />
-                                <span style={styles.label}>{pw.name}</span>
+                                <Chevron deg={gOpen ? 90 : 0} size={9} color={p.textMuted} />
+                                <span style={styles.label}>{run.group}</span>
                               </button>
-                              {chip(sel, ids.length)}
+                              {chip(g.sel, g.ids.length)}
                             </div>
-                            {pwOpen && geneRows(pw.genes, 40)}
+                            {gOpen && run.pathways.map((pw) => pathwayRows(c.name, pw, 32, 54))}
                           </div>
                         )
                       })}

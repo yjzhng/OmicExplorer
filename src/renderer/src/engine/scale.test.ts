@@ -8,6 +8,7 @@ import {
   detectScale,
   fromLinear,
   histogram,
+  histogramShape,
   outputScale,
   presentStd,
   toLinear
@@ -151,5 +152,36 @@ describe('previewScale — before any run', () => {
     const long = previewScale(longRaw, 'd_long.csv')
     expect(long.sample).toEqual([1200, 1500, 8.0e6, 7.5e6])
     expect(long.inputScale).toBe('linear')
+  })
+})
+
+describe('missing values', () => {
+  it('reads 0, blank, NA and NaN alike as not measured — but keeps a dose of 0', () => {
+    const r = standardize({
+      dataText: ['id,s1,s2,s3,s4,s5', 'g1,100,0,,NA,NaN'].join('\n'),
+      dataFilename: 'd_wide.csv',
+      samplesheetText: ['sample,cmpd,dose', 's1,A,0', 's2,A,0', 's3,A,0', 's4,A,0', 's5,A,0'].join(
+        '\n'
+      ),
+      logTransform: 'none'
+    })
+    expect(r.rows.map((x) => x.value)).toEqual([100, null, null, null, null])
+    expect(r.rows.every((x) => x.dose === 0)).toBe(true)
+  })
+})
+
+describe('histogramShape', () => {
+  // A deterministic log-normal-ish sample: symmetric on the log scale, long-tailed raw.
+  const logs = Array.from({ length: 400 }, (_, i) => 5 + 2 * Math.sin(i * 1.7) * Math.cos(i * 0.3))
+  const raw = logs.map((v) => 10 ** v)
+
+  it('calls a symmetric hump normal and raw intensities non-normal', () => {
+    expect(histogramShape(histogram(logs))).toBe('normal')
+    expect(histogramShape(histogram(raw))).toBe('non-normal')
+  })
+
+  it('has no verdict with too little to judge', () => {
+    expect(histogramShape(histogram([]))).toBeUndefined()
+    expect(histogramShape(histogram([4, 4, 4]))).toBeUndefined()
   })
 })

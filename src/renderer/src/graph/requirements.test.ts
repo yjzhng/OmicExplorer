@@ -40,7 +40,7 @@ describe('tile requirements', () => {
     // GO (the default) never fetched, KEGG was: the plot falls back to KEGG, so it isn't blocked.
     const keggOnly = facts({
       kind: 'compare',
-      result: cmpResult({ g1: { keggPathway: 'Cell cycle' } })
+      result: cmpResult({ g1: { KEGG: 'Cell cycle' } })
     })
     expect(unmetRequirement('enrich', { source: 'go' }, keggOnly)).toBeNull()
     expect(unmetRequirement('enrich', {}, keggOnly)).toBeNull()
@@ -53,10 +53,10 @@ describe('tile requirements', () => {
       GO_MF: 'kinase activity',
       GO_CC: 'nucleus',
       GO: 'DNA repair',
-      keggPathway: 'Cell cycle',
-      reactomePathway: 'Apoptosis',
-      msigdbSet: 'HALLMARK_APOPTOSIS',
-      cogCategory: 'Transcription'
+      KEGG: 'Cell cycle',
+      Reactome: 'Apoptosis',
+      MSigDB: 'HALLMARK_APOPTOSIS',
+      COG_cat: 'Transcription'
     }
     for (const [col, term] of Object.entries(single)) {
       const u = facts({ kind: 'compare', result: cmpResult({ g1: { [col]: term } }) })

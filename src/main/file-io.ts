@@ -130,6 +130,20 @@ export function registerFileIo(): void {
     }
   )
 
+  // A generated file back from temp/ (the plot-table export's sidecar), or null when there's none.
+  ipcMain.handle(
+    'wf:readTemp',
+    async (_evt, dir: string, name: string, scope?: string): Promise<string | null> => {
+      const seg = safeSeg(scope)
+      const tempDir = seg ? join(dir, seg, 'temp') : join(dir, 'temp')
+      try {
+        return await readFile(join(tempDir, name), 'utf8')
+      } catch {
+        return null
+      }
+    }
+  )
+
   ipcMain.handle(
     'wf:writeTemp',
     async (_evt, dir: string, name: string, content: string, scope?: string): Promise<void> => {

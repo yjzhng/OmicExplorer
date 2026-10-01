@@ -9,6 +9,8 @@ import { useMemo, useState } from 'react'
 
 import {
   cogAreasOf,
+  pairsOf,
+  goAspectsOf,
   ENRICH_GROUPS,
   enrichSourcesPresent,
   enrichTermsOf,
@@ -22,14 +24,17 @@ import type { GeneCategory, GeneGroupTab } from '../ui/GeneSelectMenu'
 /** Essentiality classes, in menu order. */
 const ESS_CLASSES = ['Essential', 'Non-essential', 'NA'] as const
 type EssClass = (typeof ESS_CLASSES)[number]
-/** Essentiality columns the annotation fetch writes, preferred first. CEG/NEG outranks DEG: it's a
+/** The essentiality columns — exactly these two, preferred first. CEG_NEG outranks DEG: it's a
  *  curated human gold standard that reports non-essential too, where DEG — a union of screens over
- *  many organisms — can only say "essential in at least one of them". */
-const ESSENTIALITY_COLS = ['essentialityCEG', 'essentiality']
-/** What each known essentiality column is, for the tab's dropdown; any other column shows by name. */
+ *  many organisms — can only say "essential in at least one of them". (A DB's older names for them
+ *  arrive renamed — COLUMN_ALIASES.) */
+const ESSENTIALITY_COLS = ['CEG_NEG', 'DEG']
+/** A term set's name without its species note ("(human)") — the selector names sets short. */
+const shortLabel = (s: EnrichSource): string => ENRICH_SOURCE_LABEL[s].replace(/\s*\(human\)$/, '')
+/** What each essentiality column is, for the tab's dropdown. */
 const ESSENTIALITY_LABEL: Record<string, string> = {
-  essentialityCEG: 'CEG / NEG (human)',
-  essentiality: 'DEG'
+  CEG_NEG: 'CEG-NEG',
+  DEG: 'DEG'
 }
 
 /** Pick a gene's protein description from its annotation record: the UniProt `proteinName` column
@@ -93,17 +98,18 @@ export function useGeneMenuTabs(results: Record<string, NodeResult>): GeneGroupT
     }
     return m
   }, [results])
-  // Genes grouped pathway-CATEGORY → PATHWAY → gene for the multi-select menu. Pathways come from the
-  // merged per-gene annotationMap (keggPathway; ';'/'|'-separated); each pathway's category from the
-  // merged keggCategories map (BRITE top level). A gene appears under every pathway it's annotated
-  // with. Genes with no pathway → "No pathway"; pathways with no known category → "Other".
+  // Genes grouped PARENT → TERM → gene for the multi-select menu (KEGG: pathway category › group →
+  // pathway; Reactome: top level › level 2 → level-3 pathway; GO: aspect → term; COG/KOG: area →
+  // category). A gene appears under every term it's annotated with.
   // Two-level grouping, parent → term → genes: KEGG's BRITE category → pathway, COG's area →
   // functional category. A gene appears under every term it carries; genes with none → `none`;
   // terms with no known parent → "Other". Both sink to the bottom.
   const nestedCategories = (
     termsOf: (id: string) => string[],
     parentOf: (term: string) => string | undefined,
-    none: string
+    none: string,
+    /** a term's middle level within its parent (KEGG pathway group, Reactome level 2), if any */
+    groupOf?: (term: string) => string | undefined
   ): GeneCategory[] => {
     const OTHER = 'Other'
     type Gene = { id: string; label: string; desc?: string }
@@ -124,38 +130,74 @@ export function useGeneMenuTabs(results: Record<string, NodeResult>): GeneGroupT
     const byName = (a: string, b: string): number =>
       a.localeCompare(b, undefined, { numeric: true })
     const rank = (name: string): number => (name === none ? 2 : name === OTHER ? 1 : 0)
+    // A term that IS its group (a Reactome level-2 pathway with no level 3) sits directly in the
+    // category rather than under a header of its own name.
+    const grp = (term: string): string | undefined => {
+      const g = groupOf?.(term)
+      return g && g !== term ? g : undefined
+    }
     return [...cats.entries()]
       .sort((a, b) => rank(a[0]) - rank(b[0]) || byName(a[0], b[0]))
       .map(([name, byTerm]) => ({
         name,
+        // Grouped terms together (by group, then name); ungrouped ones after them.
         pathways: [...byTerm.entries()]
-          .sort((a, b) => byName(a[0], b[0]))
-          .map(([term, genes]) => ({
+          .map(([term, genes]) => ({ term, group: grp(term), genes }))
+          .sort(
+            (a, b) =>
+              Number(!a.group) - Number(!b.group) ||
+              byName(a.group ?? '', b.group ?? '') ||
+              byName(a.term, b.term)
+          )
+          .map(({ term, group, genes }) => ({
             name: term,
+            ...(group ? { group } : {}),
             genes: genes.sort((x, y) => byName(x.label, y.label))
           }))
       }))
   }
-  const keggCategories = (): GeneCategory[] =>
-    nestedCategories(
-      (id) =>
-        (annById[id]?.keggPathway ?? '')
-          .split(/[;|]/)
-          .map((s) => s.trim())
-          .filter(Boolean),
-      (pw) => kcatAll[pw],
-      'No pathway'
-    )
-  // COG categories under the functional area NCBI puts each in — read from the data: the fetch
-  // writes a `cogArea` column aligned with `cogCategory` (one area per category, same order).
-  // Data fetched before that column existed has no areas, and its categories land under "Other"
-  // until COG is fetched again.
-  const cogCategories = (): GeneCategory[] => {
-    const areaOf = cogAreasOf(annById)
+  // KEGG: pathway category → pathway group → pathway — from the data's aligned KEGG / KEGG_cat /
+  // KEGG_grp columns, the category over an older import's map.
+  const keggCategories = (): GeneCategory[] => {
+    const catOf = { ...kcatAll, ...pairsOf(annById, 'KEGG', 'KEGG_cat') }
+    const grpOf = pairsOf(annById, 'KEGG', 'KEGG_grp')
     return nestedCategories(
-      (id) => enrichTermsOf(annById, 'cog', id),
+      (id) => enrichTermsOf(annById, 'kegg', id),
+      (pw) => catOf[pw],
+      'No pathway',
+      (pw) => grpOf[pw]
+    )
+  }
+  // Reactome: top-level pathway → level-2 group → level-3 term — the aligned Reactome /
+  // Reactome_cat / Reactome_grp columns.
+  const reactomeCategories = (): GeneCategory[] => {
+    const catOf = pairsOf(annById, 'Reactome', 'Reactome_cat')
+    const grpOf = pairsOf(annById, 'Reactome', 'Reactome_grp')
+    return nestedCategories(
+      (id) => enrichTermsOf(annById, 'reactome', id),
+      (t) => catOf[t],
+      'No pathway',
+      (t) => grpOf[t]
+    )
+  }
+  // GO terms under their aspect (biological process / molecular function / cellular component).
+  const goCategories = (): GeneCategory[] => {
+    const aspectOf = goAspectsOf(annById)
+    return nestedCategories(
+      (id) => enrichTermsOf(annById, 'go', id),
+      (t) => aspectOf[t],
+      'No GO term'
+    )
+  }
+  // COG / KOG categories under the functional area NCBI puts each in — read from the data: the
+  // fetch writes an area column aligned with the category one (COG_area with COG_cat, KOG_area
+  // with KOG_cat; one area per category, same order). Data without areas lands under "Other".
+  const ogCategories = (kind: 'COG' | 'KOG'): GeneCategory[] => {
+    const areaOf = cogAreasOf(annById, kind)
+    return nestedCategories(
+      (id) => enrichTermsOf(annById, kind === 'COG' ? 'cog' : 'kog', id),
       (c) => areaOf[c],
-      'No COG category'
+      `No ${kind} category`
     )
   }
 
@@ -163,15 +205,12 @@ export function useGeneMenuTabs(results: Record<string, NodeResult>): GeneGroupT
   // doesn't say", which is not the same as non-essential: DEG is essential-only, so under it every
   // unlisted gene is NA, while CEG/NEG can positively call a gene non-essential. Empty classes are
   // dropped so a DEG-only dataset doesn't show a Non-essential bucket it can never fill.
-  // Every essentiality column the genes carry: the known ones first (CEG/NEG before DEG — see
-  // ESSENTIALITY_COLS), then any other /essential/i column, so a hand-supplied DB column (say
-  // `is_essential`) works too. The tab's dropdown picks between them; they're kept apart rather
-  // than merged because they answer different questions.
+  // The essentiality columns the genes carry (CEG_NEG before DEG — see ESSENTIALITY_COLS). The tab's
+  // dropdown picks between them; they're kept apart rather than merged because they answer
+  // different questions.
   const essCols = useMemo(() => {
     const present = new Set(Object.values(annById).flatMap((rec) => Object.keys(rec)))
-    const known = ESSENTIALITY_COLS.filter((c) => present.has(c))
-    const other = [...present].filter((c) => /essential/i.test(c) && !known.includes(c)).sort()
-    return [...known, ...other]
+    return ESSENTIALITY_COLS.filter((c) => present.has(c))
   }, [annById])
   const [pickedEss, setPickedEss] = useState<string | null>(null)
   const essCol = pickedEss && essCols.includes(pickedEss) ? pickedEss : essCols[0]
@@ -193,12 +232,13 @@ export function useGeneMenuTabs(results: Record<string, NodeResult>): GeneGroupT
     }
     // No essentiality column at all: no tab — a lone "NA" bucket would say nothing.
     if (!essCol) return null
-    for (const id in geneLabels)
-      buckets[classOf(ann[id]?.[essCol])].push({
-        id,
-        label: geneLabels[id],
-        desc: pickDesc(ann[id])
-      })
+    // A protein group carries its members' values `;`-joined; members that disagree put it in
+    // each class they name, as a group sits under every pathway any member is in.
+    for (const id in geneLabels) {
+      const gene = { id, label: geneLabels[id], desc: pickDesc(ann[id]) }
+      const classes = new Set((ann[id]?.[essCol] ?? '').split(';').map(classOf))
+      for (const c of classes) buckets[c].push(gene)
+    }
     return ESS_CLASSES.filter((name) => buckets[name].length > 0).map((name) => ({
       name,
       genes: buckets[name].sort((x, y) => byName(x.label, y.label))
@@ -216,14 +256,17 @@ export function useGeneMenuTabs(results: Record<string, NodeResult>): GeneGroupT
   const fnSource = resolveEnrichSource(pickedFn ?? TAB_SOURCES.function[0], fnPresent)
   const pwSource = resolveEnrichSource(pickedPw ?? TAB_SOURCES.pathway[0], pwPresent)
 
-  // One set's grouping: KEGG and COG nested (see keggCategories / cogCategories), any other flat —
-  // term → genes, with the genes carrying none at the bottom.
+  // One set's grouping: KEGG, Reactome, COG and KOG nested (keggCategories, reactomeCategories,
+  // ogCategories), any other flat — term → genes, with the genes carrying none at the bottom.
   const groupBy = (source: EnrichSource): GeneCategory[] => {
     if (source === 'kegg') return keggCategories()
-    if (source === 'cog') return cogCategories()
+    if (source === 'reactome') return reactomeCategories()
+    if (source === 'go') return goCategories()
+    if (source === 'cog') return ogCategories('COG')
+    if (source === 'kog') return ogCategories('KOG')
     const byName = (a: string, b: string): number =>
       a.localeCompare(b, undefined, { numeric: true })
-    const none = `No ${ENRICH_SOURCE_LABEL[source]} term`
+    const none = `No ${shortLabel(source)} term`
     const byTerm = new Map<string, { id: string; label: string; desc?: string }[]>()
     for (const id in geneLabels) {
       const gene = { id, label: geneLabels[id], desc: pickDesc(annById[id]) }
@@ -270,7 +313,7 @@ export function useGeneMenuTabs(results: Record<string, NodeResult>): GeneGroupT
           value: source,
           options: sources.map((s) => ({
             value: s,
-            label: ENRICH_SOURCE_LABEL[s]
+            label: shortLabel(s)
           })),
           onChange: (v) => pick(v as EnrichSource)
         }

@@ -11,12 +11,14 @@ import {
   runTwoWayAnova,
   runVehNorm,
   standardize,
-  previewScale
+  previewScale,
+  enrichmentTable
 } from './index'
 import type { ContrastInput, ContrastPairInput } from './contrast'
 import type { DirectInput } from './direct'
 import type { TwoWayInput } from './twoWay'
-import type { CompareInput, StandardizeInput, VehNormInput } from './types'
+import type { CompareInput, CompareResultRow, StandardizeInput, VehNormInput } from './types'
+import type { EnrichOptions } from './plotData'
 
 export type EngineRequest =
   | { id: number; op: 'standardize'; payload: StandardizeInput }
@@ -27,6 +29,11 @@ export type EngineRequest =
   | { id: number; op: 'twoWayAnova'; payload: TwoWayInput }
   | { id: number; op: 'contrast'; payload: ContrastInput }
   | { id: number; op: 'contrastPair'; payload: ContrastPairInput }
+  | {
+      id: number
+      op: 'enrichmentTable'
+      payload: { rows: CompareResultRow[]; opts: Omit<EnrichOptions, 'topTerms'>; facet?: string }
+    }
 
 export type EngineResponse =
   { id: number; ok: true; result: unknown } | { id: number; ok: false; error: string }
@@ -52,6 +59,8 @@ ctx.addEventListener('message', (e) => {
     else if (msg.op === 'twoWayAnova') result = runTwoWayAnova(msg.payload)
     else if (msg.op === 'contrast') result = runContrast(msg.payload)
     else if (msg.op === 'contrastPair') result = runContrastPair(msg.payload)
+    else if (msg.op === 'enrichmentTable')
+      result = enrichmentTable(msg.payload.rows, msg.payload.opts, msg.payload.facet)
     else throw new Error(`Unknown engine op: ${(msg as { op: string }).op}`)
     ctx.postMessage({ id: msg.id, ok: true, result })
   } catch (err) {

@@ -425,7 +425,7 @@ function buildOverlay(data: unknown[], active: Set<string>, emph: ResolvedHighli
       // An explicit emphasis size wins; otherwise size from the SMALLEST marker drawn at this spot
       // — the cloud's own dot — plus the bump, so emphasis is the same size on every plot
       // regardless of any larger view-level marker.
-      const sz = em.size ?? at(t.marker?.size, k, 6) + em.bump
+      const sz = em.size ?? renderedSize(t.marker, k) + em.bump
       const prev = seen.get(posKey)
       if (prev != null) {
         size[prev] = Math.min(size[prev], sz)
@@ -487,6 +487,20 @@ function buildOverlay(data: unknown[], active: Set<string>, emph: ResolvedHighli
       ...(cmap ?? {})
     }
   }
+}
+
+/** The pixel diameter Plotly actually draws point `k` at. A marker's `size` is only that diameter by
+ *  default: with `sizeref` / `sizemode: 'area'` (a bubble sized by a count — enrichment dots) it's a
+ *  data value Plotly maps to pixels, and copying it raw drew the emphasis marker many times too big.
+ *  Plotly's own rule (scatter's bubble-size function): radius = max(f(size / 2), sizemin), with
+ *  f = √(v / sizeref) by area, else v / sizeref — so a plain marker comes out as its size again. */
+function renderedSize(marker: Trace['marker'] | undefined, k: number): number {
+  const mk = marker as
+    { size?: number | number[]; sizeref?: number; sizemode?: string; sizemin?: number } | undefined
+  const v = at(mk?.size, k, 6)
+  const ref = mk?.sizeref || 1
+  const base = mk?.sizemode === 'area' ? Math.sqrt(v / 2 / ref) : v / 2 / ref
+  return 2 * Math.max(Number.isFinite(base) && base > 0 ? base : 0, mk?.sizemin ?? 0)
 }
 
 /** Per-trace highlight state for the current selection: '' = opts out (no ids, or manages its

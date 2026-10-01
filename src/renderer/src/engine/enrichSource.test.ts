@@ -4,6 +4,7 @@
 import { describe, expect, it } from 'vitest'
 
 import {
+  goAspectsOf,
   cogAreasOf,
   ENRICH_COLS,
   ENRICH_FALLBACK,
@@ -20,13 +21,16 @@ const SOURCES = Object.keys(ENRICH_COLS) as EnrichSource[]
 const ann = {
   p1: {
     GO_BP: 'apoptotic process; DNA repair',
-    keggPathway: 'p53 signaling pathway; Cell cycle',
-    COG: 'Transcription factor p53',
-    cogCategory: 'Replication, recombination and repair',
-    msigdbSet: 'HALLMARK_P53_PATHWAY; HALLMARK_DNA_REPAIR',
-    reactomePathway: 'Activation of PUMA and translocation to mitochondria'
+    KEGG: 'p53 signaling pathway; Cell cycle',
+    // a human protein: its orthologous group is a KOG
+    KOG: 'Transcription factor p53',
+    KOG_cat: 'Transcription',
+    MSigDB: 'HALLMARK_P53_PATHWAY; HALLMARK_DNA_REPAIR',
+    Reactome: 'Activation of PUMA and translocation to mitochondria'
   },
-  p2: { proteinName: 'Uncharacterized protein' }
+  p2: { proteinName: 'Uncharacterized protein' },
+  // a bacterial protein: a COG
+  p3: { COG: 'RecA', COG_cat: 'Replication, recombination and repair' }
 }
 // KEGG's BRITE top level, the term set behind `kegg_category`.
 const cats = { 'p53 signaling pathway': 'Cellular Processes', 'Cell cycle': 'Cellular Processes' }
@@ -43,8 +47,12 @@ describe('enrichment sources', () => {
   it('reads only its own columns, splitting on ; and |', () => {
     expect(enrichTermsOf(ann, 'go', 'p1')).toEqual(['apoptotic process', 'DNA repair'])
     expect(enrichTermsOf(ann, 'kegg', 'p1')).toEqual(['p53 signaling pathway', 'Cell cycle'])
-    expect(enrichTermsOf(ann, 'cog', 'p1')).toEqual(['Replication, recombination and repair'])
-    expect(enrichTermsOf(ann, 'cog_group', 'p1')).toEqual(['Transcription factor p53'])
+    expect(enrichTermsOf(ann, 'cog', 'p3')).toEqual(['Replication, recombination and repair'])
+    expect(enrichTermsOf(ann, 'cog_group', 'p3')).toEqual(['RecA'])
+    // KOG is its own set: a human protein's category is read from KOG_cat, never COG_cat
+    expect(enrichTermsOf(ann, 'kog', 'p1')).toEqual(['Transcription'])
+    expect(enrichTermsOf(ann, 'cog', 'p1')).toEqual([])
+    expect(enrichTermsOf(ann, 'kog', 'p3')).toEqual([])
     expect(enrichTermsOf(ann, 'msigdb', 'p1')).toEqual([
       'HALLMARK_P53_PATHWAY',
       'HALLMARK_DNA_REPAIR'
@@ -79,9 +87,9 @@ describe('enrichment sources', () => {
     })
 
     it('COG group and COG category read different columns', () => {
-      expect(ENRICH_COLS.cog).toEqual(['cogCategory'])
+      expect(ENRICH_COLS.cog).toEqual(['COG_cat'])
       expect(ENRICH_COLS.cog_group).toEqual(['COG'])
-      expect(enrichTermsOf(ann, 'cog', 'p1')).not.toEqual(enrichTermsOf(ann, 'cog_group', 'p1'))
+      expect(enrichTermsOf(ann, 'cog', 'p3')).not.toEqual(enrichTermsOf(ann, 'cog_group', 'p3'))
     })
   })
 
@@ -94,15 +102,15 @@ describe('enrichment sources', () => {
 
     it('omits a level the data cannot support, keeping the other', () => {
       // KEGG pathways present but no BRITE map → the pathway level is testable, the category isn't.
-      expect(enrichSourcesPresent({ p1: { keggPathway: 'Cell cycle' } })).toEqual(['kegg'])
+      expect(enrichSourcesPresent({ p1: { KEGG: 'Cell cycle' } })).toEqual(['kegg'])
       // Only a category column → the group level has nothing.
-      expect(enrichSourcesPresent({ p1: { cogCategory: 'Transcription' } })).toEqual(['cog'])
+      expect(enrichSourcesPresent({ p1: { COG_cat: 'Transcription' } })).toEqual(['cog'])
       // COG group isn't offered at all (too fine): a group column alone yields nothing.
       expect(enrichSourcesPresent({ p1: { COG: 'RecA' } })).toEqual([])
     })
 
     it('finds a source carried by any gene, not just the first', () => {
-      const spread = { a: { GO_BP: 'x' }, b: {}, c: { reactomePathway: 'y' } }
+      const spread = { a: { GO_BP: 'x' }, b: {}, c: { Reactome: 'y' } }
       expect(enrichSourcesPresent(spread)).toEqual(['go', 'reactome'])
     })
   })
@@ -146,11 +154,10 @@ describe('enrichment sources', () => {
     it('pairs each category with the area written beside it, in the same order', () => {
       const data = {
         a: {
-          cogCategory:
-            'Transcription; Posttranslational modification, protein turnover, chaperones',
-          cogArea: 'Information storage and processing; Cellular processes and signaling'
+          COG_cat: 'Transcription; Posttranslational modification, protein turnover, chaperones',
+          COG_area: 'Information storage and processing; Cellular processes and signaling'
         },
-        b: { cogCategory: 'Function unknown', cogArea: 'Poorly characterized' }
+        b: { COG_cat: 'Function unknown', COG_area: 'Poorly characterized' }
       }
       expect(cogAreasOf(data)).toEqual({
         Transcription: 'Information storage and processing',
@@ -161,7 +168,22 @@ describe('enrichment sources', () => {
     })
 
     it('has nothing for data fetched before the area column existed', () => {
-      expect(cogAreasOf({ a: { cogCategory: 'Transcription' } })).toEqual({})
+      expect(cogAreasOf({ a: { COG_cat: 'Transcription' } })).toEqual({})
+    })
+  })
+})
+
+describe('GO aspects', () => {
+  it('groups each GO term under the aspect its column carries', () => {
+    const aspects = goAspectsOf({
+      a: { GO_BP: 'apoptotic process; DNA repair', GO_MF: 'DNA binding', GO_CC: 'nucleus' },
+      b: { GO_BP: 'DNA repair', GO: 'an old, aspect-less term' }
+    })
+    expect(aspects).toEqual({
+      'apoptotic process': 'Biological process',
+      'DNA repair': 'Biological process',
+      'DNA binding': 'Molecular function',
+      nucleus: 'Cellular component'
     })
   })
 })

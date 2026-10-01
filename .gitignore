@@ -19,10 +19,11 @@ compat/screenshots
 compat/diffs
 
 # Local real-data projects & their embedded/backup copies — never commit (sensitive data).
-# The shippable synthetic demo is example_project/ + example.omicexplorer (kept).
+# Test datasets stay local (the synthetic dummy_data demo included).
 demo_project/
 demo.omicexplorer
 *.omicexplorer.bak
 test_project/
 test.omicexplorer
 test_examples/pressure_test/
+test_examples/decryptE_demo/

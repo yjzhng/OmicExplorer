@@ -3,6 +3,14 @@
  * to call directly or from a Web Worker (see worker.ts / client.ts).
  */
 export { previewScale, standardize, type ScalePreview } from './ingest'
+export {
+  canonicalAccession,
+  groupMembers,
+  matchKey,
+  pairsOf,
+  unionRecords,
+  unionValues
+} from './accession'
 export { combineStandardize } from './combine'
 export {
   parseMatrix,
@@ -49,6 +57,11 @@ export {
   BUBBLE_DUMBBELL_CAP,
   enrichTermsOf,
   cogAreasOf,
+  goAspectsOf,
+  enrichTermGroups,
+  enrichmentTable,
+  facetLabel,
+  reactomeCategoriesOf,
   enrichSourcesPresent,
   ENRICH_FALLBACK,
   ENRICH_GROUPS,
@@ -183,12 +196,15 @@ export type { ImputeMethod, ImputeOptions, ImputeSummary } from './impute'
 export {
   defaultTransform,
   detectScale,
+  histogramShape,
   fromLinear,
   histogram,
   outputScale,
   toLinear,
   presentStd,
+  presentScaleOf,
   type LogTransform,
+  type Shape,
   type ScaleEvidence,
   type ValueHistogram,
   type ValueScale

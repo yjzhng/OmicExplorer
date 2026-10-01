@@ -6,9 +6,11 @@ import type { ContrastInput, ContrastPairInput, ContrastResult } from './contras
 import type { CompareTableResult, DirectInput } from './direct'
 import type { TwoWayInput } from './twoWay'
 import type { ScalePreview } from './ingest'
+import type { EnrichOptions } from './plotData'
 import type { EngineRequest, EngineResponse } from './worker'
 import type {
   CompareInput,
+  CompareResultRow,
   StandardizeInput,
   StandardizeResult,
   VehNormInput,
@@ -72,4 +74,44 @@ export const engine = {
     for (const [, p] of pending) p.reject(new Error('cancelled'))
     pending.clear()
   }
+}
+
+// A second worker for BACKGROUND work (the plot-table exports to temp): it runs alongside the one
+// above, so a long GSEA export never queues a run behind it, and Stop (cancel) leaves it alone.
+let bgWorker: Worker | null = null
+let bgSeq = 0
+const bgPending = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void }>()
+function bgCall<T>(op: EngineRequest['op'], payload: unknown): Promise<T> {
+  if (!bgWorker) {
+    const w = new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' })
+    w.onmessage = (e: MessageEvent<EngineResponse>) => {
+      const msg = e.data
+      const p = bgPending.get(msg.id)
+      if (!p) return
+      bgPending.delete(msg.id)
+      if (msg.ok) p.resolve(msg.result)
+      else p.reject(new Error(msg.error))
+    }
+    w.onerror = (e) => {
+      for (const [, p] of bgPending) p.reject(new Error(e.message || 'engine worker error'))
+      bgPending.clear()
+      bgWorker = null
+    }
+    bgWorker = w
+  }
+  const id = ++bgSeq
+  return new Promise<T>((resolve, reject) => {
+    bgPending.set(id, { resolve: resolve as (v: unknown) => void, reject })
+    bgWorker!.postMessage({ id, op, payload } as EngineRequest)
+  })
+}
+
+export const engineBg = {
+  /** One facet's enrichment as table rows (every tested term), labelled with `facet`. */
+  enrichmentTable: (
+    rows: CompareResultRow[],
+    opts: Omit<EnrichOptions, 'topTerms'>,
+    facet: string
+  ): Promise<Record<string, string | number | null>[]> =>
+    bgCall<Record<string, string | number | null>[]>('enrichmentTable', { rows, opts, facet })
 }

@@ -20,6 +20,7 @@ import { createPortal } from 'react-dom'
 
 import {
   columnFacet,
+  groupMembers,
   MATRIX_PRESETS,
   parseMatrix,
   RESERVED_COND_NAMES,
@@ -32,6 +33,7 @@ import {
 } from '../engine'
 import { cssVars, PALETTES, UI } from '../ui/theme'
 import { useUiTheme } from '../ui/useUiTheme'
+import { StatusNote, type StatusKind } from '../ui/StatusNote'
 import { ToggleSwitch } from '../ui/ToggleSwitch'
 import { DOCKED_CARD, DOCKED_WRAP, useDialogDock } from './dialogDock'
 import { useGraph } from './store'
@@ -566,7 +568,29 @@ function useMeasuredHeight<T extends HTMLElement>(): [React.RefObject<T | null>,
 
 /** A scroll box (with a max height) that shows a soft shadow on any edge where content is
  *  scrolled out of view — so it's clear when the table extends past the visible area. */
-function ScrollFade({ children, fill = true }: { children: ReactNode; fill?: boolean }): ReactNode {
+/** The nearest ancestor that scrolls horizontally (a header's table viewport). */
+function scrollParentX(el: HTMLElement | null | undefined): HTMLElement | null {
+  for (let p = el?.parentElement ?? null; p; p = p.parentElement) {
+    const ox = getComputedStyle(p).overflowX
+    if ((ox === 'auto' || ox === 'scroll') && p.scrollWidth > p.clientWidth) return p
+  }
+  return null
+}
+
+function ScrollFade({
+  children,
+  fill = true,
+  title,
+  colNav = false
+}: {
+  children: ReactNode
+  fill?: boolean
+  /** a heading above the table (needed for colNav, whose arrows share its row) */
+  title?: string
+  /** arrow buttons, right of the title, that step the view one column left / right — for tables
+   *  far wider than the window. Above the table rather than on it, so they never cover a header. */
+  colNav?: boolean
+}): ReactNode {
   const scrollRef = useRef<HTMLDivElement>(null)
   const contentRef = useRef<HTMLDivElement>(null)
   const [edges, setEdges] = useState({ top: false, bottom: false, left: false, right: false })
@@ -602,11 +626,38 @@ function ScrollFade({ children, fill = true }: { children: ReactNode; fill?: boo
     if (contentRef.current) ro.observe(contentRef.current)
     return () => ro.disconnect()
   }, [update])
-  return (
+  const heading =
+    title != null ? (
+      <div style={styles.tableHead}>
+        <span style={styles.tableTitle}>{title}</span>
+        {colNav && (edges.left || edges.right) && (
+          <span style={styles.colSteps}>
+            <ColStep
+              dir={-1}
+              disabled={!edges.left}
+              onStep={() => stepColumn(scrollRef.current, -1)}
+            />
+            <ColStep
+              dir={1}
+              disabled={!edges.right}
+              onStep={() => stepColumn(scrollRef.current, 1)}
+            />
+          </span>
+        )}
+      </div>
+    ) : null
+  const body = (
     // fill=false: take natural height (no flex cap) so the surrounding page scrolls as one, instead
     // of this box shrinking to a nested scroll region.
     <div style={{ ...styles.fadeWrap, ...(fill ? null : { flex: '0 0 auto' }) }}>
-      <div ref={scrollRef} onScroll={update} style={styles.fadeScroll}>
+      {/* The vertical scrollbar starts below the sticky header row (app.css .oe-headscroll), so it
+          scrolls the body it moves, not the header that stays put. */}
+      <div
+        ref={scrollRef}
+        onScroll={update}
+        className="oe-scroll oe-headscroll"
+        style={{ ...styles.fadeScroll, ['--head-h' as string]: `${headerH}px` }}
+      >
         <div ref={contentRef}>{children}</div>
       </div>
       {edges.top && <div style={{ ...styles.fade, ...styles.fadeTop, top: headerH }} />}
@@ -614,6 +665,91 @@ function ScrollFade({ children, fill = true }: { children: ReactNode; fill?: boo
       {edges.left && <div style={{ ...styles.fade, ...styles.fadeLeft, top: headerH }} />}
       {edges.right && <div style={{ ...styles.fade, ...styles.fadeRight, top: headerH }} />}
     </div>
+  )
+  return heading ? (
+    <>
+      {heading}
+      {body}
+    </>
+  ) : (
+    body
+  )
+}
+
+/** Where each table viewport's column-step scroll is heading while its smooth scroll runs — so a
+ *  quick second click steps on from the target instead of re-measuring mid-animation. Cleared when
+ *  the scroll ends. */
+const stepTarget = new WeakMap<HTMLElement, number>()
+
+/** Step a table viewport by column. The view's LEFT edge always lands on a column's start (never
+ *  mid-column). Next (dir 1): the first column not FULLY in view on the right (cut off by the edge,
+ *  or past it) comes fully into view — the smallest such step. Previous (dir −1): the column
+ *  before the left-most one in view comes in at the left. */
+function stepColumn(el: HTMLDivElement | null, dir: 1 | -1): void {
+  const table = el?.querySelector('table')
+  if (!el || !table) return
+  // Each header's span in the viewport's own scroll coordinates (0 = the content's left edge), from
+  // its on-screen box: offsetLeft can't be trusted here — the headers are sticky, which makes their
+  // offsetParent a box outside the viewport (its border then shifts every column by a pixel).
+  const origin = el.getBoundingClientRect().left + el.clientLeft - el.scrollLeft
+  const spans = [...table.querySelectorAll<HTMLElement>('thead th')].map((th) => {
+    const r = th.getBoundingClientRect()
+    return { left: r.left - origin, right: r.right - origin }
+  })
+  if (spans.length === 0) return
+  const at = stepTarget.get(el) ?? el.scrollLeft
+  const view = el.clientWidth
+  const max = el.scrollWidth - view
+  let target: number
+  if (dir > 0) {
+    const next = spans.find((c) => c.right > at + view + 0.5)
+    // the first column start far enough right to show `next` whole
+    const fit = next ? spans.find((c) => c.left >= next.right - view - 0.5) : undefined
+    target = fit ? fit.left : max
+  } else {
+    const prev = [...spans].reverse().find((c) => c.left < at - 0.5)
+    target = prev ? prev.left : 0
+  }
+  target = Math.round(Math.max(0, Math.min(max, target)))
+  if (target === Math.round(el.scrollLeft)) {
+    stepTarget.delete(el)
+    return
+  }
+  stepTarget.set(el, target)
+  el.addEventListener('scrollend', () => stepTarget.delete(el), { once: true })
+  el.scrollTo({ left: target, behavior: 'smooth' })
+}
+
+/** A small round arrow button beside a table's title, for stepping a wide table a column. */
+function ColStep({
+  dir,
+  disabled,
+  onStep
+}: {
+  dir: 1 | -1
+  disabled: boolean
+  onStep: () => void
+}): ReactNode {
+  return (
+    <button
+      type="button"
+      onClick={onStep}
+      disabled={disabled}
+      title={dir > 0 ? 'Next column' : 'Previous column'}
+      aria-label={dir > 0 ? 'Next column' : 'Previous column'}
+      style={{ ...styles.colStep, opacity: disabled ? 0.35 : 1 }}
+    >
+      <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden>
+        <path
+          d={dir > 0 ? 'M3.5 1.5 L7 5 L3.5 8.5' : 'M6.5 1.5 L3 5 L6.5 8.5'}
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.6"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+      </svg>
+    </button>
   )
 }
 
@@ -719,17 +855,24 @@ const UNIPROT_FIELDS: { id: string; label: string; cols: string[] }[] = [
   // GO as ONE pick: its three aspects are fetched together (UniProt serves them as three fields,
   // stored as three columns) and pooled by enrichment anyway — see sourceIds.
   { id: 'go', label: 'GO', cols: ['GO_BP', 'GO_MF', 'GO_CC'] },
-  // Orthologous group via eggNOG → NCBI COG2020 (prokaryotes) / KOG (eukaryotes): the group name
-  // and its functional category.
-  { id: 'cog', label: 'COG / KOG (orthologous group)', cols: ['COG', 'cogCategory', 'cogArea'] },
-  { id: 'msigdb', label: 'MSigDB hallmark', cols: ['msigdbSet'] },
-  { id: 'kegg', label: 'KEGG pathway', cols: ['keggPathway'] },
-  { id: 'reactome', label: 'Reactome pathway', cols: ['reactomePathway'] },
+  // Orthologous group via eggNOG → NCBI COG2020 (prokaryotes) / KOG (eukaryotes), each its own
+  // pick: the group name, functional category and area, in the COG_* / KOG_* columns.
+  { id: 'cog', label: 'COG', cols: ['COG', 'COG_cat', 'COG_area'] },
+  { id: 'kog', label: 'KOG (human)', cols: ['KOG', 'KOG_cat', 'KOG_area'] },
+  { id: 'msigdb', label: 'MSigDB', cols: ['MSigDB'] },
+  // Each pathway with its pathway category and group (aligned columns).
+  { id: 'kegg', label: 'KEGG', cols: ['KEGG', 'KEGG_cat', 'KEGG_grp'] },
+  // Each level-3 pathway with its level-2 group and top-level category (aligned columns).
+  {
+    id: 'reactome',
+    label: 'Reactome (human)',
+    cols: ['Reactome', 'Reactome_grp', 'Reactome_cat']
+  },
   { id: 'string', label: 'STRING', cols: ['stringId'] },
   // Local joins by UniProt accession — no network. DEG is a cross-organism union of screens
   // (essential-only); CEG/NEG is the curated human gold standard and also reports non-essential.
-  { id: 'essentiality', label: 'Essential gene (DEG)', cols: ['essentiality'] },
-  { id: 'ceg', label: 'Essential / non-essential (CEG–NEG, human)', cols: ['essentialityCEG'] }
+  { id: 'essentiality', label: 'DEG', cols: ['DEG'] },
+  { id: 'ceg', label: 'CEG-NEG (human)', cols: ['CEG_NEG'] }
 ]
 const colsForIds = (ids: string[]): string[] =>
   UNIPROT_FIELDS.filter((f) => ids.includes(f.id)).flatMap((f) => f.cols)
@@ -762,6 +905,7 @@ const ANN_GROUPS: AnnGroup[] = [
     members: [
       { id: 'go', label: fieldLabel('go') },
       { id: 'cog', label: fieldLabel('cog') },
+      { id: 'kog', label: fieldLabel('kog') },
       { id: 'msigdb', label: fieldLabel('msigdb') }
     ]
   },
@@ -991,7 +1135,10 @@ export function InteractiveImportDialog({
   const [msg, setMsg] = useState<string | null>(null)
   // Annotation fetch (Metadata step): status text + in-flight flag.
   const [annBusy, setAnnBusy] = useState(false)
-  const [annMsg, setAnnMsg] = useState<string | null>(null)
+  // The fetch's status line and how it reads: progress (info), done (ok), partly done (warn), failed.
+  const [annMsg, setAnnNote] = useState<{ text: string; kind: StatusKind } | null>(null)
+  const setAnnMsg = (text: string | null, kind: StatusKind = 'info'): void =>
+    setAnnNote(text == null ? null : { text, kind })
   // Active classification mode: 'none' (default, nothing painted) or a tool preset re-runs
   // detection; 'custom' is set automatically once the user hand-edits any column's role.
   const [preset, setPreset] = useState<MatrixPreset | 'custom'>(
@@ -1346,7 +1493,7 @@ export function InteractiveImportDialog({
   const setAnnotationFields = (selectedIds: string[]): void => {
     if (!annotations) return
     // Only columns the fetched data actually holds: annotations fetched before a column existed
-    // (cogArea, say) would otherwise show it, empty, until the next fetch.
+    // (COG_area, say) would otherwise show it, empty, until the next fetch.
     const held = new Set(Object.values(annotations.byId).flatMap((rec) => Object.keys(rec)))
     const fields = colsForIds(selectedIds).filter((c) => held.has(c))
     setInteractive(id, { annotations: { ...annotations, fields } })
@@ -1382,25 +1529,16 @@ export function InteractiveImportDialog({
         }
         return true
       }
-      // A feature id → clean UniProt accession: first of a `;`-group, middle of `sp|ACC|NAME`,
-      // minus any isoform suffix.
-      const accOf = (uid: string): string => {
-        const first = uid.split(';')[0].trim()
-        const parts = first.split('|')
-        return (parts.length >= 2 ? parts[1] : first).replace(/-\d+$/, '').trim()
-      }
-      const accByUniq = new Map<string, string>()
+      // Every distinct protein the kept features name: each member of a `;`-group, unwrapped
+      // from `sp|ACC|NAME`, isoforms folded into their entry (accession.ts). Annotation is
+      // fetched and saved per protein; a group carries its members' union downstream.
       const accSet = new Set<string>()
       for (const r of allRows) {
         if (active.length && !passes(r)) continue
-        const uid = (r[idCol] ?? '').trim()
-        if (!uid || accByUniq.has(uid)) continue
-        const acc = accOf(uid)
-        accByUniq.set(uid, acc)
-        if (acc) accSet.add(acc)
+        for (const acc of groupMembers((r[idCol] ?? '').trim())) accSet.add(acc)
       }
       if (accSet.size === 0) {
-        setAnnMsg('No accessions found in the ID column.')
+        setAnnMsg('No accessions found in the ID column.', 'warn')
         return
       }
       const base = refresh
@@ -1424,9 +1562,9 @@ export function InteractiveImportDialog({
       // ones instead of wiping the rest of the cache.
       const prev = annotations?.byId ?? {}
       const byId: Record<string, Record<string, string>> = {}
-      for (const [uid, acc] of accByUniq) {
+      for (const acc of accSet) {
         const rec = res.byId[acc]
-        if (prev[uid] || rec) byId[uid] = { ...(prev[uid] ?? {}), ...(rec ?? {}) }
+        if (prev[acc] || rec) byId[acc] = { ...(prev[acc] ?? {}), ...(rec ?? {}) }
       }
       // Keep any species / KEGG-org / categories already learned from a prior fetch if this one
       // didn't resolve them (a fully-cached fetch returns no new categories).
@@ -1466,8 +1604,9 @@ export function InteractiveImportDialog({
           const r = await window.api.ensureStringOrg(taxon)
           setAnnMsg(
             r.error
-              ? `Annotated ${n} features${sp}${cat}. STRING download failed: ${r.error}`
-              : `Annotated ${n} features${sp}${cat}. STRING v${r.version} ${r.cached ? 'ready (cached)' : 'downloaded'}.`
+              ? `Annotated ${n} proteins${sp}${cat}. STRING download failed: ${r.error}`
+              : `Annotated ${n} proteins${sp}${cat}. STRING v${r.version} ${r.cached ? 'ready (cached)' : 'downloaded'}.`,
+            r.error ? 'warn' : 'ok'
           )
         } finally {
           off()
@@ -1475,12 +1614,13 @@ export function InteractiveImportDialog({
       } else {
         setAnnMsg(
           res.error
-            ? `Partial: ${n}/${accByUniq.size} annotated (${res.error})${sp}${cat}`
-            : `Annotated ${n} of ${accByUniq.size} features.${sp}${cat}`
+            ? `Partial: ${n}/${accSet.size} proteins annotated (${res.error})${sp}${cat}`
+            : `Annotated ${n} of ${accSet.size} proteins.${sp}${cat}`,
+          res.error ? 'warn' : 'ok'
         )
       }
     } catch (e) {
-      setAnnMsg(e instanceof Error ? e.message : 'Fetch failed.')
+      setAnnMsg(e instanceof Error ? e.message : 'Fetch failed.', 'error')
     } finally {
       setAnnBusy(false)
     }
@@ -1710,15 +1850,74 @@ function Step1Columns({
   const shown = rows.slice(0, 10)
   const lo = drag ? Math.min(drag.a, drag.f) : -1
   const hi = drag ? Math.max(drag.a, drag.f) : -1
-  // Finish a header drag: assign the armed role to every column in the range. A single header
-  // that already holds the armed role toggles back to Ignore.
-  const finish = (): void => {
-    if (drag && armed) {
-      const range = columns.slice(lo, hi + 1)
-      const clear = range.length === 1 && roles[range[0]] === armed
-      onAssign(range, clear ? 'ignore' : armed)
+  // The last header clicked without Shift: a Shift-click labels everything from it to the one
+  // clicked, like a list's range select.
+  const anchorRef = useRef<number | null>(null)
+  // Press on a header: start a range (from the anchor when Shift is held) and follow the pointer
+  // at document level until release — so a drag can run past the table's edge, which scrolls the
+  // table and keeps extending the range: a long run of sample columns is one sweep.
+  const startDrag = (i: number, e: React.MouseEvent): void => {
+    if (!armed) return
+    e.preventDefault()
+    const role = armed
+    const a = e.shiftKey && anchorRef.current != null ? anchorRef.current : i
+    if (!e.shiftKey) anchorRef.current = i
+    let range = { a, f: i }
+    setDrag(range)
+    const scroller = scrollParentX(headRefs.current[i])
+    let x = e.clientX
+    // The header under x, clamped into the visible part of the table (beyond an edge = the edge
+    // column, while the auto-scroll brings more in).
+    const colAt = (): number => {
+      const box = scroller?.getBoundingClientRect()
+      const cx = box ? Math.min(box.right - 2, Math.max(box.left + 2, x)) : x
+      const heads = headRefs.current
+      for (let k = 0; k < columns.length; k++) {
+        const r = heads[k]?.getBoundingClientRect()
+        if (r && cx < r.right) return k
+      }
+      return columns.length - 1
     }
-    setDrag(null)
+    const track = (): void => {
+      const f = colAt()
+      if (f !== range.f) setDrag((range = { a, f }))
+    }
+    // Auto-scroll while the pointer is within EDGE px of an edge (or past it), faster the further.
+    const EDGE = 40
+    let raf = 0
+    const tick = (): void => {
+      raf = 0
+      if (!scroller) return
+      const box = scroller.getBoundingClientRect()
+      const over =
+        x > box.right - EDGE
+          ? x - (box.right - EDGE)
+          : x < box.left + EDGE
+            ? x - (box.left + EDGE)
+            : 0
+      if (over === 0) return
+      const before = scroller.scrollLeft
+      scroller.scrollLeft += Math.sign(over) * Math.min(40, 4 + Math.abs(over) / 3)
+      track()
+      if (scroller.scrollLeft !== before) raf = requestAnimationFrame(tick)
+    }
+    const onMove = (ev: MouseEvent): void => {
+      x = ev.clientX
+      track()
+      if (!raf) raf = requestAnimationFrame(tick)
+    }
+    const onUp = (): void => {
+      document.removeEventListener('mousemove', onMove)
+      document.removeEventListener('mouseup', onUp)
+      if (raf) cancelAnimationFrame(raf)
+      const cols = columns.slice(Math.min(range.a, range.f), Math.max(range.a, range.f) + 1)
+      // A single header that already holds the armed role toggles back to Ignore.
+      const clear = cols.length === 1 && roles[cols[0]] === role
+      onAssign(cols, clear ? 'ignore' : role)
+      setDrag(null)
+    }
+    document.addEventListener('mousemove', onMove)
+    document.addEventListener('mouseup', onUp)
   }
 
   // Column widths (like the review grid): null = fit-to-content, which measures + pins the
@@ -1833,9 +2032,10 @@ function Step1Columns({
       ) : (
         <>
           <div style={styles.hint}>
-            Click a role, then click a column header — or drag across several — to label them.
-            Exactly one <b>ID</b> and one <b>Name</b>; any number of <b>Sample</b> and{' '}
-            <b>Metadata</b>. Unlabelled columns are ignored.
+            Click a role, then click a column header — drag across several (past the edge to
+            scroll), or Shift-click to take every column since the last one — to label them. Exactly
+            one <b>ID</b> and one <b>Name</b>; any number of <b>Sample</b> and <b>Metadata</b>.
+            Unlabelled columns are ignored.
           </div>
           <div style={styles.chips}>
             {ROLE_CHIPS.map((role) => {
@@ -1871,7 +2071,7 @@ function Step1Columns({
                 ))}
               </colgroup>
               <thead>
-                <tr onMouseUp={finish} onMouseLeave={() => setDrag(null)}>
+                <tr>
                   {columns.map((c, i) => {
                     const role = roles[c] ?? 'ignore'
                     // Preview the armed role while dragging across the range, or hovering a header.
@@ -1885,20 +2085,12 @@ function Step1Columns({
                         ref={(el) => {
                           headRefs.current[i] = el
                         }}
-                        onMouseDown={
-                          armed
-                            ? (e) => {
-                                e.preventDefault()
-                                setDrag({ a: i, f: i })
-                              }
-                            : undefined
-                        }
-                        onMouseEnter={() => {
-                          setHover(c)
-                          setDrag((d) => (d ? { a: d.a, f: i } : d))
-                        }}
+                        onMouseDown={armed ? (e) => startDrag(i, e) : undefined}
+                        onMouseEnter={() => setHover(c)}
                         onMouseLeave={() => setHover((h) => (h === c ? null : h))}
-                        title={armed ? `Click or drag to label as ${ROLE_LABEL[armed]}` : c}
+                        title={
+                          armed ? `Click, drag or Shift-click to label as ${ROLE_LABEL[armed]}` : c
+                        }
                         style={{
                           ...styles.th,
                           ...styles.colHead,
@@ -1993,7 +2185,7 @@ function Step4Metadata({
   total: number
   annotations?: AnnotationSet
   annBusy: boolean
-  annMsg: string | null
+  annMsg: { text: string; kind: StatusKind } | null
   onFetch: (fields: string[], refresh?: boolean) => void
   onSelectFields: (fields: string[]) => void
   onClearAnnotations: () => void
@@ -2009,18 +2201,29 @@ function Step4Metadata({
       : new Set(['protein_name', 'gene_names'])
   )
   const annCols = annotations?.fields ?? []
+  // The DB exactly as it will be written (buildStandardInputs): one row per PROTEIN, keyed by its
+  // canonical accession — a protein group's members each get their own row, with that protein's
+  // own gene name and annotation; a protein named by two groups appears once.
   const cols = idCol ? ['uniqID', 'gene', ...metaCols, ...annCols] : []
-  const accessors: ((r: Record<string, string>) => string)[] = idCol
-    ? [
-        (r) => r[idCol] ?? '',
-        (r) => (labelCol ? (r[labelCol] ?? '') : ''),
-        ...metaCols.map((c) => (r: Record<string, string>) => r[c] ?? ''),
-        ...annCols.map(
-          (f) => (r: Record<string, string>) =>
-            annotations?.byId[(r[idCol] ?? '').trim()]?.[f] ?? ''
-        )
-      ]
-    : []
+  const dbRows: Record<string, string>[] = []
+  if (idCol) {
+    const written = new Set<string>()
+    for (const r of rows ?? []) {
+      const id = (r[idCol] ?? '').trim()
+      const label = labelCol ? (r[labelCol] ?? '').trim() : ''
+      const members = groupMembers(id)
+      for (const uniqID of members.length ? members : [id]) {
+        if (!uniqID || written.has(uniqID)) continue
+        written.add(uniqID)
+        const ann = annotations?.byId[uniqID]
+        const out: Record<string, string> = { uniqID, gene: label || (ann?.geneName ?? '').trim() }
+        for (const c of metaCols) out[c] = r[c] ?? ''
+        for (const f of annCols) out[f] = ann?.[f] ?? ''
+        dbRows.push(out)
+      }
+    }
+  }
+  const accessors = cols.map((c) => (r: Record<string, string>) => r[c] ?? '')
 
   // Per-column user override (px); null = the computed content-fit default. Reset when the
   // column set changes (adjust-state-during-render).
@@ -2032,7 +2235,8 @@ function Step4Metadata({
   }
 
   if (!idCol) return <div style={styles.hint}>Pick an ID column in step 1.</div>
-  const shown = rows ?? []
+  const shown = dbRows
+  const features = rows?.length ?? 0
   // Content-fit width from the longest value (header or any shown cell), capped.
   const fitWidth = (i: number): number => {
     let maxLen = cols[i].length
@@ -2061,12 +2265,14 @@ function Step4Metadata({
   return (
     <>
       <div style={styles.hint}>
-        ID map to be written: <b>uniqID</b> ← {idCol}, <b>gene</b> ← {labelCol ?? '(none)'}
+        ID map to be written, one row per protein: <b>uniqID</b> ← each protein {idCol} names
+        (groups split, isoforms folded), <b>gene</b> ←{' '}
+        {labelCol ?? '(none, or the fetched gene name)'}
         {metaCols.length ? `, + ${metaCols.length} metadata column(s)` : ''}
         {annCols.length ? `, + ${annCols.length} annotation column(s)` : ''}.{' '}
-        {total > shown.length
-          ? `Showing first ${shown.length} of ${total} rows (all written on save).`
-          : `${shown.length} rows.`}
+        {total > features
+          ? `Showing the first ${features} of ${total} features — ${shown.length} proteins (all written on save).`
+          : `${features} features — ${shown.length} proteins.`}
       </div>
       {/* Fetch external annotations (UniProt) by feature accession — merged into the DB and saved
           with the project. */}
@@ -2087,7 +2293,18 @@ function Step4Metadata({
             />
           ))}
         </div>
-        {/* The actions as one unit: they wrap to a new line together, never one at a time. */}
+        {/* Clear on the options' row, at its right end. Disabled rather than hidden during a
+            fetch, so nothing shifts as it starts. */}
+        {annotations && (
+          <button
+            style={{ ...styles.btn, marginLeft: 'auto', opacity: annBusy ? 0.5 : 1 }}
+            disabled={annBusy}
+            onClick={onClearAnnotations}
+          >
+            Clear
+          </button>
+        )}
+        {/* Fetch / Re-fetch as one unit, on a row of their own below. */}
         <span style={styles.annActions}>
           <button
             style={{ ...styles.btnPrimary, opacity: annBusy || picked.size === 0 ? 0.5 : 1 }}
@@ -2115,31 +2332,16 @@ function Step4Metadata({
           >
             Re-fetch
           </button>
-          {/* Disabled rather than hidden during a fetch, so the row doesn't shift as it starts. */}
-          {annotations && (
-            <button
-              style={{ ...styles.btn, opacity: annBusy ? 0.5 : 1 }}
-              disabled={annBusy}
-              onClick={onClearAnnotations}
-            >
-              Clear
-            </button>
+          {/* The fetch's status, right of its buttons: in progress reads as a warning (the
+              annotations aren't there yet), then the outcome — done, partly done, or failed. */}
+          {annMsg && (
+            <StatusNote kind={annBusy ? 'warn' : annMsg.kind} style={styles.annNote}>
+              {annMsg.text}
+            </StatusNote>
           )}
         </span>
-        {annMsg && (
-          <span style={styles.annMsg}>
-            {annBusy && (
-              <>
-                <style>{`@keyframes oe-spin{to{transform:rotate(360deg)}}`}</style>
-                <span style={styles.spinner} />
-              </>
-            )}
-            {annMsg}
-          </span>
-        )}
       </div>
-      <div style={styles.tableTitle}>Metadata DB</div>
-      <ScrollFade>
+      <ScrollFade title="Metadata DB" colNav>
         {/* Always fixed layout with computed widths + minWidth:0 (not the shared grid's 100%), so
             long values clip instead of stretching the column and the table doesn't fill the width. */}
         <table style={{ ...styles.grid, tableLayout: 'fixed', minWidth: 0 }}>
@@ -3603,7 +3805,14 @@ const styles: Record<string, CSSProperties> = {
   },
   annTitle: { fontSize: 12, fontWeight: 700, color: UI.text, flex: '0 0 auto' },
   annFields: { display: 'inline-flex', flexWrap: 'wrap', gap: 10 },
-  annActions: { display: 'inline-flex', alignItems: 'center', gap: 10, flex: '0 0 auto' },
+  // Fetch / Re-fetch on a row of their own, below the options.
+  annActions: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'flex-start',
+    gap: 10,
+    flex: '1 1 100%'
+  },
   // One annotation category chip: [☐ Label n/m ▾] — the box picks the whole category, the label
   // opens its member list.
   annCatBtn: {
@@ -3622,24 +3831,8 @@ const styles: Record<string, CSSProperties> = {
   annCatLabel: { display: 'inline-flex', alignItems: 'center', gap: 6 },
   annCatCount: { fontSize: 10, fontWeight: 500, color: UI.textMuted },
   annSoon: { marginLeft: 'auto', fontSize: 10, color: UI.textMuted, fontStyle: 'italic' },
-  annMsg: {
-    fontSize: 12,
-    color: UI.textMuted,
-    flex: '1 1 100%',
-    display: 'inline-flex',
-    alignItems: 'center',
-    gap: 6
-  },
-  spinner: {
-    width: 12,
-    height: 12,
-    border: `2px solid ${UI.border}`,
-    borderTopColor: UI.text,
-    borderRadius: '50%',
-    display: 'inline-block',
-    animation: 'oe-spin 0.7s linear infinite',
-    flex: '0 0 auto'
-  },
+  // beside the buttons, taking the rest of the row and wrapping within it
+  annNote: { flex: '1 1 0', minWidth: 0, marginTop: 0 },
   // Conditions-step table frame: no overflow (sticky header cells must pin to the BODY's scroll,
   // not a nested box), so a wide table scrolls the body horizontally instead.
   nameTableWrap: { flex: '0 0 auto', border: `1px solid ${UI.border}`, borderRadius: 6 },
@@ -3652,6 +3845,21 @@ const styles: Record<string, CSSProperties> = {
     borderRadius: 6
   },
   fade: { position: 'absolute', pointerEvents: 'none', zIndex: 2 },
+  tableHead: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 },
+  colSteps: { display: 'inline-flex', gap: 4 },
+  colStep: {
+    width: 20,
+    height: 20,
+    padding: 0,
+    display: 'inline-flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: '50%',
+    border: `1px solid ${UI.border}`,
+    background: UI.panel,
+    color: UI.text,
+    cursor: 'pointer'
+  },
   fadeTop: {
     top: 0,
     left: 0,

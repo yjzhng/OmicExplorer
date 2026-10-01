@@ -12,7 +12,8 @@ import {
   isCustomCond,
   type ConditionKey,
   type CustomConditionKey,
-  presentStd
+  presentStd,
+  presentScaleOf
 } from '../engine'
 import { deriveGroups } from '../graph/groups'
 import {
@@ -20,6 +21,7 @@ import {
   type CompareConfig,
   type GraphNode,
   type NodeResult,
+  type StandardizeConfig,
   type StepNode
 } from '../graph/types'
 
@@ -63,13 +65,16 @@ function cellOf(r: object, c: string): Cell {
 }
 
 /** Standardized table → columns + rows (cell shown only when the data carries it). */
-function standardizeTable(result: Extract<NodeResult, { kind: 'standardize' }>): {
+function standardizeTable(
+  result: Extract<NodeResult, { kind: 'standardize' }>,
+  logTransform?: StandardizeConfig['logTransform']
+): {
   columns: string[]
   rows: Cell[][]
 } {
   const dm = result.std.displayMap
   // On Clean data's presented scale (its chosen log-transform), as its table shows them.
-  const src = presentStd(result.std).rows
+  const src = presentStd(result.std, presentScaleOf(result.std, logTransform)).rows
   const showCell = present(src, 'cell')
   const cols = [
     'uniqID',
@@ -193,7 +198,8 @@ export function collectTableExports(
     const result = results[g.rootId]
     if (!node || !isStep(node) || !result) continue
     let built: { columns: string[]; rows: Cell[][] } | null = null
-    if (result.kind === 'standardize') built = standardizeTable(result)
+    if (result.kind === 'standardize')
+      built = standardizeTable(result, (node.data.config as StandardizeConfig).logTransform)
     else if (result.kind === 'compare')
       built = compareTable(result, (node.data.config as CompareConfig).analysis)
     else if (result.kind === 'contrast') built = contrastTable(result)

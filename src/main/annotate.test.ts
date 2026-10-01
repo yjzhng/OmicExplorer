@@ -120,12 +120,44 @@ beforeEach(() => {
         )
       return ok([cols.join('\t'), ...want.map(row)].join('\n'))
     }
-    // KEGG is exercised only to shift the UniProt field order; the pathway content doesn't matter.
+    // Reactome: P04637 sits in a pathway FOUR levels deep (Cell Cycle › Checkpoints › G1/S
+    // checkpoints › TP53 regulates G1/S), and in a level-2 pathway under two top-level ones.
+    if (url.includes('UniProt2Reactome'))
+      return ok(
+        [
+          'P04637\tR-HSA-6\turl\tTP53 regulates G1/S\tTAS\tHomo sapiens',
+          'P04637\tR-HSA-5\turl\tShared step\tTAS\tHomo sapiens'
+        ].join('\n')
+      )
+    if (url.includes('ReactomePathwaysRelation'))
+      return ok(
+        [
+          'R-HSA-1\tR-HSA-2',
+          'R-HSA-2\tR-HSA-3',
+          'R-HSA-3\tR-HSA-6',
+          'R-HSA-1\tR-HSA-5',
+          'R-HSA-4\tR-HSA-5'
+        ].join('\n')
+      )
+    if (url.includes('ReactomePathways.txt'))
+      return ok(
+        [
+          'R-HSA-1\tCell Cycle\tHomo sapiens',
+          'R-HSA-2\tCell Cycle Checkpoints\tHomo sapiens',
+          'R-HSA-3\tG1/S DNA Damage Checkpoints\tHomo sapiens',
+          'R-HSA-4\tDisease\tHomo sapiens',
+          'R-HSA-5\tShared step\tHomo sapiens',
+          'R-HSA-6\tTP53 regulates G1/S\tHomo sapiens'
+        ].join('\n')
+      )
     if (url.includes('rest.kegg.jp/link/pathway')) return ok('eco:b3932\tpath:eco03050')
     if (url.includes('rest.kegg.jp/list/pathway'))
       return ok('eco03050\tProteasome - Escherichia coli')
+    // BRITE br08901's htext: A = pathway category, B = pathway group, C = the pathway.
     if (url.includes('rest.kegg.jp/get/br:br08901'))
-      return ok('A09120 Genetic Information Processing\nC    03050 Proteasome')
+      return ok(
+        'A09120 Genetic Information Processing\nB  09123 Folding, sorting and degradation\nC    03050 Proteasome'
+      )
     throw new Error(`unexpected fetch ${url}`)
   })
   registerAnnotate()
@@ -146,11 +178,11 @@ describe('annot:uniprot — essentiality', () => {
       [ESS, NON, 'P0A7B8'],
       ['ceg']
     )
-    expect(res.fields).toEqual(['essentialityCEG'])
-    expect(res.byId[ESS]?.essentialityCEG).toBe('essential')
-    expect(res.byId[NON]?.essentialityCEG).toBe('non-essential')
+    expect(res.fields).toEqual(['CEG_NEG'])
+    expect(res.byId[ESS]?.CEG_NEG).toBe('essential')
+    expect(res.byId[NON]?.CEG_NEG).toBe('non-essential')
     // A bacterial accession is in neither set: absent, which is NOT the same as non-essential.
-    expect(res.byId['P0A7B8']?.essentialityCEG).toBeUndefined()
+    expect(res.byId['P0A7B8']?.CEG_NEG).toBeUndefined()
   })
 
   it('keeps DEG and CEG/NEG as separate columns when both are asked for', async () => {
@@ -159,7 +191,7 @@ describe('annot:uniprot — essentiality', () => {
       [ESS],
       ['essentiality', 'ceg']
     )
-    expect(res.fields).toEqual(['essentiality', 'essentialityCEG'])
+    expect(res.fields).toEqual(['DEG', 'CEG_NEG'])
   })
 
   it('needs no network — the sets are vendored', async () => {
@@ -170,44 +202,56 @@ describe('annot:uniprot — essentiality', () => {
 
 describe('annot:uniprot — COG / KOG', () => {
   it('resolves COGs for prokaryotes and KOGs for eukaryotes', async () => {
-    const res = await run(['protein_name', 'cog'])
+    const res = await run(['protein_name', 'cog', 'kog'])
     expect(res.error).toBeUndefined()
-    expect(res.fields).toEqual(['proteinName', 'COG', 'cogCategory', 'cogArea'])
+    expect(res.fields).toEqual([
+      'proteinName',
+      'COG',
+      'COG_cat',
+      'COG_area',
+      'KOG',
+      'KOG_cat',
+      'KOG_area'
+    ])
     expect(res.byId.P0A7B8.COG).toBe('ATP-dependent protease HslVU (ClpYQ), peptidase subunit')
-    expect(res.byId.P0A7B8.cogCategory).toBe(
+    expect(res.byId.P0A7B8.COG_cat).toBe(
       'Posttranslational modification, protein turnover, chaperones'
     )
-    // The eukaryotic half — this is what came back empty before KOG was wired in.
-    expect(res.byId.P04637.COG).toBe('Transcription factor p53')
-    expect(res.byId.P04637.cogCategory).toBe('Transcription')
+    expect(res.byId.P0A7B8.KOG).toBeUndefined()
+    // The eukaryotic half — in its own KOG columns, never the COG ones.
+    expect(res.byId.P04637.KOG).toBe('Transcription factor p53')
+    expect(res.byId.P04637.KOG_cat).toBe('Transcription')
+    expect(res.byId.P04637.COG).toBeUndefined()
+    expect(res.byId.P04637.COG_cat).toBeUndefined()
   })
 
   it("gives each category the area NCBI's file puts it under, in the same order", async () => {
-    const res = await run(['protein_name', 'cog'])
-    expect(res.byId.P0A7B8.cogArea).toBe('Cellular processes and signaling')
-    expect(res.byId.P04637.cogArea).toBe('Information storage and processing')
-    expect(res.byId.Q9XXXX.cogArea).toBeUndefined()
+    const res = await run(['protein_name', 'cog', 'kog'])
+    expect(res.byId.P0A7B8.COG_area).toBe('Cellular processes and signaling')
+    expect(res.byId.P04637.KOG_area).toBe('Information storage and processing')
+    expect(res.byId.Q9XXXX.COG_area).toBeUndefined()
   })
 
   it('names the group instead of printing its id, keeping the id only when unnamed', async () => {
-    const res = await run(['protein_name', 'cog'])
+    const res = await run(['protein_name', 'cog', 'kog'])
     // The id is a lookup key, not a label — but a group with no definition has nothing else to show.
     expect(res.byId.Q8DUM1.COG).toBe(
       'COG9999; ATP-dependent protease HslVU (ClpYQ), peptidase subunit'
     )
     expect(res.byId.P0A7B8.COG).not.toMatch(/COG\d/)
-    expect(res.byId.P04637.COG).not.toMatch(/KOG\d/)
+    expect(res.byId.P04637.KOG).not.toMatch(/KOG\d/)
   })
 
   it('leaves eggNOG-native groups unannotated rather than inventing a category', async () => {
-    const res = await run(['protein_name', 'cog'])
+    const res = await run(['protein_name', 'cog', 'kog'])
     expect(res.byId.Q9XXXX.COG).toBeUndefined()
-    expect(res.byId.Q9XXXX.cogCategory).toBeUndefined()
+    expect(res.byId.Q9XXXX.COG_cat).toBeUndefined()
+    expect(res.byId.Q9XXXX.KOG).toBeUndefined()
     expect(res.byId.Q9XXXX.proteinName).toBe('Uncharacterized protein')
   })
 
   it('keeps the eggNOG feed-in field out of the returned columns', async () => {
-    const res = await run(['protein_name', 'cog'])
+    const res = await run(['protein_name', 'cog', 'kog'])
     for (const rec of Object.values(res.byId))
       expect(Object.keys(rec).every((c) => !c.startsWith('_'))).toBe(true)
     expect(res.fields).not.toContain('_eggnog')
@@ -215,13 +259,13 @@ describe('annot:uniprot — COG / KOG', () => {
 
   it('unpacks the right column when other sources shift the field order', async () => {
     // KEGG and STRING both add fields ahead of the eggNOG xref; a positional slip shows up here.
-    const res = await run(['protein_name', 'gene_names', 'kegg', 'cog', 'string'])
+    const res = await run(['protein_name', 'gene_names', 'kegg', 'cog', 'kog', 'string'])
     expect(res.byId.P0A7B8.proteinName).toBe('ATP-dependent protease subunit HslV')
     expect(res.byId.P0A7B8.geneName).toBe('hslV')
-    expect(res.byId.P0A7B8.cogCategory).toBe(
+    expect(res.byId.P0A7B8.COG_cat).toBe(
       'Posttranslational modification, protein turnover, chaperones'
     )
-    expect(res.byId.P04637.cogCategory).toBe('Transcription')
+    expect(res.byId.P04637.KOG_cat).toBe('Transcription')
     expect(res.taxon).toBe(9606) // dominant taxon across the three
   })
 
@@ -241,10 +285,11 @@ describe('annot:uniprot — COG / KOG', () => {
     const res = await handlers['annot:uniprot'](
       { sender: { send: () => {} } },
       ['P04637'],
-      ['protein_name', 'cog']
+      ['protein_name', 'cog', 'kog']
     )
-    expect(res.byId.P04637.COG).toBe('Transcription factor p53')
-    expect(res.byId.P04637.cogCategory).toBe('Transcription')
+    expect(res.byId.P04637.KOG).toBe('Transcription factor p53')
+    expect(res.byId.P04637.KOG_cat).toBe('Transcription')
+    expect(res.byId.P04637.COG).toBeUndefined() // the stale COG value isn't carried over
     expect(written?.byAcc.P04637.got).toContain(RESOLVER_TOKEN.cog)
   })
 
@@ -252,10 +297,19 @@ describe('annot:uniprot — COG / KOG', () => {
     seedStore = {
       byAcc: {
         P04637: {
-          got: ['proteinName', 'COG', 'cogCategory', 'cogArea', RESOLVER_TOKEN.cog],
+          got: [
+            'proteinName',
+            'COG',
+            'COG_cat',
+            'COG_area',
+            'KOG',
+            'KOG_cat',
+            'KOG_area',
+            RESOLVER_TOKEN.cog
+          ],
           fields: {
             proteinName: 'Cellular tumor antigen p53',
-            COG: 'Transcription factor p53'
+            KOG: 'Transcription factor p53'
           },
           release: '2026_01'
         }
@@ -264,9 +318,9 @@ describe('annot:uniprot — COG / KOG', () => {
     const res = await handlers['annot:uniprot'](
       { sender: { send: () => {} } },
       ['P04637'],
-      ['protein_name', 'cog']
+      ['protein_name', 'cog', 'kog']
     )
-    expect(res.byId.P04637.COG).toBe('Transcription factor p53')
+    expect(res.byId.P04637.KOG).toBe('Transcription factor p53')
     expect(asked).toEqual([]) // fully cached — stays offline
   })
 
@@ -276,8 +330,17 @@ describe('annot:uniprot — COG / KOG', () => {
     seedStore = {
       byAcc: {
         P04637: {
-          got: ['proteinName', 'COG', 'cogCategory', 'cogArea', RESOLVER_TOKEN.cog],
-          fields: { proteinName: 'stale name', COG: 'stale group' },
+          got: [
+            'proteinName',
+            'COG',
+            'COG_cat',
+            'COG_area',
+            'KOG',
+            'KOG_cat',
+            'KOG_area',
+            RESOLVER_TOKEN.cog
+          ],
+          fields: { proteinName: 'stale name', KOG: 'stale group' },
           release: '2026_01'
         }
       }
@@ -285,11 +348,11 @@ describe('annot:uniprot — COG / KOG', () => {
     const res = await handlers['annot:uniprot'](
       { sender: { send: () => {} } },
       ['P04637'],
-      ['protein_name', 'cog'],
+      ['protein_name', 'cog', 'kog'],
       { refresh: true }
     )
     expect(res.byId.P04637.proteinName).toBe('Cellular tumor antigen p53')
-    expect(res.byId.P04637.COG).toBe('Transcription factor p53')
+    expect(res.byId.P04637.KOG).toBe('Transcription factor p53')
     expect(asked.some((u) => u.includes('rest.uniprot.org'))).toBe(true)
     expect(asked.some((u) => u.includes('ftp.ncbi.nlm.nih.gov'))).toBe(true)
   })
@@ -297,24 +360,61 @@ describe('annot:uniprot — COG / KOG', () => {
   it('a refresh re-pulls the reference tables too, not just the accessions', async () => {
     const ncbi = (): boolean => asked.some((u) => u.includes('ftp.ncbi.nlm.nih.gov'))
     // The COG/KOG defs are memoised for the whole session, so an ordinary fetch reuses them…
-    await run(['protein_name', 'cog'])
+    await run(['protein_name', 'cog', 'kog'])
     asked = []
-    await run(['protein_name', 'cog'])
+    await run(['protein_name', 'cog', 'kog'])
     expect(ncbi()).toBe(false)
     // …but a refresh has to drop that memo, or "re-query the sources" quietly wouldn't.
     asked = []
     await handlers['annot:uniprot'](
       { sender: { send: () => {} } },
       Object.keys(UNIPROT_ROWS),
-      ['protein_name', 'cog'],
+      ['protein_name', 'cog', 'kog'],
       { refresh: true }
     )
     expect(ncbi()).toBe(true)
   })
 
   it("doesn't touch NCBI when no accession has a definable group", async () => {
-    const res = await handlers['annot:uniprot']({ sender: { send: () => {} } }, ['Q9XXXX'], ['cog'])
+    const res = await handlers['annot:uniprot'](
+      { sender: { send: () => {} } },
+      ['Q9XXXX'],
+      ['cog', 'kog']
+    )
     expect(res.byId.Q9XXXX).toBeUndefined()
     expect(asked.some((u) => u.includes('ftp.ncbi.nlm.nih.gov'))).toBe(false)
+  })
+
+  it('fetches COG and KOG as separate picks', async () => {
+    const cog = await run(['protein_name', 'cog'])
+    expect(cog.fields).toEqual(['proteinName', 'COG', 'COG_cat', 'COG_area'])
+    expect(cog.byId.P0A7B8.COG_cat).toBeDefined()
+    expect(cog.byId.P04637.KOG).toBeUndefined()
+    const kog = await run(['protein_name', 'kog'])
+    expect(kog.fields).toEqual(['proteinName', 'KOG', 'KOG_cat', 'KOG_area'])
+    expect(kog.byId.P04637.KOG_cat).toBe('Transcription')
+    expect(kog.byId.P0A7B8.COG).toBeUndefined()
+  })
+})
+
+describe('annot:uniprot — KEGG', () => {
+  it('gives each pathway its pathway category and group, in aligned columns', async () => {
+    const res = await run(['protein_name', 'kegg'])
+    expect(res.fields).toEqual(['proteinName', 'KEGG', 'KEGG_cat', 'KEGG_grp'])
+    expect(res.byId.P0A7B8.KEGG).toBe('Proteasome')
+    expect(res.byId.P0A7B8.KEGG_cat).toBe('Genetic Information Processing')
+    expect(res.byId.P0A7B8.KEGG_grp).toBe('Folding, sorting and degradation')
+  })
+})
+
+describe('annot:uniprot — Reactome', () => {
+  it('rolls each pathway up to its level-3 term, with level-2 group and top-level category', async () => {
+    const res = await run(['protein_name', 'reactome'])
+    expect(res.fields).toEqual(['proteinName', 'Reactome', 'Reactome_grp', 'Reactome_cat'])
+    // the level-4 pathway is tested as its level-3 ancestor; the level-2 one stays itself, and
+    // carries both its top-level parents
+    expect(res.byId.P04637.Reactome).toBe('G1/S DNA Damage Checkpoints; Shared step')
+    expect(res.byId.P04637.Reactome_grp).toBe('Cell Cycle Checkpoints; Shared step')
+    expect(res.byId.P04637.Reactome_cat).toBe('Cell Cycle; Cell Cycle / Disease')
   })
 })

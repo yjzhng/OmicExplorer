@@ -164,7 +164,7 @@ export const NODE_SPECS: Record<NodeKind, NodeSpec> = {
     // BOTH contrasted sides (FC1 vs FC2), for comparing profiles between two datasets/contrasts.
     acceptsFrom: ['compare', 'contrast'],
     hasRun: false,
-    defaultConfig: (): DRConfig => ({ axis: 'dose', capEnabled: true, topGenes: 20 })
+    defaultConfig: (): DRConfig => ({ axis: 'dose', capEnabled: true, topGenes: 10 })
   },
   bubble: {
     kind: 'bubble',

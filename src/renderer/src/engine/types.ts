@@ -138,7 +138,7 @@ export interface StandardizeResult {
   /** uniqID → display label (gene name / locus_tag / uniqID) */
   displayMap: Record<string, string>
   /** uniqID → { annotation column → value } carried from the ID-map DB (e.g. GO terms,
-   *  keggPathway fetched in the interactive import). Empty when no DB / no annotations.
+   *  KEGG fetched in the interactive import). Empty when no DB / no annotations.
    *  Consumed by enrichment analysis; other plots ignore it. */
   annotationMap: Record<string, Record<string, string>>
   /** pathway name → KEGG category (global; passed through from the interactive import). Used by

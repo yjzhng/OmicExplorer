@@ -18,6 +18,7 @@ import {
   VALID_CONDITIONS,
   type ConditionKey
 } from './types'
+import { COLUMN_ALIASES, groupMembers, matchKey, pairsOf, unionRecords } from './accession'
 import { condPresent } from './compare'
 import { imputeMissing } from './impute'
 import {
@@ -61,6 +62,15 @@ function num(v: string | undefined | null): number | null {
   if (s === '') return null
   const n = Number(s)
   return Number.isFinite(n) ? n : null
+}
+
+/** A MEASURED value: as `num`, but 0 is missing too. Search engines write an unquantified protein
+ *  as 0 (MaxQuant LFQ) as often as blank / NA / NaN, and all of them mean "not measured" — read as
+ *  a real 0 it would count as present in the clean-up, escape imputation, and become −∞ on a log.
+ *  Measured values only: a samplesheet's dose 0 (the vehicle) is a real 0. */
+function measured(v: string | undefined | null): number | null {
+  const n = num(v)
+  return n === 0 ? null : n
 }
 
 /** Read the samplesheet: lowercase headers, synthesize `sample` from well/position/plate.
@@ -112,43 +122,84 @@ function detectIdColumn(
   return fields.find((c) => !nonId.has(c) && dbSet.has(c)) ?? null
 }
 
-interface IdMap {
-  lookup: Map<string, string>
-  displayMap: Record<string, string>
-  /** uniqID → { db column → value } for every non-structural DB column (GO, keggPathway,
-   *  geneName, …). First non-empty value per (uniqID, column) wins. */
-  annotationMap: Record<string, Record<string, string>>
-  idColumn: string
+/** The DB, indexed for matching data feature IDs: `matchKey` of each row's ID-column value → the
+ *  rows carrying it. Matching is always on canonical accessions (see accession.ts), so a data ID
+ *  `Q9ULV3-5` finds a DB keyed `Q9ULV3`, and a protein group finds each of its members' rows
+ *  (an import DB has one row per protein). */
+interface DbIndex {
+  byKey: Map<string, Row[]>
+  /** non-structural DB columns carried through as per-feature annotation (GO, KEGG, …): each
+   *  DB column (`from`) and the name it's carried as (`as` — a COLUMN_ALIASES rename, else itself) */
+  annCols: { from: string; as: string }[]
 }
 
-/** Build a UniProtID/locus_tag/... → uniqID map and uniqID → display label. */
-function buildIdMap(dbRows: Row[], dbFields: string[], idColumn: string): IdMap {
-  const lookup = new Map<string, string>()
+function buildDbIndex(dbRows: Row[], dbFields: string[], idColumn: string): DbIndex {
+  const byKey = new Map<string, Row[]>()
   for (const r of dbRows) {
-    const key = (r[idColumn] ?? '').trim()
-    const uid = (r.uniqID ?? '').trim()
-    if (key !== '' && uid !== '') lookup.set(key, uid)
+    if ((r.uniqID ?? '').trim() === '') continue
+    const key = matchKey(r[idColumn] ?? '')
+    if (!key) continue
+    const arr = byKey.get(key)
+    if (arr) arr.push(r)
+    else byKey.set(key, [r])
   }
-  // display label: gene name(s) joined by "/", else locus_tag, else uniqID
-  const byUid = new Map<string, { genes: Set<string>; loci: Set<string> }>()
-  for (const r of dbRows) {
-    const uid = (r.uniqID ?? '').trim()
-    if (uid === '') continue
-    let e = byUid.get(uid)
-    if (!e) {
-      e = { genes: new Set(), loci: new Set() }
-      byUid.set(uid, e)
-    }
-    const gene = (r.gene ?? '').trim()
-    const locus = (r.locus_tag ?? '').trim()
-    if (gene !== '') e.genes.add(gene)
-    if (locus !== '') e.loci.add(locus)
-  }
+  // uniqID and the ID column are structural; gene/locus_tag drive the display label.
+  const skip = new Set([idColumn, 'uniqID', 'gene', 'locus_tag'])
+  const fields = new Set(dbFields)
+  const annCols = dbFields
+    .filter((f) => !skip.has(f))
+    .map((from) => ({ from, as: COLUMN_ALIASES[from] ?? from }))
+    // an alias gives way to a real column of the new name, and to an earlier alias of it
+    .filter((c, i, all) =>
+      c.as === c.from ? true : !fields.has(c.as) && all.findIndex((d) => d.as === c.as) === i
+    )
+  return { byKey, annCols }
+}
+
+/** The DB rows a data feature ID matches: the whole ID (a group written the same way), and each of
+ *  its member proteins on its own (a DB keyed per accession). */
+function dbRowsFor(index: DbIndex, id: string): Row[] {
+  const out = new Set<Row>()
+  for (const k of new Set([matchKey(id), ...groupMembers(id)]))
+    for (const r of index.byKey.get(k) ?? []) out.add(r)
+  return [...out]
+}
+
+/**
+ * Display labels and annotations for the features that made it through Clean data — and only those:
+ * the gene selector lists exactly what was measured. A feature's label is its DB rows' distinct gene
+ * names joined by "/" (a protein group reads `HDAC1/HDAC2`), else locus tags, else its ID. Its
+ * annotation is the UNION of its rows' (see accession.ts): a group belongs to every pathway, term
+ * and class any of its members does.
+ */
+function featureLabels(
+  featureIds: Iterable<string>,
+  rowsOf: (uid: string) => Row[],
+  annCols: { from: string; as: string }[]
+): { displayMap: Record<string, string>; annotationMap: Record<string, Record<string, string>> } {
   const displayMap: Record<string, string> = {}
-  for (const [uid, e] of byUid) {
-    if (e.genes.size > 0) displayMap[uid] = [...e.genes].join('/')
-    else if (e.loci.size > 0) displayMap[uid] = [...e.loci].join('/')
-    else displayMap[uid] = uid
+  const annotationMap: Record<string, Record<string, string>> = {}
+  const distinct = (rows: Row[], col: string): string[] => [
+    ...new Set(
+      rows.flatMap((r) =>
+        (r[col] ?? '')
+          .split(';')
+          .map((s) => s.trim())
+          .filter(Boolean)
+      )
+    )
+  ]
+  for (const uid of featureIds) {
+    const rows = rowsOf(uid)
+    const genes = distinct(rows, 'gene')
+    const loci = distinct(rows, 'locus_tag')
+    displayMap[uid] = genes.length ? genes.join('/') : loci.length ? loci.join('/') : uid
+    if (annCols.length) {
+      const rec = unionRecords(
+        rows.map((r) => Object.fromEntries(annCols.map((c) => [c.as, (r[c.from] ?? '').trim()])))
+      )
+      if (rec) annotationMap[uid] = rec
+    }
   }
   // Disambiguate duplicate labels: when two features map to the SAME display name, append their
   // uniqID so every plot's gene label stays distinguishable (unique names are left untouched).
@@ -159,26 +210,7 @@ function buildIdMap(dbRows: Row[], dbFields: string[], idColumn: string): IdMap 
     if (displayMap[uid] !== uid && (nameCount.get(displayMap[uid]) ?? 0) > 1)
       displayMap[uid] = `${displayMap[uid]} (${uid})`
   }
-  // Carry every non-structural DB column through as a per-uniqID annotation (GO, keggPathway,
-  // geneName, …). uniqID and the ID column are structural; gene/locus_tag already drive the
-  // display label. First non-empty value per (uniqID, column) wins.
-  const skip = new Set([idColumn, 'uniqID', 'gene', 'locus_tag'])
-  const annCols = dbFields.filter((f) => !skip.has(f))
-  const annotationMap: Record<string, Record<string, string>> = {}
-  if (annCols.length > 0) {
-    for (const r of dbRows) {
-      const uid = (r.uniqID ?? '').trim()
-      if (uid === '') continue
-      let rec = annotationMap[uid]
-      for (const c of annCols) {
-        const val = (r[c] ?? '').trim()
-        if (val === '') continue
-        if (!rec) rec = annotationMap[uid] = {}
-        if (rec[c] == null) rec[c] = val
-      }
-    }
-  }
-  return { lookup, displayMap, annotationMap, idColumn }
+  return { displayMap, annotationMap }
 }
 
 /** The data scale of a data file, before any run: the scale its values look to be on, what that
@@ -207,7 +239,7 @@ function arrivedValues(
   const cols = fmt === 'wide' ? fields.slice(1) : ['value']
   for (const r of rows)
     for (const c of cols) {
-      const n = num(r[c])
+      const n = measured(r[c])
       if (n != null) out.push(n)
     }
   return out
@@ -284,7 +316,7 @@ export function standardize(input: StandardizeInput): StandardizeResult {
     merged.push({
       id: String(r[idColData] ?? '').trim(),
       sample,
-      value: num(r.value),
+      value: measured(r.value),
       cell: meta.cell ?? '',
       cmpd: meta.cmpd ?? '',
       dose: num(meta.dose),
@@ -323,16 +355,40 @@ export function standardize(input: StandardizeInput): StandardizeResult {
   }
 
   // ── optional ID mapping (feature ID → uniqID) ───────────────────────────────
-  let displayMap: Record<string, string> = {}
-  let annotationMap: Record<string, Record<string, string>> = {}
-  let idMap: IdMap | null = null
+  // Each data feature keeps its own ID — a protein group stays ONE feature, as it was measured. A
+  // single-protein feature takes its DB row's uniqID instead (a UniProtID-keyed data file mapped
+  // to locus-tag uniqIDs), as long as that uniqID is its own: two features folding to one entry
+  // (separate isoform groups) stay apart rather than merging two measurements into one gene.
+  let dbIndex: DbIndex | null = null
   if (input.dbText) {
     const db = parseCsv(input.dbText)
     const idCol = detectIdColumn([idColData], db.fields, customConds)
-    if (idCol) {
-      idMap = buildIdMap(db.rows, db.fields, idCol)
-      displayMap = idMap.displayMap
-      annotationMap = idMap.annotationMap
+    if (idCol) dbIndex = buildDbIndex(db.rows, db.fields, idCol)
+  }
+  const dbRowsByFeature = new Map<string, Row[]>()
+  const uniqOf = new Map<string, string>()
+  if (dbIndex) {
+    const index = dbIndex
+    const matched = new Map<string, Row[]>()
+    const claims = new Map<string, number>()
+    const proposed = new Map<string, string>()
+    for (const id of new Set(merged.map((m) => m.id))) {
+      let rows = dbRowsFor(index, id)
+      // A single protein the DB lists under several uniqIDs (one accession, two loci) takes the
+      // last, as the ID lookup always has (and omicViz does).
+      const single = groupMembers(id).length <= 1
+      const uid = single && rows.length ? (rows[rows.length - 1].uniqID ?? '').trim() : id
+      if (uid !== id) rows = rows.filter((r) => (r.uniqID ?? '').trim() === uid)
+      matched.set(id, rows)
+      proposed.set(id, uid)
+      claims.set(uid, (claims.get(uid) ?? 0) + 1)
+    }
+    for (const [id, uid] of proposed) {
+      const own = uid === id || claims.get(uid) === 1 ? uid : id
+      uniqOf.set(id, own)
+      const prev = dbRowsByFeature.get(own)
+      const rows = matched.get(id) ?? []
+      dbRowsByFeature.set(own, prev ? [...new Set([...prev, ...rows])] : rows)
     }
   }
 
@@ -357,32 +413,23 @@ export function standardize(input: StandardizeInput): StandardizeResult {
   for (const m of merged) {
     allSamples.add(m.sample)
     if (!sampleGroup.has(m.sample)) sampleGroup.set(m.sample, groupOf(m))
-    // Expand ';'-concatenated IDs, then map each through the DB (unmapped kept as-is).
-    const ids = m.id.includes(';')
-      ? m.id
-          .split(';')
-          .map((s) => s.trim())
-          .filter(Boolean)
-      : [m.id]
-    for (const rawId of ids) {
-      const uniqID = idMap ? (idMap.lookup.get(rawId) ?? rawId) : rawId
-      if (m.value != null) {
-        let s = presence.get(uniqID)
-        if (!s) presence.set(uniqID, (s = new Set()))
-        s.add(m.sample)
-      }
-      rows.push({
-        uniqID,
-        cell: m.cell,
-        cmpd: m.cmpd,
-        dose: m.dose,
-        time: m.time,
-        rep: repOf.get(m.sample) ?? m.rep,
-        ...(customConds.length ? { extra: m.extra } : null),
-        value: m.value,
-        peptides: m.peptides
-      })
+    const uniqID = uniqOf.get(m.id) ?? m.id
+    if (m.value != null) {
+      let s = presence.get(uniqID)
+      if (!s) presence.set(uniqID, (s = new Set()))
+      s.add(m.sample)
     }
+    rows.push({
+      uniqID,
+      cell: m.cell,
+      cmpd: m.cmpd,
+      dose: m.dose,
+      time: m.time,
+      rep: repOf.get(m.sample) ?? m.rep,
+      ...(customConds.length ? { extra: m.extra } : null),
+      value: m.value,
+      peptides: m.peptides
+    })
   }
 
   // ── data scale: detect what the values arrived on and convert them to linear ─────────────
@@ -460,11 +507,19 @@ export function standardize(input: StandardizeInput): StandardizeResult {
 
   const compounds = [...new Set(rows.map((r) => r.cmpd).filter((c) => c !== ''))].sort()
 
+  const { displayMap, annotationMap } = featureLabels(
+    new Set(rows.map((r) => r.uniqID)),
+    (uid) => dbRowsByFeature.get(uid) ?? [],
+    dbIndex?.annCols ?? []
+  )
+
   return {
     rows,
     displayMap,
     annotationMap,
-    keggCategories: input.keggCategories ?? {},
+    // Pathway → pathway category: from the data's own aligned KEGG / KEGG_cat columns, over any
+    // map an older import handed over.
+    keggCategories: { ...input.keggCategories, ...pairsOf(annotationMap, 'KEGG', 'KEGG_cat') },
     activeConditions,
     compounds,
     cleanup: { droppedGenes, sampleCount, minSamplePct, ...(grouped ? { by: groupBy } : {}) },

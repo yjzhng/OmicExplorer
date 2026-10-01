@@ -827,7 +827,7 @@ export type NodeResult =
       kind: 'compare'
       cmp: VehNormResult
       displayMap: Record<string, string>
-      /** uniqID → annotation columns (GO / keggPathway), carried from Standardize for enrichment */
+      /** uniqID → annotation columns (GO / KEGG / COG …), carried from Clean data for enrichment */
       annotationMap: Record<string, Record<string, string>>
       /** pathway name → KEGG category, carried from Standardize for grouping enrichment terms */
       keggCategories: Record<string, string>

@@ -5,6 +5,7 @@ import { useMemo, useState, type CSSProperties, type ReactNode } from 'react'
 import type { Edge } from '@xyflow/react'
 
 import {
+  enrichTermGroups,
   buildDR,
   buildEnrichment,
   DEFAULT_THRESHOLD,
@@ -13,7 +14,6 @@ import {
   buildIntensityScatter,
   buildVolcano,
   enrichSourcesPresent,
-  cogAreasOf,
   resolveEnrichSource,
   ENRICH_SOURCE_LABEL,
   type EnrichSource,
@@ -33,7 +33,8 @@ import {
   isCustomCond,
   isNumericCond,
   VALID_CONDITIONS,
-  presentStd
+  presentStd,
+  presentScaleOf
 } from '../engine'
 import { BubbleView } from '../ui/BubbleView'
 import { EnrichView } from '../ui/EnrichView'
@@ -62,6 +63,7 @@ import { FcHeatmapTile } from './FcHeatmapTile'
 import { NODE_SPECS } from '../graph/registry'
 import { dominantTaxon, factsOf, unmetRequirement } from '../graph/requirements'
 import { useGraph } from '../graph/store'
+import { tileKey, useTempJobs } from '../export/tempResults'
 import {
   isStep,
   type BarConfig,
@@ -88,6 +90,7 @@ import {
   type QcConfig,
   quickOn,
   type ScatterConfig,
+  type StandardizeConfig,
   type StepNode,
   type TableConfig,
   type VolcanoConfig
@@ -765,7 +768,10 @@ export function PanelBody({
     if (result?.kind !== 'standardize')
       return <Empty text="Run this tile to produce the clean data table." />
     // Shown on Clean data's chosen scale (its log-transform); analyses read the linear rows.
-    return <StdTable std={presentStd(result.std)} />
+    const stdCfg = node.data.config as StandardizeConfig
+    return (
+      <StdTable std={presentStd(result.std, presentScaleOf(result.std, stdCfg.logTransform))} />
+    )
   }
   if (kind === 'compare') {
     if (result?.kind !== 'compare')
@@ -800,7 +806,19 @@ export function PanelBody({
     const view = (cfgSource as TableConfig).view
     if (!upstream) return <Empty text="Connect a Clean data, Compare, or Contrast tile." />
     if (upstream.kind === 'standardize')
-      return <StdTable key={view} std={presentStd(upstream.std)} initialView={view} />
+      return (
+        <StdTable
+          key={view}
+          std={presentStd(
+            upstream.std,
+            presentScaleOf(
+              upstream.std,
+              (upStep?.data.config as StandardizeConfig | undefined)?.logTransform
+            )
+          )}
+          initialView={view}
+        />
+      )
     if (upstream.kind === 'compare') {
       const upCfg = upStep?.data.config as CompareConfig | undefined
       return (
@@ -1356,6 +1374,7 @@ export function PanelBody({
     const unmet = unmetRequirement('enrich', { ...cfg, source }, factsOf(upstream))
     const withBar = (body: ReactNode): ReactNode => (
       <div style={styles.chart}>
+        <TempJobNote k={tileKey(node.id, child?.id)} />
         <div style={styles.stack}>
           <div style={{ display: 'flex', flexWrap: 'wrap' }}>
             {quickOn(cfg, 'method') && (
@@ -1371,7 +1390,10 @@ export function PanelBody({
                 label="terms"
                 value={source}
                 options={sources}
-                optionLabel={(o) => ENRICH_SOURCE_LABEL[o as EnrichSource] ?? o}
+                // Short on the tile: the species note ("(human)") is left to the settings.
+                optionLabel={(o) =>
+                  (ENRICH_SOURCE_LABEL[o as EnrichSource] ?? o).replace(/\s*\(human\)$/, '')
+                }
                 onChange={(v) => patchConfig({ source: v })}
               />
             )}
@@ -1402,10 +1424,9 @@ export function PanelBody({
                 displayMap: upstream.displayMap,
                 // The category level's terms, for a tile still saved on it.
                 keggCategories: source.startsWith('kegg') ? cats : undefined,
-                // How the terms are grouped and coloured: KEGG pathways by category, COG
-                // categories by area.
-                termGroups:
-                  source === 'kegg' ? cats : source === 'cog' ? cogAreasOf(ann) : undefined
+                // How the terms are grouped and coloured (KEGG category, Reactome top level, GO
+                // aspect, COG / KOG area) — shared with the tile's background export.
+                termGroups: enrichTermGroups(source, ann, cats)
               })
             }
             deps={[
@@ -1436,6 +1457,7 @@ export function PanelBody({
     const species = cfg.species && cfg.species > 0 ? cfg.species : dominantTaxon(ann)
     const withBar = (body: ReactNode): ReactNode => (
       <div style={styles.chart}>
+        <TempJobNote k={tileKey(node.id, child?.id)} />
         <div style={styles.stack}>
           <div style={{ display: 'flex', flexWrap: 'wrap' }}>
             {quickOn(cfg, 'confidence') && (
@@ -1566,7 +1588,17 @@ function Empty({ text }: { text: string }): ReactNode {
 }
 
 const styles: Record<string, CSSProperties> = {
-  chart: { height: '100%', minHeight: 0 },
+  chart: { height: '100%', minHeight: 0, position: 'relative' },
+  // The background temp export's progress, small in the tile's bottom-right corner.
+  tempNote: {
+    position: 'absolute',
+    right: 8,
+    bottom: 6,
+    zIndex: 2,
+    fontSize: 10,
+    color: UI.textMuted,
+    pointerEvents: 'none'
+  },
   // A SwitchBar (or other in-plot control) stacked above the chart, which fills the rest.
   stack: { height: '100%', display: 'flex', flexDirection: 'column', minHeight: 0 },
   stackBody: { flex: 1, minHeight: 0 },
@@ -1590,4 +1622,16 @@ const styles: Record<string, CSSProperties> = {
     textAlign: 'center',
     padding: 16
   }
+}
+
+/** While a tile's tables are being written to temp in the background (export/tempResults.ts): how
+ *  far along, in facets. Nothing otherwise. */
+function TempJobNote({ k }: { k: string }): ReactNode {
+  const p = useTempJobs((s) => s.progress[k])
+  if (!p) return null
+  return (
+    <div style={styles.tempNote}>
+      Saving tables to temp… {p.done}/{p.total}
+    </div>
+  )
 }

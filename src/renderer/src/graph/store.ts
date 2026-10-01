@@ -21,7 +21,6 @@ import {
 import {
   applyThreshold,
   combineStandardize,
-  outputScale,
   presentStd,
   crossPairs,
   condsIn,
@@ -483,6 +482,9 @@ const writeScope = (s: GraphState): string | undefined => {
   const folder = activeFolder(s)
   return folder && folder.workflows.length > 1 ? readScope(s) : undefined
 }
+/** Where a generated temp file goes for the current workflow — for writers outside the store (the
+ *  background export of plot tables, export/tempResults.ts). */
+export const tempWriteScope = (s: GraphState): string | undefined => writeScope(s)
 
 /** Union of every HIDDEN geneset's gene uniqIDs — the project-wide significance mask. */
 const hiddenGeneIds = (s: GraphState): Set<string> => {
@@ -925,25 +927,16 @@ export const useGraph = create<GraphState>()((set, get) => ({
     if (!node || !isStep(node) || node.data.kind !== 'standardize') return
     const cfg = node.data.config as StandardizeConfig
     get().commit()
-    set((s) => {
-      const r = s.results[id]
-      const results =
-        r?.kind === 'standardize' && r.std.inputScale
-          ? {
-              ...s.results,
-              [id]: { ...r, std: { ...r.std, scale: outputScale(logTransform, r.std.inputScale) } }
-            }
-          : s.results
-      return {
-        nodes: s.nodes.map((n) =>
-          n.id === id && isStep(n)
-            ? { ...n, data: { ...n.data, config: { ...cfg, logTransform } as NodeConfig } }
-            : n
-        ),
-        results,
-        dirty: true
-      }
-    })
+    // Config only: the result is left exactly as it is — the scale is read from this choice where
+    // the table is drawn (presentScaleOf), so nothing built from the result rebuilds.
+    set((s) => ({
+      nodes: s.nodes.map((n) =>
+        n.id === id && isStep(n)
+          ? { ...n, data: { ...n.data, config: { ...cfg, logTransform } as NodeConfig } }
+          : n
+      ),
+      dirty: true
+    }))
   },
   setCompareThreshold: (id, partial) => {
     const node = get().nodes.find((n) => n.id === id)

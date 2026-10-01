@@ -11,6 +11,8 @@
  */
 import Papa from 'papaparse'
 
+import { groupMembers } from './accession'
+
 const BOM = /^\uFEFF/
 
 /** Default annotation columns to exclude from the sample guess (id + gene/description +
@@ -425,7 +427,8 @@ export function buildStandardInputs(
     /** per-column row filters, keyed by matrix header (only `filter`-role columns apply) */
     filters?: Record<string, FilterSpec>
     /** fetched external annotations to append to the DB, keyed by the uniqID (trimmed ID value):
-     *  `fields` are the extra column names, `byId[uniqID][field]` the value. `taxon` (if set) is
+     *  `fields` are the extra column names, `byId[accession][field]` the value — per protein, a
+     *  group's members each keyed by their canonical accession (accession.ts). `taxon` (if set) is
      *  written as a hidden per-row `taxon` DB column so the STRING plot can learn the species. */
     annotations?: { fields: string[]; byId: Record<string, Record<string, string>>; taxon?: number }
     /** custom condition names the user defined, in display order */
@@ -460,25 +463,37 @@ export function buildStandardInputs(
   })
   const dataText = Papa.unparse(dataRows, { columns: ['uniqID', ...sampleCols] })
 
-  // db: uniqID + gene (from the label column) + the other metadata columns + fetched annotations.
+  // db: uniqID + gene (from the label column) + the other metadata columns + fetched annotations,
+  // ONE ROW PER PROTEIN, keyed by its canonical accession — a protein group's ID names several
+  // (accession.ts) and each gets its own row, with its own gene name, annotation and STRING id. A
+  // protein named by two groups is written once. Clean data matches a group back to its members'
+  // rows and reads it as one feature carrying their union. Metadata columns are the feature row's
+  // own (group-level) values.
   // The dataset species (taxon) rides along as a hidden per-row column when known.
   const annFields = spec.annotations?.fields ?? []
   const annById = spec.annotations?.byId ?? {}
   const annTaxon = spec.annotations?.taxon
   const dbCols = ['uniqID', 'gene', ...metaCols, ...annFields, ...(annTaxon ? ['taxon'] : [])]
-  const dbRows = rows.map((r) => {
-    const uniqID = (r[idCol] ?? '').trim()
-    const ann = annById[uniqID]
+  const written = new Set<string>()
+  const dbRows: Row[] = []
+  for (const r of rows) {
+    const id = (r[idCol] ?? '').trim()
     // Display name (DB `gene`) priority: the user's Name column value, else — when no Name column
-    // was assigned, or the cell is blank — the UniProt-fetched gene name (annotation `geneName`).
+    // was assigned, or the cell is blank — the protein's UniProt-fetched gene name (`geneName`).
     // Still empty ⇒ ingest falls back to locus_tag, then the ID.
     const labelVal = labelCol ? (r[labelCol] ?? '').trim() : ''
-    const out: Row = { uniqID, gene: labelVal || (ann?.geneName ?? '').trim() }
-    for (const c of metaCols) out[c] = (r[c] ?? '').trim()
-    for (const f of annFields) out[f] = ann?.[f] ?? ''
-    if (annTaxon) out.taxon = String(annTaxon)
-    return out
-  })
+    const members = groupMembers(id)
+    for (const uniqID of members.length ? members : [id]) {
+      if (!uniqID || written.has(uniqID)) continue
+      written.add(uniqID)
+      const ann = annById[uniqID]
+      const out: Row = { uniqID, gene: labelVal || (ann?.geneName ?? '').trim() }
+      for (const c of metaCols) out[c] = (r[c] ?? '').trim()
+      for (const f of annFields) out[f] = ann?.[f] ?? ''
+      if (annTaxon) out.taxon = String(annTaxon)
+      dbRows.push(out)
+    }
+  }
   const dbText = Papa.unparse(dbRows, { columns: dbCols })
 
   // samplesheet: sample (raw header) + conditions.

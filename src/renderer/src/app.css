@@ -116,6 +116,12 @@
   background-clip: padding-box;
 }
 
+/* A table viewport with a sticky header row: the vertical track starts below the header (its
+   height in --head-h), so the scrollbar spans only the rows it scrolls. */
+.oe-headscroll::-webkit-scrollbar-track:vertical {
+  margin-top: var(--head-h, 0px);
+}
+
 /* The form workflow's details column before its window can open: the reason, centred. */
 .oe-dock:empty::before {
   content: attr(data-empty);

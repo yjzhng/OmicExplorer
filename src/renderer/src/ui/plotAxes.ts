@@ -252,3 +252,12 @@ export function applyPlotAxes(
   }
   return out
 }
+
+/** Longest gene label shown on a plot's axis or legend before it's cut short. */
+export const LABEL_MAX = 20
+/** A label capped at `max` characters, the rest replaced by "…" — for gene names on an axis or in
+ *  a legend, where one long name (a protein group's joined genes, a long description) would crowd
+ *  out the plot. The full name stays in the hover. */
+export function truncateLabel(label: string, max = LABEL_MAX): string {
+  return label.length > max ? `${label.slice(0, max - 1).trimEnd()}…` : label
+}

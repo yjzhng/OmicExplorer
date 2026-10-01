@@ -2,6 +2,7 @@ import { useMemo } from 'react'
 
 import type { DRData, DRSeries } from '../engine'
 import { PlotlyChart } from './PlotlyChart'
+import { truncateLabel } from './plotAxes'
 import { divergeColor } from './colormap'
 import { axisBase, CATEGORICAL, PALETTES, plotBase } from './theme'
 import { useSelection } from './useSelection'
@@ -81,7 +82,8 @@ export function DRView({ dr, title }: { dr: DRData; title?: string }) {
     const line = (s: DRSeries, color: string, width: number, showlegend = true) => ({
       type: 'scatter',
       mode: 'lines',
-      name: s.label,
+      // The legend name is capped in length; the hover keeps the full one.
+      name: truncateLabel(s.label),
       x: s.points.map((pt) => String(pt.x)),
       y: s.points.map((pt) => pt.y),
       customdata: s.points.map(() => s.uniqID),

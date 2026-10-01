@@ -147,16 +147,20 @@ export function ScatterView({
       )
     }
 
-    // One shared square spanning both axes and the origin (looped rather than spread —
-    // these arrays run to thousands of genes). A little padding keeps extreme points off
-    // the border.
+    // One shared square spanning both axes (looped rather than spread — these arrays run to
+    // thousands of genes), so the line of identity runs corner to corner. Fold changes keep the
+    // origin in range — (0,0) is "no change on either side"; abundances fit the data, since
+    // 0 there would only push the cloud into a corner. A little padding keeps extreme points
+    // off the border.
     const all = scatter.points
-    let lo0 = 0
-    let hi0 = 0
+    const fc = scatter.valueKind !== 'abundance'
+    let lo0 = fc ? 0 : Infinity
+    let hi0 = fc ? 0 : -Infinity
     for (const pt of all) {
       lo0 = Math.min(lo0, pt.x, pt.y)
       hi0 = Math.max(hi0, pt.x, pt.y)
     }
+    if (!Number.isFinite(lo0) || !Number.isFinite(hi0)) lo0 = hi0 = 0
     const pad = (hi0 - lo0) * 0.03 || 0.5
     const lo = lo0 - pad
     const hi = hi0 + pad
@@ -232,8 +236,8 @@ export function ScatterView({
       title: title ? { text: title, font: { size: 13 } } : undefined,
       // The builder owns the axis text — a contrast scatter reads "log₂FC · <side>",
       // a value scatter "log₁₀ <level>".
-      // Both axes share one range that always spans the origin, so the square is
-      // symmetric and the line of identity runs corner-to-corner through (0,0).
+      // Both axes share one range (spanning the origin for fold changes), so the square is
+      // symmetric and the line of identity runs corner-to-corner.
       xaxis: { ...axisBase(p), title: scatter.xLabel, zeroline: false, range: [lo, hi] },
       yaxis: {
         ...axisBase(p),
