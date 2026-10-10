@@ -27,8 +27,11 @@ import {
   type PlotMenuEntry
 } from './registry'
 import {
+  isDataResult,
   isStep,
+  type CompareConfig,
   type EnrichConfig,
+  type GraphNode,
   type NodeKind,
   type NodeResult,
   type StringConfig
@@ -39,6 +42,9 @@ export interface UpstreamFacts {
   kind?: NodeKind
   result?: NodeResult
   axes: AxisAvail
+  /** the upstream is a Compare set to curve fit: one fitted curve per gene, no group means and
+   *  no per-dose rows */
+  curve?: boolean
 }
 /** No upstream wired: nothing can be ruled out. */
 export const UNWIRED: UpstreamFacts = { axes: { dose: true, time: true } }
@@ -61,12 +67,41 @@ export function dominantTaxon(ann: Record<string, Record<string, string>>): numb
   return best
 }
 
+/** A plot built from per-dose rows can't take a curve fit's whole curves. */
+const PER_DOSE =
+  'Needs one result per dose — a curve fit gives one fitted curve per gene (see Dose-response)'
+/** A plot built from the two groups' means can't take a curve fit, which has none. */
+const GROUP_MEANS =
+  'Needs the two groups’ means — a curve fit gives one fitted curve per gene instead'
+
+/** Potency and the fit residuals are a fitted curve's: a t-test or ANOVA has none. */
+const CURVE_ONLY = 'Needs a curve fit — set the Compare’s analysis to Curve fit'
+
 const REQUIREMENTS: Partial<Record<NodeKind, Requirement>> = {
-  dr: (u, cfg) =>
-    needAxis(u, (cfg as { axis?: 'dose' | 'time' })?.axis === 'time' ? 'time' : 'dose'),
+  potency: (u) => (u.kind === 'compare' && u.curve === false ? CURVE_ONLY : null),
+  curveMad: (u) => (u.kind === 'compare' && u.curve === false ? CURVE_ONLY : null),
+  ma: (u) => (u.curve ? GROUP_MEANS : null),
+  // From a Compare it plots mean1 vs mean2; from a Contrast, FC1 vs FC2.
+  scatter: (u) => (u.kind === 'compare' && u.curve ? GROUP_MEANS : null),
+  dr: (u, cfg) => {
+    const axis = (cfg as { axis?: 'dose' | 'time' })?.axis === 'time' ? 'time' : 'dose'
+    // A curve fit's rows are whole curves over the axis (no per-level rows), each naming it.
+    if (u.result?.kind === 'compare' && u.result.cmp.rows.some((r) => r.curve?.axis === axis))
+      return null
+    return needAxis(u, axis)
+  },
   tdr: (u) =>
-    u.axes.dose && u.axes.time ? null : 'Needs both dose and time conditions in the data',
-  bubble: (u) => (u.axes.dose || u.axes.time ? null : 'Needs a dose or time condition in the data'),
+    u.curve
+      ? PER_DOSE
+      : u.axes.dose && u.axes.time
+        ? null
+        : 'Needs both dose and time conditions in the data',
+  bubble: (u) =>
+    u.curve
+      ? PER_DOSE
+      : u.axes.dose || u.axes.time
+        ? null
+        : 'Needs a dose or time condition in the data',
   // Met by ANY term set the genes carry, not just the saved one: the plot falls back through
   // ENRICH_FALLBACK to one they have (resolveEnrichSource), so only no annotations at all blocks it.
   enrich: (u, cfg) => {
@@ -103,13 +138,31 @@ export function upstreamFacts(g: AxisGraph, upstreamId: string | undefined): Ups
   return {
     kind: n && isStep(n) ? n.data.kind : undefined,
     result: g.results[upstreamId],
-    axes: axisAvailFor(g, upstreamId)
+    axes: axisAvailFor(g, upstreamId),
+    curve: isCurveFit(n)
   }
 }
 
 /** Facts from a result alone (no graph walk) — for the results panel, where the result is in hand. */
 export function factsOf(result: NodeResult | undefined): UpstreamFacts {
-  return { kind: result?.kind, result, axes: axisAvailFromResult(result) }
+  // A curve fit's rows all carry their curve, so the first row tells.
+  const curve = result?.kind === 'compare' && result.cmp.rows[0]?.curve != null
+  return {
+    kind: isDataResult(result) ? result.kind : undefined,
+    result,
+    axes: axisAvailFromResult(result),
+    curve
+  }
+}
+
+/** Whether a node is a Compare set to curve fit (by its config, so known before it has run). */
+export function isCurveFit(n: GraphNode | undefined): boolean {
+  return (
+    !!n &&
+    isStep(n) &&
+    n.data.kind === 'compare' &&
+    (n.data.config as CompareConfig).analysis === 'curve_fit'
+  )
 }
 
 /** Drop plot-menu entries whose requirement the upstream can't meet (each entry checked with its

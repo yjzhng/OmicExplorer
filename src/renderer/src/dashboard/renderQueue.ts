@@ -6,28 +6,59 @@
  * one reveal per animation frame instead, so the browser gets to paint and process input
  * between builds — the app stays responsive and tiles pop in progressively.
  *
+ * Two lanes: URGENT reveals (tiles on screen) go first, one per frame; BACKGROUND ones (tiles
+ * scrolled away, or in a tab not on view) only once no urgent one is waiting, one per idle
+ * moment — so everything gets built eventually, but never ahead of what's being looked at. A
+ * tile that comes into view re-enqueues as urgent (cancelling its background entry).
+ *
  * A build longer than a frame still hitches that one frame (it can't be split here); pacing
  * only stops many builds from concatenating into a single long freeze.
  */
-let queue: Array<() => void> = []
-let running = false
+type Job = () => void
 
-function pump(): void {
-  const job = queue.shift()
-  if (job) job()
-  if (queue.length) requestAnimationFrame(pump)
-  else running = false
+let urgent: Job[] = []
+let background: Job[] = []
+let framePending = false
+let idlePending = false
+
+/** When the main thread is next idle (a short timeout where there's no idle callback). */
+const whenIdle = (cb: () => void): void => {
+  if (typeof window.requestIdleCallback === 'function') window.requestIdleCallback(cb)
+  else window.setTimeout(cb, 50)
 }
 
-/** Enqueue a reveal; it runs on a later animation frame (one per frame). Returns a cancel
- *  function to call if the tile unmounts before its turn. */
-export function enqueueReveal(job: () => void): () => void {
-  queue.push(job)
-  if (!running) {
-    running = true
-    requestAnimationFrame(pump)
+function schedule(): void {
+  if (urgent.length) {
+    if (!framePending) {
+      framePending = true
+      requestAnimationFrame(() => {
+        framePending = false
+        pump()
+      })
+    }
+  } else if (background.length && !idlePending && !framePending) {
+    idlePending = true
+    whenIdle(() => {
+      idlePending = false
+      pump()
+    })
   }
+}
+
+function pump(): void {
+  const job = urgent.shift() ?? background.shift()
+  if (job) job()
+  schedule()
+}
+
+/** Enqueue a reveal; it runs on a later animation frame (one per frame) — or, with `urgent` false,
+ *  once no urgent reveal is waiting and the thread is idle. Returns a cancel function to call if
+ *  the tile unmounts (or re-enqueues) before its turn. */
+export function enqueueReveal(job: Job, isUrgent = true): () => void {
+  ;(isUrgent ? urgent : background).push(job)
+  schedule()
   return () => {
-    queue = queue.filter((j) => j !== job)
+    urgent = urgent.filter((j) => j !== job)
+    background = background.filter((j) => j !== job)
   }
 }

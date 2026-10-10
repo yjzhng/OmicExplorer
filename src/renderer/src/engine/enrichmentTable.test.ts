@@ -1,4 +1,4 @@
-/** Enrichment as a table for the temp export: every facet, every tested term. */
+/** Enrichment as a table for the background table export: every facet, every tested term. */
 import { describe, expect, it } from 'vitest'
 
 import { enrichmentTable } from './plotData'

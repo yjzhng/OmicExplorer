@@ -8,7 +8,9 @@ import {
   type ClusterPoint,
   type ConditionKey
 } from '../engine'
-import { condsOf, planAesthetics } from './clusterPlan'
+import { clusterStyle, type ClusterStyle } from '../graph/types'
+import { AUTO } from './ColorPicker'
+import { condsOf, planAesthetics, type PlanOverrides } from './clusterPlan'
 import { territoryRing, type TerritoryShape } from './territory'
 import { blues, hslHex, reds, rgbHex, shadeHex } from './colormap'
 import { PlotlyChart } from './PlotlyChart'
@@ -39,7 +41,9 @@ export function ClusterView({
   title,
   display = 'replicate',
   territory = 'none',
-  legend = 'simple'
+  legend = 'simple',
+  look = DEFAULT_STYLE,
+  scheme = NO_SCHEME
 }: {
   cluster: ClusterData
   title?: string
@@ -47,6 +51,10 @@ export function ClusterView({
   /** outline the replicates' convex hull, a ~95% Gaussian ellipse, or nothing */
   territory?: Territory
   legend?: Legend
+  /** markers' and arrow trails' look (the tile's settings; see ClusterStyle) */
+  look?: ClusterStyle
+  /** complex legend: the user's colour / shade / arrow choices (unset = automatic) */
+  scheme?: PlanOverrides
 }) {
   const mode = useUiTheme((s) => s.mode)
 
@@ -70,7 +78,7 @@ export function ClusterView({
 
     // ── Complex legend: aesthetics driven by every varying condition ──────────────
     if (legend === 'complex') {
-      const complex = buildComplex(cluster, display, p, hover, territory)
+      const complex = buildComplex(cluster, display, p, hover, territory, look, scheme)
       if (complex) {
         lay.legend = complex.legend
         if (complex.annotations.length) lay.annotations = complex.annotations
@@ -116,11 +124,13 @@ export function ClusterView({
     for (const [g, pts] of groupEntries) {
       const color = colorOf(g, i)
       const name = g || '(none)'
-      traces.push(...condGroupTraces(pts, color, name, display, p, hover, true, true, territory))
+      traces.push(
+        ...condGroupTraces(pts, color, name, display, p, hover, look, true, true, territory)
+      )
       i++
     }
     return { data: territoriesBehind(traces), layout: lay }
-  }, [cluster, title, display, territory, legend, mode])
+  }, [cluster, title, display, territory, legend, mode, look, scheme])
 
   return <PlotlyChart data={data} layout={layout} />
 }
@@ -142,6 +152,7 @@ function condGroupTraces(
   display: Mode,
   p: (typeof PALETTES)[keyof typeof PALETTES],
   hover: string,
+  look: ClusterStyle,
   showlegend = true,
   showMarkers = true,
   territory: Territory = 'none'
@@ -201,7 +212,12 @@ function condGroupTraces(
       y: cy,
       text: labels,
       hovertemplate: hover,
-      marker: { color, size: 13, opacity: 0.95, line: { color: p.panel, width: 1.5 } }
+      marker: {
+        color,
+        size: look.centroidSize,
+        opacity: look.centroidOpacity,
+        line: { color: outlineInk(look, p), width: look.outlineWidth ?? 1.5 }
+      }
     })
     return out
   }
@@ -216,10 +232,21 @@ function condGroupTraces(
     y: pts.map((pt) => pt.y),
     text: pts.map((pt) => pt.sample),
     hovertemplate: hover,
-    marker: { color, size: 8, opacity: 0.9 }
+    marker: {
+      color,
+      size: look.markerSize,
+      opacity: look.markerOpacity,
+      line: { color: outlineInk(look, p), width: look.outlineWidth ?? 0 }
+    }
   })
   return out
 }
+
+/** The markers' outline colour: the one set, else the panel's (so a dot reads against its fill). */
+const outlineInk = (look: ClusterStyle, p: (typeof PALETTES)[keyof typeof PALETTES]): string =>
+  look.outlineColor !== AUTO ? look.outlineColor : p.panel
+const DEFAULT_STYLE = clusterStyle({})
+const NO_SCHEME: PlanOverrides = {}
 
 interface ComplexBuild {
   traces: Array<Record<string, unknown>>
@@ -234,7 +261,9 @@ function buildComplex(
   display: Mode,
   p: (typeof PALETTES)[keyof typeof PALETTES],
   hover: string,
-  territory: Territory
+  territory: Territory,
+  look: ClusterStyle,
+  scheme: PlanOverrides
 ): ComplexBuild | null {
   // Distinct conditions (replicates of a condition share meta), in first-seen order.
   const condOrder: string[] = []
@@ -260,7 +289,8 @@ function buildComplex(
     return s
   }
   const varying = new Set<ConditionKey>(conds.filter((c) => distinct(c).size > 1))
-  const plan = planAesthetics(varying, conds)
+  // The user's channel choices; arrows switched off take the arrow channel away entirely.
+  const plan = planAesthetics(varying, conds, look.arrows ? scheme : { ...scheme, arrow: 'none' })
   if (!plan.grouped && !plan.colorKey) return null // nothing varies → let simple mode handle it
 
   const sortedVals = (c: ConditionKey, numeric: boolean): string[] => {
@@ -354,9 +384,9 @@ function buildComplex(
 
   // Data traces (no legend — the legend comes from dedicated swatch traces below so the
   // per-shade colours don't each spawn an entry).
-  // When arrows are on, they carry the connection between conditions — hide the dots so the
-  // trail reads cleanly.
-  const arrowMode = !!plan.arrowKey
+  // When arrows are on, they carry the connection between conditions — the dots are hidden so the
+  // trail reads cleanly, unless they're set to stay under it.
+  const arrowMode = !!plan.arrowKey && !look.markersUnderArrows
   const dataTraces: Array<Record<string, unknown>> = []
   const legendReps = new Map<string, { color: string; sort: number }>()
   for (const cond of condOrder) {
@@ -365,7 +395,18 @@ function buildComplex(
     const gname = groupName(m)
     if (!legendReps.has(gname)) legendReps.set(gname, { color: baseColor(m), sort: groupSort(m) })
     dataTraces.push(
-      ...condGroupTraces(pts, finalColor(m), gname, display, p, hover, false, !arrowMode, territory)
+      ...condGroupTraces(
+        pts,
+        finalColor(m),
+        gname,
+        display,
+        p,
+        hover,
+        look,
+        false,
+        !arrowMode,
+        territory
+      )
     )
   }
   // Territories behind the markers; the legend swatches and arrows below go on top of both.
@@ -425,7 +466,7 @@ function buildComplex(
         hoverinfo: 'skip',
         x: line.map((q) => q[0]),
         y: line.map((q) => q[1]),
-        line: { color: rgba(col, 0.85), width: 2 }
+        line: { color: rgba(col, look.trailOpacity), width: look.trailWidth }
       })
       for (let k = 0; k < sorted.length - 1; k++) {
         const [ax, ay] = centroid(sorted[k])
@@ -445,9 +486,9 @@ function buildComplex(
           ayref: 'y',
           showarrow: true,
           arrowhead: 2, // simple solid (filled) triangle
-          arrowsize: 1,
-          arrowwidth: 2,
-          arrowcolor: rgba(col, 0.85),
+          arrowsize: look.arrowSize,
+          arrowwidth: look.trailWidth,
+          arrowcolor: rgba(col, look.trailOpacity),
           standoff: 0,
           startstandoff: 0
         })

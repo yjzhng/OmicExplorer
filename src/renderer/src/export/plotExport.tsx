@@ -20,7 +20,7 @@ import { PALETTES } from '../ui/theme'
 import { useSelection } from '../ui/useSelection'
 import { useUiTheme } from '../ui/useUiTheme'
 import { planPlotJobs } from './facets'
-import { buildFolderMap, exportPath } from './paths'
+import { exportPath } from './paths'
 import { collectSpecs, type ExportSpec } from './specs'
 import { collectTableExports } from './tables'
 
@@ -438,11 +438,11 @@ export async function runExport(
   const jobs = planPlotJobs(specs, edges, results)
   const total = jobs.length + tables.length
 
-  // Each analysis gets a unique folder even when two share a label (e.g. two "clpP | WT").
-  const folder = buildFolderMap([
-    ...specs.map((s) => ({ rootId: s.rootId, analysis: s.analysis })),
-    ...tables.map((t) => ({ rootId: t.key, analysis: t.analysis }))
-  ])
+  // One folder per processing step, named after it — the same output/ subfolders the tiles'
+  // downloads use (graph/diskNames.ts); names are unique within the workflow.
+  const rootIds = [...new Set([...specs.map((s) => s.rootId), ...tables.map((t) => t.key)])]
+  const names = useGraph.getState().outputLayoutFor(rootIds)?.names ?? {}
+  const folder = new Map(rootIds.map((id) => [id, names[id] ?? id]))
 
   const errors: string[] = []
   let written = 0

@@ -434,7 +434,18 @@ export function adjustPValues(pvals: number[], method: FdrMethod): number[] {
 // ── thresholding ───────────────────────────────────────────────────────────────
 
 export interface ThresholdConfig {
-  type: 'linear' | 'non-linear'
+  /** 'curvecurator' (curve fits only): CurveCurator's relevance score — FC limits from fcHigh /
+   *  fcLow, alpha from statMin, on raw p; called per row from its curve (see classifyCompareRow). */
+  type: 'linear' | 'non-linear' | 'curvecurator' | 'sam_fdr'
+  /** curvecurator only: call by its alpha cutoff on the relevance score ('alpha', default), or by
+   *  the target–decoy q-value within a target FDR ('fdr') — alpha then only shapes the score (s0) */
+  ccCallBy?: 'alpha' | 'fdr'
+  /** curvecurator called by FDR: the target, as −log₁₀ q (absent = 0.05) */
+  ccQMin?: number
+  /** sam_fdr only: SAM's fudge factor s0, added to every gene's standard error (absent = 0.1) */
+  samS0?: number
+  /** sam_fdr only: label shuffles for the permutation FDR (absent = 250) */
+  permutations?: number
   fcLow: number
   fcHigh: number
   statMin: number
@@ -467,6 +478,13 @@ export const snapStatMin = (statMin: number): number =>
 export const fdrMethodOf = (t: ThresholdConfig): FdrMethod =>
   t.statType === 'pP' ? 'none' : (t.fdrMethod ?? 'bh')
 
+/** CurveCurator called by FDR: the default target (q ≤ 0.05), as −log₁₀ q. */
+export const CC_Q_MIN = -Math.log10(0.05)
+
+/** SAM's defaults (Perseus): fudge factor s0 and the number of label shuffles. */
+export const SAM_S0 = 0.1
+export const SAM_PERMUTATIONS = 250
+
 /** Default significance cutoff in linear scale; the stored −log10 form is derived from it. */
 export const DEFAULT_P_CUTOFF = 0.05
 
@@ -491,6 +509,17 @@ function pyFloat(x: number): string {
 export function thresholdLabel(cfg: ThresholdConfig): string {
   const m = fdrMethodOf(cfg)
   const sc = m === 'none' ? 'pP' : m === 'bh' ? 'pQ' : `pQ[${m}]`
+  if (cfg.type === 'sam_fdr') {
+    return `SAM permutation FDR ≤ ${roundP(Math.pow(10, -cfg.statMin))}, s0=${pyFloat(cfg.samS0 ?? SAM_S0)}, ${cfg.permutations ?? SAM_PERMUTATIONS} permutations`
+  }
+  if (cfg.type === 'curvecurator') {
+    const down = cfg.fcLow !== -cfg.fcHigh ? `, FC_lim_down=${pyFloat(-cfg.fcLow)}` : ''
+    const by =
+      cfg.ccCallBy === 'fdr'
+        ? `decoy FDR ≤ ${roundP(Math.pow(10, -(cfg.ccQMin ?? CC_Q_MIN)))}`
+        : `α=${roundP(Math.pow(10, -cfg.statMin))}`
+    return `CurveCurator relevance score, ${by}, FC_lim=${pyFloat(cfg.fcHigh)}${down}`
+  }
   if (cfg.type === 'linear') {
     return `linear, log2FC ∉ (${pyFloat(cfg.fcLow)}, ${pyFloat(cfg.fcHigh)}) and ${sc} > ${pyFloat(cfg.statMin)}`
   }
@@ -506,12 +535,21 @@ export type Effect = 'up' | 'down' | 'none'
 export interface ThresholdCall {
   signf: boolean
   effect: Effect
+  /** curve fit only: the final model (see CompareResultRow.model) */
+  model?: '4PL' | 'M0'
 }
 
 /** Apply linear or SAM-curve thresholding to one row. `stat` is pP or pQ per config. */
 export function applyThreshold(log2FC: number, stat: number, cfg: ThresholdConfig): ThresholdCall {
   let signf = false
-  if (Number.isFinite(log2FC) && Number.isFinite(stat)) {
+  // CurveCurator's boundary needs the curve's own F and point count: see classifyCompareRow.
+  // SAM's calls are its permutation q-values: see classifyCompareRow.
+  if (
+    Number.isFinite(log2FC) &&
+    Number.isFinite(stat) &&
+    cfg.type !== 'curvecurator' &&
+    cfg.type !== 'sam_fdr'
+  ) {
     if (cfg.type === 'linear') {
       signf = (log2FC < cfg.fcLow || log2FC > cfg.fcHigh) && stat >= cfg.statMin
     } else {

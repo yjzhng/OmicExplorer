@@ -15,18 +15,22 @@ import {
   previewCompare,
   previewContrastPair,
   previewTwoWay,
+  analysisUnmet,
   condLabel,
   condsIn,
   condValue,
+  type DataShape,
   orderConds,
+  isNumericCond,
   type CondSelector,
   type ConditionKey,
   type PairFix,
+  type ThresholdConfig,
   type StandardRow
 } from '../engine'
 import { DOCKED_CARD, DOCKED_WRAP, useDialogDock } from './dialogDock'
 import { useGraph } from './store'
-import type { ContrastConfig } from './types'
+import { thresholdForAnalysis, type ContrastConfig } from './types'
 import { cssVars, PALETTES, UI } from '../ui/theme'
 import { OnOffSwitch, ToggleSwitch } from '../ui/ToggleSwitch'
 import { StatusNote } from '../ui/StatusNote'
@@ -39,9 +43,10 @@ import { useUiTheme } from '../ui/useUiTheme'
 export type SelectVariant = 'compare' | 'contrast'
 export type ContrastSource = 'select' | 'pair'
 
-type Analysis = 'compare' | 'two_way_anova'
+type Analysis = 'compare' | 'two_way_anova' | 'curve_fit'
 
 type Side = 'num' | 'den'
+
 type Combo = Record<ConditionKey, string>
 
 /** Distinct condition-tuples ('' = absent) from the upstream table — the small "sample space"
@@ -143,7 +148,7 @@ function previewContrast(
   const nameA = nameOf(num)
   const nameB = nameOf(den)
   // The '' column is a UI-only "vs" between the two groups (rendered muted by the table).
-  const columns = ['group A', '', 'group B', ...ctx.map(String), 'paired genes']
+  const columns = ['group A', '', 'group B', ...ctx.map(condLabel), 'paired genes']
   const tableRows: string[][] = ctxKeys.slice(0, 50).map((k) => {
     const aSet = aG.get(k)!
     const bSet = bG.get(k)!
@@ -187,6 +192,7 @@ export function ComparisonDialog({
   variant = 'compare',
   rows: rowsProp,
   active: activeProp,
+  shape,
   initial,
   pair,
   onClose
@@ -197,11 +203,15 @@ export function ComparisonDialog({
   rows: StandardRow[]
   /** conditions offered as selectable (Standardize's active set, or those present upstream) */
   active: ConditionKey[]
+  /** compare only: what the data's shape allows (see dataShape) — gates the analysis switch */
+  shape?: DataShape
   initial: {
     num: CondSelector
     den: CondSelector
     match: ConditionKey[]
     analysis?: Analysis
+    /** curve fit only: the numeric condition the curve runs over */
+    curveAxis?: ConditionKey
     /** contrast only: intra-dataset (select; one input) or inter-dataset (pair; two inputs).
      *  Fixed by the tile's wiring; the other pill option shows disabled. */
     source?: ContrastSource
@@ -226,9 +236,14 @@ export function ComparisonDialog({
   const dock = useDialogDock()
   const contrast = variant === 'contrast'
   const [analysis, setAnalysis] = useState<Analysis>(
-    initial.analysis === 'two_way_anova' ? 'two_way_anova' : 'compare'
+    initial.analysis === 'two_way_anova' || initial.analysis === 'curve_fit'
+      ? initial.analysis
+      : 'compare'
   )
   const twoWay = !contrast && analysis === 'two_way_anova'
+  // Curve fit: the num/den model of a t-test, with one numeric condition (dose) as the curve's
+  // x-axis instead of a matched context — each numerator group pools its levels into one curve.
+  const curve = !contrast && analysis === 'curve_fit'
   // Contrast: intra-dataset (select two groups from one input) vs inter-dataset (pair two
   // inputs). One input wired ⇒ intra only; several ⇒ chosen here, local until Apply.
   const inputCount = pair?.length ?? 0
@@ -313,7 +328,24 @@ export function ComparisonDialog({
     return orderConds(ax)
   })
   const ordered = useMemo(() => orderConds(active), [active])
-  const matched = useMemo(() => ordered.filter((c) => !compared.includes(c)), [ordered, compared])
+  // The numeric conditions a curve can run over (not the one being compared).
+  const curveAxes = useMemo(
+    () => ordered.filter((c) => isNumericCond(c) && !compared.includes(c)),
+    [ordered, compared]
+  )
+  const [curvePick, setCurvePick] = useState<ConditionKey | undefined>(initial.curveAxis)
+  const curveAxis = useMemo((): ConditionKey | undefined => {
+    if (!curve) return undefined
+    // Compared on a numeric condition itself (dose > 0 vs dose 0, matched per compound): that
+    // condition is the curve's axis, its 0 the control.
+    if (compared.length === 1 && isNumericCond(compared[0])) return compared[0]
+    if (curvePick && curveAxes.includes(curvePick)) return curvePick
+    return curveAxes.find((c) => c === 'dose') ?? curveAxes[0]
+  }, [curve, compared, curvePick, curveAxes])
+  const matched = useMemo(
+    () => ordered.filter((c) => !compared.includes(c) && c !== curveAxis),
+    [ordered, compared, curveAxis]
+  )
   // Compared values per side; matched values to INCLUDE (absent = every value).
   const [numVals, setNumVals] = useState<CondSelector>(() => {
     const out: CondSelector = {}
@@ -422,12 +454,14 @@ export function ComparisonDialog({
     () =>
       contrast
         ? previewContrast(rows, num, den, match, active, compared)
-        : previewCompare({ rows, num, den, match, activeConditions: active }),
-    [contrast, rows, num, den, match, active, compared]
+        : previewCompare({ rows, num, den, match, activeConditions: active, curveAxis }),
+    [contrast, rows, num, den, match, active, compared, curveAxis]
   )
   // Role-level problems the engine can't see (it only gets selectors).
   const roleWarnings: string[] = []
   if (!twoWay && axis.length === 0) roleWarnings.push('Switch on the condition to be compared.')
+  if (curve && !curveAxis)
+    roleWarnings.push('A curve fit needs a numeric condition (dose or time) to run over.')
   for (const c of axis) {
     if (!(numVals[c]?.length ?? 0))
       roleWarnings.push(`${condLabel(c)}: pick the numerator value(s).`)
@@ -492,6 +526,19 @@ export function ComparisonDialog({
       onClose()
       return
     }
+    // The threshold follows the analysis (see thresholdForAnalysis).
+    const cur = (
+      useGraph.getState().nodes.find((n) => n.id === id)?.data.config as
+        { threshold?: ThresholdConfig } | undefined
+    )?.threshold
+    const next = cur
+      ? thresholdForAnalysis(
+          initial.analysis ?? 'compare',
+          twoWay ? 'two_way_anova' : curve ? 'curve_fit' : 'compare',
+          cur
+        )
+      : null
+    const threshold: { threshold?: ThresholdConfig } = next ? { threshold: next } : {}
     if (twoWay) {
       // Derive the two factors from the compared conditions for the existing two-way run path.
       const [a, b] = axis
@@ -500,6 +547,7 @@ export function ComparisonDialog({
         num,
         den,
         match,
+        ...threshold,
         ...(axis.length === 2
           ? {
               condition: a,
@@ -511,8 +559,10 @@ export function ComparisonDialog({
             }
           : {})
       })
+    } else if (curve) {
+      update(id, { analysis: 'curve_fit', num, den, match, curveAxis, ...threshold })
     } else {
-      update(id, { analysis: 'compare', num, den, match })
+      update(id, { analysis: 'compare', num, den, match, ...threshold })
     }
     onClose()
   }
@@ -558,6 +608,7 @@ export function ComparisonDialog({
   // ── rendering ──────────────────────────────────────────────────────────────────
   const condSwitch = (c: ConditionKey): ReactNode => {
     const on = axis.includes(c)
+    const isCurveAxis = !on && c === curveAxis
     const disabled = !on && axis.length >= maxCompared
     return (
       <OnOffSwitch
@@ -566,13 +617,15 @@ export function ComparisonDialog({
         label={`Compare on ${condLabel(c)}`}
         disabled={disabled}
         title={
-          on
-            ? `${contrast ? 'Contrasted' : 'Compared'} — switch off to use as context`
-            : disabled
-              ? twoWay
-                ? 'Two factors are already chosen'
-                : `A ${contrast ? 'contrast' : 'comparison'} is on one condition — switch the other off first`
-              : `Switch on to ${contrast ? 'contrast' : 'compare'} on this condition`
+          isCurveAxis && !disabled
+            ? 'The curve runs over this condition — switch on to fit its levels against its 0 (the control) instead of a control compound'
+            : on
+              ? `${contrast ? 'Contrasted' : 'Compared'} — switch off to use as context`
+              : disabled
+                ? twoWay
+                  ? 'Two factors are already chosen'
+                  : `A ${contrast ? 'contrast' : 'comparison'} is on one condition — switch the other off first`
+                : `Switch on to ${contrast ? 'contrast' : 'compare'} on this condition`
         }
       />
     )
@@ -645,15 +698,32 @@ export function ComparisonDialog({
             {condLabel(c)}
           </span>
         </div>
-        {on ? (
+        {c === curveAxis && !on ? (
+          // The curve's x-axis: every level above 0 is a dose on it; the control is its baseline.
+          <div style={styles.chips}>
+            <span style={styles.curveTag}>curve axis</span>
+            {curveAxes.length > 1 && (
+              <ToggleSwitch
+                label="Curve axis"
+                value={c}
+                options={curveAxes.map((a) => ({ value: a, label: condLabel(a) }))}
+                onChange={(a) => setCurvePick(a)}
+              />
+            )}
+          </div>
+        ) : on ? (
           <div style={styles.sidePair}>
             <div style={styles.sideCol}>
-              <span style={styles.sideLabel}>{contrast ? 'group A (y-axis)' : 'numerator'}</span>
+              <span style={styles.sideLabel}>
+                {contrast ? 'group A (y-axis)' : curve ? 'treatment' : 'numerator'}
+              </span>
               {sideChips('num', c)}
             </div>
             <span style={styles.vsRule} />
             <div style={styles.sideCol}>
-              <span style={styles.sideLabel}>{contrast ? 'group B (x-axis)' : 'denominator'}</span>
+              <span style={styles.sideLabel}>
+                {contrast ? 'group B (x-axis)' : curve ? 'control' : 'denominator'}
+              </span>
               {sideChips('den', c)}
             </div>
           </div>
@@ -772,14 +842,27 @@ export function ComparisonDialog({
               <ToggleSwitch
                 label="Analysis"
                 value={analysis}
-                options={[
-                  { value: 'compare' as Analysis, label: 't-test' },
-                  { value: 'two_way_anova' as Analysis, label: '2-way ANOVA' }
-                ]}
+                options={(
+                  [
+                    ['compare', 't-test'],
+                    ['two_way_anova', '2-way ANOVA'],
+                    ['curve_fit', 'Curve fit']
+                  ] as const
+                ).map(([value, label]) => {
+                  // An analysis the data's shape can't support is offered greyed, with why.
+                  const why = shape ? analysisUnmet(shape, value) : null
+                  return {
+                    value: value as Analysis,
+                    label,
+                    disabled: !!why,
+                    title: why ?? undefined
+                  }
+                })}
                 onChange={(a) => {
                   setAnalysis(a)
-                  // t-test compares one condition: drop any second factor left from 2-way.
-                  if (a === 'compare') setCompared((p) => p.slice(0, 1))
+                  // A t-test or curve compares one condition: drop any second factor left from
+                  // 2-way.
+                  if (a !== 'two_way_anova') setCompared((p) => p.slice(0, 1))
                 }}
               />
             )}
@@ -858,11 +941,13 @@ export function ComparisonDialog({
                         : contrast
                           ? 'group B'
                           : 'denominator'
-                    const parts: string[] = [
-                      `matched on ${matchedOn.length ? matchedOn.join(', ') : '—'}`
-                    ]
+                    // Nothing to match (the compared condition is the only one that varies, or the
+                    // rest are fixed): say nothing about matching rather than "matched on —".
+                    const parts: string[] = matchedOn.length
+                      ? [`matched on ${matchedOn.map(condLabel).join(', ')}`]
+                      : []
                     if (fixed.length > 0) {
-                      if (twoWay) parts.push(`fixed in ${fixed.join(', ')}`)
+                      if (twoWay) parts.push(`fixed in ${fixed.map(condLabel).join(', ')}`)
                       else {
                         const bySide = new Map<Side | 'both', ConditionKey[]>()
                         for (const c of fixed) {
@@ -875,14 +960,14 @@ export function ComparisonDialog({
                         for (const [s, conds] of bySide)
                           parts.push(
                             s === 'both'
-                              ? `fixed in ${conds.join(', ')}`
-                              : `fixed ${sideName(s)} in ${conds.join(', ')}`
+                              ? `fixed in ${conds.map(condLabel).join(', ')}`
+                              : `fixed ${sideName(s)} in ${conds.map(condLabel).join(', ')}`
                           )
                       }
                     }
                     return (
                       <StatusNote kind="ok" style={styles.matchedLine}>
-                        {parts.join(' · ')}
+                        {parts.length ? parts.join(' · ') : 'no other condition to match on'}
                       </StatusNote>
                     )
                   })()}
@@ -898,12 +983,14 @@ export function ComparisonDialog({
                     {axis.length === 2 && (
                       <div style={styles.previewItem}>
                         <div>
-                          log₂ abundance ~ {axis[0]} + {axis[1]} + {axis[0]} × {axis[1]}
+                          log₂ abundance ~ {condLabel(axis[0])} + {condLabel(axis[1])} +{' '}
+                          {condLabel(axis[0])} × {condLabel(axis[1])}
                         </div>
                         <div style={styles.previewItemNote}>
-                          Welch t-test on the {axis[0]} × {axis[1]} interaction
+                          Welch t-test on the {condLabel(axis[0])} × {condLabel(axis[1])}{' '}
+                          interaction
                           {twoWayView && twoWayView.context.length
-                            ? `, for each ${twoWayView.context.join(' × ')}`
+                            ? `, for each ${twoWayView.context.map(condLabel).join(' × ')}`
                             : ''}
                         </div>
                       </div>
@@ -921,15 +1008,28 @@ export function ComparisonDialog({
                 ) : (
                   <div style={styles.preview}>
                     <div style={styles.previewHead}>
-                      {contrast ? 'Contrast' : 'Comparisons'} ({preview.groups} in total)
+                      {contrast ? 'Contrast' : curve ? 'Curves' : 'Comparisons'} ({preview.groups}{' '}
+                      in total)
                     </div>
-                    {!contrast && axis.length === 1 && (
+                    {curve && axis.length === 1 && curveAxis && (
                       <div style={styles.previewItem}>
-                        <div>log₂ abundance ~ {axis[0]}</div>
+                        <div>ratio to control ~ log-logistic(log₁₀ {condLabel(curveAxis)})</div>
+                        <div style={styles.previewItemNote}>
+                          4-parameter curve vs a flat line, recalibrated F-test (CurveCurator), per
+                          gene
+                          {preview.matched.length
+                            ? `, for each ${preview.matched.map(condLabel).join(' × ')}`
+                            : ''}
+                        </div>
+                      </div>
+                    )}
+                    {!contrast && !curve && axis.length === 1 && (
+                      <div style={styles.previewItem}>
+                        <div>log₂ abundance ~ {condLabel(axis[0])}</div>
                         <div style={styles.previewItemNote}>
                           Welch t-test
                           {preview.matched.length
-                            ? `, for each ${preview.matched.join(' × ')}`
+                            ? `, for each ${preview.matched.map(condLabel).join(' × ')}`
                             : ''}
                         </div>
                       </div>
@@ -979,10 +1079,13 @@ const styles: Record<string, CSSProperties> = {
   ...selectorStyles,
   scrim: { position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', zIndex: 70 },
   modal: {
+    // Centred by auto margins, not translate(−50%): a translate lands on a half pixel whenever the
+    // window's size is odd, and Chromium then renders its scrolled text (the preview tables)
+    // blurry.
     position: 'fixed',
-    top: '50%',
-    left: '50%',
-    transform: 'translate(-50%, -50%)',
+    inset: 0,
+    margin: 'auto',
+    height: 'fit-content',
     width: 640,
     maxWidth: '94vw',
     maxHeight: '88vh',
@@ -1026,6 +1129,7 @@ const styles: Record<string, CSSProperties> = {
   // Included and paired in SOME of the compared contexts, but not all.
 
   valChipDisabled: { opacity: 0.3, cursor: 'not-allowed' },
+  curveTag: { fontSize: 11, color: UI.textMuted, alignSelf: 'center' },
   previewItemNote: { fontFamily: 'inherit', color: UI.textMuted, fontWeight: 400, marginTop: 2 },
   previewItem: {
     fontSize: 12,

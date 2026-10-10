@@ -22,6 +22,8 @@ import type {
   ClusterConfig,
   CorrConfig,
   PlotGroupConfig,
+  PotencyConfig,
+  CurveMadConfig,
   QcConfig,
   ScatterConfig,
   StandardizeConfig,
@@ -38,8 +40,13 @@ export interface NodeSpec {
   category: NodeCategory
   /** upstream operations this op accepts an input from (empty = source node) */
   acceptsFrom: NodeKind[]
-  /** whether the op performs compute via a Run action (vs. loading files / just viewing) */
+  /** whether the op has a Run action: a step computes its data; a plot computes what it needs to
+   *  be viewed (graph/plotRun.ts) — green on the canvas then means ready to view */
   hasRun: boolean
+  /** a runnable op's config change: whether it makes the result stale (it must run again). Unset =
+   *  every change does (the steps). Plots set it — their view settings never do, only a setting
+   *  outside what the run computed. */
+  staleOn?: (next: NodeConfig, prev: NodeConfig, result: NodeResult | undefined) => boolean
   defaultConfig: () => NodeConfig
 }
 
@@ -90,7 +97,6 @@ export const NODE_SPECS: Record<NodeKind, NodeSpec> = {
     defaultConfig: (): CompareConfig => ({
       analysis: 'compare',
       method: 'ttest',
-      transform: true,
       // Fresh tile: nothing declared — the user opens "Configure comparison" to define it.
       num: {},
       den: {},
@@ -126,7 +132,7 @@ export const NODE_SPECS: Record<NodeKind, NodeSpec> = {
     label: 'Volcano',
     category: 'plotting',
     acceptsFrom: ['compare'],
-    hasRun: false,
+    hasRun: true,
     defaultConfig: (): VolcanoConfig => ({ capEnabled: false, labelTop: 20 })
   },
   heatmap: {
@@ -135,8 +141,8 @@ export const NODE_SPECS: Record<NodeKind, NodeSpec> = {
     category: 'plotting',
     // Standardize → intensity heatmap; Compare → log2FC heatmap (same tile, upstream decides).
     acceptsFrom: ['standardize', 'compare'],
-    hasRun: false,
-    defaultConfig: (): HeatmapConfig => ({ capEnabled: false, maxGenes: 50, log10: true })
+    hasRun: true,
+    defaultConfig: (): HeatmapConfig => ({ capEnabled: false, maxGenes: 50 })
   },
   scatter: {
     kind: 'scatter',
@@ -145,7 +151,7 @@ export const NODE_SPECS: Record<NodeKind, NodeSpec> = {
     // Contrast → FC1 vs FC2. Compare → log10 intensity of the two compared groups
     // (mean1 vs mean2), e.g. the basal clpP-vs-WT abundances from a direct comparison.
     acceptsFrom: ['contrast', 'compare'],
-    hasRun: false,
+    hasRun: true,
     defaultConfig: (): ScatterConfig => ({ capEnabled: false, labelTop: 20 })
   },
   ma: {
@@ -153,7 +159,7 @@ export const NODE_SPECS: Record<NodeKind, NodeSpec> = {
     label: 'MA',
     category: 'plotting',
     acceptsFrom: ['compare'],
-    hasRun: false,
+    hasRun: true,
     defaultConfig: (): MAConfig => ({ fcLow: -1, fcHigh: 1 })
   },
   dr: {
@@ -163,15 +169,33 @@ export const NODE_SPECS: Record<NodeKind, NodeSpec> = {
     // From a Compare: every gene's response curve. From a Contrast: the hovered gene's response on
     // BOTH contrasted sides (FC1 vs FC2), for comparing profiles between two datasets/contrasts.
     acceptsFrom: ['compare', 'contrast'],
-    hasRun: false,
+    hasRun: true,
     defaultConfig: (): DRConfig => ({ axis: 'dose', capEnabled: true, topGenes: 10 })
+  },
+  potency: {
+    kind: 'potency',
+    label: 'Potency',
+    category: 'plotting',
+    // A curve fit's pEC50 against its curve fold change (CurveCurator's potency plot).
+    acceptsFrom: ['compare'],
+    hasRun: true,
+    defaultConfig: (): PotencyConfig => ({ show: 'called', capEnabled: false, labelTop: 20 })
+  },
+  curveMad: {
+    kind: 'curveMad',
+    label: 'Residual plots',
+    category: 'plotting',
+    // A curve fit's per-dose residuals from the fits (CurveCurator's MAD analysis).
+    acceptsFrom: ['compare'],
+    hasRun: true,
+    defaultConfig: (): CurveMadConfig => ({})
   },
   bubble: {
     kind: 'bubble',
     label: 'Bubble',
     category: 'plotting',
     acceptsFrom: ['compare'],
-    hasRun: false,
+    hasRun: true,
     defaultConfig: (): BubbleConfig => ({ axis: 'dose', capEnabled: true, topGenes: 20 })
   },
   dumbbell: {
@@ -179,7 +203,7 @@ export const NODE_SPECS: Record<NodeKind, NodeSpec> = {
     label: 'Dumbbell',
     category: 'plotting',
     acceptsFrom: ['contrast'],
-    hasRun: false,
+    hasRun: true,
     defaultConfig: (): DumbbellConfig => ({ capEnabled: true, topGenes: 20 })
   },
   tdr: {
@@ -187,7 +211,7 @@ export const NODE_SPECS: Record<NodeKind, NodeSpec> = {
     label: 'Time & Dose-response',
     category: 'plotting',
     acceptsFrom: ['compare'],
-    hasRun: false,
+    hasRun: true,
     defaultConfig: (): TdrConfig => ({})
   },
   geneBar: {
@@ -195,7 +219,7 @@ export const NODE_SPECS: Record<NodeKind, NodeSpec> = {
     label: 'Bar',
     category: 'plotting',
     acceptsFrom: ['standardize'],
-    hasRun: false,
+    hasRun: true,
     defaultConfig: (): BarConfig => ({})
   },
   pca: {
@@ -205,7 +229,7 @@ export const NODE_SPECS: Record<NodeKind, NodeSpec> = {
     // Sample-level embedding of the clean intensities only; a fold-change "responsome" embedding
     // (Compare-fed) reads differently enough that it isn't offered here.
     acceptsFrom: ['standardize'],
-    hasRun: false,
+    hasRun: true,
     // Defaults chosen to match a standard tool's PCA (e.g. Spectronaut): covariance (no per-gene
     // scaling), complete cases only (no imputation), log2, individual replicates, no per-sample
     // normalization. `display: 'replicate'` shows every data point — the raw scatter is what a PCA
@@ -234,7 +258,7 @@ export const NODE_SPECS: Record<NodeKind, NodeSpec> = {
     label: 'Enrichment',
     category: 'plotting',
     acceptsFrom: ['compare'],
-    hasRun: false,
+    hasRun: true,
     defaultConfig: (): EnrichConfig => ({
       method: 'ora',
       source: 'go',
@@ -247,9 +271,9 @@ export const NODE_SPECS: Record<NodeKind, NodeSpec> = {
     label: 'STRING network',
     category: 'plotting',
     acceptsFrom: ['compare'],
-    hasRun: false,
+    hasRun: true,
+    // No confidence: auto — the highest level that still draws a network.
     defaultConfig: (): StringConfig => ({
-      confidence: 'medium',
       maxGenes: 40,
       addInteractors: false
     })
@@ -259,7 +283,7 @@ export const NODE_SPECS: Record<NodeKind, NodeSpec> = {
     label: 'QC',
     category: 'plotting',
     acceptsFrom: ['standardize'],
-    hasRun: false,
+    hasRun: true,
     defaultConfig: (): QcConfig => ({ metric: 'intensity', plot: 'box' })
   },
   corr: {
@@ -267,7 +291,7 @@ export const NODE_SPECS: Record<NodeKind, NodeSpec> = {
     label: 'Correlation',
     category: 'plotting',
     acceptsFrom: ['standardize'],
-    hasRun: false,
+    hasRun: true,
     defaultConfig: (): CorrConfig => ({ cluster: true })
   },
   table: {
@@ -276,19 +300,35 @@ export const NODE_SPECS: Record<NodeKind, NodeSpec> = {
     category: 'plotting',
     // Shows the upstream step's results table; any processing step can feed it.
     acceptsFrom: ['standardize', 'compare', 'contrast'],
-    hasRun: false,
+    hasRun: true,
     defaultConfig: (): TableConfig => ({})
   },
   plotGroup: {
     kind: 'plotGroup',
-    label: 'Plot group',
+    label: 'Plot',
     category: 'plotting',
     // Union of every plotting op's inputs, so a group can wire from any of them; all its
     // children must be compatible with the single upstream it actually binds to.
     acceptsFrom: ['standardize', 'compare', 'contrast'],
-    hasRun: false,
+    hasRun: true,
     defaultConfig: (): PlotGroupConfig => ({ children: [] })
   }
+}
+
+// A plot's run computes what EVERY setting its tile offers needs (all enrichment methods and term
+// sources, all STRING levels / caps / interactor modes …), so changing a setting only re-renders —
+// its view settings never make the result stale. The exceptions are settings outside what the run
+// covered, below.
+for (const spec of Object.values(NODE_SPECS))
+  if (spec.category === 'plotting' && !spec.staleOn) spec.staleOn = () => false
+// STRING: a species override reads another organism; a gene cap the run didn't cover (a custom one
+// typed in the gear) needs its query read.
+NODE_SPECS.string.staleOn = (next, prev, result) => {
+  const n = next as StringConfig
+  const p = prev as StringConfig
+  if ((n.species ?? 0) !== (p.species ?? 0)) return true
+  const cap = n.maxGenes > 0 ? n.maxGenes : 40
+  return result?.kind === 'string' && !result.caps.includes(cap)
 }
 
 export interface CategorySpec {
@@ -317,6 +357,8 @@ export const CATEGORIES: Record<NodeCategory, CategorySpec> = {
       'scatter',
       'ma',
       'dr',
+      'potency',
+      'curveMad',
       'bubble',
       'dumbbell',
       'tdr',
@@ -339,9 +381,9 @@ export const ADDABLE_CATEGORIES: NodeCategory[] = ['data', 'processing', 'plotti
  *  two stay in sync. Any plotting kind not listed falls into a trailing "Other" section. */
 export const PLOT_SECTIONS: { label: string; kinds: NodeKind[] }[] = [
   { label: 'Data', kinds: ['table'] },
-  { label: 'Global', kinds: ['qc', 'heatmap', 'corr', 'pca', 'geneBar'] },
+  { label: 'Global', kinds: ['qc', 'curveMad', 'heatmap', 'corr', 'pca', 'geneBar'] },
   { label: 'Differential', kinds: ['volcano', 'ma'] },
-  { label: 'Conditions', kinds: ['bubble', 'dr', 'tdr'] },
+  { label: 'Conditions', kinds: ['bubble', 'dr', 'potency', 'tdr'] },
   { label: 'Contrast', kinds: ['scatter', 'dumbbell'] },
   { label: 'Function', kinds: ['enrich', 'string'] }
 ]
@@ -356,6 +398,8 @@ export const ALL_OPS: NodeKind[] = [
   'scatter',
   'ma',
   'dr',
+  'potency',
+  'curveMad',
   'bubble',
   'dumbbell',
   'tdr',
@@ -380,6 +424,8 @@ export const PLOT_CONFIG_KINDS: ReadonlySet<NodeKind> = new Set<NodeKind>([
   'dumbbell',
   'ma',
   'dr',
+  'potency',
+  'curveMad',
   'bubble',
   'tdr',
   'geneBar',

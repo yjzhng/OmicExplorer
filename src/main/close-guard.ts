@@ -3,7 +3,7 @@
  * name); closing the window (or quitting) while dirty asks Save / Don't Save / Cancel. "Save"
  * hands the write back to the renderer (it owns the project state and the save-as dialog) and
  * only closes once that reports success. The same dialog is exposed to the renderer for its own
- * replace-project flows (open another project, new project).
+ * replace-project flows (open another project, new project), alongside the newer-project warning.
  */
 import { BrowserWindow, dialog, ipcMain } from 'electron'
 
@@ -25,6 +25,20 @@ export function registerCloseGuard(): void {
     const win = BrowserWindow.fromWebContents(evt.sender)
     return askSave(win, action)
   })
+  ipcMain.handle(
+    'proj:warnNewer',
+    async (evt, name: string, savedBy: string, current: string): Promise<void> => {
+      const win = BrowserWindow.fromWebContents(evt.sender)
+      const opts: Electron.MessageBoxOptions = {
+        type: 'warning',
+        buttons: ['OK'],
+        noLink: true,
+        message: `“${name}” was created by a newer version of OmicExplorer (v${savedBy}).`,
+        detail: `Current version v${current} is lower. Please update to v${savedBy} or later to avoid potential issues.`
+      }
+      await (win ? dialog.showMessageBox(win, opts) : dialog.showMessageBox(opts))
+    }
+  )
   ipcMain.on('proj:saveResult', (_evt, token: number, ok: boolean) => {
     pendingSaves.get(token)?.(!!ok)
     pendingSaves.delete(token)

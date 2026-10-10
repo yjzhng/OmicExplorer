@@ -1,5 +1,6 @@
-/** One-gene pager shared by the single-gene tiles (TDR, gene bar, contrast DR/TR). The navigable
- *  set is the selected genes present in the data (`genes`, plus any pins not in it); a header
+/** One-gene pager shared by the single-gene tiles (TDR, gene bar, DR/TR). The navigable set is
+ *  `genes` present in the data (the selected genes, or every gene for a DR), plus any pins not
+ *  in it; a header
  *  shows "‹ n/m › gene_name", the arrows step through the set, and the gene-name button opens a
  *  searchable dropdown to jump straight to any gene. A gene hovered in another plot/table
  *  transiently drives the figure (linked selection) without moving the pager. Renders
@@ -7,16 +8,26 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 
+import { Chevron } from '../ui/Chevron'
+import { IconSearch } from '../ui/GeneSelectMenu'
+import { GENE_LIST_STYLES } from '../ui/geneListStyles'
 import { PALETTES, UI } from '../ui/theme'
 import { useSelection } from '../ui/useSelection'
 import { useUiTheme } from '../ui/useUiTheme'
+import { useGeneDescriptions } from './useGeneMenuTabs'
 
 export function GeneSwitch({
   genes,
   present,
   displayMap,
+  aside,
+  lead,
   children
 }: {
+  /** a control at the LEFT of the switcher's row, before the gene (e.g. the tile's view switch) */
+  lead?: ReactNode
+  /** a control at the right end of the switcher's row (e.g. the tile's axis-scale switch) */
+  aside?: ReactNode
   genes: string[]
   /** uniqIDs that actually have data — a hovered/pinned gene only shows if present */
   present: Set<string>
@@ -39,37 +50,55 @@ export function GeneSwitch({
   const hoverActive = hoverId && present.has(hoverId) ? hoverId : null
   const displayed = hoverActive ?? set[safePos] ?? null
 
+  // No gene yet: still show the lead control (a view switch must stay reachable).
   if (!displayed)
-    return <div style={styles.placeholder}>Hover or select a gene to display.</div>
+    return lead ? (
+      <div style={styles.root}>
+        <div className="oe-switch-strip" style={styles.bar}>
+          {lead}
+        </div>
+        <div style={styles.placeholder}>Hover or select a gene to display.</div>
+      </div>
+    ) : (
+      <div style={styles.placeholder}>Hover or select a gene to display.</div>
+    )
 
   const idx = set.indexOf(displayed)
   const many = set.length > 1
   // Step through the set, wrapping within [0, set.length).
   const go = (d: number): void => {
-    if (set.length) setPos((((idx >= 0 ? idx : safePos) + d) % set.length + set.length) % set.length)
+    if (set.length)
+      setPos(((((idx >= 0 ? idx : safePos) + d) % set.length) + set.length) % set.length)
   }
 
   return (
     <div style={styles.root}>
-      <div style={styles.bar}>
+      <div className="oe-switch-strip" style={styles.bar}>
+        {lead && <span style={{ display: 'flex', marginRight: 6 }}>{lead}</span>}
         <button
           onClick={() => go(-1)}
           disabled={!many}
           title="Previous gene"
-          style={{ ...styles.arrow, opacity: many ? 1 : 0.35, cursor: many ? 'pointer' : 'default' }}
+          style={{
+            ...styles.arrow,
+            opacity: many ? 1 : 0.35,
+            cursor: many ? 'pointer' : 'default'
+          }}
         >
-          ‹
+          <Chevron deg={180} size={11} color={UI.text} />
         </button>
-        <span style={styles.pos}>
-          {idx >= 0 ? `${idx + 1}/${set.length}` : `–/${set.length}`}
-        </span>
+        <span style={styles.pos}>{idx >= 0 ? `${idx + 1}/${set.length}` : `–/${set.length}`}</span>
         <button
           onClick={() => go(1)}
           disabled={!many}
           title="Next gene"
-          style={{ ...styles.arrow, opacity: many ? 1 : 0.35, cursor: many ? 'pointer' : 'default' }}
+          style={{
+            ...styles.arrow,
+            opacity: many ? 1 : 0.35,
+            cursor: many ? 'pointer' : 'default'
+          }}
         >
-          ›
+          <Chevron deg={0} size={11} color={UI.text} />
         </button>
         <GenePicker
           set={set}
@@ -80,6 +109,7 @@ export function GeneSwitch({
             if (i >= 0) setPos(i)
           }}
         />
+        {aside && <span style={{ marginLeft: 'auto', display: 'flex' }}>{aside}</span>}
       </div>
       <div style={styles.body}>{children(displayed)}</div>
     </div>
@@ -124,12 +154,18 @@ function GenePicker({
     }
   }, [open])
 
+  // Each gene's protein description, as the nav's gene selector shows it — listed and searched.
+  const descs = useGeneDescriptions()
   const filtered = useMemo(() => {
     const needle = q.trim().toLowerCase()
     return needle
-      ? set.filter((id) => (displayMap[id] ?? id).toLowerCase().includes(needle))
+      ? set.filter(
+          (id) =>
+            (displayMap[id] ?? id).toLowerCase().includes(needle) ||
+            (descs[id]?.toLowerCase().includes(needle) ?? false)
+        )
       : set
-  }, [set, q, displayMap])
+  }, [set, q, displayMap, descs])
 
   const toggle = (): void => {
     if (!open && btnRef.current) setRect(btnRef.current.getBoundingClientRect())
@@ -137,87 +173,93 @@ function GenePicker({
     setOpen((o) => !o)
   }
 
+  const L = GENE_LIST_STYLES
   return (
     <>
       <button
         ref={btnRef}
         onClick={toggle}
         title="Jump to a gene"
+        aria-expanded={open}
         style={{ ...styles.nameBtn, color: UI.text, borderColor: open ? UI.accent : UI.border }}
       >
         <span style={styles.name}>{displayMap[current] ?? current}</span>
-        <span style={{ color: UI.textMuted, fontSize: 9 }}>▾</span>
+        <Chevron deg={open ? -90 : 90} />
       </button>
       {open &&
         rect &&
         createPortal(
+          // The nav's gene selector window: its search field, then gene rows — name, description.
           <div
             ref={menuRef}
             style={{
-              position: 'fixed',
+              ...L.menu,
               left: rect.left,
               top: rect.bottom + 4,
-              minWidth: Math.max(rect.width, 160),
-              maxWidth: 320,
+              width: MENU_W,
+              maxHeight: Math.max(160, window.innerHeight - rect.bottom - 4 - 8),
               zIndex: 5000,
-              background: p.panelAlt,
-              border: `1px solid ${p.border}`,
-              borderRadius: 6,
-              boxShadow: '0 8px 24px rgba(0,0,0,0.45)',
-              display: 'flex',
-              flexDirection: 'column',
-              overflow: 'hidden'
+              background: p.panel,
+              border: `1px solid ${p.border}`
             }}
           >
-            <input
-              autoFocus
-              value={q}
-              onChange={(e) => setQ(e.target.value)}
-              placeholder={`Search ${set.length} gene${set.length === 1 ? '' : 's'}…`}
-              style={{
-                border: 'none',
-                borderBottom: `1px solid ${p.border}`,
-                background: 'transparent',
-                color: p.text,
-                fontSize: 12,
-                padding: '7px 9px',
-                outline: 'none'
-              }}
-            />
-            <div style={{ maxHeight: 240, overflowY: 'auto', padding: 3 }}>
+            <div style={L.searchWrap}>
+              <span style={{ ...L.searchIcon, color: p.textMuted }}>
+                <IconSearch />
+              </span>
+              <input
+                autoFocus
+                value={q}
+                onChange={(e) => setQ(e.target.value)}
+                placeholder={`Search ${set.length.toLocaleString()} gene${set.length === 1 ? '' : 's'}…`}
+                style={{
+                  ...L.search,
+                  paddingLeft: 26,
+                  background: p.panelAlt,
+                  color: p.text,
+                  border: `1px solid ${p.border}`
+                }}
+              />
+            </div>
+            <div
+              style={{ overflowY: 'auto', minHeight: 0, display: 'flex', flexDirection: 'column' }}
+            >
               {filtered.length === 0 ? (
-                <div style={{ color: p.textMuted, fontSize: 11, padding: '8px 9px' }}>No match.</div>
+                <div style={{ ...L.more, paddingLeft: 6, color: p.textMuted }}>No match.</div>
               ) : (
-                filtered.map((id) => {
+                filtered.slice(0, LIST_CAP).map((id) => {
                   const on = id === current
+                  const desc = descs[id]
                   return (
-                    <button
+                    <div
                       key={id}
+                      role="button"
                       onClick={() => {
                         onPick(id)
                         setOpen(false)
                       }}
                       style={{
-                        display: 'block',
-                        width: '100%',
-                        textAlign: 'left',
-                        border: 'none',
-                        borderRadius: 4,
-                        background: on ? UI.accent : 'transparent',
-                        color: on ? UI.accentText : p.text,
-                        fontSize: 12,
-                        fontWeight: on ? 700 : 500,
-                        padding: '5px 8px',
-                        cursor: 'pointer',
-                        whiteSpace: 'nowrap',
-                        overflow: 'hidden',
-                        textOverflow: 'ellipsis'
+                        ...L.geneRow,
+                        paddingLeft: 6,
+                        color: p.text,
+                        fontWeight: on ? 700 : undefined,
+                        ...(on ? { background: `${p.accent}22` } : {})
                       }}
                     >
-                      {displayMap[id] ?? id}
-                    </button>
+                      <span style={L.geneName}>{displayMap[id] ?? id}</span>
+                      {desc && (
+                        <span style={{ ...L.geneDesc, color: p.textMuted }} title={desc}>
+                          {desc}
+                        </span>
+                      )}
+                    </div>
                   )
                 })
+              )}
+              {filtered.length > LIST_CAP && (
+                <div style={{ ...L.more, paddingLeft: 6, color: p.textMuted }}>
+                  +{(filtered.length - LIST_CAP).toLocaleString()} more — refine search
+                </div>
               )}
             </div>
           </div>,
@@ -227,6 +269,12 @@ function GenePicker({
   )
 }
 
+/** The dropdown's width — room for a gene's name and its description, as the nav's menu. */
+const MENU_W = 340
+
+/** Rows the gene dropdown renders at once — the set can be every gene in the data. */
+const LIST_CAP = 300
+
 const styles: Record<string, CSSProperties> = {
   root: { height: '100%', display: 'flex', flexDirection: 'column', minHeight: 0 },
   bar: {
@@ -234,19 +282,14 @@ const styles: Record<string, CSSProperties> = {
     alignItems: 'center',
     gap: 6,
     padding: '5px 10px',
-    borderBottom: `1px solid ${UI.border}`,
     flex: '0 0 auto'
   },
+  // A bare chevron (no chip): the pager reads "‹ n/m ›".
   arrow: {
     background: 'transparent',
-    color: UI.text,
-    border: `1px solid ${UI.border}`,
-    borderRadius: 5,
-    width: 20,
+    border: 'none',
+    width: 16,
     height: 20,
-    lineHeight: 1,
-    fontSize: 15,
-    fontWeight: 700,
     display: 'inline-flex',
     alignItems: 'center',
     justifyContent: 'center',

@@ -18,6 +18,36 @@ export interface OpenFileOptions {
  * Window / aspect-ratio switching is intentionally NOT here: it's a dev tool in the
  * main-process menu (see src/main/dev-menu.ts), so it stays out of your app UI.
  */
+/** Where a workflow's generated files live: its folder (`base`, absolute), plus the workflow name
+ *  whose older `<data folder>/<name>` subfolder is still read from. A bare string is the older
+ *  form (a workflow name nested under the data folder). */
+export type WorkflowScope = string | { base: string; legacy?: string }
+
+/** One folder move a project save applies (see main/data-layout.ts). */
+export interface DirOp {
+  from: string
+  to: string
+  mode: 'rename' | 'move' | 'copy'
+  unique?: boolean
+}
+export interface DirOpResult {
+  from: string
+  to: string
+  ok: boolean
+  skipped?: boolean
+  error?: string
+}
+
+/** One entry of a folder listing (see fs:listDir). */
+export interface DirEntry {
+  name: string
+  path: string
+  dir: boolean
+  size: number
+  /** last-modified time, epoch ms */
+  mtime: number
+}
+
 export interface WorkflowEntry {
   name: string
   path: string
@@ -70,16 +100,13 @@ const api = {
   /** Read a file under <dir>/input (null if missing). */
   readInputFile: (dir: string, name: string): Promise<string | null> =>
     ipcRenderer.invoke('wf:readInput', dir, name),
-  /** Write a file under <dir>/[scope/]input (scope = the per-workflow subfolder, when nesting). */
-  writeInputFile: (dir: string, name: string, content: string, scope?: string): Promise<void> =>
-    ipcRenderer.invoke('wf:writeInput', dir, name, content, scope),
-  /** Write processed data under <dir>/[scope/]temp. */
-  writeTempFile: (dir: string, name: string, content: string, scope?: string): Promise<void> =>
-    ipcRenderer.invoke('wf:writeTemp', dir, name, content, scope),
-  /** A generated file back from temp/ (under the workflow subfolder when `scope` is set); null
-   *  when it isn't there. */
-  readTempFile: (dir: string, name: string, scope?: string): Promise<string | null> =>
-    ipcRenderer.invoke('wf:readTemp', dir, name, scope),
+  /** Write a file under the workflow folder's input/ (`scope`), else <dir>/input. */
+  writeInputFile: (
+    dir: string,
+    name: string,
+    content: string,
+    scope?: WorkflowScope
+  ): Promise<void> => ipcRenderer.invoke('wf:writeInput', dir, name, content, scope),
 
   // ── projects (.omicexplorer) ─────────────────────────────────────────────────
   /** Open a project via native picker; returns its path + JSON text (null if cancelled). */
@@ -87,8 +114,16 @@ const api = {
     ipcRenderer.invoke('proj:open'),
   /** Read a project file's text by path. */
   readProject: (path: string): Promise<string> => ipcRenderer.invoke('proj:read', path),
-  /** Write a project file. */
-  saveProject: (path: string, content: string): Promise<void> =>
+  /** Park an inactive workflow's packed results on disk (its JSON text, in pieces). */
+  parkWrite: (key: string, pieces: string[]): Promise<void> =>
+    ipcRenderer.invoke('park:write', key, pieces),
+  /** Read parked results back (their JSON text). */
+  parkRead: (key: string): Promise<string> => ipcRenderer.invoke('park:read', key),
+  /** Forget parked results. */
+  parkDrop: (key: string): Promise<void> => ipcRenderer.invoke('park:drop', key),
+  /** Write a project file — its text whole, or in pieces written one after another; a
+   *  `{ park }` piece is that parked workflow's results, copied in from its park file. */
+  saveProject: (path: string, content: string | Array<string | { park: string }>): Promise<void> =>
     ipcRenderer.invoke('proj:save', path, content),
   /** Native save-as dialog; returns the chosen .omicexplorer path (null if cancelled). */
   pickProjectSavePath: (suggestedName?: string): Promise<string | null> =>
@@ -107,6 +142,10 @@ const api = {
   /** Native Save / Don't Save / Cancel prompt; `action` completes "before …?" (e.g. "closing"). */
   askSaveChanges: (action: string): Promise<'save' | 'discard' | 'cancel'> =>
     ipcRenderer.invoke('proj:askSave', action),
+  /** Native warning that the project was saved by a newer app version (`savedBy`) and may not
+   *  work right in this one (`current`); resolves once dismissed. */
+  warnNewerProject: (name: string, savedBy: string, current: string): Promise<void> =>
+    ipcRenderer.invoke('proj:warnNewer', name, savedBy, current),
   /** Main asks the renderer to save (on close → Save). The handler resolves true once written,
    *  false if it couldn't (save-as cancelled). Returns an unsubscribe. */
   onSaveRequest: (handler: () => Promise<boolean>): (() => void) => {
@@ -122,12 +161,28 @@ const api = {
   /** Whether a path exists on disk (`dir` = exists and is a directory). */
   pathExists: (p: string): Promise<{ exists: boolean; dir: boolean }> =>
     ipcRenderer.invoke('fs:exists', p),
-  /** List input files (csv/tsv/txt) directly under a data folder. */
-  listDataFiles: (dir: string): Promise<string[]> => ipcRenderer.invoke('data:list', dir),
+  /** This app run's scratch folder, where an unsaved project's files go until its first save. */
+  scratchDir: (): Promise<string> => ipcRenderer.invoke('layout:scratchDir'),
+  /** Apply a save's folder moves in order (renames, scratch → data folder, Save-as copies). */
+  applyDirOps: (ops: DirOp[]): Promise<DirOpResult[]> =>
+    ipcRenderer.invoke('layout:applyDirOps', ops),
+  /** One level of a folder for the project-folder viewer: folders first, dotfiles hidden. */
+  listDir: (dir: string): Promise<DirEntry[]> => ipcRenderer.invoke('fs:listDir', dir),
+  /** Select a file or folder in the OS file manager. */
+  revealPath: (p: string): Promise<void> => ipcRenderer.invoke('fs:reveal', p),
+  /** Open a file in its default app; resolves to an error message, or '' on success. */
+  openPath: (p: string): Promise<string> => ipcRenderer.invoke('fs:open', p),
+  /** List input files (csv/tsv/txt) in a data folder — and, with `scope`, the workflow's folder. */
+  listDataFiles: (dir: string, scope?: WorkflowScope): Promise<string[]> =>
+    ipcRenderer.invoke('data:list', dir, scope),
+  /** Each input file's folder, relative to the data folder ('' = the folder itself) — where it's
+   *  read from. */
+  listDataFileFolders: (dir: string, scope?: WorkflowScope): Promise<Record<string, string>> =>
+    ipcRenderer.invoke('data:listWhere', dir, scope),
   /** Read a file from the data folder — or, when `name` is an absolute path, that file directly
-   *  (null if missing). When `scope` (a per-workflow subfolder) is given, the workflow subfolder is
-   *  tried first, then the shared data-folder root. */
-  readDataFile: (dir: string, name: string, scope?: string): Promise<string | null> =>
+   *  (null if missing). With `scope`, the workflow's folder is tried first, then the older
+   *  per-workflow subfolder and the shared data-folder root. */
+  readDataFile: (dir: string, name: string, scope?: WorkflowScope): Promise<string | null> =>
     ipcRenderer.invoke('data:read', dir, name, scope),
   /** Pick a data matrix from anywhere on disk via the native picker; returns its absolute path
    *  (readable via readDataFile), or null if cancelled. */
@@ -143,6 +198,8 @@ const api = {
     format: 'csv' | 'xlsx'
     items: TableItem[]
   }): Promise<ExportResult> => ipcRenderer.invoke('tables:export', payload),
+  /** Put plain text on the clipboard. */
+  copyText: (text: string): Promise<void> => ipcRenderer.invoke('clip:text', text),
   /** Put one rendered plot on the clipboard: PNG as an image, SVG as markup text. */
   copyPlot: (payload: CopyPayload): Promise<void> => ipcRenderer.invoke('plots:copy', payload),
   /** Reveal a folder in the OS file manager. */
@@ -189,8 +246,26 @@ const api = {
   ): Promise<{
     nodes: { id: string; name: string; isQuery: boolean }[]
     edges: { aId: string; bId: string; score: number }[]
+    /** best query–query / query–any link score (0–1000) at any confidence; −1 = none */
+    maxQueryScore?: number
+    maxLinkScore?: number
     error?: string
   }> => ipcRenderer.invoke('string:network', identifiers, species, requiredScore, maxInteractors),
+
+  /** Every setting's STRING network for one query at once, from two local scans (see the main
+   *  process's StringAllResult): `genes` is the widest query, strongest first, each gene's STRING
+   *  ids; `caps` the gene caps offered (`genes` sent, `k` interactors). */
+  fetchStringNetworkAll: (
+    genes: string[][],
+    species: number,
+    caps: { genes: number; k: number }[]
+  ): Promise<{
+    nodes: { id: string; name: string }[]
+    edges: { aId: string; bId: string; score: number }[]
+    interactors: string[][][]
+    maxLinkScore: number[]
+    error?: string
+  }> => ipcRenderer.invoke('string:networkAll', genes, species, caps),
 
   /** Download an organism's STRING interactome + canonical gene-name map into the app cache
    *  (idempotent). */

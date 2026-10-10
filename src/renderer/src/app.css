@@ -24,6 +24,21 @@
   border-color: #3fae5a !important;
 }
 
+/* Switcher strips above a plot/table (SwitchBar, FacetedPlot's condition tabs, the gene switcher,
+   and the rows that wrap several of them): the stack reads as ONE control block, so a single rule
+   runs under the last strip and none between rows. A strip/row drops its rule when another strip
+   follows it — directly, or at the top of the next sibling (a FacetedPlot inside the plot body). */
+.oe-switch-strip,
+.oe-switch-row {
+  border-bottom: 1px solid var(--border);
+}
+.oe-switch-row > .oe-switch-strip,
+.oe-switch-row:empty,
+.oe-switch-strip:has(+ .oe-switch-strip, + .oe-switch-row, + * .oe-switch-strip),
+.oe-switch-row:has(+ .oe-switch-strip, + .oe-switch-row, + * .oe-switch-strip) {
+  border-bottom: none;
+}
+
 /* Data table (DataTableView): hover feedback for its interactive parts. Resting colours are inline,
    so the hover rules need !important. Data rows are tinted by the table's own selection painter. */
 .oe-dt-th:hover {
@@ -153,4 +168,238 @@
 }
 .oe-tabscroll::-webkit-scrollbar-thumb:hover {
   background: rgba(138, 138, 138, 0.75);
+}
+
+/* A marquee selection shows as each selected tile highlighted (its accent outline and glow), not as
+   React Flow's box drawn around them all. Dragging any selected tile still moves the whole set. */
+.react-flow__nodesselection-rect {
+  display: none;
+}
+
+/* Form mode's drag grips (FormWorkflow): tinted and darkened under the pointer, so they read as
+   something to grab. */
+.oe-grip:hover {
+  background: color-mix(in srgb, var(--text) 10%, transparent);
+  color: var(--text) !important;
+}
+
+/* The progress spinners (StatusNote, FreezeNotice): a steady turn. Still when the user asks
+   for reduced motion. */
+@keyframes oe-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.oe-spin {
+  animation: oe-spin 0.9s linear infinite;
+  transform-origin: 50% 50%;
+  /* its own layer, so the turn runs on the compositor and keeps going while the main thread is
+     busy (see FreezeNotice) */
+  will-change: transform;
+}
+@media (prefers-reduced-motion: reduce) {
+  .oe-spin {
+    animation: none;
+  }
+}
+
+/* The import's unit chip (InteractiveImportDialog UnitChip): borderless at rest, outlined on hover.
+   The resting border is inline (transparent), hence !important; an open chip keeps its own colour. */
+.oe-unit-chip:not([aria-expanded='true']):hover {
+  border-color: var(--border) !important;
+}
+
+/* The import's Conditions step (InteractiveImportDialog ConditionsStage): the faint arrow floating
+   over the parked card (Refine & edit, or back to the first) — it drifts gently toward it, and firms up on hover. */
+@keyframes oe-deck-next-drift {
+  0%,
+  100% {
+    transform: translateX(0);
+  }
+  50% {
+    transform: translateX(5px);
+  }
+}
+@keyframes oe-deck-next-in {
+  from {
+    opacity: 0;
+  }
+}
+.oe-deck-next {
+  opacity: 0.45;
+  transition: opacity 200ms;
+  animation:
+    oe-deck-next-in 400ms ease-out 300ms backwards,
+    oe-deck-next-drift 1.8s ease-in-out 700ms infinite;
+}
+/* The back chevron (over the parked first card) drifts the other way. */
+@keyframes oe-deck-back-drift {
+  0%,
+  100% {
+    transform: translateX(0);
+  }
+  50% {
+    transform: translateX(-5px);
+  }
+}
+.oe-deck-back {
+  animation-name: oe-deck-next-in, oe-deck-back-drift;
+}
+.oe-deck-next:hover,
+.oe-deck-next:focus-visible {
+  opacity: 0.9;
+}
+@media (prefers-reduced-motion: reduce) {
+  .oe-deck-next {
+    animation: none;
+  }
+}
+
+/* The import's steps (InteractiveImportDialog): each step swipes in as it's turned to — from the
+   right going forward, from the left going back. */
+@keyframes oe-step-in-next {
+  from {
+    opacity: 0;
+    transform: translateX(48px);
+  }
+}
+@keyframes oe-step-in-back {
+  from {
+    opacity: 0;
+    transform: translateX(-48px);
+  }
+}
+.oe-step-in {
+  animation: oe-step-in-next 320ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.oe-step-in-back {
+  animation-name: oe-step-in-back;
+}
+@media (prefers-reduced-motion: reduce) {
+  .oe-step-in {
+    animation: none;
+  }
+}
+
+/* The canvas's "Results →" and the dashboard's "← Workflow": a tint over their solid panel on
+   hover (the resting background is inline, hence !important), and the press-in below. */
+.oe-view-btn:hover {
+  background-color: color-mix(in srgb, var(--text) 8%, var(--panel)) !important;
+}
+
+/* Every button in the nav (App header, `.oe-nav`) answers the pointer: a tint on hover and a quick
+   press-in on click. The tint is an inset shadow laid OVER the button's own background, so filled
+   ones (Run, the chips' segments) keep their colours. A button whose panel is open (`data-open`:
+   settings, the guide, the folder viewer) holds a stronger tint. */
+.oe-nav button {
+  transition:
+    transform 90ms ease-out,
+    box-shadow 120ms,
+    border-color 120ms;
+}
+.oe-nav button:not(:disabled):hover {
+  box-shadow: inset 0 0 0 100vmax color-mix(in srgb, var(--text) 8%, transparent);
+}
+.oe-nav button:not(:disabled):active {
+  transform: scale(0.94);
+}
+.oe-nav button[data-open='true'] {
+  box-shadow: inset 0 0 0 100vmax color-mix(in srgb, var(--text) 14%, transparent);
+  border-color: color-mix(in srgb, var(--text) 35%, transparent) !important;
+}
+/* The same press-in elsewhere (the canvas / dashboard view switches, the home page's buttons). */
+.oe-press {
+  transition:
+    transform 90ms ease-out,
+    background-color 120ms,
+    border-color 120ms;
+}
+.oe-press:not(:disabled):active {
+  transform: scale(0.94);
+}
+@media (prefers-reduced-motion: reduce) {
+  .oe-nav button:not(:disabled):active,
+  .oe-press:not(:disabled):active {
+    transform: none;
+  }
+}
+
+/* The home page's Getting started buttons: the icon keeps its size when a third of the column is
+   tight for the label (it would otherwise be squeezed away first). */
+.oe-guide-btn svg {
+  flex: none;
+}
+
+/* The project-folder viewer's rows after a refresh: each fades in, a little after the one above. */
+@keyframes oe-row-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
+.oe-row-in {
+  animation: oe-row-in 220ms ease-out backwards;
+}
+@media (prefers-reduced-motion: reduce) {
+  .oe-row-in {
+    animation: none;
+  }
+}
+
+/* A canvas tile's config float (GraphNode): fades in sliding from the tile's side, and out back
+   toward it. `--oe-config-from` is the offset on the tile's side (set inline per side). Under
+   reduced motion it still runs, near-instantly, so the float's unmount (on animationend) happens. */
+@keyframes oe-config-in {
+  from {
+    opacity: 0;
+    transform: translateX(var(--oe-config-from, -10px)) scale(0.98);
+  }
+}
+@keyframes oe-config-out {
+  to {
+    opacity: 0;
+    transform: translateX(var(--oe-config-from, -10px)) scale(0.98);
+  }
+}
+.oe-config-in {
+  animation: oe-config-in 180ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.oe-config-out {
+  animation: oe-config-out 130ms ease-in forwards;
+}
+@media (prefers-reduced-motion: reduce) {
+  .oe-config-in,
+  .oe-config-out {
+    animation-duration: 1ms;
+  }
+}
+
+/* A drop-down menu (the gene selector's): drops open from just under its button — fading in,
+   sliding down a touch — and lifts away on close. Under reduced motion it still runs, near-
+   instantly, so the menu's unmount (on animationend) happens. */
+@keyframes oe-menu-in {
+  from {
+    opacity: 0;
+    transform: translateY(-6px) scaleY(0.97);
+  }
+}
+@keyframes oe-menu-out {
+  to {
+    opacity: 0;
+    transform: translateY(-6px) scaleY(0.97);
+  }
+}
+.oe-menu-in {
+  transform-origin: top center;
+  animation: oe-menu-in 170ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.oe-menu-out {
+  transform-origin: top center;
+  animation: oe-menu-out 120ms ease-in forwards;
+}
+@media (prefers-reduced-motion: reduce) {
+  .oe-menu-in,
+  .oe-menu-out {
+    animation-duration: 1ms;
+  }
 }

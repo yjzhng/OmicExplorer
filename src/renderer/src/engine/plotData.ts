@@ -7,7 +7,9 @@ import { pairsOf } from './accession'
 import { condValue } from './compare'
 import { clusterRowGroups, clusterRowOrder, suggestClusterCount } from './cluster'
 import type { ContrastResultRow } from './contrast'
+import { logistic } from './curveFit'
 import { embed2D, type ClusterMethod } from './embed'
+import { abundanceLabel, fromLinear, type ValueScale } from './scale'
 import { benjaminiHochberg, madNormal, median, normalSf, studentTppf, type Effect } from './stats'
 import {
   condLabel,
@@ -49,6 +51,16 @@ export interface VolcanoOptions {
 
 /** The one `comparison` label ("A | B") these rows share, for axis titles — undefined when the
  *  rows are unlabelled or span several comparisons (then the title stays generic). */
+/** What a Compare's `log2FC` measures, by analysis: a t-test's fold change, a curve fit's change
+ *  across the tested doses, or a two-way ANOVA's interaction (a log₂ ratio of fold changes). */
+export function fcMeasure(analysis?: 'compare' | 'two_way_anova' | 'curve_fit'): string {
+  return analysis === 'curve_fit'
+    ? 'curve log₂FC'
+    : analysis === 'two_way_anova'
+      ? 'interaction log₂FC'
+      : 'log₂FC'
+}
+
 export function comparisonOf(rows: Array<{ comparison?: string }>): string | undefined {
   let found: string | undefined
   for (const r of rows) {
@@ -311,9 +323,12 @@ export interface ScatterData {
 
 export interface ScatterOptions {
   displayMap?: Record<string, string>
-  /** what the two sides hold (from ContrastResult.valueKind): fold changes (default) or log₂
+  /** what the two sides hold (from ContrastResult.valueKind): fold changes (default) or
    *  abundances from a raw-data contrast — drives the axis titles */
   valueKind?: 'abundance' | 'fc'
+  /** the scale abundances are on (see plotScaleOf): the intensity scatter's values, and the
+   *  abundance axis titles. Default log₁₀. */
+  scale?: ValueScale
 }
 
 /** The statistic's cutoffs, read back off the rows' `thrsh` label (written by contrast.ts) so the
@@ -445,7 +460,7 @@ export function buildScatter(rows: ContrastResultRow[], opts: ScatterOptions = {
   }
   const thrsh = rows.find((r) => r.thrsh)?.thrsh ?? ''
   // Group A (FC1) on y, group B (FC2) on x.
-  const unit = opts.valueKind === 'abundance' ? 'log₁₀ abundance' : 'log₂FC'
+  const unit = opts.valueKind === 'abundance' ? abundanceLabel(opts.scale ?? 'log10') : 'log₂FC'
   return {
     points,
     xLabel: `${unit} · ${rows[0]?.cmp2 ?? 'group B'}`,
@@ -468,11 +483,14 @@ export function buildIntensityScatter(
   opts: ScatterOptions = {}
 ): ScatterData {
   const points: ScatterPoint[] = []
+  const scale = opts.scale ?? 'log10'
   for (const r of rows) {
-    // mean1/mean2 are linear-space group means (numerator / denominator).
-    if (r.mean1 == null || r.mean2 == null || !(r.mean1 > 0) || !(r.mean2 > 0)) continue
-    const y = Math.log10(r.mean1)
-    const x = Math.log10(r.mean2)
+    // mean1/mean2 are linear-space group means (numerator / denominator), put on the scale the
+    // plots show abundance on (a log has no value for a non-positive mean).
+    if (r.mean1 == null || r.mean2 == null) continue
+    const y = fromLinear(r.mean1, scale)
+    const x = fromLinear(r.mean2, scale)
+    if (y == null || x == null || !Number.isFinite(y) || !Number.isFinite(x)) continue
     points.push({
       x,
       y,
@@ -488,8 +506,8 @@ export function buildIntensityScatter(
   return {
     points,
     // "abundance" (with its log base) — the same word the MA plot and contrast scatter use.
-    xLabel: `log abundance · ${den || 'denominator'}`,
-    yLabel: `log abundance · ${num || 'numerator'}`,
+    xLabel: `${abundanceLabel(scale)} · ${den || 'denominator'}`,
+    yLabel: `${abundanceLabel(scale)} · ${num || 'numerator'}`,
     valueKind: 'abundance'
   }
 }
@@ -497,7 +515,7 @@ export function buildIntensityScatter(
 // ── MA (compare) ────────────────────────────────────────────────────────────────
 
 export interface MAPoint {
-  x: number // mean log10 abundance A
+  x: number // mean abundance A, on the plots' abundance scale (log₁₀ by default)
   y: number // log2FC (M)
   label: string
   effect: Effect
@@ -509,22 +527,29 @@ export interface MAData {
   fcHigh: number
   /** the rows' single comparison label ("A | B"), for the fold-change axis title */
   comparison?: string
+  /** the abundance axis title, with its log base ("mean log abundance", "mean log₂ abundance") */
+  xLabel: string
 }
 export interface MAOptions {
   fcLow: number
   fcHigh: number
   displayMap?: Record<string, string>
+  /** the scale abundance is shown on (see plotScaleOf); default log₁₀ */
+  scale?: ValueScale
 }
 
-/** MA plot: mean log10 abundance (A) vs log2 fold change (M). Abundance is shown in log10
- *  everywhere in the app (heatmap, intensity scatter, abundance contrasts); only fold changes
- *  are log2. */
+/** MA plot: mean abundance (A) vs log2 fold change (M). Abundance is on the scale every abundance
+ *  plot shows Clean data on (see plotScaleOf — log₁₀ unless set otherwise); fold changes are
+ *  always log₂. */
 export function buildMA(rows: CompareResultRow[], opts: MAOptions): MAData {
   const points: MAPoint[] = []
+  const scale = opts.scale ?? 'log10'
   for (const r of rows) {
-    if (r.log2FC == null || r.mean1 == null || r.mean2 == null || r.mean1 <= 0 || r.mean2 <= 0)
-      continue
-    const a = 0.5 * (Math.log10(r.mean1) + Math.log10(r.mean2))
+    if (r.log2FC == null || r.mean1 == null || r.mean2 == null) continue
+    const a1 = fromLinear(r.mean1, scale)
+    const a2 = fromLinear(r.mean2, scale)
+    if (a1 == null || a2 == null) continue
+    const a = 0.5 * (a1 + a2)
     if (!Number.isFinite(a) || !Number.isFinite(r.log2FC)) continue
     points.push({
       x: a,
@@ -534,7 +559,13 @@ export function buildMA(rows: CompareResultRow[], opts: MAOptions): MAData {
       uniqID: r.uniqID
     })
   }
-  return { points, fcLow: opts.fcLow, fcHigh: opts.fcHigh, comparison: comparisonOf(rows) }
+  return {
+    points,
+    fcLow: opts.fcLow,
+    fcHigh: opts.fcHigh,
+    comparison: comparisonOf(rows),
+    xLabel: abundanceLabel(scale, 'mean abundance').replace(/^(log₂?) mean/, 'mean $1')
+  }
 }
 
 // ── dose/time-response (compare) ─────────────────────────────────────────────────
@@ -555,6 +586,9 @@ export interface DRData {
   total: number
   /** the rows' single comparison label ("A | B"), for the fold-change axis title */
   comparison?: string
+  /** fitted curves (a Compare's curve fit): x is the dose itself, sampled finely along each curve,
+   *  so the view needs a continuous log axis rather than one category per tested level */
+  continuous?: boolean
 }
 export interface DROptions {
   axis: 'dose' | 'time'
@@ -580,12 +614,57 @@ const geneLimit = (topGenes: number, total: number): number =>
 const topDoseMag = (pts: { y: number }[]): number =>
   pts.length ? Math.abs(pts[pts.length - 1].y) : 0
 
+/** Top-N split between the two directions IN PROPORTION to how many candidates each has — 70 up
+ *  and 30 down picks 7:3 — so a strongly one-sided response doesn't crowd the other side out by
+ *  magnitude alone (and a balanced one gets both). Each side gets at least a quarter (rounded up)
+ *  while it has the genes for it; a side that runs out hands its unused slots to the other. Within a side, largest |log2FC| first; the result is ordered by |log2FC|. A gene's
+ *  direction is the sign of its `signed` value (≥ 0 counts as up). */
+export function pickBalanced(cands: { id: string; signed: number }[], n: number): string[] {
+  if (n >= cands.length) return [...cands].sort(byMag).map((c) => c.id)
+  const up = cands.filter((c) => c.signed >= 0).sort(byMag)
+  const down = cands.filter((c) => c.signed < 0).sort(byMag)
+  let nUp = Math.round((n * up.length) / cands.length)
+  // Each side keeps at least a quarter of the picks (when it has that many), so a lopsided ratio
+  // can't round the smaller side down to nothing.
+  // (A single pick can't be shared: it goes by proportion alone.)
+  const floor = n >= 2 ? Math.ceil(n * MIN_SIDE_SHARE) : 0
+  if (up.length) nUp = Math.max(nUp, Math.min(floor, up.length))
+  if (down.length) nUp = Math.min(nUp, n - Math.min(floor, down.length))
+  let nDown = n - nUp
+  if (nUp > up.length) [nUp, nDown] = [up.length, n - up.length]
+  if (nDown > down.length) [nUp, nDown] = [n - down.length, down.length]
+  return [...up.slice(0, nUp), ...down.slice(0, nDown)].sort(byMag).map((c) => c.id)
+}
+/** The smallest share of the top-N either direction gets (see pickBalanced). */
+const MIN_SIDE_SHARE = 1 / 4
+const byMag = (a: { signed: number }, b: { signed: number }): number =>
+  Math.abs(b.signed) - Math.abs(a.signed)
+
 /** Response curves: log2FC vs dose (or time), one line per gene, top-N by |log2FC| at the top dose. */
 export function buildDR(rows: CompareResultRow[], opts: DROptions): DRData {
   const byGene = new Map<string, { x: number; y: number }[]>()
+  // Genes significant at one level or more: the only ones the top-N colours (as in the bubble).
+  const anySig = new Set<string>()
+  let continuous = false
   for (const r of rows) {
+    // A curve fit's row is one whole curve: draw the fitted ratio to the control (log₂) across the
+    // tested doses rather than one point per level.
+    if (r.curve) {
+      if (r.curve.axis !== opts.axis) continue
+      continuous = true
+      if (r.signf) anySig.add(r.uniqID)
+      const { xMin, xMax } = r.curve
+      const pts: { x: number; y: number }[] = []
+      for (let i = 0; i < CURVE_SAMPLES; i++) {
+        const lx = xMin + ((xMax - xMin) * i) / (CURVE_SAMPLES - 1)
+        pts.push({ x: 10 ** lx, y: Math.log2(logistic(lx, r.curve)) })
+      }
+      byGene.set(r.uniqID, pts)
+      continue
+    }
     const x = opts.axis === 'dose' ? r.dose : r.time
     if (x == null || r.log2FC == null || !Number.isFinite(r.log2FC)) continue
+    if (r.signf) anySig.add(r.uniqID)
     let arr = byGene.get(r.uniqID)
     if (!arr) {
       arr = []
@@ -613,20 +692,35 @@ export function buildDR(rows: CompareResultRow[], opts: DROptions): DRData {
       axis: opts.axis,
       highlight: inFocus.length,
       total: series.length,
-      comparison: comparisonOf(rows)
+      comparison: comparisonOf(rows),
+      continuous
     }
   }
-  // Show every gene (as faint background lines); topGenes controls only how many of the
-  // most-differential are colored on top. All genes stay in one merged view trace. topGenes ≤ 0
-  // (Cap genes off) colours them all — DRView safety-caps the coloured foreground.
+  // Show every gene (as faint background lines); the coloured top-N on top is drawn from the
+  // significant genes, split between up and down in proportion (pickBalanced), and moved to the
+  // front. topGenes ≤ 0 (Cap genes off) colours every significant gene — DRView safety-caps the
+  // coloured foreground. All genes stay in one merged view trace.
+  const sigSeries = series
+    .filter((sr) => anySig.has(sr.uniqID))
+    .map((sr) => ({ id: sr.uniqID, signed: sr.points[sr.points.length - 1].y }))
+  const chosen = pickBalanced(sigSeries, opts.topGenes > 0 ? opts.topGenes : sigSeries.length)
+  const rank = new Map(chosen.map((id, i) => [id, i]))
+  const front = series
+    .filter((sr) => rank.has(sr.uniqID))
+    .sort((a, b) => (rank.get(a.uniqID) ?? 0) - (rank.get(b.uniqID) ?? 0))
+  const back = series.filter((sr) => !rank.has(sr.uniqID))
   return {
-    series,
+    series: [...front, ...back],
     axis: opts.axis,
-    highlight: opts.topGenes > 0 ? opts.topGenes : series.length,
+    highlight: front.length,
     total: series.length,
-    comparison: comparisonOf(rows)
+    comparison: comparisonOf(rows),
+    continuous
   }
 }
+
+/** Points along each fitted curve in the DR view. */
+const CURVE_SAMPLES = 25
 
 // ── bubble (compare) ─────────────────────────────────────────────────────────────
 
@@ -659,21 +753,23 @@ export interface BubbleOptions {
 }
 
 /** Bubble grid: genes × dose(or time), dot color = log2FC, size = |log2FC| (view). Top-N genes
- *  are picked (and ordered) by their log2FC at the TOP dose/time level — the same "most
+ *  are those significant at one level or more, picked (and ordered) by their log2FC at the TOP
+ *  dose/time level — the same "most
  *  differential at the max dose" ranking DR/TR use — not by their peak across all levels. */
 export function buildBubble(rows: CompareResultRow[], opts: BubbleOptions): BubbleData {
   const topX = new Map<string, number>() // the highest dose/time level seen per gene
-  const topAbs = new Map<string, number>() // |log2FC| at that top level — which genes to keep
-  const topSigned = new Map<string, number>() // signed log2FC at the top level — gene axis order
+  const topSigned = new Map<string, number>() // signed log2FC at the top level: picks + axis order
   const byGene = new Map<string, CompareResultRow[]>()
+  // Genes with at least one significant point (any dose / time level): only these can be top-N.
+  const anySig = new Set<string>()
   for (const r of rows) {
     if (r.log2FC == null || !Number.isFinite(r.log2FC)) continue
+    if (r.signf) anySig.add(r.uniqID)
     const x = opts.axis === 'dose' ? r.dose : r.time
     if (x != null && Number.isFinite(x)) {
       const cur = topX.get(r.uniqID)
       if (cur == null || x > cur) {
         topX.set(r.uniqID, x)
-        topAbs.set(r.uniqID, Math.abs(r.log2FC))
         topSigned.set(r.uniqID, r.log2FC)
       }
     }
@@ -684,13 +780,18 @@ export function buildBubble(rows: CompareResultRow[], opts: BubbleOptions): Bubb
     }
     arr.push(r)
   }
-  const ranked = [...topAbs.entries()].sort((a, b) => b[1] - a[1]).map((e) => e[0])
+  // Top-N is drawn from the genes significant at some level — a big fold change that never passes
+  // the Compare's threshold (grey on the volcano) isn't a "top" gene.
+  const sigGenes = [...topSigned.entries()]
+    .filter(([id]) => anySig.has(id))
+    .map(([id, signed]) => ({ id, signed }))
   // Focus genes (when set) override top-N: keep exactly those present in the data.
   const focus = opts.focus ?? []
   const base =
     focus.length > 0
       ? focus.filter((id) => byGene.has(id))
-      : ranked.slice(0, geneLimit(opts.topGenes, ranked.length)) // unset ⇒ all (safety-capped)
+      : // up / down in proportion to the significant genes on each side; unset ⇒ all (safety-capped)
+        pickBalanced(sigGenes, geneLimit(opts.topGenes, sigGenes.length))
   // Order the chosen genes by their top-level log2FC (descending) for the gene axis.
   base.sort((a, b) => (topSigned.get(b) ?? 0) - (topSigned.get(a) ?? 0))
   // Append linked-selection genes not already shown (kept in their own FC order), so a
@@ -722,7 +823,7 @@ export function buildBubble(rows: CompareResultRow[], opts: BubbleOptions): Bubb
     genes: top, // uniqIDs — the axis category keys (unique per feature)
     geneLabels: top.map((g) => opts.displayMap?.[g] ?? g),
     axis: opts.axis,
-    total: ranked.length
+    total: sigGenes.length
   }
 }
 
@@ -839,11 +940,16 @@ export interface GeneBarValue {
   errUp: number
   errDown: number
   n: number
+  /** the replicate values themselves (finite ones), in the data's units — for the dots */
+  values: number[]
 }
 export interface GeneBarData {
   bars: GeneBarValue[]
   /** condition x-axis order */
   conds: string[]
+  /** each condition slot's own condition values (cell, cmpd, dose, time, custom) — what a
+   *  colour-by-condition reads (see metaValue) */
+  condMeta: Record<string, SampleMeta>
   /** genes present (for the legend / series order) */
   genes: { uniqID: string; label: string }[]
 }
@@ -856,12 +962,16 @@ export function buildGeneBar(
   displayMap?: Record<string, string>,
   /** log-scaled data → compute the central value and spread in log10 space (geometric mean ±
    *  geometric sd), matching the log value axis / colour map. */
-  log = false
+  log = false,
+  /** what the error bars show: standard deviation, standard error of the mean, or the 95%
+   *  confidence interval of the mean (t-based) */
+  error: 'sd' | 'sem' | 'ci95' = 'sd'
 ): GeneBarData {
   const want = new Set(uniqIDs)
   const byKey = new Map<string, number[]>() // `${uniqID} ${cond}` → values
   const condOrder: string[] = []
   const condSeen = new Set<string>()
+  const condMeta: Record<string, SampleMeta> = {}
   const present = new Set<string>()
   for (const r of rows) {
     const cond = sampleCond(r)
@@ -870,6 +980,14 @@ export function buildGeneBar(
     if (!condSeen.has(cond)) {
       condSeen.add(cond)
       condOrder.push(cond)
+      condMeta[cond] = {
+        cell: r.cell,
+        cmpd: r.cmpd,
+        dose: r.dose,
+        time: r.time,
+        rep: r.rep,
+        ...(r.extra ? { extra: { ...r.extra } } : null)
+      }
     }
     if (!want.has(r.uniqID)) continue
     present.add(r.uniqID) // gene is in the data (listed even if every value is missing)
@@ -893,7 +1011,17 @@ export function buildGeneBar(
       // No finite replicate here → a missing bar (mean null): the view leaves the position
       // empty and labels it NaN.
       if (!vals || vals.length === 0) {
-        bars.push({ cond, gene: label, uniqID, mean: null, sd: 0, errUp: 0, errDown: 0, n: 0 })
+        bars.push({
+          cond,
+          gene: label,
+          uniqID,
+          mean: null,
+          sd: 0,
+          errUp: 0,
+          errDown: 0,
+          n: 0,
+          values: []
+        })
         continue
       }
       // Log data: geometric mean ± geometric sd — compute in log10 space, then map back, so the
@@ -914,23 +1042,36 @@ export function buildGeneBar(
           sd,
           errUp: Math.pow(10, m + sd) - center,
           errDown: center - Math.pow(10, m - sd),
-          n: vals.length
+          n: vals.length,
+          values: vals
         })
       } else {
+        const n = vals.length
+        const sem = n > 0 ? sd / Math.sqrt(n) : 0
+        const e =
+          error === 'sem'
+            ? sem
+            : error === 'ci95'
+              ? n > 1
+                ? // two-sided: P(|T| > t) = 0.05
+                  studentTppf(0.05, n - 1) * sem
+                : 0
+              : sd
         bars.push({
           cond,
           gene: label,
           uniqID,
           mean: m,
           sd,
-          errUp: sd,
-          errDown: sd,
-          n: vals.length
+          errUp: e,
+          errDown: e,
+          n,
+          values: vals
         })
       }
     }
   }
-  return { bars, conds: condOrder, genes }
+  return { bars, conds: condOrder, condMeta, genes }
 }
 
 // ── cluster / sample embedding (standardize) ─────────────────────────────────────
@@ -1020,10 +1161,13 @@ export interface ClusterOptions {
    *  With p ≫ n, restricting to the most variable proteins keeps the sample covariance from going
    *  isotropic, so a real group axis dominates PC1 instead of being buried in noise dimensions. */
   topVar?: number
-  /** Log transform (standardize path). 'auto' logs only raw-looking intensity (positive, ≥2
-   *  decades); 'log2'/'log10' force it; 'none' forces linear. A wrong auto-guess (PCA on linear
-   *  intensity) is a common cause of a flat scree. Defaults to 'auto'. */
+  /** Log transform (standardize path). 'auto' follows Clean data (`autoScale`, see plotScaleOf);
+   *  'log2'/'log10' force it; 'none' forces linear. A linear matrix of raw intensities (PCA on
+   *  linear intensity) is a common cause of a flat scree. Defaults to 'auto'. */
   transform?: 'auto' | 'log2' | 'log10' | 'none'
+  /** what 'auto' resolves to: the scale the plots show Clean data on. Unset → the old guess (log₂
+   *  when the values look like raw intensity, else as-is). */
+  autoScale?: ValueScale
   /** Replicate handling (standardize path). 'individual' embeds every replicate; 'mean' averages
    *  replicates to condition means first, cutting per-protein noise so a real group axis rises above
    *  the noise floor. Defaults to 'individual'. */
@@ -1385,7 +1529,15 @@ export function buildCluster(rows: StandardRow[], opts: ClusterOptions): Cluster
   // then runs on linear intensities, which high-abundance proteins dominate). 'none' forces linear.
   const tOpt = opts.transform ?? 'auto'
   const applied: 'log2' | 'log10' | 'none' =
-    tOpt === 'auto' ? (min > 0 && max / min >= 100 ? 'log2' : 'none') : tOpt
+    tOpt !== 'auto'
+      ? tOpt
+      : opts.autoScale
+        ? opts.autoScale === 'linear'
+          ? 'none'
+          : opts.autoScale
+        : min > 0 && max / min >= 100
+          ? 'log2'
+          : 'none'
   const tf = (v: number): number =>
     applied === 'log2'
       ? v > 0
@@ -1861,6 +2013,11 @@ export interface QcGroup {
   /** the metric's values for this group (distribution for intensity/CV; a single count for
    *  proteins). `bar` renders their summary; violin/box render the distribution. */
   values: number[]
+  /** proteins only: how many of the sample's proteins were filled in by imputation (not counted
+   *  in `values`) — drawn stacked on top of the measured count */
+  imputed?: number
+  /** the group's condition values (for colouring by condition); a CV group's `rep` is moot */
+  meta: SampleMeta
 }
 
 export interface QcData {
@@ -1881,12 +2038,19 @@ function qcLabelCmp(a: string, b: string): number {
  * Per-sample QC distributions for a standardized result, for the QC plot (violin/box/bar):
  *  - `intensity`: every protein's intensity in each sample (log10 when values look like raw
  *    intensity), so a box/violin per sample flags mis-normalised samples.
- *  - `proteins`: count of proteins identified per sample (one value → a bar per sample).
+ *  - `proteins`: count of proteins identified (measured, not imputed) per sample (one value → a
+ *    bar per sample).
  *  - `cv`: per-protein %CV across replicates within each condition group (replicates pooled),
  *    so each condition's reproducibility is a distribution.
  * A "sample" is the active-condition combo + replicate; a CV "group" drops the replicate.
  */
-export function buildQc(std: StandardizeResult, metric: QcMetric): QcData {
+export function buildQc(
+  std: StandardizeResult,
+  metric: QcMetric,
+  /** the scale abundance is shown on (see plotScaleOf); unset → the old guess (log₁₀ when the
+   *  values look like raw intensity) */
+  scale?: ValueScale
+): QcData {
   const conds = std.activeConditions
   const parts = (r: StandardRow): string[] =>
     conds.map((c) => String(condValue(r, c) ?? '')).filter((x) => x !== '')
@@ -1896,6 +2060,21 @@ export function buildQc(std: StandardizeResult, metric: QcMetric): QcData {
     return p.join(' · ') || 'sample'
   }
   const condLabel = (r: StandardRow): string => parts(r).join(' · ') || 'all'
+  // Each group's condition values, from its first row.
+  const metas = new Map<string, SampleMeta>()
+  const noteMeta = (label: string, r: StandardRow): void => {
+    if (!metas.has(label))
+      metas.set(label, {
+        cell: r.cell,
+        cmpd: r.cmpd,
+        dose: r.dose,
+        time: r.time,
+        rep: r.rep,
+        ...(r.extra ? { extra: { ...r.extra } } : null)
+      })
+  }
+  const metaOf = (label: string): SampleMeta =>
+    metas.get(label) ?? { cell: '', cmpd: '', dose: null, time: null, rep: null }
   const push = (m: Map<string, number[]>, k: string, v: number): void => {
     const a = m.get(k)
     if (a) a.push(v)
@@ -1903,12 +2082,26 @@ export function buildQc(std: StandardizeResult, metric: QcMetric): QcData {
   }
 
   if (metric === 'proteins') {
-    const count = new Map<string, number>()
+    // Proteins MEASURED in each sample: an imputed cell isn't an identification (with imputation
+    // on, every sample would otherwise count every protein and the bars all come out level).
+    // The imputed ones are counted apart, so the bar can show them stacked on top.
+    const count = new Map<string, { measured: number; imputed: number }>()
     for (const r of std.rows)
-      if (r.value != null && Number.isFinite(r.value))
-        count.set(sampleLabel(r), (count.get(sampleLabel(r)) ?? 0) + 1)
+      if (r.value != null && Number.isFinite(r.value)) {
+        const k = sampleLabel(r)
+        noteMeta(k, r)
+        let c = count.get(k)
+        if (!c) count.set(k, (c = { measured: 0, imputed: 0 }))
+        if (r.imputed) c.imputed++
+        else c.measured++
+      }
     const groups = [...count]
-      .map(([label, n]) => ({ label, values: [n] }))
+      .map(([label, c]) => ({
+        label,
+        values: [c.measured],
+        ...(c.imputed ? { imputed: c.imputed } : null),
+        meta: metaOf(label)
+      }))
       .sort((a, b) => qcLabelCmp(a.label, b.label))
     return { groups, yLabel: '# proteins', metric, summary: 'count' }
   }
@@ -1920,16 +2113,24 @@ export function buildQc(std: StandardizeResult, metric: QcMetric): QcData {
     for (const r of std.rows)
       if (r.value != null && Number.isFinite(r.value)) {
         push(map, sampleLabel(r), r.value)
+        noteMeta(sampleLabel(r), r)
         if (r.value < min) min = r.value
         if (r.value > max) max = r.value
       }
-    // log10 the distribution when the values look like raw intensity (all positive, ≥2 decades),
-    // matching the heatmap/table value scale.
-    const log = min > 0 && max / min >= 100
+    // On the scale every abundance plot shows Clean data on — or, unset, log₁₀ when the values
+    // look like raw intensity (all positive, ≥2 decades).
+    const sc: ValueScale = scale ?? (min > 0 && max / min >= 100 ? 'log10' : 'linear')
     const groups = [...map]
-      .map(([label, vals]) => ({ label, values: log ? vals.map((v) => Math.log10(v)) : vals }))
+      .map(([label, vals]) => ({
+        label,
+        values: vals.flatMap((v) => {
+          const x = fromLinear(v, sc)
+          return x == null ? [] : [x]
+        }),
+        meta: metaOf(label)
+      }))
       .sort((a, b) => qcLabelCmp(a.label, b.label))
-    return { groups, yLabel: log ? 'log intensity' : 'intensity', metric, summary: 'median' }
+    return { groups, yLabel: abundanceLabel(sc), metric, summary: 'median' }
   }
 
   // cv: per condition group, the %CV of each protein across its replicates.
@@ -1937,6 +2138,7 @@ export function buildQc(std: StandardizeResult, metric: QcMetric): QcData {
   for (const r of std.rows)
     if (r.value != null && Number.isFinite(r.value)) {
       const gk = condLabel(r)
+      noteMeta(gk, r)
       let gm = byGroup.get(gk)
       if (!gm) {
         gm = new Map()
@@ -1956,7 +2158,7 @@ export function buildQc(std: StandardizeResult, metric: QcMetric): QcData {
         )
         cvs.push((100 * sd) / mean)
       }
-      return { label, values: cvs }
+      return { label, values: cvs, meta: metaOf(label) }
     })
     .sort((a, b) => qcLabelCmp(a.label, b.label))
   return { groups, yLabel: 'CV %', metric, summary: 'median' }
@@ -1983,7 +2185,10 @@ export interface CorrData {
  */
 export function buildSampleCorr(
   std: StandardizeResult,
-  opts: { cluster?: boolean } = {}
+  /** `scale`: the scale abundance is shown on (see plotScaleOf); unset → the old guess (log₁₀
+   *  when the values look like raw intensity). A log base doesn't change Pearson r; log vs linear
+   *  does. */
+  opts: { cluster?: boolean; scale?: ValueScale } = {}
 ): CorrData {
   const conds = std.activeConditions
   const sampleLabel = (r: StandardRow): string => {
@@ -2009,7 +2214,7 @@ export function buildSampleCorr(
   }
   const S = labels.length
   const G = geneIdx.size
-  const log = min > 0 && max / min >= 100
+  const log = opts.scale ? opts.scale !== 'linear' : min > 0 && max / min >= 100
 
   // Dense per-sample vectors over the gene axis (NaN = protein absent in that sample).
   const vecs = Array.from({ length: S }, () => new Float64Array(G).fill(NaN))
@@ -2225,7 +2430,6 @@ export function enrichmentTable(
   facet?: string
 ): Record<string, string | number | null>[] {
   const out: Record<string, string | number | null>[] = []
-  const gsea = (opts.method ?? 'ora') === 'gsea'
   const groups =
     facet != null
       ? [{ label: facet, rows }]
@@ -2233,29 +2437,93 @@ export function enrichmentTable(
           label: facetLabel(g.values),
           rows: g.rows
         }))
+  for (const g of groups)
+    out.push(
+      ...enrichTermRows(
+        buildEnrichment(g.rows, { ...opts, topTerms: Number.MAX_SAFE_INTEGER }),
+        g.label
+      )
+    )
+  return out
+}
+
+/** One facet's enrichment (every tested term) as table rows — what the export writes. */
+export function enrichTermRows(
+  e: EnrichData,
+  facet: string
+): Record<string, string | number | null>[] {
+  const gsea = e.method === 'gsea'
+  const out: Record<string, string | number | null>[] = []
+  for (const [direction, terms] of [
+    ['up', e.up],
+    ['down', e.down]
+  ] as const)
+    for (const t of terms)
+      out.push({
+        facet,
+        method: gsea ? 'GSEA' : 'ORA',
+        source: ENRICH_SOURCE_LABEL[e.source],
+        direction,
+        term: t.term,
+        group: t.category ?? null,
+        setSize: t.setSize,
+        count: t.count,
+        geneRatio: t.geneRatio,
+        ...(gsea ? { NES: t.nes ?? null } : { bgRatio: t.bgRatio, fold: t.fold }),
+        pValue: t.pValue,
+        pAdjust: t.pAdjust,
+        genes: t.genes.join(';')
+      })
+  return out
+}
+
+/** GSEA keeps each tested set's member log₂FC distribution (for the ridge plot); only this many
+ *  top terms per direction keep theirs in a stored run — the ridge never shows more, and every
+ *  set's would make a saved project heavy. */
+export const ENRICH_DIST_KEPT = 100
+
+/** An enrichment plot's run: every method × term source, per facet (keyed by the facet's
+ *  FacetGroup key — '' when there are no facets), each with EVERY tested term (the tile shows its
+ *  top N, the export writes them all). `combo` keys are `${method}|${source}`. */
+export function enrichmentAll(
+  rows: CompareResultRow[],
+  opts: {
+    annotationMap: Record<string, Record<string, string>>
+    displayMap?: Record<string, string>
+    keggCategories?: Record<string, string>
+    sources: EnrichSource[]
+    methods: EnrichMethod[]
+  }
+): Record<string, Record<string, EnrichData>> {
+  const out: Record<string, Record<string, EnrichData>> = {}
+  const groups = facetCompareRows(rows, facetDims(rows))
+  // Per source, the term grouping — the same for every facet and method.
+  const termGroups = new Map(
+    opts.sources.map((src) => [
+      src,
+      enrichTermGroups(src, opts.annotationMap, opts.keggCategories ?? {})
+    ])
+  )
+  const trim = (terms: EnrichTerm[]): EnrichTerm[] =>
+    terms.map((t, i) =>
+      i < ENRICH_DIST_KEPT ? t : { ...t, dist: undefined, leadingDist: undefined }
+    )
   for (const g of groups) {
-    const e = buildEnrichment(g.rows, { ...opts, topTerms: Number.MAX_SAFE_INTEGER })
-    const facet = g.label
-    for (const [direction, terms] of [
-      ['up', e.up],
-      ['down', e.down]
-    ] as const)
-      for (const t of terms)
-        out.push({
-          facet,
-          method: gsea ? 'GSEA' : 'ORA',
-          source: ENRICH_SOURCE_LABEL[e.source],
-          direction,
-          term: t.term,
-          group: t.category ?? null,
-          setSize: t.setSize,
-          count: t.count,
-          geneRatio: t.geneRatio,
-          ...(gsea ? { NES: t.nes ?? null } : { bgRatio: t.bgRatio, fold: t.fold }),
-          pValue: t.pValue,
-          pAdjust: t.pAdjust,
-          genes: t.genes.join(';')
+    const byCombo: Record<string, EnrichData> = {}
+    for (const method of opts.methods)
+      for (const source of opts.sources) {
+        const e = buildEnrichment(g.rows, {
+          method,
+          source,
+          topTerms: Number.MAX_SAFE_INTEGER,
+          annotationMap: opts.annotationMap,
+          displayMap: opts.displayMap,
+          keggCategories: source.startsWith('kegg') ? opts.keggCategories : undefined,
+          termGroups: termGroups.get(source)
         })
+        byCombo[`${method}|${source}`] = { ...e, up: trim(e.up), down: trim(e.down) }
+      }
+    out[g.key] = byCombo
   }
   return out
 }
@@ -2522,16 +2790,17 @@ function mulberry32(seed: number): () => number {
 /** Weighted running-sum enrichment score for a set, given its member positions (ascending) in the
  *  ranked list and the per-position weights |metric|. Returns the signed peak ES and the peak
  *  position (the deepest point of the walk), from which the leading edge is read.
- *  Between hits the sum falls by 1/(N−K) per miss; at a hit it rises by w/N_R (N_R = Σ member w). */
+ *  Between hits the sum falls by 1/(N−K) per miss; at a hit it rises by w/N_R (N_R = Σ member w).
+ *  Indexed loops over the arrays: it runs nPerm times per set size, the bulk of a GSEA run. */
 function runningEs(
-  positions: number[],
-  weightAt: (pos: number) => number,
+  positions: readonly number[] | Int32Array,
+  weights: ArrayLike<number>,
   N: number
 ): { es: number; peakAt: number } {
   const K = positions.length
   if (K === 0 || K >= N) return { es: 0, peakAt: -1 }
   let nr = 0
-  for (const pos of positions) nr += weightAt(pos)
+  for (let i = 0; i < K; i++) nr += weights[positions[i]]
   if (nr <= 0) return { es: 0, peakAt: -1 }
   const missPenalty = 1 / (N - K)
   let cum = 0
@@ -2539,10 +2808,11 @@ function runningEs(
   let maxDev = 0
   let minDev = 0
   let peakAt = positions[0]
-  for (const pos of positions) {
+  for (let i = 0; i < K; i++) {
+    const pos = positions[i]
     cum -= (pos - prev - 1) * missPenalty // misses since the previous hit
     if (cum < minDev) minDev = cum
-    cum += weightAt(pos) / nr
+    cum += weights[pos] / nr
     if (cum > maxDev) {
       maxDev = cum
       if (maxDev >= -minDev) peakAt = pos
@@ -2555,13 +2825,14 @@ function runningEs(
     cum = 0
     prev = -1
     let dev = 0
-    for (const pos of positions) {
+    for (let i = 0; i < K; i++) {
+      const pos = positions[i]
       cum -= (pos - prev - 1) * missPenalty
       if (cum < dev) {
         dev = cum
         peakAt = pos
       }
-      cum += weightAt(pos) / nr
+      cum += weights[pos] / nr
       prev = pos
     }
   }
@@ -2645,29 +2916,32 @@ function runGsea(rows: CompareResultRow[], opts: EnrichOptions): EnrichData {
     .filter((s) => s.pos.length >= minSet && s.pos.length <= maxSet)
   if (sets.length === 0) return empty
 
-  const wAt = (pos: number): number => weights[pos]
-
   // Null ES per set size (permutations depend only on K), reused across sets of equal size.
   const rand = mulberry32(0x9e3779b9 ^ N ^ (sets.length << 8))
   const nullBySize = new Map<number, number[]>()
-  const sample = (k: number): number[] => {
-    // Partial Fisher–Yates over an index pool for k distinct ranked positions.
-    const pool = new Set<number>()
-    const out: number[] = []
-    while (out.length < k) {
+  // k distinct random ranked positions, ascending. The hot loop of a run (nPerm draws per set
+  // size), so a picked position is marked in a reused stamp array rather than a Set, and sorted as
+  // a typed array (numeric, no comparator) — the same draws in the same order, many times faster.
+  const picked = new Uint32Array(N)
+  let stamp = 0
+  const sample = (k: number): Int32Array => {
+    stamp++
+    const out = new Int32Array(k)
+    let n = 0
+    while (n < k) {
       const idx = (rand() * N) | 0
-      if (!pool.has(idx)) {
-        pool.add(idx)
-        out.push(idx)
+      if (picked[idx] !== stamp) {
+        picked[idx] = stamp
+        out[n++] = idx
       }
     }
-    return out.sort((a, b) => a - b)
+    return out.sort()
   }
   const nullFor = (k: number): number[] => {
     const cached = nullBySize.get(k)
     if (cached) return cached
     const es: number[] = []
-    for (let i = 0; i < nPerm; i++) es.push(runningEs(sample(k), wAt, N).es)
+    for (let i = 0; i < nPerm; i++) es.push(runningEs(sample(k), weights, N).es)
     nullBySize.set(k, es)
     return es
   }
@@ -2686,7 +2960,7 @@ function runGsea(rows: CompareResultRow[], opts: EnrichOptions): EnrichData {
   }
   const scored: Scored[] = []
   for (const s of sets) {
-    const { es, peakAt } = runningEs(s.pos, wAt, N)
+    const { es, peakAt } = runningEs(s.pos, weights, N)
     if (es === 0) continue
     const { nes, p } = gseaNormalize(es, nullFor(s.pos.length))
     // Leading edge: members up to (positive) / from (negative) the peak position, ordered by

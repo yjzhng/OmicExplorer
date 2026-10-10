@@ -84,16 +84,17 @@ export function fromLinear(v: number, scale: ValueScale): number | null {
 }
 
 /** The output scale for a log-transform choice on linear rows: 'none' leaves them on the scale the
- *  input arrived on; a log choice puts them on that log. Unset → the default for the input: log₁₀
- *  when it arrived linear, none (its own log) when it arrived logged. */
+ *  input arrived on; a log choice puts them on that log. Unset → none: a log-transform is only
+ *  applied when the user picks one. */
 export function outputScale(choice: LogTransform | undefined, input: ValueScale): ValueScale {
   const c = choice ?? defaultTransform(input)
   return c === 'none' ? input : c
 }
 
-/** The default log-transform for an input scale: log₁₀ for linear input, none for logged. */
-export const defaultTransform = (input: ValueScale): LogTransform =>
-  input === 'linear' ? 'log10' : 'none'
+/** The default log-transform, whatever the input scale: none. Clean data never picks one for the
+ *  user (it used to suggest log₁₀ for raw intensities) — the switch has to be set on purpose. */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+export const defaultTransform = (_input: ValueScale): LogTransform => 'none'
 
 /** Whether a distribution looks roughly normal, judged from its histogram's shape: sample skewness
  *  (from the bin centres, weighted by count) within ±1. A quick read of symmetry beside the plot, not
@@ -164,6 +165,25 @@ export function sampleValues(values: number[], cap = 50000): number[] {
  *  every plot built from it) untouched. A result from before `inputScale` existed keeps its own. */
 export function presentScaleOf(std: StandardizeResult, logTransform?: LogTransform): ValueScale {
   return std.inputScale ? outputScale(logTransform, std.inputScale) : (std.scale ?? 'linear')
+}
+
+/** The scale every abundance PLOT shows a Clean data result on (heatmap, bars, MA, abundance
+ *  scatter, abundance contrasts, QC, sample correlation, PCA/clustering): exactly its log-transform
+ *  choice — with none, the data as it arrived. No fallback of the plots' own: raw intensities left
+ *  unlogged LOOK wrong on every plot, which is the cue to set the log-transform in Clean data. */
+export function plotScaleOf(std: StandardizeResult, logTransform?: LogTransform): ValueScale {
+  return presentScaleOf(std, logTransform)
+}
+
+/** An abundance axis title on `scale`: "log abundance" (log₁₀ — the app's plain "log"),
+ *  "log₂ abundance", or just "abundance" when linear. `noun` swaps the word (e.g. "mean … "). */
+export function abundanceLabel(scale: ValueScale, noun = 'abundance'): string {
+  return scale === 'log10' ? `log ${noun}` : scale === 'log2' ? `log₂ ${noun}` : noun
+}
+
+/** A log₁₀ value (how an abundance contrast stores its sides) → `scale`. */
+export function fromLog10(v: number, scale: ValueScale): number {
+  return scale === 'log10' ? v : scale === 'log2' ? v / Math.log10(2) : 10 ** v
 }
 
 const presented = new WeakMap<StandardizeResult, Map<ValueScale, StandardizeResult>>()

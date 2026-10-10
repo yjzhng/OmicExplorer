@@ -7,6 +7,7 @@ import { deriveGroups } from '../graph/groups'
 import { categoryOf, NODE_SPECS } from '../graph/registry'
 import {
   isStep,
+  plotResultKey,
   type GraphNode,
   type NodeResult,
   type PlotChild,
@@ -65,6 +66,9 @@ export function collectSpecs(
       if (!node || !isStep(node) || categoryOf(node.data.kind) !== 'plotting') continue
       if (node.data.kind === 'plotGroup') {
         for (const c of (node.data.config as PlotGroupConfig).children) {
+          // Only a plot that has run can be drawn (graph/plotRun.ts) — the rest would export as
+          // a "not run" note.
+          if (!results[plotResultKey(node.id, c.id)]) continue
           specs.push({
             node,
             child: c,
@@ -76,6 +80,7 @@ export function collectSpecs(
           })
         }
       } else {
+        if (!results[plotResultKey(node.id)]) continue
         specs.push({
           node,
           rootId: g.rootId,

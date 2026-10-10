@@ -138,3 +138,55 @@ describe('condsOf', () => {
     expect(condsOf([meta({ genotype: '' })])).toEqual(['cell', 'cmpd', 'dose', 'time'])
   })
 })
+
+describe('the user’s channel choices', () => {
+  const ALL: ConditionKey[] = ['cell', 'cmpd', 'dose', 'time']
+  const withOv = (varying: ConditionKey[], ov: Parameters<typeof planAesthetics>[2]) =>
+    planAesthetics(new Set(varying), ALL, ov)
+
+  it('no choices: exactly the automatic plan', () => {
+    for (const v of [
+      ['cell', 'dose'],
+      ['cell', 'cmpd', 'dose', 'time'],
+      ['dose', 'time']
+    ] as ConditionKey[][])
+      expect(withOv(v, {})).toEqual(plan(v))
+  })
+
+  it('colour by a chosen condition; the numerics fill shade then arrows', () => {
+    expect(withOv(['cell', 'cmpd', 'dose', 'time'], { color: ['cmpd'] })).toMatchObject({
+      grouped: false,
+      colorKey: 'cmpd',
+      shadeKey: 'time',
+      arrowKey: 'dose'
+    })
+  })
+
+  it('colour by several categoricals, in the chosen order', () => {
+    expect(withOv(['cell', 'cmpd'], { color: ['cmpd', 'cell'] })).toMatchObject({
+      grouped: true,
+      quals: ['cmpd', 'cell']
+    })
+  })
+
+  it('shade / arrow by a chosen numeric, or none', () => {
+    expect(withOv(['cell', 'dose', 'time'], { shade: 'dose', arrow: 'time' })).toMatchObject({
+      shadeKey: 'dose',
+      arrowKey: 'time'
+    })
+    expect(withOv(['cell', 'dose', 'time'], { arrow: 'none' })).toMatchObject({
+      shadeKey: 'time',
+      arrowKey: null
+    })
+  })
+
+  it('never puts a categorical on an ordered channel, whatever was chosen', () => {
+    const p = withOv(['cell', 'cmpd', 'dose'], { color: ['cell'], shade: 'cmpd', arrow: 'cmpd' })
+    expect(p.shadeKey).not.toBe('cmpd')
+    expect(p.arrowKey).not.toBe('cmpd')
+  })
+
+  it('skips a chosen colour condition that does not vary', () => {
+    expect(withOv(['cell', 'dose'], { color: ['cmpd'] })).toMatchObject({ colorKey: 'cell' })
+  })
+})

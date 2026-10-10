@@ -2,7 +2,7 @@
  * The STRING network as data: which differential genes are queried, how the reply becomes nodes and
  * edges, what fits the draw budget, and the interaction modules (Markov clustering) with their
  * pathway labels. Shared by the STRING view, which lays it out and draws it, and the background
- * export that writes each facet's node / edge tables to the project's temp folder — so the files
+ * export that writes each facet's node / edge tables to the step's output/ folder — so the files
  * hold exactly what the tile shows.
  */
 import { benjaminiHochberg, type CompareResultRow } from '../engine'
@@ -89,6 +89,129 @@ export function stringQueryGenes(
     }))
     .sort((a, b) => Math.abs(b.log2FC) - Math.abs(a.log2FC))
     .slice(0, Math.max(2, sendLimit))
+}
+
+/** STRING's confidence buckets → the required score (0–1000) each stands for. */
+export const STRING_LEVELS = { low: 150, medium: 400, high: 700, highest: 900 } as const
+export type StringLevel = keyof typeof STRING_LEVELS
+const LEVELS_HIGH_FIRST: StringLevel[] = ['highest', 'high', 'medium', 'low']
+
+/** The confidence levels at which a network has anything, from the best link score (0–1000, at
+ *  any confidence) a read reports — every level at or under it. Null (unknown) when not reported. */
+export function stringLevelsFromScore(best: number | null | undefined): Set<StringLevel> | null {
+  if (best == null) return null
+  return new Set(LEVELS_HIGH_FIRST.filter((l) => best >= STRING_LEVELS[l]))
+}
+
+/** The confidence an unset ("auto") setting shows: the highest level that still has a network;
+ *  'low' when none does (the network is empty at every level). */
+export const autoStringLevel = (levels: Set<StringLevel>): StringLevel =>
+  LEVELS_HIGH_FIRST.find((l) => levels.has(l)) ?? 'low'
+
+/** A `string:network` reply (see the preload's fetchStringNetwork). */
+export interface StringReply {
+  nodes: { id: string; name: string; isQuery: boolean }[]
+  edges: { aId: string; bId: string; score: number }[]
+  /** best link score (0–1000) at any confidence: query–query / query–anything; −1 = none */
+  maxQueryScore?: number
+  maxLinkScore?: number
+  error?: string
+}
+
+// ── every setting at once, for the tile and its background export ────────────────────────────
+// A read scans the organism's whole links file in the main process. So one read per query gets
+// what EVERY setting draws (all confidence levels, gene caps and both interactor modes — see the
+// main process's StringAllResult) — the STRING plot's run (graph/plotRun.ts) does it per facet and
+// keeps it as its result; a setting is then assembled from it (stringVariant), so switching settings
+// only re-renders. Reads are cached for the session (a re-run of an unchanged query is free).
+
+/** The gene caps a STRING tile offers (its quick switch), plus a custom one set in the gear. The
+ *  tile and its export use the same list, so they share one read. */
+export const stringCapOptions = (maxGenes: number): number[] =>
+  [...new Set([20, 40, 80, maxGenes])].sort((a, b) => a - b)
+
+/** What one read of every setting returns (see the main process's StringAllResult). */
+export interface StringAll {
+  nodes: { id: string; name: string }[]
+  edges: { aId: string; bId: string; score: number }[]
+  /** `interactors[cap][level]`, cap and level in stringCapOptions / LEVEL_ORDER order */
+  interactors: string[][][]
+  /** `maxLinkScore[cap]` (0–1000; −1 = none) */
+  maxLinkScore: number[]
+  error?: string
+}
+
+/** Levels low → high, the order the read's per-level lists use. */
+const LEVEL_ORDER: StringLevel[] = ['low', 'medium', 'high', 'highest']
+
+const readCache = new Map<string, Promise<StringAll>>()
+const READ_CACHE_MAX = 24
+
+/** Read every setting's network for a query: `widest` is the query at the largest cap (strongest
+ *  first — every smaller cap's query is a prefix of it). Cached by query, species and caps. */
+export function readStringAll(
+  widest: StringGene[],
+  species: number,
+  caps: number[]
+): Promise<StringAll> {
+  const genes = widest.map((g) => (g.stringIds.length ? g.stringIds : [g.name]))
+  const key = `${species}|${caps.join(',')}|${genes.map((ids) => ids.join(';')).join(',')}`
+  let p = readCache.get(key)
+  if (p) {
+    // Most recently used last, so the oldest is the first evicted.
+    readCache.delete(key)
+    readCache.set(key, p)
+  } else {
+    p = window.api.fetchStringNetworkAll(
+      genes,
+      species,
+      caps.map((n) => ({ genes: Math.max(2, stringSendLimit(n)), k: n }))
+    )
+    readCache.set(key, p)
+    // A failed read isn't kept — the next ask tries again.
+    p.then(
+      (r) => {
+        if (r.error) readCache.delete(key)
+      },
+      () => readCache.delete(key)
+    )
+    while (readCache.size > READ_CACHE_MAX) readCache.delete(readCache.keys().next().value!)
+  }
+  return p
+}
+
+/** One setting's network, assembled from a read of every setting: the query at cap `maxGenes`
+ *  (`genes`, a prefix of the read's), plus — with interactors — the ones that cap and level pull
+ *  in; every link among them at or above the level. With the best scores that say which levels
+ *  have any network. Exactly what a read of just that setting returns. */
+export function stringVariant(
+  all: StringAll,
+  genes: StringGene[],
+  caps: number[],
+  maxGenes: number,
+  level: StringLevel,
+  interactors: boolean
+): StringReply {
+  const c = caps.indexOf(maxGenes)
+  const query = new Set(stringSendIds(genes))
+  const added =
+    interactors && c >= 0 ? (all.interactors[c]?.[LEVEL_ORDER.indexOf(level)] ?? []) : []
+  const N = new Set([...query, ...added])
+  const cut = STRING_LEVELS[level]
+  let maxQuery = -1
+  const edges: StringReply['edges'] = []
+  for (const e of all.edges) {
+    const s = Math.round(e.score * 1000)
+    if (query.has(e.aId) && query.has(e.bId) && s > maxQuery) maxQuery = s
+    if (s >= cut && N.has(e.aId) && N.has(e.bId)) edges.push(e)
+  }
+  const nameById = new Map(all.nodes.map((n) => [n.id, n.name]))
+  return {
+    nodes: [...N].map((id) => ({ id, name: nameById.get(id) ?? id, isQuery: query.has(id) })),
+    edges,
+    maxQueryScore: maxQuery,
+    maxLinkScore: c >= 0 ? (all.maxLinkScore[c] ?? -1) : -1
+  }
 }
 
 /** What's sent to STRING: each gene's STRING ids (a protein group's members each), else its name. */

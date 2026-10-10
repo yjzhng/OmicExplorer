@@ -1,12 +1,17 @@
 import { useMemo } from 'react'
 
 import type { MAData, MAPoint, ThresholdConfig } from '../engine'
-import { DEFAULT_EFFECT_LABELS, type EffectLabels, type PointStyle } from '../graph/types'
+import {
+  DEFAULT_EFFECT_LABELS,
+  type EffectColors,
+  type EffectLabels,
+  type PointStyle
+} from '../graph/types'
 import { useGraph } from '../graph/store'
 import { PlotlyChart, type GuideDrag } from './PlotlyChart'
 import { legendOn, resolveGroups, resolveHighlight } from './pointStyle'
-import { axisBase, guideLine, PALETTES, plotBase } from './theme'
-import { matchingGeneSet, useSelection } from './useSelection'
+import { axisBase, EFFECT_COLOR, guideLine, PALETTES, plotBase } from './theme'
+import { useSelectedGeneSets } from './useSelection'
 import { useUiTheme } from './useUiTheme'
 
 type Eff = 'up' | 'down' | 'none'
@@ -22,6 +27,7 @@ export function MAView({
   asymmetric = false,
   onThresholdChange,
   effectLabels = DEFAULT_EFFECT_LABELS,
+  effectColors,
   style
 }: {
   ma: MAData
@@ -32,6 +38,8 @@ export function MAView({
   asymmetric?: boolean
   /** display names for the down/up classes (from the Compare config) */
   effectLabels?: EffectLabels
+  /** the upstream Compare's effect colours — what each group's automatic colour follows */
+  effectColors?: EffectColors
   /** upstream compare uses a non-linear (SAM) threshold — hide the fold-change guide lines, which
    *  imply a fixed FC cutoff that SAM doesn't have (SAM depends on the stat, absent from MA axes). */
   samThreshold?: boolean
@@ -40,29 +48,30 @@ export function MAView({
   onThresholdChange?: (partial: Partial<ThresholdConfig>) => void
 }) {
   const mode = useUiTheme((s) => s.mode)
-  // The linked selection, read only to tell whether it IS a saved geneset (selIds below) — not
-  // hoverId, and not per click: an ordinary pick is drawn by PlotlyChart's overlay.
-  const pinnedIds = useSelection((s) => s.pinnedIds)
-  // A selection that IS a saved geneset gets a legend entry under that geneset's name; an ad-hoc
-  // pick gets none (the overlay already marks and names each pinned gene).
+  // The selected saved genesets (each its own trace: legend entry, and its colour if set). An
+  // ad-hoc pick gets none — PlotlyChart's shared overlay marks and names each pinned gene, restyled
+  // in place — and the sets stay stable across clicks that don't change them, so a click-select
+  // elsewhere doesn't rebuild this plot (a full redraw).
   const geneSets = useGraph((s) => s.geneSets)
-  const selSet = matchingGeneSet(pinnedIds, geneSets)
-  const selName = selSet?.name ?? null
-  // A geneset's own colour (set in the gene selector) replaces the effect colours for its points.
-  const selColor = selSet?.color ?? null
-  // The selection trace exists only for a saved geneset (its legend entry and colour), so the plot's
-  // data follows the MATCHED geneset, not every click: an ad-hoc pick is marked by PlotlyChart's
-  // shared overlay alone, restyled in place. Keyed on pinnedIds directly, each click-select anywhere
-  // in the app rebuilt this plot from scratch (a full redraw — the lag after a click).
-  const selIds = useMemo(() => (selSet ? new Set(selSet.genes.map((g) => g.id)) : null), [selSet])
+  const selSets = useSelectedGeneSets(geneSets)
   // Resolved once per config change (stable objects, so PlotlyChart doesn't re-render per hover).
   // Memo inputs kept primitive / stable (see VolcanoView): a fresh `effectLabels` object or
   // `onThresholdChange` closure per parent render must not rebuild the traces.
   const upName = effectLabels.up
   const downName = effectLabels.down
+  const noneName = effectLabels.none
+  const upColor = effectColors?.up ?? EFFECT_COLOR.up
+  const downColor = effectColors?.down ?? EFFECT_COLOR.down
+  const noneColor = effectColors?.none ?? EFFECT_COLOR.none
   const groups = useMemo(
-    () => resolveGroups(style, 'ma', { up: upName, down: downName }),
-    [style, upName, downName]
+    () =>
+      resolveGroups(
+        style,
+        'ma',
+        { up: upName, down: downName, none: noneName },
+        { up: upColor, down: downColor, none: noneColor }
+      ),
+    [style, upName, downName, noneName, upColor, downColor, noneColor]
   )
   const editable = !!onThresholdChange
   const emphasis = useMemo(() => resolveHighlight(style), [style])
@@ -74,7 +83,7 @@ export function MAView({
     // Tooltip terms match the axis titles; the fold-change axis names the comparison
     // ("log₂FC · A | B") when the rows share one.
     const fcLabel = ma.comparison ? `log₂FC · ${ma.comparison}` : 'log₂FC'
-    const hover = `${emphasis.label ? '' : '%{text}<br>'}mean log abundance=%{x:.2f}<br>${fcLabel}=%{y:.3f}<extra></extra>`
+    const hover = `${emphasis.label ? '' : '%{text}<br>'}${ma.xLabel}=%{x:.2f}<br>${fcLabel}=%{y:.3f}<extra></extra>`
     const look = (eff: Eff) => groups.get(eff)!
 
     // Always colour EVERY point by effect (up/down/none), so the significance groups stay
@@ -105,17 +114,17 @@ export function MAView({
         }
       }
     })
-    // A selection that is a saved geneset → its own trace (fully opaque, its legend entry and colour);
-    // any pinned gene's emphasis — enlarged, ringed, labelled — is PlotlyChart's shared overlay.
-    const sel = selIds ? ma.points.filter((pt) => selIds.has(pt.uniqID)) : []
-    if (sel.length) {
+    // Each selected geneset → its own trace (fully opaque, its legend entry and colour); any pinned
+    // gene's emphasis — enlarged, ringed, labelled — is PlotlyChart's shared overlay.
+    for (const set of selSets) {
+      const sel = ma.points.filter((pt) => set.ids.has(pt.uniqID))
+      if (!sel.length) continue
       traces.push({
         type: 'scatter',
         // Markers only — the pinned gene's LABEL comes from the shared selection overlay (which
         // labels each active gene exactly once); `text` here feeds the tooltip's %{text} only.
         mode: 'markers',
-        name: selName ? `${selName} (${sel.length})` : `Selected (${sel.length})`,
-        showlegend: selName !== null,
+        name: `${set.name} (${sel.length})`,
         x: sel.map((pt) => pt.x),
         y: sel.map((pt) => pt.y),
         text: sel.map((pt) => pt.label),
@@ -124,7 +133,7 @@ export function MAView({
         // Same size as the cloud's dots: this trace exists for its (geneset) legend entry and to keep
         // the pinned genes fully opaque; the enlarged, ringed emphasis is PlotlyChart's shared overlay.
         marker: {
-          color: selColor ?? sel.map((pt) => look(pt.effect).color),
+          color: set.color ?? sel.map((pt) => look(pt.effect).color),
           size: sel.map((pt) => look(pt.effect).size),
           opacity: 1,
           line: {
@@ -171,7 +180,7 @@ export function MAView({
       title: title ? { text: title, font: { size: 13 } } : undefined,
       xaxis: {
         ...axisBase(p),
-        title: 'mean log abundance',
+        title: ma.xLabel,
         range: [lo - xPad, hi + xPad],
         autorange: false
       },
@@ -216,8 +225,10 @@ export function MAView({
             }
           ]
     // Collision-managed labels for the genes of every group whose label switch is on (by default
-    // the significant ones), largest |log₂FC| first. PlotlyChart itself leaves out any pinned gene
-    // (the selection overlay names it).
+    // the significant ones), ranked by distance from the y = 0 line — |log₂FC|, largest first (the
+    // Manhattan distance to a horizontal line is the vertical one alone). The ranking runs before
+    // PlotlyChart's crowding gate and placement. PlotlyChart leaves out any pinned gene (the
+    // selection overlay names it).
     const labels = ma.points
       .filter((pt) => look(pt.effect).label)
       .map((pt) => ({ x: pt.x, y: pt.y, text: pt.label, priority: Math.abs(pt.y), id: pt.uniqID }))
@@ -226,9 +237,7 @@ export function MAView({
     ma,
     title,
     mode,
-    selIds,
-    selName,
-    selColor,
+    selSets,
     samThreshold,
     asymmetric,
     editable,

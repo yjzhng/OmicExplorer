@@ -30,6 +30,20 @@ describe('tile requirements', () => {
     expect(unmetRequirement('bubble', {}, none)).toMatch(/dose or time/)
   })
 
+  it('a curve-fit Compare feeds curve plots, not per-dose or group-mean ones', () => {
+    const curve = facts({ kind: 'compare', curve: true })
+    for (const k of ['volcano', 'heatmap', 'dr', 'potency', 'enrich', 'string', 'table'] as const)
+      expect(unmetRequirement(k, NODE_SPECS[k].defaultConfig(), curve)).toBeNull()
+    for (const k of ['ma', 'scatter', 'bubble', 'tdr'] as const)
+      expect(unmetRequirement(k, NODE_SPECS[k].defaultConfig(), curve)).not.toBeNull()
+    // Potency is a curve fit's only.
+    expect(unmetRequirement('potency', {}, facts({ kind: 'compare', curve: false }))).toMatch(
+      /curve fit/i
+    )
+    // A Contrast's scatter (FC1 vs FC2) is unaffected.
+    expect(unmetRequirement('scatter', {}, facts({ kind: 'contrast', curve: false }))).toBeNull()
+  })
+
   it('kind mismatch is reported before data requirements', () => {
     expect(unmetRequirement('pca', {}, facts({ kind: 'compare', result: cmpResult() }))).toMatch(
       /Needs a Clean data upstream/

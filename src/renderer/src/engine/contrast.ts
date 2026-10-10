@@ -9,7 +9,9 @@
  * band; independent → marginal robust per-axis Gaussian.
  */
 import { benjaminiHochberg, madNormal, median, normalSf, studentTppf } from './stats'
+import { fromLog10, type ValueScale } from './scale'
 import {
+  condLabel,
   condsIn,
   customSlug,
   isCustomCond,
@@ -87,6 +89,11 @@ export interface ContrastResultRow {
    *  abundance SE, SD/√n (Standardize). Drives the DR/TR error bands; null when < 2 reps. */
   FC1err?: number | null
   FC2err?: number | null
+  /** each side's replicates on its value's scale — a Compare's per-replicate log2 ratio to the
+   *  control mean, or a Standardize's per-sample log10 abundance. Drawn as the DR/TR points;
+   *  absent when the side carried none (older results, a curve fit). Not a table column. */
+  FC1reps?: number[] | null
+  FC2reps?: number[] | null
   FCdiff: number | null
   P1: number | null
   P2: number | null
@@ -111,6 +118,59 @@ export interface ContrastResult {
   valueKind?: 'abundance' | 'fc'
 }
 
+const onScale = new WeakMap<ContrastResultRow[], Map<ValueScale, ContrastResultRow[]>>()
+/** An abundance contrast's rows (sides stored as log₁₀ abundance) with their side values, their
+ *  errors and their difference put on `scale` — the scale the plots show Clean data on (see
+ *  plotScaleOf). A log base is a plain rescale; linear takes the values back out of the log
+ *  (geometric means), the errors by the delta method and the difference as linear A − B. The
+ *  statistics are untouched. Cached per row array and scale. */
+export function abundanceOnScale(
+  rows: ContrastResultRow[],
+  scale: ValueScale
+): ContrastResultRow[] {
+  if (scale === 'log10') return rows
+  let byScale = onScale.get(rows)
+  if (!byScale) onScale.set(rows, (byScale = new Map()))
+  const hit = byScale.get(scale)
+  if (hit) return hit
+  const f = (v: number | null | undefined): number | null =>
+    v == null || !Number.isFinite(v) ? null : fromLog10(v, scale)
+  const out = rows.map((r): ContrastResultRow => {
+    if (scale === 'log2') {
+      const k = 1 / Math.log10(2)
+      const m = (v: number | null | undefined): number | null =>
+        v == null || !Number.isFinite(v) ? (v ?? null) : v * k
+      return {
+        ...r,
+        FC1: m(r.FC1),
+        FC2: m(r.FC2),
+        FC1err: m(r.FC1err),
+        FC2err: m(r.FC2err),
+        FC1reps: r.FC1reps?.map((v) => v * k),
+        FC2reps: r.FC2reps?.map((v) => v * k),
+        FCdiff: m(r.FCdiff)
+      }
+    }
+    const a = f(r.FC1)
+    const b = f(r.FC2)
+    // d(10^v) = ln10 · 10^v · dv
+    const err = (lin: number | null, e: number | null | undefined): number | null =>
+      lin == null || e == null || !Number.isFinite(e) ? null : Math.LN10 * lin * e
+    return {
+      ...r,
+      FC1: a,
+      FC2: b,
+      FC1err: err(a, r.FC1err),
+      FC2err: err(b, r.FC2err),
+      FC1reps: r.FC1reps?.map((v) => fromLog10(v, scale)),
+      FC2reps: r.FC2reps?.map((v) => fromLog10(v, scale)),
+      FCdiff: a != null && b != null ? a - b : null
+    }
+  })
+  byScale.set(scale, out)
+  return out
+}
+
 /** One per-gene value on one side of a PAIRED contrast: a scalar keyed by uniqID + condition
  *  context. From a Compare it is the log2FC (with its significance); from a Standardize it is a
  *  per-sample log10 abundance (runContrastPair averages replicates + unmatched dims to the matched
@@ -131,6 +191,9 @@ export interface ContrastSideRow {
   /** uncertainty of `value` (log2 scale): fold-change SE (Compare) — for Standardize it's left
    *  null here and computed as the abundance SD across replicates in aggregateSide. */
   se?: number | null
+  /** the replicates behind `value`, on its scale (a sample row: just its own value) — pooled by
+   *  aggregateSide into the result's FC1reps / FC2reps */
+  reps?: number[]
 }
 
 /** A paired contrast: two independent value series (two datasets), joined side-by-side by
@@ -334,6 +397,7 @@ function aggregateSide(rows: ContrastSideRow[], ctx: ConditionKey[]): Map<string
       const varr = vals.reduce((s, v) => s + (v - mean) ** 2, 0) / (vals.length - 1)
       se = Math.sqrt(varr) / Math.sqrt(vals.length)
     }
+    const reps = grp.flatMap((r) => r.reps ?? []).filter((v) => Number.isFinite(v))
     out.set(k, {
       uniqID: rep.uniqID,
       cell: rep.cell,
@@ -345,7 +409,8 @@ function aggregateSide(rows: ContrastSideRow[], ctx: ConditionKey[]): Map<string
       se,
       signf: grp.some((r) => r.signf),
       pP: best(grp, 'pP'),
-      pQ: best(grp, 'pQ')
+      pQ: best(grp, 'pQ'),
+      ...(reps.length ? { reps } : null)
     })
   }
   return out
@@ -410,6 +475,8 @@ export function runContrastPair(input: ContrastPairInput): ContrastResult {
       FC2: b?.value ?? null,
       FC1err: a?.se ?? null,
       FC2err: b?.se ?? null,
+      FC1reps: a?.reps ?? null,
+      FC2reps: b?.reps ?? null,
       FCdiff: sub(a?.value ?? null, b?.value ?? null),
       P1: a?.pP ?? null,
       P2: b?.pP ?? null,
@@ -486,7 +553,7 @@ export function sliceSuffix(
   const parts: string[] = []
   for (const c of conds) {
     const v = [...valueSet(rows, c)]
-    if (v.length === 1 && !base.includes(v[0])) parts.push(`${c} ${v[0]}`)
+    if (v.length === 1 && !base.includes(v[0])) parts.push(`${condLabel(c)} ${v[0]}`)
   }
   return parts.length ? ` (${parts.join(' · ')})` : ''
 }
@@ -593,7 +660,7 @@ export function previewContrastPair(
     ])
   }
   // The '' column is a UI-only "vs" between the two datasets (rendered muted by the table).
-  const columns = ['dataset A', '', 'dataset B', ...matched, 'paired genes']
+  const columns = ['dataset A', '', 'dataset B', ...matched.map(condLabel), 'paired genes']
   const warnings: string[] = []
   for (const u of unpinned)
     warnings.push(

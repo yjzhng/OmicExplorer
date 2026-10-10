@@ -1,30 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { buildFolderMap, exportPath, sanitize } from './paths'
-
-describe('buildFolderMap', () => {
-  it('keeps unique labels clean and disambiguates colliding ones by root id', () => {
-    // Two distinct analyses both labelled "clpP | WT" must not share a folder.
-    const m = buildFolderMap([
-      { rootId: 'compare-6', analysis: 'Amk | H2O2' },
-      { rootId: 'step-7', analysis: 'clpP | WT' },
-      { rootId: 'step-48', analysis: 'clpP | WT' }
-    ])
-    expect(m.get('compare-6')).toBe('Amk_H2O2')
-    expect(m.get('step-7')).toBe('clpP_WT_step-7')
-    expect(m.get('step-48')).toBe('clpP_WT_step-48')
-    // the two colliding folders are now distinct
-    expect(m.get('step-7')).not.toBe(m.get('step-48'))
-  })
-
-  it('collapses repeated entries for the same root', () => {
-    const m = buildFolderMap([
-      { rootId: 'r1', analysis: 'A' },
-      { rootId: 'r1', analysis: 'A' }
-    ])
-    expect(m.get('r1')).toBe('A')
-  })
-})
+import { exportPath, sanitize } from './paths'
 
 describe('exportPath', () => {
   it('subfolder: nests by analysis folder; selected-only variants under a selected subfolder', () => {

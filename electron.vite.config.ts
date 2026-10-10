@@ -2,6 +2,7 @@ import { resolve } from 'path'
 import { defineConfig, externalizeDepsPlugin } from 'electron-vite'
 import react from '@vitejs/plugin-react'
 import pkg from './package.json'
+import { readCitation } from './config/citation'
 
 export default defineConfig({
   main: {
@@ -46,6 +47,11 @@ export default defineConfig({
     define: {
       __APP_NAME__: JSON.stringify(pkg.productName),
       __APP_VERSION__: JSON.stringify(pkg.version),
+      // "Cite this software" from the newest release notes up to this version that give one —
+      // see config/citation.ts. null when none does yet.
+      __APP_CITATION__: JSON.stringify(
+        readCitation(resolve('.'), pkg.version, String(new Date().getFullYear()))
+      ),
       // react-draggable (via react-grid-layout) reads `process.env.DRAGGABLE_DEBUG`
       // in its log(); with contextIsolation the renderer has no `process`, so the
       // bare reference throws on drag-start. Fold it to a literal.

@@ -16,12 +16,17 @@ import {
   type CSSProperties,
   type ReactNode
 } from 'react'
+import { createPortal } from 'react-dom'
 
-import { UI } from './theme'
+import { StatusIcon } from './StatusNote'
+import { cssVars, PALETTES, UI } from './theme'
+import { useUiTheme } from './useUiTheme'
 
 /** The switches' shared motion: how long a highlight or knob takes to move, and its easing. */
 const MOTION_MS = 160
 const MOTION = `${MOTION_MS}ms ease`
+/** A disabled option's tooltip: its widest. */
+const TIP_MAX_W = 260
 
 /**
  * Move first, then commit. A pick can set off heavy work (a condition switch rebuilds every plot
@@ -71,6 +76,9 @@ export interface ToggleOption<V extends string> {
 type Size = 'sm' | 'md' | 'lg'
 /** `pill` is fully rounded; `rounded` is a rounded rectangle (the main nav's chip shape). */
 type Shape = 'pill' | 'rounded'
+/** `accent`: the picked option on a solid accent highlight. `subtle`: on a faint shade, the others
+ *  grey — for a switch that sits among quiet chrome (the nav's layout switch). */
+type Tone = 'accent' | 'subtle'
 
 export function ToggleSwitch<V extends string>({
   value,
@@ -80,6 +88,7 @@ export function ToggleSwitch<V extends string>({
   size = 'md',
   shape = 'pill',
   fill,
+  tone = 'accent',
   disabled
 }: {
   value: V
@@ -91,6 +100,8 @@ export function ToggleSwitch<V extends string>({
   shape?: Shape
   /** stretch across the container, options sharing the width equally */
   fill?: boolean
+  /** how strongly the picked option stands out (see Tone) */
+  tone?: Tone
   /** the whole switch inert (e.g. while its data loads) */
   disabled?: boolean
 }): ReactNode {
@@ -144,6 +155,16 @@ export function ToggleSwitch<V extends string>({
     return () => cancelAnimationFrame(raf)
   }, [box, placed])
 
+  // Hover tooltip for a disabled option's reason: centred under it, kept inside the window.
+  const mode = useUiTheme((s) => s.mode)
+  const [tip, setTip] = useState<{ text: string; left: number; top: number } | null>(null)
+  const showTip = (text: string, el: HTMLElement): void => {
+    const r = el.getBoundingClientRect()
+    const half = TIP_MAX_W / 2 + 8
+    const centre = Math.min(Math.max(r.left + r.width / 2, half), window.innerWidth - half)
+    setTip({ text, left: centre, top: r.bottom + 6 })
+  }
+
   const radius = shape === 'pill' ? 999 : 6
   return (
     <div
@@ -162,6 +183,7 @@ export function ToggleSwitch<V extends string>({
           aria-hidden
           style={{
             ...styles.highlight,
+            ...(tone === 'subtle' ? styles.highlightSubtle : null),
             ...box,
             borderRadius: shape === 'pill' ? 999 : 4,
             transition: placed ? `left ${MOTION}, top ${MOTION}, width ${MOTION}` : 'none'
@@ -179,17 +201,26 @@ export function ToggleSwitch<V extends string>({
             }}
             role="tab"
             aria-selected={on}
-            disabled={off}
-            title={o.title}
+            // aria-disabled, not `disabled`: a disabled button gets no mouse events, so why it's
+            // off could never show on hover. Clicks on it are ignored instead.
+            aria-disabled={off || undefined}
+            // A disabled option's reason shows in the switch's own tooltip (the native one doesn't
+            // reliably appear here); an enabled option keeps the plain title.
+            title={off ? undefined : o.title}
+            onMouseEnter={off && o.title ? (e) => showTip(o.title!, e.currentTarget) : undefined}
+            onMouseLeave={() => setTip(null)}
             onClick={() => {
-              if (!on) pick(o.value)
+              if (!on && !off) pick(o.value)
             }}
             style={{
               ...styles.option,
               ...SIZES[size],
               ...(fill ? styles.optionFill : null),
-              color: on ? UI.accentText : UI.text,
-              ...(o.disabled ? styles.optionDisabled : null),
+              color:
+                tone === 'subtle' ? (on ? UI.text : UI.textMuted) : on ? UI.accentText : UI.text,
+              // A disabled option that is the current value (an automatic state, e.g. the import
+              // wizard's Custom preset) stays readable on the highlight; only unpicked ones dim.
+              ...(o.disabled && !on ? styles.optionDisabled : null),
               cursor: off ? 'not-allowed' : on ? 'default' : 'pointer'
             }}
           >
@@ -197,6 +228,18 @@ export function ToggleSwitch<V extends string>({
           </button>
         )
       })}
+      {tip &&
+        createPortal(
+          <div
+            role="tooltip"
+            style={{ ...cssVars(PALETTES[mode]), ...styles.tip, left: tip.left, top: tip.top }}
+          >
+            {/* Styled as a warning (StatusNote's ⚠ amber): it says why the option can't be picked. */}
+            <StatusIcon kind="warn" />
+            <span>{tip.text}</span>
+          </div>,
+          document.body
+        )}
     </div>
   )
 }
@@ -207,7 +250,9 @@ export function OnOffSwitch({
   onChange,
   label,
   title,
-  disabled
+  disabled,
+  color,
+  size = 'md'
 }: {
   on: boolean
   onChange: (on: boolean) => void
@@ -217,8 +262,13 @@ export function OnOffSwitch({
   title?: string
   /** greyed and inert, with a not-allowed cursor; `title` is the place to say why */
   disabled?: boolean
+  /** the track's colour when on (default the accent) — e.g. a condition's own colour */
+  color?: string
+  /** `lg`: a bigger switch, for a list where the switch is the main control */
+  size?: 'md' | 'lg'
 }): ReactNode {
   const [shown, pick] = useMoveThenCommit(on, onChange)
+  const lg = size === 'lg'
   return (
     <button
       role="switch"
@@ -229,13 +279,18 @@ export function OnOffSwitch({
       onClick={() => pick(!shown)}
       style={{
         ...styles.knobTrack,
-        background: shown ? UI.accent : UI.border,
+        ...(lg ? styles.knobTrackLg : null),
+        background: shown ? (color ?? UI.accent) : UI.border,
         ...(disabled ? styles.knobDisabled : null)
       }}
     >
       {/* Slides rather than jumps: a transform animates, a flip of justify-content can't. */}
       <span
-        style={{ ...styles.knob, transform: shown ? `translateX(${KNOB_TRAVEL}px)` : 'none' }}
+        style={{
+          ...styles.knob,
+          ...(lg ? styles.knobLg : null),
+          transform: shown ? `translateX(${lg ? KNOB_TRAVEL_LG : KNOB_TRAVEL}px)` : 'none'
+        }}
       />
     </button>
   )
@@ -243,6 +298,8 @@ export function OnOffSwitch({
 
 /** How far the knob slides: the track's inside (28 − 2 × 2 padding) less the knob's 11px. */
 const KNOB_TRAVEL = 13
+/** The `lg` switch's: (36 − 2 × 2) − 16. */
+const KNOB_TRAVEL_LG = 16
 
 /** Option text and padding per size. `lg` is the main nav's: 2px track inset + 3px padding +
  *  13px text comes to the same height as the folder / workflow chip beside it. */
@@ -269,6 +326,7 @@ const styles: Record<string, CSSProperties> = {
   trackDisabled: { opacity: 0.5 },
   // Behind the options; sized and placed on the picked one.
   highlight: { position: 'absolute', background: UI.accent, pointerEvents: 'none' },
+  highlightSubtle: { background: `color-mix(in srgb, ${UI.text} 12%, transparent)` },
   option: {
     position: 'relative', // above the highlight
     border: 'none',
@@ -279,6 +337,26 @@ const styles: Record<string, CSSProperties> = {
   },
   optionFill: { flex: 1 },
   optionDisabled: { opacity: 0.35 },
+  tip: {
+    position: 'fixed',
+    zIndex: 10000,
+    transform: 'translateX(-50%)',
+    maxWidth: TIP_MAX_W,
+    padding: '5px 8px',
+    borderRadius: 4,
+    display: 'flex',
+    alignItems: 'flex-start',
+    gap: 6,
+    border: `1px solid ${UI.warn}`,
+    background: UI.panelRaised,
+    color: UI.warn,
+    fontSize: 11,
+    lineHeight: 1.35,
+    fontWeight: 500,
+    whiteSpace: 'normal',
+    pointerEvents: 'none',
+    boxShadow: '0 4px 14px rgba(0,0,0,0.3)'
+  },
   knobTrack: {
     display: 'inline-flex',
     alignItems: 'center',
@@ -300,5 +378,7 @@ const styles: Record<string, CSSProperties> = {
     boxShadow: '0 1px 2px rgba(0,0,0,0.4)',
     transition: `transform ${MOTION}`
   },
+  knobTrackLg: { width: 36, height: 20, borderRadius: 10 },
+  knobLg: { width: 16, height: 16 },
   knobDisabled: { opacity: 0.4, cursor: 'not-allowed' }
 }

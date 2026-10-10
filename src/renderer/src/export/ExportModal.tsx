@@ -24,7 +24,6 @@ export function ExportModal({ onClose }: { onClose: () => void }): ReactNode {
   const nodes = useGraph((s) => s.nodes)
   const edges = useGraph((s) => s.edges)
   const results = useGraph((s) => s.results)
-  const dataDir = useGraph((s) => s.dataDir)
   const canvasSelection = useGraph((s) => s.canvasSelection)
   const sel = useMemo(() => new Set(canvasSelection), [canvasSelection])
 
@@ -66,7 +65,10 @@ export function ExportModal({ onClose }: { onClose: () => void }): ReactNode {
   const [plotFormat, setPlotFormat] = useState<'png' | 'pdf'>('png')
   const [dpi, setDpi] = useState(300)
   const [tableFormat, setTableFormat] = useState<'csv' | 'xlsx'>('csv')
-  const [baseDir, setBaseDir] = useState<string | null>(dataDir ? `${dataDir}/output` : null)
+  // The workflow's output/ folder; each step's files go in its own subfolder there.
+  const [baseDir, setBaseDir] = useState<string | null>(
+    () => useGraph.getState().outputLayoutFor([])?.root ?? null
+  )
 
   const [phase, setPhase] = useState<'config' | 'running' | 'done'>('config')
   const [progress, setProgress] = useState({ done: 0, total: 0 })
@@ -88,6 +90,24 @@ export function ExportModal({ onClose }: { onClose: () => void }): ReactNode {
 
   async function doExport(): Promise<void> {
     if (!baseDir) return
+    // Writing into a data folder deleted meanwhile would quietly bring it back.
+    const { dataDir, refreshDataFiles } = useGraph.getState()
+    if (
+      dataDir &&
+      baseDir.startsWith(`${dataDir}/`) &&
+      !(await window.api.pathExists(dataDir)).dir
+    ) {
+      void refreshDataFiles()
+      setSummary({
+        dir: baseDir,
+        written: 0,
+        skipped: 0,
+        total: count,
+        errors: [`Data folder not found: ${dataDir} — choose another destination.`]
+      })
+      setPhase('done')
+      return
+    }
     setPhase('running')
     setProgress({ done: 0, total: count })
     const opts: ExportOptions = {

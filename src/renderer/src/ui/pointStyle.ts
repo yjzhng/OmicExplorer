@@ -1,8 +1,9 @@
 /** Resolution of a point plot's `PointStyle` config against each plot's built-in defaults —
  *  shared by the views (which draw with the resolved values) and the config panel (which shows
  *  the defaults as the starting values). The config only ever stores what the user changed. */
-import type { GroupStyle, HighlightStyle, PointStyle } from '../graph/types'
-import { EFFECT_COLOR } from './theme'
+import type { EffectColors, GroupStyle, HighlightStyle, PointStyle } from '../graph/types'
+import { AUTO } from './ColorPicker'
+import { CATEGORICAL, EFFECT_COLOR } from './theme'
 
 /** A group's fully-resolved look, plus its key and display name for the panel. Its `highlight`
  *  is the plot-wide one with this group's own overrides on top. */
@@ -64,19 +65,20 @@ export const QUAD_COLORS: Record<string, string> = {
 }
 
 /** Which point plot (and, for scatter, which grouping) a default set is for. */
-export type PointPlotKind = 'volcano' | 'ma' | 'scatter' | 'scatterQuad'
+export type PointPlotKind = 'volcano' | 'ma' | 'scatter' | 'scatterQuad' | 'potency' | 'curveMad'
 
 const effectGroups = (
   size: { none: number; sig: number },
   opacity: number,
-  names: { up: string; down: string } = { up: 'up', down: 'down' }
+  names: { up: string; down: string; none?: string } = { up: 'up', down: 'down' },
+  colors: EffectColors = EFFECT_COLOR
 ): ResolvedGroup[] => [
   {
     key: 'none',
-    name: 'none',
+    name: names.none ?? 'none',
     size: size.none,
     opacity,
-    color: EFFECT_COLOR.none,
+    color: colors.none,
     label: false,
     legend: false,
     outline: 0,
@@ -87,7 +89,7 @@ const effectGroups = (
     name: names.down,
     size: size.sig,
     opacity,
-    color: EFFECT_COLOR.down,
+    color: colors.down,
     label: true,
     legend: true,
     outline: 0,
@@ -98,7 +100,7 @@ const effectGroups = (
     name: names.up,
     size: size.sig,
     opacity,
-    color: EFFECT_COLOR.up,
+    color: colors.up,
     label: true,
     legend: true,
     outline: 0,
@@ -107,18 +109,49 @@ const effectGroups = (
 ]
 
 /** Each plot's built-in group looks, in legend order. `names` renames the up/down classes (the
- *  Compare's effect labels) for display; keys never change. */
+ *  Compare's effect labels) for display, and `colors` colours them (the Compare's effect colours
+ *  — what a group's automatic colour follows); keys never change. */
 export function defaultGroups(
   kind: PointPlotKind,
-  names?: { up: string; down: string }
+  names?: { up: string; down: string; none?: string },
+  colors?: EffectColors
 ): ResolvedGroup[] {
   switch (kind) {
     case 'volcano':
-      return effectGroups({ none: 7, sig: 7 }, 0.85, names)
+      return effectGroups({ none: 7, sig: 7 }, 0.85, names, colors)
     case 'ma':
-      return effectGroups({ none: 6, sig: 6 }, 0.8, names)
+      return effectGroups({ none: 6, sig: 6 }, 0.8, names, colors)
+    case 'potency':
+      return effectGroups({ none: 6, sig: 8 }, 0.85, names, colors)
+    case 'curveMad':
+      // The fit-residual QC's residuals: the control samples' and the dosed ones' (small and faint —
+      // there's one per gene per sample).
+      return [
+        {
+          key: 'control',
+          name: 'control',
+          size: 4,
+          opacity: 0.35,
+          color: EFFECT_COLOR.none,
+          label: false,
+          legend: true,
+          outline: 0,
+          highlight: DEFAULT_HIGHLIGHT
+        },
+        {
+          key: 'dose',
+          name: 'dosed',
+          size: 4,
+          opacity: 0.35,
+          color: CATEGORICAL[0],
+          label: false,
+          legend: true,
+          outline: 0,
+          highlight: DEFAULT_HIGHLIGHT
+        }
+      ]
     case 'scatter':
-      return effectGroups({ none: 6, sig: 8 }, 0.85, names)
+      return effectGroups({ none: 6, sig: 8 }, 0.85, names, colors)
     case 'scatterQuad':
       return [
         {
@@ -157,7 +190,8 @@ export function resolveGroup(style: PointStyle | undefined, def: ResolvedGroup):
     name: o.name?.trim() || def.name,
     size: o.size ?? def.size,
     opacity: o.opacity ?? def.opacity,
-    color: o.color ?? def.color,
+    // Automatic (unset, or AUTO) follows the default — for an effect group, the upstream's colour.
+    color: o.color && o.color !== AUTO ? o.color : def.color,
     outline: o.outline ?? def.outline,
     outlineColor: o.outlineColor ?? def.outlineColor,
     label: o.label ?? def.label,
@@ -170,9 +204,10 @@ export function resolveGroup(style: PointStyle | undefined, def: ResolvedGroup):
 export function resolveGroups(
   style: PointStyle | undefined,
   kind: PointPlotKind,
-  names?: { up: string; down: string }
+  names?: { up: string; down: string; none?: string },
+  colors?: EffectColors
 ): Map<string, ResolvedGroup> {
-  return new Map(defaultGroups(kind, names).map((d) => [d.key, resolveGroup(style, d)]))
+  return new Map(defaultGroups(kind, names, colors).map((d) => [d.key, resolveGroup(style, d)]))
 }
 
 /** The highlight look: the shared defaults, then the plot-wide overrides, then (optionally) one

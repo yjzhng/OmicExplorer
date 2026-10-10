@@ -32,7 +32,26 @@ export {
   type FieldRule
 } from './interactive'
 export { runVehNorm } from './compare'
-export { runDirect, runCompare, previewCompare, classifyConditions } from './direct'
+export { runDirect, runCompare, runCurveFit, previewCompare, classifyConditions } from './direct'
+export {
+  applyCurveFdr,
+  classifyCompareRow,
+  curveBand,
+  curveM0,
+  curveModel,
+  curveCuratorBoundary,
+  curveCuratorWall,
+  curveGroupKey,
+  curveMetrics,
+  CURVE_METRICS,
+  curveResidualMad,
+  type DoseMad,
+  logistic,
+  relevanceScore,
+  type CurveFit
+} from './curveFit'
+export { samBoundary } from './sam'
+export { curvePointsFromStd, replicateLog2FCs, stdByGene, type CurvePoints } from './curvePoints'
 export type { ComparePreview } from './direct'
 export { runTwoWayAnova, previewTwoWay, crossPairs } from './twoWay'
 export type { TwoWayPreview } from './twoWay'
@@ -40,6 +59,7 @@ export {
   runContrast,
   runContrastPair,
   previewContrastPair,
+  abundanceOnScale,
   CONTRAST_STAT_DEFAULTS,
   AXIS_TAILS,
   statTails
@@ -60,6 +80,9 @@ export {
   goAspectsOf,
   enrichTermGroups,
   enrichmentTable,
+  enrichmentAll,
+  enrichTermRows,
+  ENRICH_DIST_KEPT,
   facetLabel,
   reactomeCategoriesOf,
   enrichSourcesPresent,
@@ -74,6 +97,8 @@ export {
   buildIntensityScatter,
   buildMA,
   buildDR,
+  comparisonOf,
+  fcMeasure,
   buildBubble,
   buildDumbbell,
   buildTdr,
@@ -118,6 +143,13 @@ export {
 } from './types'
 export type { CustomConditionKey, PresetConditionKey } from './types'
 export { condValue, condPresent } from './compare'
+export {
+  analysisUnmet,
+  CURVE_MIN_TREATED,
+  dataShape,
+  type CompareAnalysis,
+  type DataShape
+} from './dataShape'
 export { detectCustomConditions } from './ingest'
 
 export type { ThresholdConfig, Effect, FdrMethod } from './stats'
@@ -127,6 +159,9 @@ export {
   adjustPValues,
   jacobiEigenSymmetric,
   roundP,
+  CC_Q_MIN,
+  SAM_PERMUTATIONS,
+  SAM_S0,
   snapStatMin
 } from './stats'
 export type {
@@ -203,6 +238,9 @@ export {
   toLinear,
   presentStd,
   presentScaleOf,
+  plotScaleOf,
+  abundanceLabel,
+  fromLog10,
   type LogTransform,
   type Shape,
   type ScaleEvidence,

@@ -1,5 +1,6 @@
 import {
   Fragment,
+  useContext,
   useEffect,
   useMemo,
   useRef,
@@ -8,6 +9,7 @@ import {
   type ReactNode,
   type RefObject
 } from 'react'
+import { slashBackground } from '../ui/slash'
 import { createPortal } from 'react-dom'
 import { useStore } from '@xyflow/react'
 import { useShallow } from 'zustand/react/shallow'
@@ -34,12 +36,19 @@ import {
   crossPairs,
   IMPUTE_DEFAULTS,
   roundP,
+  CC_Q_MIN,
+  SAM_PERMUTATIONS,
+  SAM_S0,
   previewCompare,
   previewContrastPair,
   previewTwoWay,
+  analysisUnmet,
   CLUSTER_COLOR,
+  CURVE_MIN_TREATED,
   condLabel,
+  dataShape,
   customCond,
+  isNumericCond,
   orderConds,
   type ClusterColorBy,
   type ConditionKey,
@@ -47,6 +56,7 @@ import {
   type Pair,
   type StandardizeResult
 } from '../engine'
+import { planAesthetics } from '../ui/clusterPlan'
 import { IconCopy, IconGear, IconTrash } from '../ui/icons'
 import {
   defaultGroups,
@@ -55,14 +65,14 @@ import {
   type PointPlotKind,
   type ResolvedGroup
 } from '../ui/pointStyle'
-import { CLEAR, ColorPicker } from '../ui/ColorPicker'
+import { AUTO, AUTO_BACKGROUND, AutoMark, CLEAR, ColorPicker } from '../ui/ColorPicker'
 import { Select as AppSelect, type SelectOption } from '../ui/Select'
 import { OnOffSwitch, ToggleSwitch } from '../ui/ToggleSwitch'
 import { StatusNote } from '../ui/StatusNote'
 import { gatePlotEntries, UNWIRED, type UpstreamFacts } from './requirements'
-import { useUpstreamFacts } from './useUpstreamFacts'
+import { useCondUnits, useUpstreamFacts } from './useUpstreamFacts'
 import type { AxisDefaults } from '../ui/plotAxes'
-import { PALETTES, UI } from '../ui/theme'
+import { PALETTES, QC_FILL, UI } from '../ui/theme'
 import { useUiTheme } from '../ui/useUiTheme'
 import { ComparisonDialog, contrastSummary } from './ComparisonDialog'
 import { isPairable, pairSides, selectorRowsOf, selectSource, toContrastSide } from './contrastPair'
@@ -79,22 +89,42 @@ import {
   plotEntriesFor,
   plotLabel,
   PLOT_SECTIONS,
+  safeTileName,
   stepTitle,
   type PlotMenuEntry
 } from './registry'
+import { ApplyStageContext } from './applyStage'
 import { useGraph } from './store'
+import { nameChip, nameInput, tileNameText } from './tileNameStyles'
 import {
+  barColorConds,
+  qcColorConds,
   isCompareConfigured,
   isContrastConfigured,
   isStep,
   normalizeCompareConfig,
+  thresholdForAnalysis,
   resolveContrastSource,
   resolveLoadMode,
+  type BarConfig,
   type BubbleConfig,
   type CompareConfig,
   effectLabelsOf,
+  effectColorsOf,
+  type EffectColors,
+  type EffectLabels,
+  type PlotEffectColors,
   type ContrastConfig,
   type DRConfig,
+  drLook,
+  drYScale,
+  AU,
+  curveDoseUnit,
+  DOSE_UNITS,
+  TIME_UNITS,
+  type CondUnits,
+  type PotencyConfig,
+  type CurveMadConfig,
   type DumbbellConfig,
   type EnrichConfig,
   type GroupStyle,
@@ -113,6 +143,8 @@ import {
   type PointStyle,
   type QuickAccess,
   clusterLook,
+  clusterStyle,
+  CLUSTER_STYLE_FIELDS,
   quickOn,
   type ClusterConfig,
   type CorrConfig,
@@ -129,6 +161,8 @@ import {
 /** Detail panel width (flow units — it scales with the canvas zoom). Exported so the tile can
  *  decide which side of itself the panel fits on. */
 export const PANEL_WIDTH = 402
+/** A canvas tile's category strip (its top border's width) — the floating panel's matches it. */
+export const TILE_STRIP = 5
 
 /** The preset conditions, as a fallback where the data's own condition list isn't known yet.
  *  Anywhere the real list is reachable (a tile's upstream result), use that instead — it carries
@@ -505,7 +539,16 @@ export function AddPlotMenu({
                         checked={entryPresent(e, children)}
                         z={z}
                         colors={{ text: p.text, hover: p.panel, accent: plotAccent }}
-                        onClick={() => onAdd([{ kind: e.kind, override: e.override }])}
+                        // A toggle: a ticked plot is taken out of the group (every copy of it),
+                        // an unticked one added. The group's last plot stays — removing it would
+                        // delete the tile from a menu.
+                        onClick={() => {
+                          const ids = children
+                            .filter((c) => childMatchesEntry(c, e))
+                            .map((c) => c.id)
+                          if (!ids.length) onAdd([{ kind: e.kind, override: e.override }])
+                          else if (ids.length < children.length) onRemove(ids)
+                        }}
                       />
                     ))}
                 </div>
@@ -645,6 +688,8 @@ const AXIS_KINDS: ReadonlySet<NodeKind> = new Set<NodeKind>([
   'scatter',
   'ma',
   'dr',
+  'potency',
+  'curveMad',
   'bubble',
   'dumbbell',
   'tdr',
@@ -673,18 +718,45 @@ function kindPanel(
       return <MAPanel config={config as MAConfig} {...props} />
     case 'dr':
       return <DRPanel config={config as DRConfig} {...props} />
+    case 'potency':
+      return <PotencyPanel config={config as PotencyConfig} {...props} />
+    case 'curveMad':
+      return (
+        <PointStyleSections
+          kind="curveMad"
+          names={{ up: 'up', down: 'down' }}
+          style={(config as CurveMadConfig).style}
+          update={props.update}
+          selection={false}
+        />
+      )
     case 'bubble':
-      return <BubblePanel config={config as BubbleConfig} {...props} />
+      return (
+        <>
+          <BubblePanel config={config as BubbleConfig} {...props} />
+          <EffectColorSection config={config as BubbleConfig} {...props} />
+        </>
+      )
     case 'tdr':
       return <TdrPanel />
     case 'geneBar':
-      return <GeneBarPanel />
+      return <GeneBarPanel config={config as BarConfig} {...props} />
     case 'pca':
       return <ClusterPanel config={config as ClusterConfig} {...props} />
     case 'enrich':
-      return <EnrichPanel config={config as EnrichConfig} {...props} />
+      return (
+        <>
+          <EnrichPanel config={config as EnrichConfig} {...props} />
+          <EffectColorSection config={config as EnrichConfig} {...props} />
+        </>
+      )
     case 'string':
-      return <StringPanel config={config as StringConfig} {...props} />
+      return (
+        <>
+          <StringPanel config={config as StringConfig} {...props} />
+          <EffectColorSection config={config as StringConfig} {...props} />
+        </>
+      )
     case 'qc':
       return <QcPanel config={config as QcConfig} {...props} />
     case 'corr':
@@ -694,6 +766,69 @@ function kindPanel(
     default:
       return null
   }
+}
+
+/** The panel's title: the tile's name, exactly as the tile shows it and renames it (see
+ *  tileNameStyles) — dashed outline in the accent under the pointer, click to edit, Enter or blur
+ *  commits, Escape cancels, an emptied name falls back to the type. */
+function HeadName({
+  id,
+  name,
+  fallback,
+  accent
+}: {
+  id: string
+  name?: string
+  fallback: string
+  accent: string
+}): ReactNode {
+  const renameNode = useGraph((s) => s.renameNode)
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState('')
+  const [hovered, setHovered] = useState(false)
+  const commit = (): void => {
+    renameNode(id, safeTileName(draft))
+    setEditing(false)
+  }
+  return (
+    // Its own line, as the tile's title column is.
+    <div style={styles.headName}>
+      {editing ? (
+        <input
+          autoFocus
+          value={draft}
+          placeholder={fallback}
+          onChange={(e) => setDraft(safeTileName(e.target.value))}
+          onBlur={commit}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') commit()
+            else if (e.key === 'Escape') setEditing(false)
+          }}
+          aria-label="Step name"
+          style={nameInput}
+        />
+      ) : (
+        <span
+          title="Click to rename"
+          onMouseEnter={() => setHovered(true)}
+          onMouseLeave={() => setHovered(false)}
+          onClick={() => {
+            setDraft(name ?? '')
+            setEditing(true)
+            // The span unmounts into the input without a mouseleave, so clear it here.
+            setHovered(false)
+          }}
+          style={{
+            ...tileNameText,
+            ...nameChip,
+            border: `1px dashed ${hovered ? accent : 'transparent'}`
+          }}
+        >
+          {name ?? fallback}
+        </span>
+      )}
+    </div>
+  )
 }
 
 /** Floating config popover for a single node (anchored to its right via NodeToolbar).
@@ -736,17 +871,43 @@ export function NodeConfigPanel({
   return (
     // Embedded (the form workflow): flow with the page instead of floating as a fixed-width card
     // — no shadow, no width cap, and no inner scroller fighting the page's own.
+    // Floating beside its tile, the panel's own top border is the category strip, as thick as the
+    // tile's and at the same outer edge, so the two line up; embedded, the head carries it.
     <div
       data-config-panel={id}
-      style={embedded ? { ...styles.panel, ...styles.panelEmbedded } : styles.panel}
+      style={
+        embedded
+          ? { ...styles.panel, ...styles.panelEmbedded }
+          : {
+              ...styles.panel,
+              borderTopWidth: TILE_STRIP,
+              borderTopColor: accentOf(category)
+            }
+      }
     >
-      <div style={{ ...styles.head, borderTopColor: accentOf(category) }}>
+      <div
+        style={{
+          ...styles.head,
+          ...(embedded ? { borderTopColor: accentOf(category) } : { borderTopWidth: 0 })
+        }}
+      >
         <div style={styles.headText}>
           <span style={{ ...styles.headCat, color: accentOf(category) }}>
             {CATEGORIES[category].label}
           </span>
-          <span style={styles.headTitle}>{isGroup ? `Group · ${headLabel}` : headLabel}</span>
-          <span style={styles.headId}>{node.id}</span>
+          {/* The tile's name, renamed in place (as on the tile itself); its type stands in until
+              it's given one, and moves to the line below once it has. */}
+          <HeadName
+            // fresh per tile, so a rename left open doesn't carry over to the next one
+            key={id}
+            id={id}
+            name={node.data.name}
+            fallback={isGroup ? `Group · ${headLabel}` : headLabel}
+            accent={accentOf(category)}
+          />
+          <span style={styles.headId}>
+            {node.data.name ? `${headLabel} · ${node.id}` : node.id}
+          </span>
         </div>
         <div style={styles.headActions}>
           {/* Same chrome for both; the trash is red like the workflow/folder menus' delete. */}
@@ -777,7 +938,8 @@ export function NodeConfigPanel({
         {isGroup
           ? !activeChild && <div style={styles.hint}>Empty group — add a plot on the tile.</div>
           : ops.length > 1 && (
-              // The operation picker sits in the section header, right of the title.
+              // The operation picker sits in the section header, right of the title. (A plot never
+              // gets here: every visualisation tile is a plot group, managed on the tile.)
               <Section
                 title="Operation"
                 action={
@@ -833,6 +995,7 @@ export function NodeConfigPanel({
 
 function LoadPanel({ id, config }: { id: string; config: LoadConfig }) {
   const update = useGraph((s) => s.updateConfig)
+  const setUnits = useGraph((s) => s.setLoadUnits)
   const inputFiles = useGraph((s) => s.inputFiles)
   const refreshDataFiles = useGraph((s) => s.refreshDataFiles)
   const [dialogOpen, setDialogOpen] = useConfigWindowOpen(id)
@@ -967,6 +1130,32 @@ function LoadPanel({ id, config }: { id: string; config: LoadConfig }) {
           </>
         )}
       </Section>
+      {/* A manual samplesheet has no mapping step, so its numeric conditions' units are set here
+          (the interactive import sets them on its Samplesheet step). Display-only — no re-run. */}
+      {mode === 'manual' && (
+        <Section title="Condition units">
+          <Field label="dose">
+            <Select
+              value={config.units?.dose ?? ''}
+              onChange={(v) => setUnits(id, { dose: (v || undefined) as CondUnits['dose'] })}
+              options={[
+                { value: '', label: '— pick a unit —' },
+                ...[AU, ...Object.keys(DOSE_UNITS)].map((u) => ({ value: u, label: u }))
+              ]}
+            />
+          </Field>
+          <Field label="time">
+            <Select
+              value={config.units?.time ?? ''}
+              onChange={(v) => setUnits(id, { time: (v || undefined) as CondUnits['time'] })}
+              options={[
+                { value: '', label: '— pick a unit —' },
+                ...[AU, ...TIME_UNITS].map((u) => ({ value: u, label: u }))
+              ]}
+            />
+          </Field>
+        </Section>
+      )}
     </>
   )
 }
@@ -1159,18 +1348,30 @@ function StandardizePanel({ id, config }: { id: string; config: StandardizeConfi
     const r = s.results[id]
     return r?.kind === 'standardize' ? r.std : null
   })
-  // Custom conditions declared on the upstream Load tile, so the clean-up checkboxes offer them
-  // before this tile has ever run (after a run `std.activeConditions` carries them anyway).
-  const upstreamCustom = useGraph((s) => {
+  // The conditions the imported data actually carries, for "Coverage per": read off the upstream
+  // interactive import's sample conditions (any included sample with a value), so they're right
+  // before this tile has ever run. Joined into a string so the selector returns a stable value.
+  // null = nothing to read there (a manual import) — then this tile's last run says, else every
+  // preset is offered.
+  const importConds = useGraph((s) => {
     const upId = s.edges.find((e) => e.target === id)?.source
     const up = upId ? s.nodes.find((n) => n.id === upId) : undefined
-    const cfg = up && isStep(up) ? (up.data.config as LoadConfig) : undefined
-    return (cfg?.interactive?.customConditions ?? []).join('\u0001')
+    const ia = up && isStep(up) ? (up.data.config as LoadConfig).interactive : undefined
+    if (!ia) return null
+    const samples = Object.values(ia.conditions ?? {}).filter((c) => c.include !== false)
+    const has = (v: string | undefined): boolean => !!v && v.trim() !== ''
+    const keys: string[] = (['cell', 'cmpd', 'dose', 'time'] as const).filter((f) =>
+      samples.some((c) => has(c[f]))
+    )
+    for (const name of ia.customConditions ?? [])
+      if (samples.some((c) => has(c.extra?.[name]))) keys.push(customCond(name))
+    return keys.join('\u0001')
   })
   const conds = useMemo(() => {
-    const declared = upstreamCustom ? upstreamCustom.split('\u0001').map(customCond) : []
-    return orderConds([...CONDS, ...(std?.activeConditions ?? []), ...declared])
-  }, [std, upstreamCustom])
+    if (importConds != null)
+      return orderConds(importConds ? (importConds.split('\u0001') as ConditionKey[]) : [])
+    return orderConds(std ? std.activeConditions : [...CONDS])
+  }, [std, importConds])
   const geneTotal = useMemo(() => (std ? new Set(std.rows.map((r) => r.uniqID)).size : 0), [std])
   const r2 = (v: number): number => Math.round(v * 100) / 100
   return (
@@ -1238,11 +1439,12 @@ function StandardizePanel({ id, config }: { id: string; config: StandardizeConfi
             <div style={styles.hint}>
               {(() => {
                 const pct = config.minSamplePct ?? 0
-                const by = config.minSamplePctBy ?? []
+                // Only the conditions on offer: one the data doesn't carry groups nothing.
+                const by = (config.minSamplePctBy ?? []).filter((c) => conds.includes(c))
                 const where =
                   by.length === 0
                     ? 'all samples'
-                    : `samples in at least one ${by.join(' × ')} group`
+                    : `samples in at least one ${by.map(condLabel).join(' × ')} group`
                 return `Keep genes detected in ≥ ${pct}% of ${where}.`
               })()}
             </div>
@@ -1357,7 +1559,8 @@ function comparisonCount(
       num: config.num,
       den: config.den,
       match: config.match,
-      activeConditions: std.activeConditions
+      activeConditions: std.activeConditions,
+      curveAxis: config.analysis === 'curve_fit' ? (config.curveAxis ?? 'dose') : undefined
     }).labels.length
     const on = classifyConditions(std.rows, config.num, config.den, std.activeConditions).axis
     return { n, on }
@@ -1416,8 +1619,9 @@ function MergePanel({ id }: { id: string }) {
   )
 }
 
-/** A Compare's significance calls: FDR control, the threshold type and its cutoffs, and the effect
- *  class names. Shown on the Compare step, and again on a volcano fed by it — the same settings,
+/** A Compare's significance calls: the method (the p-value route — FDR control, correction,
+ *  linear or hyperbolic boundary — or SAM / CurveCurator), its cutoffs, and the effect class
+ *  names. Shown on the Compare step, and again on a volcano fed by it — the same settings,
  *  written to the Compare, so tuning the calls is possible from the plot that shows them. */
 function CompareStatisticSection({
   id,
@@ -1430,23 +1634,66 @@ function CompareStatisticSection({
   subtitle?: ReactNode
 }) {
   const update = useGraph((s) => s.updateConfig)
-  const t = config.threshold
+  // In a plot's settings window, edits that need a re-run are held (with any made after them)
+  // until its Apply, which then re-runs the Compare — rather than discarding its result under the
+  // open window. Shown here merged over the stored threshold.
+  const staging = useContext(ApplyStageContext)
+  const [staged, setStaged] = useState<Partial<CompareConfig['threshold']> | null>(null)
+  const t = staged ? { ...config.threshold, ...staged } : config.threshold
+  // Whether what's held needs a re-run (the statistics change) or just a re-call of the genes.
+  const stagedRerun =
+    !!staged &&
+    ('fdrMethod' in staged ||
+      'samS0' in staged ||
+      'permutations' in staged ||
+      ('type' in staged && (staged.type === 'sam_fdr') !== (config.threshold.type === 'sam_fdr')))
   // The significance statistic the FDR switch selects — names both the switch and the cutoff row.
   // Shown as the plain P/Q value; the stored threshold (and every plot) stays −log10.
   const statLabel = t.statType === 'pQ' ? 'Q-value' : 'P-value'
   // Cutoff edits re-classify the stored result live (like dragging a volcano guide) — only the
   // correction method changes the q-values themselves, which needs a re-run.
   const setThreshold = useGraph((s) => s.setCompareThreshold)
-  const setT = (partial: Partial<CompareConfig['threshold']>) =>
-    'fdrMethod' in partial
-      ? update(id, { threshold: { ...t, ...partial } })
-      : setThreshold(id, partial)
+  // SAM's settings (and switching to or from it) change the statistics themselves — a re-run.
+  const changesStats = (partial: Partial<CompareConfig['threshold']>): boolean =>
+    'fdrMethod' in partial ||
+    'samS0' in partial ||
+    'permutations' in partial ||
+    ('type' in partial && (partial.type === 'sam_fdr') !== (t.type === 'sam_fdr'))
+  const setT = (partial: Partial<CompareConfig['threshold']>): void => {
+    // In a plot's settings window every statistic edit waits for Apply — re-calling the genes
+    // (and redrawing every plot) on each keystroke is what made the window stutter. Apply then
+    // re-calls them in place, or saves and re-runs the Compare when the statistics themselves
+    // changed (SAM's settings, the FDR method).
+    if (staging) {
+      const next = { ...staged, ...partial }
+      setStaged(next)
+      staging.stage(`compare-threshold:${id}`, () => {
+        const g = useGraph.getState()
+        const node = g.nodes.find((n) => n.id === id)
+        if (!node || !isStep(node)) return
+        const cur = (node.data.config as CompareConfig).threshold
+        const rerun =
+          'fdrMethod' in next ||
+          'samS0' in next ||
+          'permutations' in next ||
+          ('type' in next && (next.type === 'sam_fdr') !== (cur.type === 'sam_fdr'))
+        if (rerun) {
+          g.updateConfig(id, { threshold: { ...cur, ...next } })
+          void g.rerunFrom(id)
+        } else g.setCompareThreshold(id, next)
+      })
+      return
+    }
+    if (changesStats(partial)) update(id, { threshold: { ...t, ...partial } })
+    else setThreshold(id, partial)
+  }
   const r2 = (v: number): number => Math.round(v * 100) / 100
   const asym = t.asymmetric ?? false
   const mirrorTitle = asym ? undefined : 'Mirrors the up cutoff — switch on asymmetric to edit'
   // First line of the effect-size block (same level as the cutoff rows): the asymmetric switch.
   const asymRow = (
-    <div style={styles.cutoffRow}>
+    // As tall as a cutoff line (a number box), so it lines up with the field's top-aligned label.
+    <div style={{ ...styles.cutoffRow, minHeight: 25 }}>
       <span style={styles.inlineTag}>asymmetric</span>
       <OnOffSwitch
         on={asym}
@@ -1459,43 +1706,228 @@ function CompareStatisticSection({
   // stale the result.
   const labels = effectLabelsOf(config)
   const setLabels = useGraph((s) => s.setCompareEffectLabels)
+  // Each class's colour, just after its name: every plot this Compare feeds colours the class with
+  // it unless the plot sets its own. Display-only too.
+  const colors = effectColorsOf(config)
+  const setColors = useGraph((s) => s.setCompareEffectColors)
+  const effectChip = (key: 'up' | 'down' | 'none'): ReactNode => (
+    <ColorChip
+      color={colors[key]}
+      on
+      label={`${labels[key]} colour`}
+      title={`${labels[key]} colour — inherited by every plot this Compare feeds`}
+      onPick={(c) => setColors(id, { [key]: c })}
+      onAuto={() => setColors(id, { [key]: undefined })}
+      autoLabel={`Default (${key === 'up' ? 'red' : key === 'down' ? 'blue' : 'grey'})`}
+    />
+  )
 
+  const curveCurator = t.type === 'curvecurator'
+  const ccByFdr = curveCurator && t.ccCallBy === 'fdr'
+  const sam = t.type === 'sam_fdr'
+  // The run's target–decoy FDR for CurveCurator's calls (follows its cutoffs live).
+  const curveFdr = useGraph((s) => {
+    const r = s.results[id]
+    return r?.kind === 'compare' ? r.cmp.curveFdr : undefined
+  })
+  // A curve fit run before the decoy FDR existed has no decoys (so no q-values) until re-run.
+  const noDecoys = useGraph((s) => {
+    const r = s.results[id]
+    return r?.kind === 'compare' && r.cmp.rows.some((x) => x.curve) && !r.cmp.decoys
+  })
+  const method = sam ? 'sam' : curveCurator ? 'curvecurator' : 'pvalue'
+  // The methods this analysis offers: SAM needs the t-test's per-sample values, CurveCurator a
+  // curve fit's per-curve F; a two-way ANOVA has the p-value route only.
+  const methods: Array<{ value: typeof method; label: string; title: string }> = [
+    {
+      value: 'pvalue',
+      label: 'P-value',
+      title:
+        'The per-gene test’s p-value, optionally FDR-corrected, under a linear or hyperbolic boundary'
+    },
+    ...(config.analysis === 'compare'
+      ? [
+          {
+            value: 'sam' as const,
+            label: 'SAM',
+            title: 'SAM: moderated t with a permutation-estimated FDR (as in Perseus)'
+          }
+        ]
+      : []),
+    ...(config.analysis === 'curve_fit'
+      ? [
+          {
+            value: 'curvecurator' as const,
+            label: 'CurveCurator',
+            title:
+              'CurveCurator: the relevance score — the curve’s F-test shrunk by its fold change'
+          }
+        ]
+      : [])
+  ]
   return (
     <Section title="Statistic" subtitle={subtitle}>
-      <Field label="FDR control">
-        {/* Which statistic drives the significance calls: raw p (off), or the adjusted q (on). */}
-        <OnOffSwitch
-          on={t.statType === 'pQ'}
-          label="FDR control"
-          onChange={(on) => setT({ statType: on ? 'pQ' : 'pP' })}
-        />
-      </Field>
-      {t.statType === 'pQ' && (
+      {staged && (
+        <StatusNote kind="info">
+          {stagedRerun
+            ? 'Changes the statistic — re-runs the Compare on Apply.'
+            : 'Applies on Apply.'}
+        </StatusNote>
+      )}
+      {/* The significance method first: the per-gene test's p (with or without an FDR correction,
+          under a linear or hyperbolic boundary), or a method with its own statistic, FDR and
+          boundary — SAM for a t-test, CurveCurator for a curve fit. */}
+      {methods.length > 1 && (
         <Field label="method">
-          <Select
-            value={t.fdrMethod ?? 'bh'}
-            onChange={(v) => setT({ fdrMethod: v as Exclude<FdrMethod, 'none'> })}
-            options={[
-              { value: 'bh', label: 'Benjamini–Hochberg (FDR)' },
-              { value: 'bonferroni', label: 'Bonferroni (FWER)' }
-            ]}
+          <ToggleSwitch
+            label="Significance method"
+            value={method}
+            options={methods}
+            onChange={(m) =>
+              setT(
+                m === 'sam'
+                  ? { type: 'sam_fdr', statType: 'pP' }
+                  : m === 'curvecurator'
+                    ? // CurveCurator works on raw p (its FDR is estimated separately, not by BH).
+                      { type: 'curvecurator', statType: 'pP' }
+                    : { type: 'non-linear', statType: 'pQ' }
+              )
+            }
           />
         </Field>
       )}
-      <Field label="threshold type">
-        <Select
-          value={t.type}
-          onChange={(v) => setT({ type: v as 'linear' | 'non-linear' })}
-          options={[
-            { value: 'linear', label: 'linear cutoff' },
-            { value: 'non-linear', label: 'hyperbolic boundary' }
-          ]}
-        />
-      </Field>
+      {method === 'curvecurator' && (
+        // Call by its α cutoff (the FDR is then measured), or by a target FDR (the cutoff follows).
+        <Field label="call by">
+          <ToggleSwitch
+            label="Call by"
+            value={ccByFdr ? 'fdr' : 'alpha'}
+            options={[
+              {
+                value: 'alpha' as const,
+                label: 'α',
+                title: 'CurveCurator’s cutoff on the relevance score; the FDR is then estimated'
+              },
+              {
+                value: 'fdr' as const,
+                label: 'target FDR',
+                title: 'Call the curves whose target–decoy q is within a target FDR'
+              }
+            ]}
+            onChange={(v) => setT({ ccCallBy: v })}
+          />
+        </Field>
+      )}
+      {method === 'curvecurator' && noDecoys && (
+        <StatusNote kind="warn">
+          This result has no FDR estimate (it was run before one existed) — re-run the Compare
+          {ccByFdr ? ' to call by target FDR' : ''}.
+        </StatusNote>
+      )}
+      {method === 'curvecurator' && curveFdr != null && Number.isFinite(curveFdr) && (
+        // CurveCurator's FDR: how many simulated null (decoy) curves these cutoffs would also call.
+        <StatusNote kind="info">
+          Estimated FDR of these calls: {(curveFdr * 100).toPrecision(2)}% (target–decoy)
+        </StatusNote>
+      )}
+      {ccByFdr && !noDecoys && curveFdr != null && !Number.isFinite(curveFdr) && (
+        <StatusNote kind="info">No curve reaches the target FDR.</StatusNote>
+      )}
+      {method === 'pvalue' && (
+        <>
+          <Field label="FDR control">
+            {/* Which statistic drives the calls: raw p (off), or the adjusted q (on). */}
+            <OnOffSwitch
+              on={t.statType === 'pQ'}
+              label="FDR control"
+              onChange={(on) => setT({ statType: on ? 'pQ' : 'pP' })}
+            />
+          </Field>
+          {t.statType === 'pQ' && (
+            <Field label="correction">
+              <Select
+                value={t.fdrMethod ?? 'bh'}
+                onChange={(v) => setT({ fdrMethod: v as Exclude<FdrMethod, 'none'> })}
+                options={[
+                  { value: 'bh', label: 'Benjamini–Hochberg (FDR)' },
+                  { value: 'bonferroni', label: 'Bonferroni (FWER)' }
+                ]}
+              />
+            </Field>
+          )}
+          <Field label="boundary">
+            <Select
+              value={t.type}
+              onChange={(v) => setT({ type: v as 'linear' | 'non-linear' })}
+              options={[
+                { value: 'linear', label: 'linear cutoff' },
+                { value: 'non-linear', label: 'hyperbolic boundary' }
+              ]}
+            />
+          </Field>
+        </>
+      )}
       {/* Effect size: asymmetric switch, then one line per class (up first) — the cutoff and
           the name the class shows under. Symmetric (default): the down cutoff mirrors the up one
           (store keeps them in lock-step), so its box is read-only. */}
-      {t.type === 'linear' ? (
+      {sam ? (
+        <>
+          <Field label="FDR">
+            <div style={styles.cutoffRow}>
+              <span style={styles.inlineTag}>q ≤</span>
+              <div style={styles.cutoffBox}>
+                <PValueInput statMin={t.statMin} onChange={(v) => setT({ statMin: v })} />
+              </div>
+            </div>
+          </Field>
+          {/* s0 sets the boundary's fold-change wall: larger keeps small-variance, small-change
+              genes out. */}
+          <Field label="s0">
+            <div style={styles.cutoffBox}>
+              <NumberInput
+                value={t.samS0 ?? SAM_S0}
+                step={0.05}
+                onChange={(v) => setT({ samS0: Math.max(0, r2(v)) })}
+              />
+            </div>
+          </Field>
+          <Field label="permutations">
+            <div style={styles.cutoffBox}>
+              <NumberInput
+                value={t.permutations ?? SAM_PERMUTATIONS}
+                step={50}
+                onChange={(v) => setT({ permutations: Math.max(10, Math.round(v)) })}
+              />
+            </div>
+          </Field>
+          <Field label="labels" top>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              <div style={styles.cutoffRow}>
+                <span style={styles.inlineTag}>up</span>
+                <EffectLabelInput value={labels.up} onCommit={(v) => setLabels(id, { up: v })} />
+                {effectChip('up')}
+              </div>
+              <div style={styles.cutoffRow}>
+                <span style={styles.inlineTag}>down</span>
+                <EffectLabelInput
+                  value={labels.down}
+                  onCommit={(v) => setLabels(id, { down: v })}
+                />
+                {effectChip('down')}
+              </div>
+              <div style={styles.cutoffRow}>
+                <span style={styles.inlineTag}>none</span>
+                <EffectLabelInput
+                  value={labels.none}
+                  onCommit={(v) => setLabels(id, { none: v })}
+                  title="Name shown for the genes called neither up nor down"
+                />
+                {effectChip('none')}
+              </div>
+            </div>
+          </Field>
+        </>
+      ) : t.type !== 'non-linear' ? (
         <>
           <Field label="effect size" top>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
@@ -1511,6 +1943,7 @@ function CompareStatisticSection({
                 </div>
                 <span style={{ ...styles.inlineTag, marginLeft: 6 }}>label</span>
                 <EffectLabelInput value={labels.up} onCommit={(v) => setLabels(id, { up: v })} />
+                {effectChip('up')}
               </div>
               <div style={styles.cutoffRow}>
                 <span style={styles.inlineTag}>log₂FC ≤</span>
@@ -1528,15 +1961,35 @@ function CompareStatisticSection({
                   value={labels.down}
                   onCommit={(v) => setLabels(id, { down: v })}
                 />
+                {effectChip('down')}
+              </div>
+              <div style={styles.cutoffRow}>
+                <span style={styles.inlineTag}>otherwise</span>
+                <span style={{ ...styles.inlineTag, marginLeft: 6 }}>label</span>
+                <EffectLabelInput
+                  value={labels.none}
+                  onCommit={(v) => setLabels(id, { none: v })}
+                  title="Name shown for the genes called neither up nor down"
+                />
+                {effectChip('none')}
               </div>
             </div>
           </Field>
           {/* Named after the statistic the FDR switch selects, so the cutoff reads as one unit. */}
           <Field label="significance">
             <div style={styles.cutoffRow}>
-              <span style={styles.inlineTag}>{statLabel} ≤</span>
+              <span style={styles.inlineTag}>
+                {ccByFdr ? 'FDR q ≤' : curveCurator ? 'α =' : `${statLabel} ≤`}
+              </span>
               <div style={styles.cutoffBox}>
-                <PValueInput statMin={t.statMin} onChange={(v) => setT({ statMin: v })} />
+                {ccByFdr ? (
+                  <PValueInput
+                    statMin={t.ccQMin ?? CC_Q_MIN}
+                    onChange={(v) => setT({ ccQMin: v })}
+                  />
+                ) : (
+                  <PValueInput statMin={t.statMin} onChange={(v) => setT({ statMin: v })} />
+                )}
               </div>
             </div>
           </Field>
@@ -1559,6 +2012,7 @@ function CompareStatisticSection({
                 </div>
                 <span style={{ ...styles.inlineTag, marginLeft: 6 }}>label</span>
                 <EffectLabelInput value={labels.up} onCommit={(v) => setLabels(id, { up: v })} />
+                {effectChip('up')}
               </div>
               <div style={styles.cutoffRow}>
                 <span style={styles.inlineTag}>log₂FC ≤</span>
@@ -1576,6 +2030,17 @@ function CompareStatisticSection({
                   value={labels.down}
                   onCommit={(v) => setLabels(id, { down: v })}
                 />
+                {effectChip('down')}
+              </div>
+              <div style={styles.cutoffRow}>
+                <span style={styles.inlineTag}>otherwise</span>
+                <span style={{ ...styles.inlineTag, marginLeft: 6 }}>label</span>
+                <EffectLabelInput
+                  value={labels.none}
+                  onCommit={(v) => setLabels(id, { none: v })}
+                  title="Name shown for the genes called neither up nor down"
+                />
+                {effectChip('none')}
               </div>
             </div>
           </Field>
@@ -1609,7 +2074,6 @@ function CompareStatisticSection({
 function ComparePanel({ id, config: rawConfig }: { id: string; config: CompareConfig }) {
   const config = normalizeCompareConfig(rawConfig)
   const configured = isCompareConfigured(config)
-  const update = useGraph((s) => s.updateConfig)
   const [dialogOpen, setDialogOpen] = useConfigWindowOpen(id)
   // Compare accepts up to two Standardize inputs; combine them into one pooled dataset (matched by
   // uniqID) so the comparison selectors offer the union of both datasets' conditions/values. Select
@@ -1625,6 +2089,7 @@ function ComparePanel({ id, config: rawConfig }: { id: string; config: CompareCo
     )
   )
   const std = useMemo(() => (stds.length ? combineStandardize(stds) : null), [stds])
+  const shape = useMemo(() => (std ? dataShape(std) : null), [std])
 
   // Only the comparison-defining fields change the count — NOT threshold/transform. Keying the
   // memo on those (references stay stable when only the threshold changes) avoids re-running the
@@ -1644,45 +2109,125 @@ function ComparePanel({ id, config: rawConfig }: { id: string; config: CompareCo
       config.pairNum,
       config.pairDen,
       config.pair2Num,
-      config.pair2Den
+      config.pair2Den,
+      config.curveAxis
     ]
   )
+  // Switch the analysis from here as well as from the dialog. The comparison carries over when it
+  // fits the new analysis — one compared condition for a t-test or a curve fit, two for a 2-way
+  // ANOVA (its factors); otherwise the dialog opens on the new analysis to finish setting it up.
+  const update = useGraph((s) => s.updateConfig)
+  const units = useCondUnits(id)
+  const curveUnit = curveDoseUnit(config, units)
+  // A fresh (unconfigured) Compare starts on the first analysis its data can take, rather than a
+  // t-test the data can't support. A configured one keeps its pick and shows why it can't run.
+  useEffect(() => {
+    if (configured || !shape || !analysisUnmet(shape, config.analysis)) return
+    const next = (['compare', 'two_way_anova', 'curve_fit'] as const).find(
+      (a) => !analysisUnmet(shape, a)
+    )
+    if (!next) return
+    const patch: Record<string, unknown> = { analysis: next }
+    const t = thresholdForAnalysis(config.analysis, next, config.threshold)
+    if (t) patch.threshold = t
+    if (next === 'curve_fit')
+      patch.curveAxis =
+        (['dose', 'time'] as const).find(
+          (ax) => (shape.levels[ax] ?? 0) >= 2 && (shape.treated[ax] ?? 0) >= CURVE_MIN_TREATED
+        ) ?? 'dose'
+    update(id, patch)
+  }, [configured, shape, config.analysis, config.threshold, id, update])
+  const switchAnalysis = (a: CompareConfig['analysis']): void => {
+    if (a === config.analysis) return
+    const axis = std
+      ? classifyConditions(std.rows, config.num, config.den, std.activeConditions).axis
+      : []
+    const patch: Record<string, unknown> = { analysis: a }
+    const t = thresholdForAnalysis(config.analysis, a, config.threshold)
+    if (t) patch.threshold = t
+    let fits = a === 'two_way_anova' ? axis.length === 2 : axis.length === 1
+    if (a === 'two_way_anova' && fits) {
+      const [c1, c2] = axis
+      Object.assign(patch, {
+        condition: c1,
+        pairNum: config.num[c1]?.[0] ?? '',
+        pairDen: config.den[c1]?.[0] ?? '',
+        condition2: c2,
+        pair2Num: config.num[c2]?.[0] ?? '',
+        pair2Den: config.den[c2]?.[0] ?? ''
+      })
+    }
+    if (a === 'curve_fit') {
+      // The curve runs over the compared condition when it's numeric (dose > 0 vs 0), else dose.
+      const curveAxis = axis[0] && isNumericCond(axis[0]) ? axis[0] : (config.curveAxis ?? 'dose')
+      patch.curveAxis = curveAxis
+      fits = fits && !!std?.activeConditions.includes(curveAxis)
+    }
+    update(id, patch)
+    if (!fits && std) setDialogOpen(true)
+  }
   const readyMsg = nComparisons
     ? `Ready, ${nComparisons.n} comparison${nComparisons.n === 1 ? '' : 's'}${nComparisons.on.length ? ` on ${nComparisons.on.join(', ')}` : ''}`
     : 'Ready'
 
   return (
     <>
-      <Section
-        title="Comparison"
-        action={
+      <Section title="Comparison">
+        <Field label="analysis">
+          <ToggleSwitch
+            label="Analysis"
+            value={config.analysis}
+            options={(
+              [
+                ['compare', 't-test'],
+                ['two_way_anova', '2-way ANOVA'],
+                ['curve_fit', 'Curve fit']
+              ] as const
+            ).map(([value, label]) => {
+              // An analysis the data's shape can't support is offered greyed, with why (unknown
+              // until the upstream Clean data has run — then every one is offered).
+              const why = shape ? analysisUnmet(shape, value) : null
+              return { value, label, disabled: !!why, title: why ?? undefined }
+            })}
+            onChange={switchAnalysis}
+          />
+        </Field>
+        {/* The analysis already picked, but the data can't support it (e.g. no replicates). */}
+        {shape && analysisUnmet(shape, config.analysis) && (
+          <StatusNote kind="warn">{analysisUnmet(shape, config.analysis)}</StatusNote>
+        )}
+        {/* A curve fit's axis unit comes from the import (the Load tile), where the
+            conditions were mapped — noted here so the EC50 / pEC50 it reports can be read. */}
+        {config.analysis === 'curve_fit' && (
+          <div style={styles.hint}>
+            {`${condLabel(config.curveAxis ?? 'dose')} unit: ${curveUnit.unit ?? 'a.u.'}`}
+          </div>
+        )}
+        {/* The comparison itself (what's compared, matched, and over what) — for the analysis above. */}
+        <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
           <ConfigureButton
             label="Configure…"
             disabled={!std}
             title={std ? undefined : 'Run the upstream Clean data first'}
             onClick={() => setDialogOpen(true)}
           />
-        }
-      >
+        </div>
         {dialogOpen && std && (
           <ComparisonDialog
             id={id}
             rows={std.rows}
             active={std.activeConditions}
+            shape={shape ?? undefined}
             initial={{
               num: config.num,
               den: config.den,
               match: config.match,
-              analysis: config.analysis
+              analysis: config.analysis,
+              curveAxis: config.curveAxis
             }}
             onClose={() => setDialogOpen(false)}
           />
         )}
-        <Checkbox
-          label="log₂-transform before testing"
-          checked={config.transform}
-          onChange={(v) => update(id, { transform: v })}
-        />
         {configured ? (
           <StatusNote kind="ok">{readyMsg}</StatusNote>
         ) : (
@@ -1985,11 +2530,20 @@ function useUpstreamNode(edgeNodeId: string) {
 
 /** The up/down class names a point plot's legend shows — the upstream Compare's effect labels
  *  (a Contrast fed by a Compare inherits nothing here; it falls back to up/down). */
-function useEffectNames(edgeNodeId: string): { up: string; down: string } {
+function useEffectNames(edgeNodeId: string): EffectLabels {
   const up = useUpstreamNode(edgeNodeId)
   const cfg =
     up && isStep(up) && up.data.kind === 'compare' ? (up.data.config as CompareConfig) : undefined
   return effectLabelsOf(cfg)
+}
+
+/** The up/down/none colours a plot's automatic group colours follow — the upstream Compare's
+ *  (the defaults from anything else). */
+function useEffectColors(edgeNodeId: string): EffectColors {
+  const up = useUpstreamNode(edgeNodeId)
+  const cfg =
+    up && isStep(up) && up.data.kind === 'compare' ? (up.data.config as CompareConfig) : undefined
+  return effectColorsOf(cfg)
 }
 
 /** The y-axis stat and guide lines come from the upstream Compare's threshold, so its Statistic
@@ -1997,6 +2551,7 @@ function useEffectNames(edgeNodeId: string): { up: string; down: string } {
  *  Per tile there's the label cap and the look (per-group markers, highlight, legend). */
 function VolcanoPanel({ config, update, edgeNodeId }: PlotPanelProps<VolcanoConfig>) {
   const names = useEffectNames(edgeNodeId)
+  const colors = useEffectColors(edgeNodeId)
   const up = useUpstreamNode(edgeNodeId)
   const compare = up && isStep(up) && up.data.kind === 'compare' ? up : undefined
   return (
@@ -2019,13 +2574,20 @@ function VolcanoPanel({ config, update, edgeNodeId }: PlotPanelProps<VolcanoConf
         update={update}
         rule={(n) => `Label the top ${n} genes by significance.`}
       />
-      <PointStyleSections kind="volcano" names={names} style={config.style} update={update} />
+      <PointStyleSections
+        kind="volcano"
+        names={names}
+        colors={colors}
+        style={config.style}
+        update={update}
+      />
     </>
   )
 }
 
 function ScatterPanel({ config, update, edgeNodeId }: PlotPanelProps<ScatterConfig>) {
   const names = useEffectNames(edgeNodeId)
+  const colors = useEffectColors(edgeNodeId)
   // An independent (marginal) contrast colours by quadrant, so the look is per quadrant group.
   const up = useUpstreamNode(edgeNodeId)
   const quad =
@@ -2048,6 +2610,7 @@ function ScatterPanel({ config, update, edgeNodeId }: PlotPanelProps<ScatterConf
       <PointStyleSections
         kind={quad ? 'scatterQuad' : 'scatter'}
         names={names}
+        colors={colors}
         style={config.style}
         update={update}
       />
@@ -2057,6 +2620,7 @@ function ScatterPanel({ config, update, edgeNodeId }: PlotPanelProps<ScatterConf
 
 function MAPanel({ config, update, edgeNodeId }: PlotPanelProps<MAConfig>): ReactNode {
   const names = useEffectNames(edgeNodeId)
+  const colors = useEffectColors(edgeNodeId)
   return (
     <>
       <Section title="MA">
@@ -2064,7 +2628,51 @@ function MAPanel({ config, update, edgeNodeId }: PlotPanelProps<MAConfig>): Reac
             with volcano — so there are no per-tile FC cutoffs to set here. */}
         <div style={styles.hint}>Fold-change lines follow the upstream Compare threshold.</div>
       </Section>
-      <PointStyleSections kind="ma" names={names} style={config.style} update={update} />
+      <PointStyleSections
+        kind="ma"
+        names={names}
+        colors={colors}
+        style={config.style}
+        update={update}
+      />
+    </>
+  )
+}
+
+function PotencyPanel({ config, update, edgeNodeId }: PlotPanelProps<PotencyConfig>): ReactNode {
+  const names = useEffectNames(edgeNodeId)
+  const colors = useEffectColors(edgeNodeId)
+  return (
+    <>
+      <Section title="Potency">
+        <Field label="curves" aside={<QuickToggle config={config} field="show" update={update} />}>
+          <Select
+            value={config.show ?? 'called'}
+            onChange={(v) => update({ show: v as PotencyConfig['show'] })}
+            options={[
+              { value: 'called', label: 'significant only' },
+              { value: 'all', label: 'all' }
+            ]}
+          />
+        </Field>
+      </Section>
+      <CapSection
+        title="Cap labels"
+        hint="Label only the curves with the largest fold change."
+        label="Max labels"
+        field="labelTop"
+        value={config.labelTop}
+        enabled={config.capEnabled}
+        update={update}
+        rule={(n) => `Label the top ${n} curves by |fold change|.`}
+      />
+      <PointStyleSections
+        kind="potency"
+        names={names}
+        colors={colors}
+        style={config.style}
+        update={update}
+      />
     </>
   )
 }
@@ -2082,17 +2690,33 @@ const PREVIEW_H = 42
 function PointStyleSections({
   kind,
   names,
+  colors,
   style,
-  update
+  update,
+  selection = true
 }: {
   kind: PointPlotKind
-  names: { up: string; down: string }
+  names: { up: string; down: string; none?: string }
+  /** the upstream's effect colours — what a group's automatic colour follows */
+  colors?: EffectColors
   style: PointStyle | undefined
   update: (patch: Record<string, unknown>) => void
+  /** the points are genes, so the gene selection applies: the label switch and the selected /
+   *  not-selected looks (off for a plot of samples) */
+  selection?: boolean
 }): ReactNode {
   const mode = useUiTheme((s) => s.mode)
   const ink = PALETTES[mode].text
-  const groups = defaultGroups(kind, names).map((d) => resolveGroup(style, d))
+  const defaults = defaultGroups(kind, names, colors)
+  const groups = defaults.map((d) => resolveGroup(style, d))
+  /** A group's colour as its chip shows it: what the user picked (or cleared), else Automatic. */
+  // Where a group's automatic colour comes from: an effect group follows the upstream tile.
+  const autoSource = (key: string): string =>
+    key === 'up' || key === 'down' || key === 'none' ? "the upstream tile's" : "the plot's default"
+  const chipColor = (key: string): string => {
+    const c = style?.groups?.[key]?.color
+    return c && c !== AUTO ? c : AUTO
+  }
   /** A group's emphasised marker size: the explicit one, else its own size plus the bump. */
   const hlSize = (g: ResolvedGroup): number => g.highlight.size ?? g.size + g.highlight.bump
   // One template for every block below, so their columns line up under the group they belong to.
@@ -2203,13 +2827,19 @@ function PointStyleSections({
               {groups.map((g, i) => (
                 <ColorChip
                   key={g.key}
-                  color={g.color}
+                  color={chipColor(g.key)}
                   on={g.color !== CLEAR}
                   label={`${g.name} colour`}
-                  title={`${g.name} colour`}
+                  title={
+                    chipColor(g.key) === AUTO
+                      ? `${g.name} colour: automatic (${autoSource(g.key)})`
+                      : `${g.name} colour`
+                  }
                   clearLabel="No fill (a hollow marker)"
                   onPick={(c) => setGroup(g.key, { color: c })}
                   onClear={() => setGroup(g.key, { color: CLEAR })}
+                  onAuto={() => setGroup(g.key, { color: undefined })}
+                  autoLabel={`Automatic (${autoSource(g.key)})`}
                   style={{ gridRow: 2, gridColumn: i + 2, width: '100%', flex: '1 1 auto' }}
                 />
               ))}
@@ -2277,21 +2907,25 @@ function PointStyleSections({
                 </div>
               ))}
 
-              <span
-                style={styles.rowLabel}
-                title="Offer this group's genes to the auto-label layer"
-              >
-                label
-              </span>
-              {groups.map((g) => (
-                <div key={g.key} style={styles.switchCell}>
-                  <OnOffSwitch
-                    on={g.label}
-                    label={`${g.name} labels`}
-                    onChange={(on) => setGroup(g.key, { label: on })}
-                  />
-                </div>
-              ))}
+              {selection && (
+                <>
+                  <span
+                    style={styles.rowLabel}
+                    title="Offer this group's genes to the auto-label layer"
+                  >
+                    label
+                  </span>
+                  {groups.map((g) => (
+                    <div key={g.key} style={styles.switchCell}>
+                      <OnOffSwitch
+                        on={g.label}
+                        label={`${g.name} labels`}
+                        onChange={(on) => setGroup(g.key, { label: on })}
+                      />
+                    </div>
+                  ))}
+                </>
+              )}
 
               <span style={styles.rowLabel}>legend</span>
               {groups.map((g) => (
@@ -2308,81 +2942,85 @@ function PointStyleSections({
           </div>
 
           {/* How each group's points look while they ARE the selection. */}
-          <div style={{ ...styles.sideTag, marginTop: 12 }}>Selected</div>
-          <div style={styles.subGroup}>
-            <div style={gridCols}>
-              <span style={styles.rowLabel}>size</span>
-              {groups.map((g) => (
-                <Fragment key={g.key}>
-                  {px(
-                    `${g.name} selected size`,
-                    hlSize(g),
-                    (v) => setGroupHl(g.key, { size: v }),
-                    1,
-                    25
-                  )}
-                </Fragment>
-              ))}
+          {selection && <div style={{ ...styles.sideTag, marginTop: 12 }}>Selected</div>}
+          {selection && (
+            <div style={styles.subGroup}>
+              <div style={gridCols}>
+                <span style={styles.rowLabel}>size</span>
+                {groups.map((g) => (
+                  <Fragment key={g.key}>
+                    {px(
+                      `${g.name} selected size`,
+                      hlSize(g),
+                      (v) => setGroupHl(g.key, { size: v }),
+                      1,
+                      25
+                    )}
+                  </Fragment>
+                ))}
 
-              <span style={styles.rowLabel}>outline</span>
-              {groups.map((g) => (
-                <div key={g.key} style={styles.ringCell}>
-                  <ColorChip
-                    color={g.highlight.ringColor ?? ink}
-                    on={g.highlight.ringColor !== CLEAR}
-                    clearLabel="No colour (keeps the width)"
-                    label={`${g.name} selected-outline colour`}
-                    title={`${g.name} selected-outline colour (default: the theme's text colour)`}
-                    onPick={(c) => setGroupHl(g.key, { ringColor: c })}
-                    onClear={() => setGroupHl(g.key, { ringColor: CLEAR })}
-                  />
-                  {px(
-                    `${g.name} selected-outline width`,
-                    g.highlight.ring,
-                    (v) => setGroupHl(g.key, { ring: v }),
-                    0,
-                    3,
-                    true
-                  )}
-                </div>
-              ))}
-
-              <span style={styles.rowLabel}>label</span>
-              {groups.map((g) => (
-                <div key={g.key} style={styles.hlLabelCell}>
-                  <OnOffSwitch
-                    on={g.highlight.label}
-                    label={`Label selected ${g.name} points`}
-                    onChange={(on) => setGroupHl(g.key, { label: on })}
-                  />
-                  {g.highlight.label &&
-                    px(
-                      `${g.name} label size`,
-                      g.highlight.labelSize,
-                      (v) => setGroupHl(g.key, { labelSize: v }),
-                      9,
-                      13,
+                <span style={styles.rowLabel}>outline</span>
+                {groups.map((g) => (
+                  <div key={g.key} style={styles.ringCell}>
+                    <ColorChip
+                      color={g.highlight.ringColor ?? ink}
+                      on={g.highlight.ringColor !== CLEAR}
+                      clearLabel="No colour (keeps the width)"
+                      label={`${g.name} selected-outline colour`}
+                      title={`${g.name} selected-outline colour (default: the theme's text colour)`}
+                      onPick={(c) => setGroupHl(g.key, { ringColor: c })}
+                      onClear={() => setGroupHl(g.key, { ringColor: CLEAR })}
+                    />
+                    {px(
+                      `${g.name} selected-outline width`,
+                      g.highlight.ring,
+                      (v) => setGroupHl(g.key, { ring: v }),
+                      0,
+                      3,
                       true
                     )}
-                </div>
-              ))}
+                  </div>
+                ))}
+
+                <span style={styles.rowLabel}>label</span>
+                {groups.map((g) => (
+                  <div key={g.key} style={styles.hlLabelCell}>
+                    <OnOffSwitch
+                      on={g.highlight.label}
+                      label={`Label selected ${g.name} points`}
+                      onChange={(on) => setGroupHl(g.key, { label: on })}
+                    />
+                    {g.highlight.label &&
+                      px(
+                        `${g.name} label size`,
+                        g.highlight.labelSize,
+                        (v) => setGroupHl(g.key, { labelSize: v }),
+                        9,
+                        13,
+                        true
+                      )}
+                  </div>
+                ))}
+              </div>
             </div>
-          </div>
+          )}
 
           {/* How each group fades while something ELSE is selected. */}
-          <div style={{ ...styles.sideTag, marginTop: 12 }}>Not selected</div>
-          <div style={styles.subGroup}>
-            <div style={gridCols}>
-              <span style={styles.rowLabel}>opacity</span>
-              {groups.map((g) => (
-                <Fragment key={g.key}>
-                  {opacity(`${g.name} faded opacity`, g.highlight.dim, (v) =>
-                    setGroupHl(g.key, { dim: v })
-                  )}
-                </Fragment>
-              ))}
+          {selection && <div style={{ ...styles.sideTag, marginTop: 12 }}>Not selected</div>}
+          {selection && (
+            <div style={styles.subGroup}>
+              <div style={gridCols}>
+                <span style={styles.rowLabel}>opacity</span>
+                {groups.map((g) => (
+                  <Fragment key={g.key}>
+                    {opacity(`${g.name} faded opacity`, g.highlight.dim, (v) =>
+                      setGroupHl(g.key, { dim: v })
+                    )}
+                  </Fragment>
+                ))}
+              </div>
             </div>
-          </div>
+          )}
         </div>
       </Section>
     </>
@@ -2394,39 +3032,350 @@ const AXIS_OPTS = [
   { value: 'time', label: 'time' }
 ]
 
-/** Dose- and time-response are separate tiles (the axis is fixed when the tile is picked), so the
- *  panel only carries the colour cap. Every gene is always drawn as background; the cap decides
- *  how many of the strongest responders are coloured. */
+/** The DR panel: a Compare-fed DR's view (global, with its top-genes colour cap underneath, or
+ *  focused), the dose⇆time axis when the data has both, and — one gene at a time (a Contrast, or a
+ *  focused Compare) — the value axis's scale. In the global view every gene is drawn as
+ *  background; the cap decides how many of the strongest responders are coloured. */
 function DRPanel({ config, update, edgeNodeId }: PlotPanelProps<DRConfig>) {
   // The dose⇆time axis is only a choice when the upstream data carries both (the tile shows
   // its switch bar under the same condition); with one axis the tile forces it.
   const upId = useGraph((s) => s.edges.find((e) => e.target === edgeNodeId)?.source)
   const { axes: avail } = useUpstreamFacts(upId)
   const axes = AXIS_OPTS.filter((o) => avail[o.value as 'dose' | 'time'])
+  // From a Contrast the tile shows one gene at a time, so its value axis can be per gene.
+  const fromContrast = useGraph((s) => {
+    const up = upId ? s.nodes.find((n) => n.id === upId) : undefined
+    return !!up && isStep(up) && up.data.kind === 'contrast'
+  })
+  // From a Compare: every gene at once, or one gene at a time (with its points / fitted curve).
+  const fromCompare = useGraph((s) => {
+    const up = upId ? s.nodes.find((n) => n.id === upId) : undefined
+    return !!up && isStep(up) && up.data.kind === 'compare'
+  })
+  // A curve fit's error is its fit's confidence band, not a fold change's SE.
+  const curveFit = useGraph((s) => {
+    const up = upId ? s.nodes.find((n) => n.id === upId) : undefined
+    return (
+      !!up &&
+      isStep(up) &&
+      up.data.kind === 'compare' &&
+      normalizeCompareConfig(up.data.config as CompareConfig).analysis === 'curve_fit'
+    )
+  })
+  const focused = fromContrast || config.view === 'focus'
   return (
     <>
-      {axes.length > 1 && (
+      {(axes.length > 1 || fromContrast || fromCompare) && (
         <Section title="Response">
-          <Field label="axis" aside={<QuickToggle config={config} field="axis" update={update} />}>
-            <Select
-              value={config.axis}
-              onChange={(v) => update({ axis: v as DRConfig['axis'] })}
-              options={axes}
-            />
-          </Field>
+          {fromCompare && (
+            <Field
+              label="view"
+              aside={<QuickToggle config={config} field="view" update={update} />}
+            >
+              <Select
+                value={config.view ?? 'overview'}
+                onChange={(v) => update({ view: v as DRConfig['view'] })}
+                options={[
+                  { value: 'overview', label: 'global (every gene)' },
+                  { value: 'focus', label: 'focused (one gene)' }
+                ]}
+              />
+            </Field>
+          )}
+          {/* Top genes is a setting OF the global view (it only decides which of the every-gene
+              curves are coloured), so it sits under view and goes away when focused. */}
+          {fromCompare && config.view !== 'focus' && (
+            <div style={styles.subGroup}>
+              <Field label="top genes">
+                <OnOffSwitch
+                  on={capOn(config.capEnabled, config.topGenes)}
+                  label="Top genes"
+                  onChange={(next) =>
+                    // First switch-on with no N yet → a sensible starting point.
+                    update({
+                      capEnabled: next,
+                      ...(next && !(config.topGenes > 0) ? { topGenes: 10 } : null)
+                    })
+                  }
+                />
+              </Field>
+              {capOn(config.capEnabled, config.topGenes) && (
+                <Field label="n">
+                  <div style={{ width: 90 }}>
+                    <NumberInput
+                      value={config.topGenes}
+                      step={10}
+                      min={1}
+                      onChange={(v) => update({ topGenes: Math.max(1, Math.round(v)) })}
+                    />
+                  </div>
+                </Field>
+              )}
+              <div style={styles.hint}>
+                {capOn(config.capEnabled, config.topGenes)
+                  ? `Colour the top ${config.topGenes} genes by response`
+                  : 'Colour every significant gene'}
+                ; every gene stays drawn in the background. Selected genes are coloured instead
+                while any are selected.
+              </div>
+            </div>
+          )}
+          {axes.length > 1 && (
+            <Field
+              label="axis"
+              aside={<QuickToggle config={config} field="axis" update={update} />}
+            >
+              <Select
+                value={config.axis}
+                onChange={(v) => update({ axis: v as DRConfig['axis'] })}
+                options={axes}
+              />
+            </Field>
+          )}
+          {(fromContrast || (fromCompare && focused)) && (
+            <Field
+              label="axis scale"
+              aside={<QuickToggle config={config} field="yScale" update={update} />}
+            >
+              <Select
+                value={drYScale(config, fromContrast)}
+                onChange={(v) => update({ yScale: v as DRConfig['yScale'] })}
+                options={
+                  fromContrast
+                    ? [
+                        { value: 'global', label: 'global (whole contrast)' },
+                        { value: 'gene', label: 'per gene' }
+                      ]
+                    : [
+                        { value: 'gene', label: 'per gene' },
+                        { value: 'global', label: 'global (all genes)' }
+                      ]
+                }
+              />
+            </Field>
+          )}
         </Section>
       )}
-      <CapSection
-        title="Cap genes"
-        hint="Colour only the strongest responders; every gene stays drawn in the background."
-        field="topGenes"
-        value={config.topGenes}
-        enabled={config.capEnabled}
+      <DRStyleSection
+        config={config}
         update={update}
-        defaultValue={10}
-        rule={(n) => `Colour the top ${n} genes by response.`}
+        focused={focused}
+        fromContrast={fromContrast}
+        curveFit={curveFit}
       />
     </>
+  )
+}
+
+/** The DR settings that make up its look, persisted with the tile (see DRConfig / drLook). */
+const DR_LOOK_FIELDS = [
+  'lineWidth',
+  'lineColor',
+  'lineOpacity',
+  'points',
+  'pointSize',
+  'pointColor',
+  'pointOpacity',
+  'errors',
+  'errorStyle',
+  'errorColor',
+  'errorOpacity'
+] as const
+
+/** A DR's line / points / error look, one row each: an on/off where the element can be hidden,
+ *  then — while shown — its colour, size and opacity (%), as the gene bar's replicate row does.
+ *  Points and error are drawn only one gene at a time (focused, or from a Contrast), so they're
+ *  offered only there. An automatic colour is the gene's effect group (focused, one comparison),
+ *  one per comparison (focused, several), per gene (global), or per side (from a Contrast). */
+function DRStyleSection({
+  config,
+  update,
+  focused,
+  fromContrast,
+  curveFit
+}: {
+  config: DRConfig
+  update: (patch: Record<string, unknown>) => void
+  focused: boolean
+  fromContrast: boolean
+  curveFit: boolean
+}): ReactNode {
+  const look = drLook(config)
+  const autoLine = fromContrast
+    ? 'one per side'
+    : focused
+      ? 'by effect group; one per comparison when several'
+      : 'one per gene'
+  const row: CSSProperties = { display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }
+  const custom = DR_LOOK_FIELDS.some((f) => config[f] !== undefined)
+  const color = (field: string, value: string, what: string, auto: string): ReactNode => (
+    <ColorChip
+      color={value}
+      on
+      label={`${what} colour`}
+      title={value === AUTO ? `${what} colour: automatic (${auto})` : `${what} colour`}
+      onPick={(c) => update({ [field]: c })}
+      onAuto={() => update({ [field]: AUTO })}
+      autoLabel={`Automatic (${auto})`}
+    />
+  )
+  const px = (field: string, value: number, title: string, min: number, max: number): ReactNode => (
+    <div style={{ width: 52, flex: '0 0 auto' }}>
+      <NumberInput
+        value={value}
+        step={field === 'lineWidth' ? 0.5 : 1}
+        min={min}
+        max={max}
+        title={title}
+        onChange={(v) => update({ [field]: Math.min(max, Math.max(min, Math.round(v * 2) / 2)) })}
+      />
+    </div>
+  )
+  const pct = (field: string, value: number, title: string): ReactNode => (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 3, width: 64, flex: '0 0 auto' }}>
+      <NumberInput
+        value={Math.round(value * 100)}
+        step={10}
+        min={5}
+        max={100}
+        title={title}
+        onChange={(v) => update({ [field]: Math.min(100, Math.max(5, Math.round(v))) / 100 })}
+      />
+      <span style={{ color: UI.textMuted, fontSize: 12 }}>%</span>
+    </div>
+  )
+  return (
+    <Section
+      title="Style"
+      subtitle={
+        custom ? (
+          <button
+            style={styles.resetBtn}
+            onClick={() => update(Object.fromEntries(DR_LOOK_FIELDS.map((f) => [f, undefined])))}
+            title="Restore the default line, point and error look"
+          >
+            Reset
+          </button>
+        ) : null
+      }
+    >
+      <Field label="line">
+        <div style={row}>
+          {color('lineColor', look.lineColor, 'Line', autoLine)}
+          {px('lineWidth', look.lineWidth, 'Line width (px)', 0.5, 8)}
+          {pct('lineOpacity', look.lineOpacity, 'Line opacity (%)')}
+        </div>
+      </Field>
+      {focused && (
+        <>
+          <Field label="points">
+            <div style={row}>
+              <OnOffSwitch
+                on={look.points}
+                label="Points"
+                title={
+                  fromContrast
+                    ? "Each side's replicates behind its line"
+                    : curveFit
+                      ? 'The measured points the curve was fitted to'
+                      : 'The replicates behind each fold change'
+                }
+                onChange={(v) => update({ points: v })}
+              />
+              {look.points && (
+                <>
+                  {color('pointColor', look.pointColor, 'Point', 'the line colour')}
+                  {px('pointSize', look.pointSize, 'Point size (px)', 2, 16)}
+                  {pct('pointOpacity', look.pointOpacity, 'Point opacity (%)')}
+                </>
+              )}
+            </div>
+          </Field>
+          <Field label="error">
+            <div style={row}>
+              <OnOffSwitch
+                on={look.errors}
+                label="Error"
+                title={
+                  fromContrast
+                    ? "Each side's standard error (its fold change's, or its abundance's)"
+                    : curveFit
+                      ? 'The fit’s 95% confidence band: where the true curve plausibly lies'
+                      : "The fold change's standard error"
+                }
+                onChange={(v) => update({ errors: v })}
+              />
+              {look.errors && (
+                <>
+                  <div style={{ width: 92, flex: '0 0 auto' }}>
+                    <Select
+                      value={look.errorStyle}
+                      onChange={(v) => update({ errorStyle: v as DRConfig['errorStyle'] })}
+                      options={[
+                        { value: 'whisker', label: 'whisker' },
+                        { value: 'band', label: 'band' }
+                      ]}
+                    />
+                  </div>
+                  {color('errorColor', look.errorColor, 'Error', 'the line colour')}
+                  {pct('errorOpacity', look.errorOpacity, 'Error opacity (%)')}
+                </>
+              )}
+            </div>
+          </Field>
+        </>
+      )}
+      {!focused && (
+        <div style={styles.hint}>
+          Styles the coloured curves; points and error show in the focused view.
+        </div>
+      )}
+    </Section>
+  )
+}
+
+/** A plot's up / down / none colours where it has no point groups to carry them (bubble, enrichment,
+ *  STRING): Automatic by default — the upstream Compare's colours — or the plot's own. */
+function EffectColorSection({
+  config,
+  update,
+  edgeNodeId
+}: PlotPanelProps<{ effectColors?: PlotEffectColors }>): ReactNode {
+  const names = useEffectNames(edgeNodeId)
+  const inherited = useEffectColors(edgeNodeId)
+  const own = config.effectColors
+  const chip = (k: 'up' | 'down' | 'none'): ReactNode => {
+    const c = own?.[k]
+    const set = c && c !== AUTO ? c : AUTO
+    return (
+      <ColorChip
+        color={set}
+        on
+        label={`${names[k]} colour`}
+        title={
+          set === AUTO
+            ? `${names[k]} colour: automatic (the upstream tile's, ${inherited[k]})`
+            : `${names[k]} colour`
+        }
+        onPick={(v) => update({ effectColors: { ...own, [k]: v } })}
+        onAuto={() => update({ effectColors: { ...own, [k]: undefined } })}
+        autoLabel="Automatic (the upstream tile's)"
+      />
+    )
+  }
+  return (
+    <Section title="Colour">
+      <Field label="groups">
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <span style={styles.inlineTag}>{names.up}</span>
+          {chip('up')}
+          <span style={{ ...styles.inlineTag, marginLeft: 6 }}>{names.down}</span>
+          {chip('down')}
+          <span style={{ ...styles.inlineTag, marginLeft: 6 }}>{names.none}</span>
+          {chip('none')}
+        </div>
+      </Field>
+    </Section>
   )
 }
 
@@ -2832,11 +3781,217 @@ function TdrPanel(): ReactNode {
   )
 }
 
-function GeneBarPanel(): ReactNode {
+function GeneBarPanel({ config, update, edgeNodeId }: PlotPanelProps<BarConfig>): ReactNode {
+  // The conditions the upstream data carries, to colour by (see ClusterPanel on selecting the
+  // result rather than a fresh array).
+  const upstream = useGraph((s) => {
+    const upId = s.edges.find((e) => e.target === edgeNodeId)?.source
+    return upId ? s.results[upId] : undefined
+  })
+  const active = useMemo(
+    () => (upstream?.kind === 'standardize' ? upstream.std.activeConditions : CONDS),
+    [upstream]
+  )
+  const colorConds = barColorConds(config)
+  const byCondition = colorConds.length > 0 || config.colorBy === 'condition'
+  const repColor = config.repColor ?? 'auto'
+  const errorColor = config.errorColor ?? 'auto'
   return (
-    <Section title="Bar">
-      <div style={styles.hint}>Each selected gene's value across every condition.</div>
-    </Section>
+    <>
+      <Section title="Bar">
+        <Field
+          label="axis scale"
+          aside={<QuickToggle config={config} field="yScale" update={update} />}
+        >
+          <Select
+            value={config.yScale ?? 'gene'}
+            onChange={(v) => update({ yScale: v as BarConfig['yScale'] })}
+            options={[
+              { value: 'gene', label: 'per gene' },
+              { value: 'global', label: 'global (all genes)' }
+            ]}
+          />
+        </Field>
+        {/* Replicates as dots over the bars: on/off, then — while on — colour, size (px),
+            opacity (%) and jitter, on one line like the error bar's. */}
+        <Field label="replicate">
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
+            <OnOffSwitch
+              on={!!config.replicates}
+              label="Replicates"
+              title="Each replicate as a dot over its bar"
+              onChange={(v) => update({ replicates: v })}
+            />
+            {config.replicates && (
+              <>
+                <ColorChip
+                  color={repColor}
+                  on
+                  label="Replicate colour"
+                  title={
+                    repColor === AUTO
+                      ? 'Replicate colour: automatic (the group colour)'
+                      : 'Replicate colour'
+                  }
+                  onPick={(c) => update({ repColor: c })}
+                  onAuto={() => update({ repColor: AUTO })}
+                  autoLabel="Automatic (the group colour)"
+                />
+                <div style={{ width: 48, flex: '0 0 auto' }}>
+                  <NumberInput
+                    value={config.repSize ?? 6}
+                    min={2}
+                    max={16}
+                    title="Dot size (px)"
+                    onChange={(v) => update({ repSize: Math.min(16, Math.max(2, Math.round(v))) })}
+                  />
+                </div>
+                <div
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 3,
+                    width: 64,
+                    flex: '0 0 auto'
+                  }}
+                >
+                  <NumberInput
+                    value={Math.round((config.repOpacity ?? 0.6) * 100)}
+                    step={10}
+                    min={10}
+                    max={100}
+                    title="Dot opacity (%)"
+                    onChange={(v) =>
+                      update({ repOpacity: Math.min(100, Math.max(10, Math.round(v))) / 100 })
+                    }
+                  />
+                  <span style={{ color: UI.textMuted, fontSize: 12 }}>%</span>
+                </div>
+                <span style={{ color: UI.textMuted, fontSize: 11, marginLeft: 2 }}>jitter</span>
+                <OnOffSwitch
+                  on={config.repJitter ?? true}
+                  label="Jittered"
+                  title="Jittered: spread the dots sideways across the bar (off: one column over its centre)"
+                  onChange={(v) => update({ repJitter: v })}
+                />
+              </>
+            )}
+          </div>
+        </Field>
+        {/* One line: the error bars' colour, line width (px), then what they show. */}
+        <Field label="error bar">
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
+            <ColorChip
+              color={errorColor}
+              on
+              label="Error bar colour"
+              title={
+                errorColor === AUTO
+                  ? 'Error bar colour: automatic (the group colour)'
+                  : 'Error bar colour'
+              }
+              onPick={(c) => update({ errorColor: c })}
+              onAuto={() => update({ errorColor: AUTO })}
+              autoLabel="Automatic (the group colour)"
+            />
+            <div style={{ width: 56, flex: '0 0 auto' }}>
+              <NumberInput
+                value={config.errorWidth ?? 1.4}
+                step={0.5}
+                min={0.5}
+                max={6}
+                title="Error bar line width (px)"
+                onChange={(v) =>
+                  update({ errorWidth: Math.min(6, Math.max(0.5, Math.round(v * 10) / 10)) })
+                }
+              />
+            </div>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <Select
+                value={config.error ?? 'sd'}
+                onChange={(v) => update({ error: v as BarConfig['error'] })}
+                options={[
+                  { value: 'sd', label: 'SD' },
+                  { value: 'sem', label: 'SEM' },
+                  { value: 'ci95', label: '95% CI' }
+                ]}
+              />
+            </div>
+          </div>
+        </Field>
+        <Field label="colour by">
+          <Select
+            value={byCondition ? 'condition' : 'value'}
+            onChange={(v) =>
+              update(
+                v === 'value'
+                  ? { colorBy: 'value' }
+                  : {
+                      colorBy: 'condition',
+                      // Start from what was there, else the first categorical condition.
+                      colorConds: colorConds.length
+                        ? colorConds
+                        : active.filter((c) => !isNumericCond(c)).slice(0, 1)
+                    }
+              )
+            }
+            options={[
+              { value: 'value', label: 'value' },
+              { value: 'condition', label: 'condition' }
+            ]}
+          />
+        </Field>
+        {byCondition && (
+          <ConditionColorFields
+            active={active}
+            selected={colorConds}
+            onChange={(next) => update({ colorBy: 'condition', colorConds: next })}
+          />
+        )}
+      </Section>
+    </>
+  )
+}
+
+/** Colour by condition's picks (gene bar, QC): up to two — one categorical (the colour), one
+ *  numeric, dose or time (the shade). Picking a second of a kind swaps it for the first. */
+function ConditionColorFields({
+  active,
+  selected,
+  onChange
+}: {
+  /** the conditions the upstream data carries */
+  active: ConditionKey[]
+  selected: ConditionKey[]
+  onChange: (next: ConditionKey[]) => void
+}): ReactNode {
+  const toggle = (c: ConditionKey, on: boolean): void =>
+    onChange(
+      on
+        ? [...selected.filter((k) => isNumericCond(k) !== isNumericCond(c)), c]
+        : selected.filter((k) => k !== c)
+    )
+  return (
+    <>
+      <Field label="conditions" top>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0 12px' }}>
+          {active.map((c) => (
+            <label key={c} style={{ ...styles.checkRow, marginBottom: 0 }}>
+              <input
+                type="checkbox"
+                checked={selected.includes(c)}
+                onChange={(e) => toggle(c, e.target.checked)}
+              />
+              {condLabel(c)}
+            </label>
+          ))}
+        </div>
+      </Field>
+      <div style={styles.hint}>
+        Up to two: a condition for the colour, and a dose or time for the shade (light = low, dark =
+        high).
+      </div>
+    </>
   )
 }
 
@@ -2866,256 +4021,518 @@ function ClusterPanel({ config, update, edgeNodeId }: PlotPanelProps<ClusterConf
       update({ colorBy: active[0] })
   }, [active, config.colorBy, update])
   return (
-    <Section title="Cluster">
-      <Field label="method">
-        <Select
-          value={config.method}
-          onChange={(v) => update({ method: v as ClusterConfig['method'] })}
-          options={[
-            { value: 'pca', label: 'PCA' },
-            { value: 'umap', label: 'UMAP' },
-            { value: 'tsne', label: 't-SNE' }
-          ]}
-        />
-      </Field>
-      {/* PCA is the only method with component variances, so the scree has nothing to show for
+    <>
+      {/* By category: what is plotted, how the data are prepared for it (in processing order),
+          how it is coloured, and how the data and their territories are drawn. */}
+      <Section title="Plot">
+        <Field label="method">
+          <Select
+            value={config.method}
+            onChange={(v) => update({ method: v as ClusterConfig['method'] })}
+            options={[
+              { value: 'pca', label: 'PCA' },
+              { value: 'umap', label: 'UMAP' },
+              { value: 'tsne', label: 't-SNE' }
+            ]}
+          />
+        </Field>
+        {/* PCA is the only method with component variances, so the scree has nothing to show for
           UMAP/t-SNE. */}
-      {config.method === 'pca' && (
-        <Field
-          label="plot"
-          aside={<QuickToggle config={config} field="plot" update={update} kind="pca" />}
-        >
-          <Select
-            value={config.plot ?? 'pc'}
-            onChange={(v) => update({ plot: v as ClusterConfig['plot'] })}
-            options={[
-              { value: 'pc', label: 'PC plot (samples)' },
-              { value: 'loadings', label: 'loadings (features)' },
-              { value: 'scree', label: 'scree plot (variance)' }
-            ]}
-          />
-        </Field>
-      )}
-      {config.method === 'pca' && config.plot === 'scree' && (
-        <div style={styles.hint}>
-          Variance explained per component — a steep drop after PC1–2 means the PC plot summarises
-          the data well; a flat scree means it doesn’t.
-        </div>
-      )}
-      {config.method === 'pca' && config.plot === 'loadings' && (
-        <>
-          <Field label="features">
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6, width: 90 }}>
-              <NumberInput
-                value={config.loadings ?? 10}
-                step={1}
-                min={1}
-                max={40}
-                onChange={(v) => update({ loadings: Math.max(1, Math.min(40, Math.round(v))) })}
-              />
-            </div>
-          </Field>
-          <div style={styles.hint}>
-            The most influential features in the same PC1/PC2 plane, as vectors from the origin —
-            which measurements drive the separation, not just that there is one. Same direction =
-            moves together; opposite = trades off; longer = stronger.
-          </div>
-        </>
-      )}
-      <Field label="gene scaling">
-        <Select
-          value={config.scale ?? 'unit'}
-          onChange={(v) => update({ scale: v as ClusterConfig['scale'] })}
-          options={[
-            { value: 'unit', label: 'unit variance (correlation)' },
-            { value: 'none', label: 'none (covariance)' }
-          ]}
-        />
-      </Field>
-      <Field label="missing values">
-        <Select
-          value={config.missing ?? 'impute'}
-          onChange={(v) => update({ missing: v as ClusterConfig['missing'] })}
-          options={[
-            { value: 'impute', label: 'impute (gene mean)' },
-            { value: 'complete', label: 'complete cases only' }
-          ]}
-        />
-      </Field>
-      <Field label="normalize">
-        <Select
-          value={config.center ?? 'median'}
-          onChange={(v) => update({ center: v as ClusterConfig['center'] })}
-          options={[
-            { value: 'median', label: 'median-center (offset)' },
-            { value: 'zscore', label: 'z-score per sample (offset + scale)' },
-            { value: 'quantile', label: 'quantile (common distribution)' },
-            { value: 'none', label: 'none (raw log₂)' }
-          ]}
-        />
-      </Field>
-      <Field label="features">
-        <Select
-          value={String(config.topVar ?? 0)}
-          onChange={(v) => update({ topVar: Number(v) })}
-          options={[
-            { value: '0', label: 'all genes' },
-            { value: '100', label: 'top 100 most variable' },
-            { value: '250', label: 'top 250 most variable' },
-            { value: '500', label: 'top 500 most variable' }
-          ]}
-        />
-      </Field>
-      <Field label="transform">
-        <Select
-          value={config.transform ?? 'auto'}
-          onChange={(v) => update({ transform: v as ClusterConfig['transform'] })}
-          options={[
-            { value: 'auto', label: 'auto (heuristic)' },
-            { value: 'log2', label: 'log₂ (force)' },
-            { value: 'log10', label: 'log (force)' },
-            { value: 'none', label: 'none (linear)' }
-          ]}
-        />
-      </Field>
-      <Field label="replicates">
-        <Select
-          value={config.replicates ?? 'individual'}
-          onChange={(v) => update({ replicates: v as ClusterConfig['replicates'] })}
-          options={[
-            { value: 'individual', label: 'individual replicates' },
-            { value: 'mean', label: 'condition means (average reps)' }
-          ]}
-        />
-      </Field>
-      <Field
-        label="legend"
-        aside={<QuickToggle config={config} field="legend" update={update} kind="pca" />}
-      >
-        <Select
-          value={config.legend ?? 'simple'}
-          onChange={(v) => update({ legend: v as ClusterConfig['legend'] })}
-          options={[
-            { value: 'simple', label: 'simple (one condition)' },
-            { value: 'complex', label: 'complex (multi-condition)' }
-          ]}
-        />
-      </Field>
-      {(config.legend ?? 'simple') === 'simple' && (
-        <Field
-          label="color by"
-          aside={<QuickToggle config={config} field="colorBy" update={update} kind="pca" />}
-        >
-          <Select
-            value={config.colorBy}
-            onChange={(v) => update({ colorBy: v as ClusterColorBy })}
-            options={[
-              ...active.map((c) => ({ value: c, label: condLabel(c) })),
-              { value: CLUSTER_COLOR, label: 'cluster (computed)' }
-            ]}
-          />
-        </Field>
-      )}
-      {/* The two cluster knobs only apply while the colours ARE clusters. */}
-      {(config.legend ?? 'simple') === 'simple' && config.colorBy === CLUSTER_COLOR && (
-        <>
+        {config.method === 'pca' && (
           <Field
-            label="cluster on"
-            aside={<QuickToggle config={config} field="clusterOn" update={update} kind="pca" />}
+            label="plot"
+            aside={<QuickToggle config={config} field="plot" update={update} kind="pca" />}
           >
             <Select
-              value={config.clusterOn ?? 'coords'}
-              onChange={(v) => update({ clusterOn: v as ClusterConfig['clusterOn'] })}
+              value={config.plot ?? 'pc'}
+              onChange={(v) => update({ plot: v as ClusterConfig['plot'] })}
               options={[
-                { value: 'coords', label: 'the plotted x/y' },
-                { value: 'features', label: 'the full feature matrix' }
+                { value: 'pc', label: 'PC' },
+                { value: 'loadings', label: 'loadings' },
+                { value: 'scree', label: 'scree' }
               ]}
             />
           </Field>
+        )}
+        {config.method === 'pca' && config.plot === 'scree' && (
           <div style={styles.hint}>
-            {(config.clusterOn ?? 'coords') === 'coords'
-              ? 'Clusters what you see, so the colours always match the visual grouping — but it clusters a 2-D projection, so groups that overlap on screen merge.'
-              : 'Clusters the same high-dimensional data the embedding ran on, so the grouping is the real structure and is identical under PCA/UMAP/t-SNE — a cluster may then look split on screen.'}
+            Variance explained per component — a steep drop after PC1–2 means the PC plot summarises
+            the data well; a flat scree means it doesn’t.
           </div>
-          <Field
-            label="cluster count"
-            aside={<QuickToggle config={config} field="clusterCount" update={update} kind="pca" />}
-          >
-            <Select
-              value={config.clusterCount ?? 'fixed'}
-              onChange={(v) => update({ clusterCount: v as ClusterConfig['clusterCount'] })}
-              options={[
-                { value: 'fixed', label: 'a number I choose' },
-                { value: 'conditions', label: 'one per condition' },
-                { value: 'auto', label: 'automatic (largest gap)' }
-              ]}
-            />
-          </Field>
-          {(config.clusterCount ?? 'fixed') === 'fixed' && (
-            <Field label="clusters">
+        )}
+        {config.method === 'pca' && config.plot === 'loadings' && (
+          <>
+            <Field label="loadings">
               <div style={{ display: 'flex', alignItems: 'center', gap: 6, width: 90 }}>
                 <NumberInput
-                  value={config.clusterK ?? 3}
+                  value={config.loadings ?? 10}
                   step={1}
                   min={1}
-                  max={24}
-                  onChange={(v) => update({ clusterK: Math.max(1, Math.min(24, Math.round(v))) })}
+                  max={40}
+                  onChange={(v) => update({ loadings: Math.max(1, Math.min(40, Math.round(v))) })}
                 />
               </div>
             </Field>
-          )}
-          {(config.clusterCount ?? 'fixed') === 'conditions' && (
             <div style={styles.hint}>
-              One group per distinct condition — asks whether the samples group the way the design
-              says they should.
+              The most influential features in the same PC1/PC2 plane, as vectors from the origin —
+              which measurements drive the separation, not just that there is one. Same direction =
+              moves together; opposite = trades off; longer = stronger.
             </div>
-          )}
-          {(config.clusterCount ?? 'fixed') === 'auto' && (
+          </>
+        )}
+      </Section>
+      <Section title="Data">
+        <Field label="transform">
+          <Select
+            value={config.transform ?? 'auto'}
+            onChange={(v) => update({ transform: v as ClusterConfig['transform'] })}
+            options={[
+              // Follows Clean data's log-transform exactly (none = the data as it arrived).
+              { value: 'auto', label: 'as Clean data' },
+              { value: 'log2', label: 'log₂' },
+              { value: 'log10', label: 'log' },
+              { value: 'none', label: 'none' }
+            ]}
+          />
+        </Field>
+        <Field label="replicates">
+          <Select
+            value={config.replicates ?? 'individual'}
+            onChange={(v) => update({ replicates: v as ClusterConfig['replicates'] })}
+            options={[
+              { value: 'individual', label: 'individual' },
+              { value: 'mean', label: 'mean' }
+            ]}
+          />
+        </Field>
+        <Field label="missing values">
+          <Select
+            value={config.missing ?? 'impute'}
+            onChange={(v) => update({ missing: v as ClusterConfig['missing'] })}
+            options={[
+              { value: 'impute', label: 'impute' },
+              { value: 'complete', label: 'complete cases' }
+            ]}
+          />
+        </Field>
+        <Field label="normalize">
+          <Select
+            value={config.center ?? 'median'}
+            onChange={(v) => update({ center: v as ClusterConfig['center'] })}
+            options={[
+              { value: 'median', label: 'median' },
+              { value: 'zscore', label: 'z-score' },
+              { value: 'quantile', label: 'quantile' },
+              { value: 'none', label: 'none' }
+            ]}
+          />
+        </Field>
+        <Field label="features">
+          <Select
+            value={String(config.topVar ?? 0)}
+            onChange={(v) => update({ topVar: Number(v) })}
+            options={[
+              { value: '0', label: 'all' },
+              { value: '100', label: 'top 100' },
+              { value: '250', label: 'top 250' },
+              { value: '500', label: 'top 500' }
+            ]}
+          />
+        </Field>
+        <Field label="gene scaling">
+          <Select
+            value={config.scale ?? 'unit'}
+            onChange={(v) => update({ scale: v as ClusterConfig['scale'] })}
+            options={[
+              { value: 'unit', label: 'unit variance' },
+              { value: 'none', label: 'none' }
+            ]}
+          />
+        </Field>
+      </Section>
+      <Section title="Colour">
+        <Field
+          label="legend"
+          aside={<QuickToggle config={config} field="legend" update={update} kind="pca" />}
+        >
+          <Select
+            value={config.legend ?? 'simple'}
+            onChange={(v) => update({ legend: v as ClusterConfig['legend'] })}
+            options={[
+              { value: 'simple', label: 'simple' },
+              { value: 'complex', label: 'complex' }
+            ]}
+          />
+        </Field>
+        {/* The complex legend's channels are a setting OF it, so they sit indented under it. */}
+        {(config.legend ?? 'simple') === 'complex' && (
+          <ClusterSchemeFields config={config} update={update} active={active} />
+        )}
+        {(config.legend ?? 'simple') === 'simple' && (
+          <Field
+            label="color by"
+            aside={<QuickToggle config={config} field="colorBy" update={update} kind="pca" />}
+          >
+            <Select
+              value={config.colorBy}
+              onChange={(v) => update({ colorBy: v as ClusterColorBy })}
+              options={[
+                ...active.map((c) => ({ value: c, label: condLabel(c) })),
+                { value: CLUSTER_COLOR, label: 'cluster' }
+              ]}
+            />
+          </Field>
+        )}
+        {/* The two cluster knobs only apply while the colours ARE clusters. */}
+        {(config.legend ?? 'simple') === 'simple' && config.colorBy === CLUSTER_COLOR && (
+          <>
+            <Field
+              label="cluster on"
+              aside={<QuickToggle config={config} field="clusterOn" update={update} kind="pca" />}
+            >
+              <Select
+                value={config.clusterOn ?? 'coords'}
+                onChange={(v) => update({ clusterOn: v as ClusterConfig['clusterOn'] })}
+                options={[
+                  { value: 'coords', label: 'plotted x/y' },
+                  { value: 'features', label: 'all features' }
+                ]}
+              />
+            </Field>
             <div style={styles.hint}>
-              Cuts the dendrogram at its largest gap, so the count follows the data. Convenient, but
-              it can change between datasets.
+              {(config.clusterOn ?? 'coords') === 'coords'
+                ? 'Clusters what you see, so the colours always match the visual grouping — but it clusters a 2-D projection, so groups that overlap on screen merge.'
+                : 'Clusters the same high-dimensional data the embedding ran on, so the grouping is the real structure and is identical under PCA/UMAP/t-SNE — a cluster may then look split on screen.'}
             </div>
-          )}
-        </>
+            <Field
+              label="cluster count"
+              aside={
+                <QuickToggle config={config} field="clusterCount" update={update} kind="pca" />
+              }
+            >
+              <Select
+                value={config.clusterCount ?? 'fixed'}
+                onChange={(v) => update({ clusterCount: v as ClusterConfig['clusterCount'] })}
+                options={[
+                  { value: 'fixed', label: 'fixed' },
+                  { value: 'conditions', label: 'per condition' },
+                  { value: 'auto', label: 'auto' }
+                ]}
+              />
+            </Field>
+            {(config.clusterCount ?? 'fixed') === 'fixed' && (
+              <Field label="clusters">
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, width: 90 }}>
+                  <NumberInput
+                    value={config.clusterK ?? 3}
+                    step={1}
+                    min={1}
+                    max={24}
+                    onChange={(v) => update({ clusterK: Math.max(1, Math.min(24, Math.round(v))) })}
+                  />
+                </div>
+              </Field>
+            )}
+            {(config.clusterCount ?? 'fixed') === 'conditions' && (
+              <div style={styles.hint}>
+                One group per distinct condition — asks whether the samples group the way the design
+                says they should.
+              </div>
+            )}
+            {(config.clusterCount ?? 'fixed') === 'auto' && (
+              <div style={styles.hint}>
+                Cuts the dendrogram at its largest gap, so the count follows the data. Convenient,
+                but it can change between datasets.
+              </div>
+            )}
+          </>
+        )}
+      </Section>
+      <Section title="Display">
+        {/* Two independent settings: what marks the data, and the territory outlining it. */}
+        <Field
+          label="data"
+          aside={<QuickToggle config={config} field="display" update={update} kind="pca" />}
+        >
+          <Select
+            value={look.data}
+            onChange={(v) =>
+              update({ display: v as 'replicate' | 'centroid', outline: look.territory })
+            }
+            options={[
+              { value: 'replicate', label: 'replicate' },
+              { value: 'centroid', label: 'centroid' }
+            ]}
+          />
+        </Field>
+        <Field
+          label="territory"
+          aside={<QuickToggle config={config} field="territory" update={update} kind="pca" />}
+        >
+          <Select
+            value={look.territory}
+            onChange={(v) =>
+              update({ display: look.data, outline: v as 'hull' | 'gaussian' | 'none' })
+            }
+            options={[
+              { value: 'hull', label: 'hull' },
+              { value: 'gaussian', label: 'gaussian' },
+              { value: 'none', label: 'none' }
+            ]}
+          />
+        </Field>
+        {look.territory !== 'none' && (
+          <div style={styles.hint}>
+            {look.territory === 'hull'
+              ? 'The convex hull of each condition’s replicates — only where measurements landed.'
+              : 'A ~95% covariance ellipse per condition — smoother and comparable, but extrapolated beyond the replicates.'}
+          </div>
+        )}
+        <ClusterMarkerField config={config} update={update} centroid={look.data === 'centroid'} />
+      </Section>
+      {(config.legend ?? 'simple') === 'complex' && (
+        <ClusterArrowSection config={config} update={update} />
       )}
-      {/* Two independent settings: what marks the data, and the territory outlining it. */}
-      <Field
-        label="data"
-        aside={<QuickToggle config={config} field="display" update={update} kind="pca" />}
-      >
-        <Select
-          value={look.data}
-          onChange={(v) =>
-            update({ display: v as 'replicate' | 'centroid', outline: look.territory })
-          }
+    </>
+  )
+}
+
+/** The complex legend's channels as one row per available condition, each showing what it drives
+ *  now — colour (its place in the colour order: the first picks the hue family, the next spreads
+ *  within it), shade (light→dark), arrow (low→high), or none. The rows start from the plan in force
+ *  (automatic until changed); changing one saves the whole mapping as set, so nothing left at none
+ *  is filled in behind your back. Shade and arrow are ordered channels, so only numeric conditions
+ *  offer them (see planAesthetics); a numeric one takes colour only as the lone ramp. */
+function ClusterSchemeFields({
+  config,
+  update,
+  active
+}: {
+  config: ClusterConfig
+  update: (patch: Record<string, unknown>) => void
+  active: ConditionKey[]
+}): ReactNode {
+  const conds = useMemo(() => orderConds(active), [active])
+  const chosen = !!(config.schemeColor?.length || config.schemeShade || config.schemeArrow)
+  const plan = planAesthetics(new Set(conds), conds, {
+    color: config.schemeColor,
+    shade: config.schemeShade,
+    arrow: config.schemeArrow
+  })
+  const colours: ConditionKey[] = plan.grouped ? plan.quals : plan.colorKey ? [plan.colorKey] : []
+  const channelOf = (c: ConditionKey): string =>
+    colours.includes(c)
+      ? `colour:${colours.indexOf(c)}`
+      : plan.shadeKey === c
+        ? 'shade'
+        : plan.arrowKey === c
+          ? 'arrow'
+          : 'none'
+  const set = (c: ConditionKey, v: string): void => {
+    const col = colours.filter((k) => k !== c)
+    let shade = plan.shadeKey === c ? null : plan.shadeKey
+    let arrow = plan.arrowKey === c ? null : plan.arrowKey
+    if (v.startsWith('colour:')) {
+      // A numeric condition colours only as the lone ramp; a categorical joins the hue order.
+      if (isNumericCond(c)) col.splice(0, col.length, c)
+      else {
+        const numericRamp = col.filter((k) => isNumericCond(k))
+        for (const k of numericRamp) col.splice(col.indexOf(k), 1)
+        col.splice(Math.min(Number(v.slice(7)), col.length), 0, c)
+      }
+    } else if (v === 'shade') shade = c
+    else if (v === 'arrow') arrow = c
+    update({
+      schemeColor: col.length ? col : undefined,
+      schemeShade: shade ?? 'none',
+      schemeArrow: arrow ?? 'none'
+    })
+  }
+  const catColours = colours.filter((k) => !isNumericCond(k))
+  const optionsFor = (c: ConditionKey): Array<{ value: string; label: string }> => {
+    const none = { value: 'none', label: 'none' }
+    if (!isNumericCond(c)) {
+      // Its own place, or one more than the categoricals already on colour.
+      const n = catColours.includes(c) ? catColours.length : catColours.length + 1
+      return [
+        // The first colour condition picks the hue family; each next one varies the hue within it.
+        ...Array.from({ length: Math.max(1, n) }, (_, i) => ({
+          value: `colour:${i}`,
+          label: i === 0 ? 'hue family' : i === 1 ? 'hue variant' : `hue variant ${i}`
+        })),
+        none
+      ]
+    }
+    return [
+      ...(catColours.length ? [] : [{ value: 'colour:0', label: 'colour ramp' }]),
+      { value: 'shade', label: 'shade' },
+      { value: 'arrow', label: 'arrow' },
+      none
+    ]
+  }
+  // Auto ⇄ custom. Custom starts from the mapping in force (the automatic one), saved as set, so
+  // switching shows the same plot with its rows to edit; auto clears it.
+  const toCustom = (): void =>
+    update({
+      schemeColor: colours.length ? colours : undefined,
+      schemeShade: plan.shadeKey ?? 'none',
+      schemeArrow: plan.arrowKey ?? 'none'
+    })
+  const toAuto = (): void =>
+    update({ schemeColor: undefined, schemeShade: undefined, schemeArrow: undefined })
+  return (
+    <div style={styles.subGroup}>
+      <Field label="channels">
+        <ToggleSwitch
+          label="Channels"
+          value={chosen ? 'custom' : 'auto'}
           options={[
-            { value: 'replicate', label: 'replicate' },
-            { value: 'centroid', label: 'centroid' }
+            { value: 'auto' as const, label: 'auto' },
+            { value: 'custom' as const, label: 'custom' }
           ]}
+          onChange={(v) => (v === 'custom' ? toCustom() : toAuto())}
         />
       </Field>
-      <Field
-        label="territory"
-        aside={<QuickToggle config={config} field="territory" update={update} kind="pca" />}
-      >
-        <Select
-          value={look.territory}
-          onChange={(v) =>
-            update({ display: look.data, outline: v as 'hull' | 'gaussian' | 'none' })
-          }
-          options={[
-            { value: 'hull', label: 'hull' },
-            { value: 'gaussian', label: 'gaussian (~95%)' },
-            { value: 'none', label: 'none' }
-          ]}
+      {chosen &&
+        conds.map((c) => (
+          <Field key={c} label={condLabel(c)}>
+            <Select value={channelOf(c)} onChange={(v) => set(c, v)} options={optionsFor(c)} />
+          </Field>
+        ))}
+    </div>
+  )
+}
+
+/** A size box (px) and an opacity box (%), as the DR's style rows. */
+function styleBoxes(update: (patch: Record<string, unknown>) => void): {
+  px: (field: string, value: number, title: string, min: number, max: number) => ReactNode
+  pct: (field: string, value: number, title: string) => ReactNode
+} {
+  return {
+    px: (field, value, title, min, max) => (
+      <div style={{ width: 52, flex: '0 0 auto' }}>
+        <NumberInput
+          value={value}
+          step={field === 'arrowSize' ? 0.25 : 0.5}
+          min={min}
+          max={max}
+          title={title}
+          onChange={(v) => update({ [field]: Math.min(max, Math.max(min, Math.round(v * 4) / 4)) })}
         />
-      </Field>
-      {look.territory !== 'none' && (
-        <div style={styles.hint}>
-          {look.territory === 'hull'
-            ? 'The convex hull of each condition’s replicates — only where measurements landed.'
-            : 'A ~95% covariance ellipse per condition — smoother and comparable, but extrapolated beyond the replicates.'}
+      </div>
+    ),
+    pct: (field, value, title) => (
+      <div style={{ display: 'flex', alignItems: 'center', gap: 3, width: 64, flex: '0 0 auto' }}>
+        <NumberInput
+          value={Math.round(value * 100)}
+          step={10}
+          min={5}
+          max={100}
+          title={title}
+          onChange={(v) => update({ [field]: Math.min(100, Math.max(5, Math.round(v))) / 100 })}
+        />
+        <span style={{ color: UI.textMuted, fontSize: 12 }}>%</span>
+      </div>
+    )
+  }
+}
+
+/** The markers' look — the mark on show (replicate dots or centroids): size, opacity, outline
+ *  width and colour ('auto' = the panel's). */
+function ClusterMarkerField({
+  config,
+  update,
+  centroid
+}: {
+  config: ClusterConfig
+  update: (patch: Record<string, unknown>) => void
+  centroid: boolean
+}): ReactNode {
+  const st = clusterStyle(config)
+  const { px, pct } = styleBoxes(update)
+  const row: CSSProperties = { display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }
+  return (
+    <Field label="markers">
+      <div style={row}>
+        {centroid
+          ? px('centroidSize', st.centroidSize, 'Centroid size (px)', 2, 30)
+          : px('markerSize', st.markerSize, 'Dot size (px)', 2, 24)}
+        {centroid
+          ? pct('centroidOpacity', st.centroidOpacity, 'Centroid opacity (%)')
+          : pct('markerOpacity', st.markerOpacity, 'Dot opacity (%)')}
+        {px('outlineWidth', st.outlineWidth ?? (centroid ? 1.5 : 0), 'Outline width (px)', 0, 4)}
+        <ColorChip
+          color={st.outlineColor}
+          on
+          label="Outline colour"
+          title={
+            st.outlineColor === AUTO ? 'Outline colour: automatic (the panel)' : 'Outline colour'
+          }
+          onPick={(c) => update({ outlineColor: c })}
+          onAuto={() => update({ outlineColor: AUTO })}
+          autoLabel="Automatic (the panel)"
+        />
+      </div>
+    </Field>
+  )
+}
+
+/** The complex legend's arrow trails: on/off, then — while on — line width, opacity, arrowhead
+ *  size, and whether the markers stay visible under the trails. With a Reset for the whole look. */
+function ClusterArrowSection({
+  config,
+  update
+}: {
+  config: ClusterConfig
+  update: (patch: Record<string, unknown>) => void
+}): ReactNode {
+  const st = clusterStyle(config)
+  const { px, pct } = styleBoxes(update)
+  const row: CSSProperties = { display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }
+  const custom = CLUSTER_STYLE_FIELDS.some((f) => config[f] !== undefined)
+  return (
+    <Section
+      title="Arrows"
+      subtitle={
+        custom ? (
+          <button
+            style={styles.resetBtn}
+            onClick={() =>
+              update(Object.fromEntries(CLUSTER_STYLE_FIELDS.map((f) => [f, undefined])))
+            }
+            title="Restore the default marker and arrow look"
+          >
+            Reset
+          </button>
+        ) : null
+      }
+    >
+      <Field label="trails">
+        <div style={row}>
+          <OnOffSwitch
+            on={st.arrows}
+            label="Arrows"
+            title="Connect each series low → high with arrows"
+            onChange={(v) => update({ arrows: v })}
+          />
+          {st.arrows && (
+            <>
+              {px('trailWidth', st.trailWidth, 'Line width (px)', 0.5, 8)}
+              {pct('trailOpacity', st.trailOpacity, 'Line opacity (%)')}
+              {px('arrowSize', st.arrowSize, 'Arrowhead size', 0.25, 3)}
+            </>
+          )}
         </div>
+      </Field>
+      {st.arrows && (
+        <Field label="markers">
+          <OnOffSwitch
+            on={st.markersUnderArrows}
+            label="Markers under arrows"
+            title="Keep the markers visible under the trails (off: the trails stand in for them)"
+            onChange={(v) => update({ markersUnderArrows: v })}
+          />
+        </Field>
       )}
     </Section>
   )
@@ -3226,9 +4643,12 @@ function StringPanel({ config, update }: PlotPanelProps<StringConfig>) {
         aside={<QuickToggle config={config} field="confidence" update={update} />}
       >
         <Select
-          value={config.confidence ?? 'medium'}
-          onChange={(v) => update({ confidence: v as StringConfig['confidence'] })}
+          value={config.confidence ?? 'auto'}
+          onChange={(v) =>
+            update({ confidence: v === 'auto' ? undefined : (v as StringConfig['confidence']) })
+          }
           options={[
+            { value: 'auto', label: 'auto (highest with a network)' },
             { value: 'low', label: 'low (0.15)' },
             { value: 'medium', label: 'medium (0.4)' },
             { value: 'high', label: 'high (0.7)' },
@@ -3281,9 +4701,20 @@ function StringPanel({ config, update }: PlotPanelProps<StringConfig>) {
   )
 }
 
-function QcPanel({ config, update }: PlotPanelProps<QcConfig>) {
+function QcPanel({ config, update, edgeNodeId }: PlotPanelProps<QcConfig>) {
   const plotOpts = qcPlotOptions(config.metric)
   const plot = plotOpts.includes(config.plot) ? config.plot : plotOpts[0]
+  // The conditions the upstream Clean data carries, to colour by (as the gene bar does).
+  const upstream = useGraph((s) => {
+    const upId = s.edges.find((e) => e.target === edgeNodeId)?.source
+    return upId ? s.results[upId] : undefined
+  })
+  const active = useMemo(
+    () => (upstream?.kind === 'standardize' ? upstream.std.activeConditions : CONDS),
+    [upstream]
+  )
+  const byCondition = config.colorBy === 'condition'
+  const color = config.color ?? QC_FILL
   return (
     <Section title="QC">
       <div style={styles.hint}>
@@ -3313,6 +4744,49 @@ function QcPanel({ config, update }: PlotPanelProps<QcConfig>) {
             options={plotOpts.map((o) => ({ value: o, label: o }))}
           />
         </Field>
+      )}
+      {config.metric === 'proteins' && (
+        <Field
+          label="axis scale"
+          aside={<QuickToggle config={config} field="yScale" update={update} />}
+        >
+          <Select
+            value={config.yScale ?? 'global'}
+            onChange={(v) => update({ yScale: v as QcConfig['yScale'] })}
+            options={[
+              { value: 'range', label: 'by range (fit to the counts)' },
+              { value: 'global', label: 'global (from 0)' }
+            ]}
+          />
+        </Field>
+      )}
+      {/* One chip, as the gene bar's replicate/error colours: Automatic colours by condition (the
+          picks below), a picked colour fills every sample with it. */}
+      <Field label="colour">
+        <ColorChip
+          color={byCondition ? AUTO : color}
+          on
+          label="QC colour"
+          title={byCondition ? 'QC colour: automatic (by condition)' : 'QC colour'}
+          onPick={(c) => update({ colorBy: 'single', color: c })}
+          onAuto={() =>
+            update({
+              colorBy: 'condition',
+              // Start from what was there, else the first categorical condition.
+              colorConds: config.colorConds?.length
+                ? config.colorConds
+                : active.filter((c) => !isNumericCond(c)).slice(0, 1)
+            })
+          }
+          autoLabel="Automatic (by condition)"
+        />
+      </Field>
+      {byCondition && (
+        <ConditionColorFields
+          active={active}
+          selected={qcColorConds(config)}
+          onChange={(next) => update({ colorConds: next })}
+        />
       )}
     </Section>
   )
@@ -3351,23 +4825,14 @@ function CorrPanel({ config, update }: PlotPanelProps<CorrConfig>) {
 
 function HeatmapPanel({ config, update, edgeNodeId }: PlotPanelProps<HeatmapConfig>) {
   // The gene cap is a fold-change concept (top-N differential genes); the intensity heatmap
-  // always shows the full proteome, and log10 only applies to intensities. Gate each section on
-  // the upstream kind; an unwired heatmap offers both.
+  // always shows the full proteome, on Clean data's own log-transform scale (no setting here).
+  // Gate the cap on the upstream kind; an unwired heatmap offers it.
   const upstreamKind = useGraph((s) => {
     const up = s.nodes.find((n) => n.id === s.edges.find((e) => e.target === edgeNodeId)?.source)
     return up && isStep(up) ? up.data.kind : undefined
   })
   return (
     <>
-      {upstreamKind !== 'compare' && (
-        <Section title="Heatmap">
-          <Checkbox
-            label="log intensities"
-            checked={config.log10}
-            onChange={(v) => update({ log10: v })}
-          />
-        </Section>
-      )}
       {upstreamKind !== 'standardize' && (
         <CapSection
           title="Cap genes"
@@ -3379,6 +4844,22 @@ function HeatmapPanel({ config, update, edgeNodeId }: PlotPanelProps<HeatmapConf
           defaultValue={50}
           rule={(n) => `Keep the top ${n} differential genes by largest |log₂FC|.`}
         />
+      )}
+      {/* The condition bar belongs to the Clean-data heatmap (a fold-change one has none). */}
+      {upstreamKind !== 'compare' && (
+        <Section title="Heatmap">
+          <Field
+            label="Show conditions"
+            aside={<QuickToggle config={config} field="condBar" update={update} />}
+          >
+            <OnOffSwitch
+              on={config.condBar ?? true}
+              label="Show conditions"
+              title="A coloured track per condition along the samples"
+              onChange={(v) => update({ condBar: v })}
+            />
+          </Field>
+        </Section>
       )}
     </>
   )
@@ -3724,42 +5205,57 @@ function ColorChip({
   clearLabel,
   onPick,
   onClear,
+  onAuto,
+  autoLabel,
   style
 }: {
+  /** a colour, or AUTO (shown as the letter A — see the picker's Automatic row) */
   color: string
   /** false = the colour is cleared: the chip is hatched rather than showing an ink. Independent of
    *  the width beside it — a width of 0 just means nothing is drawn at the moment. */
   on: boolean
   label: string
   title: string
-  clearLabel: string
+  clearLabel?: string
   onPick: (color: string) => void
-  /** clear the colour: nothing is drawn, while any width beside it is kept */
-  onClear: () => void
+  /** clear the colour: nothing is drawn, while any width beside it is kept (no clear chip unset) */
+  onClear?: () => void
+  /** offer the Automatic option (sets AUTO) on top of the grid */
+  onAuto?: () => void
+  autoLabel?: string
   /** placement / sizing from the caller (the group colour heads its column, full width) */
   style?: CSSProperties
 }): ReactNode {
   // On a tile the grid is drawn at the canvas zoom, and closes when the canvas moves under it.
   const tf = useStore((s) => `${s.transform[0]},${s.transform[1]},${s.transform[2]}`)
+  // The slash is an SVG (see slashBackground), which can't read a CSS variable: the theme's literal.
+  const border = PALETTES[useUiTheme((s) => s.mode)].border
   return (
     <ColorPicker
       value={color}
       onPick={onPick}
       onClear={onClear}
       clearLabel={clearLabel}
+      onAuto={onAuto}
+      autoLabel={autoLabel}
       label={label}
       title={title}
       zoom={Number(tf.split(',')[2]) || 1}
       closeKey={tf}
       triggerStyle={{
         ...styles.swatch,
-        background: on
-          ? color
-          : `linear-gradient(to bottom right, transparent 45%, ${UI.border} 45%, ${UI.border} 55%, transparent 55%)`,
+        background: color === AUTO ? AUTO_BACKGROUND : on ? color : slashBackground(border),
+        ...(color === AUTO
+          ? {
+              display: 'inline-flex',
+              alignItems: 'center',
+              justifyContent: 'center'
+            }
+          : null),
         ...style
       }}
     >
-      <span />
+      {color === AUTO ? <AutoMark /> : <span />}
     </ColorPicker>
   )
 }
@@ -3960,7 +5456,9 @@ const styles: Record<string, CSSProperties> = {
     alignItems: 'flex-start',
     gap: 8
   },
-  headText: { minWidth: 0 },
+  // Fills the header (up to the action buttons), so the rename field has a set width to take and
+  // doesn't resize the header as it swaps in for the name.
+  headText: { flex: 1, minWidth: 0 },
   headActions: { display: 'flex', gap: 6, flex: '0 0 auto' },
   iconBtnSm: {
     width: 24,
@@ -3984,7 +5482,8 @@ const styles: Record<string, CSSProperties> = {
     letterSpacing: 0.6,
     display: 'block'
   },
-  headTitle: { fontWeight: 700, fontSize: 13, display: 'block' },
+  // A line of its own holding the name or its rename field (see tileNameStyles).
+  headName: { display: 'flex', lineHeight: '20px' },
   headId: { color: UI.textMuted, fontSize: 11 },
   scroll: { flex: 1, overflow: 'auto', minHeight: 0 },
   // Embedded: no inner scroller, so the page scrolls as one document.
@@ -4063,7 +5562,7 @@ const styles: Record<string, CSSProperties> = {
   /** small label sitting left of an inline control (e.g. "log₂FC ≤" before its box) */
   inlineTag: { color: UI.textMuted, fontSize: 11, whiteSpace: 'nowrap' },
   /** one cutoff line: tag, number box (fixed width), optional class-name box */
-  cutoffRow: { display: 'flex', alignItems: 'center', gap: 6 },
+  cutoffRow: { display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 },
   /** a side's name above its cutoff line (uppercase, like the selector's side labels) */
   sideTag: {
     fontSize: 10,
@@ -4192,7 +5691,8 @@ const styles: Record<string, CSSProperties> = {
   pctBox: { width: 48, flex: '0 0 48px' },
   labelInput: {
     flex: 1,
-    minWidth: 80,
+    // shrinks with a narrow panel rather than pushing the row past it
+    minWidth: 40,
     background: UI.panelAlt,
     color: UI.text,
     border: `1px solid ${UI.border}`,
@@ -4367,7 +5867,7 @@ const styles: Record<string, CSSProperties> = {
   },
   chipDone: {
     color: UI.accent,
-    borderColor: UI.accent
+    border: `1px solid ${UI.accent}`
   },
   footer: { display: 'flex', gap: 8, padding: 12, borderTop: `1px solid ${UI.border}` }
 }

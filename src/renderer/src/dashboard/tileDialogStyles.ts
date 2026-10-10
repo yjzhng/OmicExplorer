@@ -60,7 +60,16 @@ export const styles: Record<string, CSSProperties> = {
   },
 
   hint: { fontSize: 11, color: UI.textMuted },
-  foot: { display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 4 },
+  // Pinned below the scrolling body (see TileDialog), like the header above it.
+  foot: {
+    display: 'flex',
+    justifyContent: 'flex-end',
+    gap: 8,
+    padding: '10px 16px',
+    borderTop: `1px solid ${UI.border}`,
+    background: UI.panelAlt,
+    flex: '0 0 auto'
+  },
   btnGhost: {
     background: 'transparent',
     color: UI.text,

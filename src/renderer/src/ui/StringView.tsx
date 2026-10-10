@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, type ReactNode } from 'react'
 import Plotly, { type PlotlyGraphDiv } from 'plotly.js-dist-min'
 
 import type { CompareResultRow } from '../engine'
@@ -6,15 +6,18 @@ import {
   buildStringModel,
   stringNetFromResponse,
   stringQueryGenes,
-  stringSendIds,
   stringSendLimit,
   type StringGene,
-  type StringNet
+  stringLevelsFromScore,
+  stringVariant,
+  type StringAll,
+  type StringLevel
 } from './stringModel'
 import { PlotlyChart, type PlotLabel } from './PlotlyChart'
 import { useSelection } from './useSelection'
 import { axisBase, CATEGORICAL, EFFECT_COLOR, plotBase, PALETTES } from './theme'
 import { useUiTheme } from './useUiTheme'
+import type { EffectColors } from '../graph/types'
 
 /** Pixel width of `text` at `font` via a memoised offscreen canvas (for wrapping the cluster legend). */
 let measureCtx: CanvasRenderingContext2D | null = null
@@ -94,77 +97,84 @@ export function StringView({
   rows,
   displayMap,
   annotationMap,
-  species,
-  requiredScore,
+  all,
+  level,
   maxGenes,
+  capOptions,
   addInteractors = false,
-  title
+  title,
+  onLevels,
+  effectColors
 }: {
   rows: CompareResultRow[]
   displayMap?: Record<string, string>
   annotationMap?: Record<string, Record<string, string>>
-  species: number
-  requiredScore: number
+  /** this facet's network for every setting, from the plot's run (graph/plotRun.ts); undefined
+   *  when the run read none for it */
+  all: StringAll | undefined
+  /** the confidence level drawn */
+  level: StringLevel
   maxGenes: number
+  /** the gene caps the run covered (its result's caps) — switching between them only
+   *  re-renders; unset = just `maxGenes` */
+  capOptions?: number[]
   /** also pull in first-shell interactors of the query set; they count toward `maxGenes` */
   addInteractors?: boolean
   title?: string
+  /** report the confidence levels at which this setting has any network (null = unknown, until
+   *  the read is back), so the tile can grey out the empty ones and resolve its "auto" level.
+   *  Omitted (e.g. export) = not reported. */
+  onLevels?: (levels: Set<StringLevel> | null) => void
+  /** the upstream Compare's effect colours (with any of the plot's own on top); unset = the
+   *  shared defaults */
+  effectColors?: EffectColors
 }) {
   const mode = useUiTheme((s) => s.mode)
+  const upColor = effectColors?.up ?? EFFECT_COLOR.up
+  const downColor = effectColors?.down ?? EFFECT_COLOR.down
+  const noneColor = effectColors?.none ?? EFFECT_COLOR.none
 
-  // How many genes are SENT to STRING. `maxGenes` caps what's DRAWN, and only connected nodes are
-  // (a lone dot says nothing), so sending exactly that many would draw far fewer — send a multiple
-  // and let the draw cap decide, bounded so a huge significant set can't blow up the query.
-  const sendLimit = stringSendLimit(maxGenes)
-
-  // Significant genes, one per feature (max |log₂FC|), strongest first, capped to `sendLimit`.
-  const genes = useMemo<StringGene[]>(
-    () => stringQueryGenes(rows, displayMap, annotationMap, sendLimit),
-    [rows, displayMap, annotationMap, sendLimit]
+  // The caps one read covers (always including the one drawn), and the widest query among them —
+  // significant genes, one per feature (max |log₂FC|), strongest first. A smaller cap's query is a
+  // prefix of it. (A cap sends a multiple of itself — stringSendLimit — since only connected genes
+  // are drawn.)
+  const capKey = (capOptions ?? []).join(',')
+  const caps = useMemo(
+    () =>
+      [...new Set([...(capKey ? capKey.split(',').map(Number) : []), maxGenes])].sort(
+        (a, b) => a - b
+      ),
+    [capKey, maxGenes]
+  )
+  const widest = useMemo<StringGene[]>(
+    () => stringQueryGenes(rows, displayMap, annotationMap, stringSendLimit(caps[caps.length - 1])),
+    [rows, displayMap, annotationMap, caps]
+  )
+  // This setting's query: the drawn cap's prefix of the widest.
+  const genes = useMemo(
+    () => widest.slice(0, Math.max(2, stringSendLimit(maxGenes))),
+    [widest, maxGenes]
   )
 
-  const sendIds = useMemo(() => stringSendIds(genes), [genes])
-  // Stable key so the fetch effect only re-runs when the query (or interactor setting) changes.
-  const key = useMemo(
-    () => `${addInteractors ? maxGenes : 0}|${[...sendIds].sort().join('|')}`,
-    [sendIds, addInteractors, maxGenes]
+  // The setting drawn — and the best link score its kind of network draws from at any level
+  // (query–query, or query–anything with interactors), which says the levels that have a network.
+  const reply = useMemo(
+    () => (all ? stringVariant(all, genes, caps, maxGenes, level, addInteractors) : null),
+    [all, genes, caps, maxGenes, level, addInteractors]
   )
+  const net = useMemo(() => (reply ? stringNetFromResponse(reply, genes) : null), [reply, genes])
+  const best = reply ? ((addInteractors ? reply.maxLinkScore : reply.maxQueryScore) ?? null) : null
 
-  const [net, setNet] = useState<StringNet | null>(null)
-  const [error, setError] = useState<string | null>(null)
-  const [loading, setLoading] = useState(false)
-
+  // Which levels have a network: from the read's best score; none at all when there aren't 2
+  // significant genes to make one (nothing is read); unknown until the read is back.
+  const tooFew = genes.length < 2
+  const levels = useMemo(
+    () => (tooFew ? new Set<StringLevel>() : stringLevelsFromScore(best)),
+    [tooFew, best]
+  )
   useEffect(() => {
-    if (genes.length < 2 || !species) return
-    let cancelled = false
-    void Promise.resolve().then(() => {
-      if (cancelled) return
-      setLoading(true)
-      setError(null)
-    })
-    const done = (n: StringNet | null, err: string | null): void => {
-      if (cancelled) return
-      setNet(n)
-      setError(err)
-    }
-    const fail = (e: unknown): void => {
-      if (cancelled) return
-      setError(e instanceof Error ? e.message : 'STRING read failed')
-      setNet(null)
-    }
-    window.api
-      // At most `maxGenes` interactors are ever useful: they compete with the query genes for the
-      // same draw budget, so more would only be trimmed below.
-      .fetchStringNetwork(sendIds, species, requiredScore, addInteractors ? maxGenes : 0)
-      .then((res) => done(stringNetFromResponse(res, genes), res.error ?? null))
-      .catch(fail)
-      .finally(() => {
-        if (!cancelled) setLoading(false)
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [key, species, requiredScore, genes, sendIds, maxGenes, addInteractors])
+    onLevels?.(levels)
+  }, [levels, onLevels])
 
   const { data, layout, nConnected, labels, labelColor, hover } = useMemo(() => {
     const p = PALETTES[mode]
@@ -290,9 +300,9 @@ export function StringView({
         opacity: 1,
         color: nodeOrder.map((i) => vis[i].log2FC),
         colorscale: [
-          [0, EFFECT_COLOR.down],
-          [0.5, EFFECT_COLOR.none],
-          [1, EFFECT_COLOR.up]
+          [0, downColor],
+          [0.5, noneColor],
+          [1, upColor]
         ],
         cmid: 0,
         cmin: -maxAbs,
@@ -437,9 +447,9 @@ export function StringView({
       color: vis.map((g) => g.log2FC),
       size: vis.map((_, i) => sizeOf(degree[i])),
       colorscale: [
-        [0, EFFECT_COLOR.down],
-        [0.5, EFFECT_COLOR.none],
-        [1, EFFECT_COLOR.up]
+        [0, downColor],
+        [0.5, noneColor],
+        [1, upColor]
       ] as [number, string][],
       cmin: -maxAbs,
       cmax: maxAbs,
@@ -461,7 +471,7 @@ export function StringView({
       labelColor: p.textMuted,
       hover
     }
-  }, [net, mode, title, genes, annotationMap, maxGenes])
+  }, [net, mode, title, genes, annotationMap, maxGenes, upColor, downColor, noneColor])
 
   // Hover a node → highlight it + its neighbours + the connecting edges. Done imperatively (restyle
   // + overlay traces) so it never re-renders/resets the pan-zoom. Dims the base nodes/edges and draws
@@ -534,10 +544,14 @@ export function StringView({
         return [ax + ux * rA, ay + uy * rA, bx - ux * rB, by - uy * rB]
       }
       // Re-lay the base edge traces with each segment trimmed to the node radius at the live scale.
+      // ONE restyle over every edge trace: each restyle of x/y redraws the whole figure, and a
+      // network has up to 15 edge traces (one per line width).
       const trimEdges = (): void => {
         const pd = pxPerData()
-        if (!pd) return
-        h.edgeIdxs.forEach((ti, bi) => {
+        if (!pd || h.edgeIdxs.length === 0) return
+        const allX: (number | null)[][] = []
+        const allY: (number | null)[][] = []
+        h.edgeIdxs.forEach((_, bi) => {
           const xs: (number | null)[] = []
           const ys: (number | null)[] = []
           for (const [a, b] of h.edgeBuckets[bi] ?? []) {
@@ -550,12 +564,14 @@ export function StringView({
               ys.push(null)
             }
           }
-          try {
-            void P.restyle(el, { x: [xs], y: [ys] }, [ti])
-          } catch {
-            /* cosmetic */
-          }
+          allX.push(xs)
+          allY.push(ys)
         })
+        try {
+          void P.restyle(el, { x: allX, y: allY }, h.edgeIdxs)
+        } catch {
+          /* cosmetic */
+        }
       }
       const relayout = (u: Record<string, unknown>): void => {
         try {
@@ -695,8 +711,20 @@ export function StringView({
         cancelAnimationFrame(trimRaf)
         trimRaf = requestAnimationFrame(trimEdges)
       }
-      const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(scheduleTrim) : null
-      ro?.observe(el as unknown as Element)
+      // Only on a real size change: an observer reports once as soon as it starts observing, which
+      // re-trimmed (a full redraw) right after the trim above.
+      const box = el as unknown as Element
+      let seen = `${box.clientWidth}x${box.clientHeight}`
+      const ro =
+        typeof ResizeObserver !== 'undefined'
+          ? new ResizeObserver(() => {
+              const now = `${box.clientWidth}x${box.clientHeight}`
+              if (now === seen) return
+              seen = now
+              scheduleTrim()
+            })
+          : null
+      ro?.observe(box)
       // Broadcast this network's node hover to the shared store (round-trips to applyFocus above).
       const onHover = (e: { points?: { curveNumber?: number; pointNumber?: number }[] }): void => {
         const pt = e.points?.[0]
@@ -730,15 +758,15 @@ export function StringView({
   )
 
   if (genes.length < 2) return <Center>Need at least 2 significant genes for a network.</Center>
-  if (loading && net == null) return <Center>Reading STRING data…</Center>
-  if (error === 'NO_LOCAL_DATA')
+  if (!all) return <Center>No network read for this facet — re-run the plot.</Center>
+  // No network at any level (a query-only read at the lowest one found no interaction at all).
+  if (net != null && levels != null && levels.size === 0)
     return (
       <Center>
-        No local STRING data for this organism. In the interactive import, tick <b>STRING</b> in the
-        Metadata fetch to download it, then re-run Clean data and Compare.
+        No network — the query genes have no STRING interactions, even at low confidence. Raise max
+        genes or add interactors.
       </Center>
     )
-  if (error && (net == null || net.nodes.length === 0)) return <Center>{error}</Center>
   if (net != null && nConnected === 0)
     return (
       <Center>

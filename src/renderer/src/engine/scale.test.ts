@@ -3,7 +3,11 @@
 import { describe, expect, it } from 'vitest'
 
 import { previewScale, standardize } from './ingest'
+import { abundanceOnScale, type ContrastResultRow } from './contrast'
+import type { StandardizeResult } from './types'
 import {
+  abundanceLabel,
+  plotScaleOf,
   defaultTransform,
   detectScale,
   fromLinear,
@@ -60,9 +64,10 @@ describe('scale conversions', () => {
   })
 
   it('defaults to log10 for linear input and none for logged', () => {
-    expect(defaultTransform('linear')).toBe('log10')
+    // never picked for the user: unset is none, whatever the input
+    expect(defaultTransform('linear')).toBe('none')
     expect(defaultTransform('log2')).toBe('none')
-    expect(outputScale(undefined, 'linear')).toBe('log10')
+    expect(outputScale(undefined, 'linear')).toBe('linear')
     expect(outputScale(undefined, 'log2')).toBe('log2')
     expect(outputScale('none', 'linear')).toBe('linear')
     expect(outputScale('log2', 'log10')).toBe('log2')
@@ -99,17 +104,18 @@ describe('Clean data on raw vs already-logged input', () => {
     values(a).forEach((v, i) => expect(values(b)[i]).toBeCloseTo(v, 6))
   })
 
-  it('presents on the chosen scale, defaulting to log10 for raw input', () => {
+  it('presents on the chosen scale, with no log-transform unless one is picked', () => {
+    // unset: raw input is presented as it arrived — the very same rows
     const r = run(wide(raw, (v) => v))
-    expect(r.scale).toBe('log10')
-    expect(presentStd(r).rows[0].value).toBeCloseTo(Math.log10(r.rows[0].value as number), 12)
-    // 'none' on raw input presents it as it arrived: the very same rows.
-    const none = run(
+    expect(r.scale).toBe('linear')
+    expect(presentStd(r)).toBe(r)
+    // a picked log10 presents the log of the same rows
+    const lg = run(
       wide(raw, (v) => v),
-      'none'
+      'log10'
     )
-    expect(none.scale).toBe('linear')
-    expect(presentStd(none)).toBe(none)
+    expect(lg.scale).toBe('log10')
+    expect(presentStd(lg).rows[0].value).toBeCloseTo(Math.log10(lg.rows[0].value as number), 12)
   })
 
   it('records the input distribution as it arrived', () => {
@@ -183,5 +189,55 @@ describe('histogramShape', () => {
   it('has no verdict with too little to judge', () => {
     expect(histogramShape(histogram([]))).toBeUndefined()
     expect(histogramShape(histogram([4, 4, 4]))).toBeUndefined()
+  })
+})
+
+describe('the scale abundance plots show', () => {
+  // A minimal Clean data result: linear rows, arriving on `inputScale`.
+  const std = (values: number[], inputScale: 'linear' | 'log2' | 'log10'): StandardizeResult =>
+    ({
+      rows: values.map((value, i) => ({
+        uniqID: `g${i}`,
+        cell: 'c',
+        cmpd: 'x',
+        dose: null,
+        time: null,
+        rep: 1,
+        value
+      })),
+      inputScale
+    }) as unknown as StandardizeResult
+
+  it("follows Clean data's log choice", () => {
+    const s = std([1, 10, 100], 'linear')
+    expect(plotScaleOf(s, 'log2')).toBe('log2')
+    expect(plotScaleOf(s, 'log10')).toBe('log10')
+  })
+
+  it('with none: an already-logged input stays on its log', () => {
+    expect(plotScaleOf(std([1, 2, 3], 'log2'), 'none')).toBe('log2')
+  })
+
+  it('with none: raw intensities stay linear — no fallback, so an unlogged plot looks off', () => {
+    const skewed = [...Array.from({ length: 200 }, (_, i) => 1 + (i % 5)), 5000, 20000, 90000]
+    expect(plotScaleOf(std(skewed, 'linear'), 'none')).toBe('linear')
+  })
+
+  it('labels log₁₀ as plain "log" and log₂ with its base', () => {
+    expect(abundanceLabel('log10')).toBe('log abundance')
+    expect(abundanceLabel('log2')).toBe('log₂ abundance')
+    expect(abundanceLabel('linear')).toBe('abundance')
+  })
+
+  it('moves an abundance contrast from log₁₀ onto another scale', () => {
+    const row = { FC1: 2, FC2: 1, FC1err: 0.1, FC2err: null, FCdiff: 1 } as ContrastResultRow
+    const [l2] = abundanceOnScale([row], 'log2')
+    expect(l2.FC1).toBeCloseTo(2 / Math.log10(2))
+    expect(l2.FCdiff).toBeCloseTo(1 / Math.log10(2))
+    const [lin] = abundanceOnScale([row], 'linear')
+    expect(lin.FC1).toBeCloseTo(100)
+    expect(lin.FCdiff).toBeCloseTo(90)
+    expect(lin.FC1err).toBeCloseTo(Math.LN10 * 100 * 0.1)
+    expect(abundanceOnScale([row], 'log10')[0]).toBe(row)
   })
 })

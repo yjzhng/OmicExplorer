@@ -21,6 +21,7 @@ import {
   SelectionMode,
   useReactFlow,
   type FinalConnectionState,
+  type Node,
   type NodeChange,
   type OnConnectStartParams
 } from '@xyflow/react'
@@ -28,15 +29,17 @@ import '@xyflow/react/dist/style.css'
 import './app.css'
 
 import { ResultsView } from './dashboard/ResultsView'
-import { useGeneMenuTabs } from './dashboard/useGeneMenuTabs'
+import { useShallow } from 'zustand/react/shallow'
+import { menuParts, useGeneMenuTabs } from './dashboard/useGeneMenuTabs'
 import { GeneSelectMenu } from './ui/GeneSelectMenu'
 import { FormWorkflow } from './form/FormWorkflow'
 import { UserGuide } from './ui/UserGuide'
-import { RELEASES_URL, useUpdateCheck, type UpdateInfo } from './ui/useUpdateCheck'
+import { RELEASES_URL, REPO_URL, useUpdateCheck, type UpdateInfo } from './ui/useUpdateCheck'
 import { edgeTypes } from './graph/GraphEdge'
+import { FRAME_LABEL_H, FRAME_PAD, type FrameData } from './graph/FrameNode'
+import { frameDepths, frameTiles, outermostFrame, topFullFrames } from './graph/frames'
 import { nodeTypes } from './graph/GraphNode'
 import { useGraph } from './graph/store'
-import { useTempResultExports } from './export/tempResults'
 import {
   accentOf,
   ALL_OPS,
@@ -52,15 +55,21 @@ import {
   type NodeConfig,
   type NodeData,
   type NodeKind,
+  type PlotGroupConfig,
   type StepNode
 } from './graph/types'
+import { Chevron } from './ui/Chevron'
 import { IconGear, IconTrash } from './ui/icons'
 import { StatusIcon, StatusNote } from './ui/StatusNote'
-import { cssVars, PALETTES, UI } from './ui/theme'
+import { accentColors, ACCENT_LABELS, cssVars, PALETTES, UI } from './ui/theme'
+import { ColorPicker } from './ui/ColorPicker'
 import { ToggleSwitch } from './ui/ToggleSwitch'
+import { FreezeNotice } from './ui/FreezeNotice'
 import { useAppView, type AppView } from './ui/useAppView'
 import { DPI_CHOICES, useAppSettings } from './ui/useAppSettings'
 import { useUiTheme } from './ui/useUiTheme'
+import appLogo from './assets/logo-256.png'
+import { ProjectFolderViewer } from './ui/ProjectFolderViewer'
 
 /** Bottom-center "New step" button; toggles placement mode (becomes "Cancel" while placing). */
 function NewStep({
@@ -194,7 +203,7 @@ function ResultsLink() {
   return (
     <Panel position="top-right">
       <button
-        className="new-step-btn"
+        className="new-step-btn oe-view-btn oe-press"
         style={styles.resultsLink}
         onClick={() => setView('results')}
         title="Open the results dashboard"
@@ -266,6 +275,13 @@ function PanControls({ onPan }: { onPan: (dx: number, dy: number) => void }) {
   )
 }
 
+const CONNECTION_LINE: CSSProperties = {
+  stroke: '#7c7c8c',
+  strokeWidth: 2,
+  strokeDasharray: '6 4',
+  opacity: 0.85
+}
+
 /** Action bar for the current marquee selection (Group/Ungroup/Duplicate/Delete). */
 function SelectionActions({
   count,
@@ -273,7 +289,12 @@ function SelectionActions({
   canUngroup,
   onGroup,
   onUngroup,
+  onTidy,
   onCascade,
+  canExpand,
+  canCollapse,
+  onExpand,
+  onCollapse,
   onDuplicate,
   onDelete
 }: {
@@ -282,6 +303,11 @@ function SelectionActions({
   canUngroup: boolean
   onGroup: () => void
   onUngroup: () => void
+  onTidy: () => void
+  canExpand: boolean
+  canCollapse: boolean
+  onExpand: () => void
+  onCollapse: () => void
   onCascade: () => void
   onDuplicate: () => void
   onDelete: () => void
@@ -305,9 +331,32 @@ function SelectionActions({
     <Panel position="bottom-center">
       <div style={styles.actBar}>
         <span style={styles.actCount}>{count} selected</span>
-        {btn('Group', canGroup, onGroup, 'Group ≥2 plots that share one upstream')}
-        {btn('Ungroup', canUngroup, onUngroup, 'Split the selected group(s) back into plots')}
+        {btn(
+          'Group',
+          canGroup,
+          onGroup,
+          'Frame the selected tiles: a labelled area that moves them together'
+        )}
+        {btn(
+          'Ungroup',
+          canUngroup,
+          onUngroup,
+          'Remove the frame around the selection (the tiles stay)'
+        )}
+        {btn(
+          'Tidy',
+          count > 1,
+          onTidy,
+          'Lay the selection out left to right along its connections'
+        )}
         {btn('Cascade', count > 1, onCascade, 'Auto-arrange the selection in a cascade')}
+        {btn('Expand', canExpand, onExpand, 'Show the plots in the selected plot groups')}
+        {btn(
+          'Collapse',
+          canCollapse,
+          onCollapse,
+          'Fold away the plots in the selected plot groups'
+        )}
         {btn('Duplicate', true, onDuplicate, 'Duplicate the selection')}
         {btn('Delete', true, onDelete, 'Delete the selection', true)}
       </div>
@@ -332,19 +381,168 @@ function Canvas() {
   useEffect(() => {
     nodesRef.current = nodes
   }, [nodes])
+  const { screenToFlowPosition, getViewport, setViewport } = useReactFlow()
+  // Frames React Flow's drag-select is touching, while one is under way (null otherwise). Frames
+  // aren't selected themselves (see onNodesChange) — at the drag's end each stands for its tiles.
+  const marqueeFrames = useRef<Set<string> | null>(null)
+  // The same, as state, so the groups being touched light up live during the drag.
+  const [touchedFrames, setTouchedFrames] = useState<string[] | null>(null)
+  // Canvas frames (Group): each drawn as a node behind its tiles, sized to their box. Derived from
+  // the LOCAL tile positions, so a frame follows its tiles live during a drag.
+  const frames = useGraph((s) => s.frames)
+  const unframeNodes = useGraph((s) => s.unframeNodes)
+  const selectTiles = useGraph((s) => s.selectTiles)
+  const frameNodes = useMemo((): Node<FrameData>[] => {
+    const byId = new Map(nodes.map((n) => [n.id, n]))
+    const fById = new Map(frames.map((f) => [f.id, f]))
+    const depth = frameDepths(frames)
+    // Selection is kept on tiles: a frame shows as selected when all its tiles are (outermost only).
+    // During a drag-select, a group lights up as soon as it — or any tile in it — is touched:
+    // the outermost group is what the drag will select.
+    const shownSel = new Set(
+      touchedFrames
+        ? [...nodes.filter((n) => n.selected).map((n) => n.id), ...touchedFrames].flatMap(
+            (id) => outermostFrame(frames, id) ?? (frames.some((f) => f.id === id) ? [id] : [])
+          )
+        : topFullFrames(frames, (id) => !!byId.get(id)?.selected)
+    )
+    type Box = { x0: number; y0: number; x1: number; y1: number }
+    // A frame's box wraps its members' boxes — a tile's own, a nested frame's (with its padding
+    // and label strip) — so frames nest visibly.
+    const boxes = new Map<string, Box | null>()
+    const boxOf = (id: string, seen: Set<string>): Box | null => {
+      const f = fById.get(id)
+      if (!f) {
+        const n = byId.get(id)
+        if (!n) return null
+        return {
+          x0: n.position.x,
+          y0: n.position.y,
+          x1: n.position.x + (n.measured?.width ?? 230),
+          y1: n.position.y + (n.measured?.height ?? 120)
+        }
+      }
+      if (boxes.has(id)) return boxes.get(id)!
+      if (seen.has(id)) return null
+      seen.add(id)
+      const inner = f.members.map((m) => boxOf(m, seen)).filter((b): b is Box => !!b)
+      const box = inner.length
+        ? {
+            x0: Math.min(...inner.map((b) => b.x0)) - FRAME_PAD,
+            y0: Math.min(...inner.map((b) => b.y0)) - FRAME_PAD - FRAME_LABEL_H,
+            x1: Math.max(...inner.map((b) => b.x1)) + FRAME_PAD,
+            y1: Math.max(...inner.map((b) => b.y1)) + FRAME_PAD
+          }
+        : null
+      boxes.set(id, box)
+      return box
+    }
+    return frames.flatMap((f) => {
+      const b = boxOf(f.id, new Set())
+      if (!b) return []
+      const width = b.x1 - b.x0
+      const height = b.y1 - b.y0
+      return [
+        {
+          id: f.id,
+          type: 'frame',
+          position: { x: b.x0, y: b.y0 },
+          data: { label: f.label, width, height },
+          width,
+          height,
+          // behind every tile; an inner frame above the one holding it
+          zIndex: -100 + (depth.get(f.id) ?? 0),
+          selected: shownSel.has(f.id),
+          deletable: false
+        }
+      ]
+    })
+  }, [frames, nodes, touchedFrames])
+  const shown = useMemo(
+    () => [...(frameNodes as unknown as GraphNode[]), ...nodes],
+    [frameNodes, nodes]
+  )
   // Mirror the store into local state whenever we're NOT mid-drag, so external changes (adds,
   // deletes, undo/redo, project load, selection) still show. During a drag the store isn't
   // touched, so this effect stays quiet.
   useEffect(() => {
     if (!draggingRef.current) setNodes(storeNodes)
   }, [storeNodes])
-  const onNodesChange = useCallback(
+  const applyTileChanges = useCallback(
     (changes: NodeChange<GraphNode>[]) => {
       if (draggingRef.current) setNodes((cur) => applyNodeChanges(changes, cur))
       else storeOnNodesChange(changes)
     },
     [storeOnNodesChange]
   )
+  // A frame is derived, not stored: its moves become its members' moves (by the same offset). Its
+  // own selection changes are dropped — its tiles hold the selection — except that frames touched
+  // by a drag-select are noted, for its end.
+  const onNodesChange = useCallback(
+    (changes: NodeChange<GraphNode>[]) => {
+      const frameIds = new Set(frameNodes.map((f) => f.id))
+      const tileChanges: NodeChange<GraphNode>[] = []
+      const movedTiles = new Set(
+        changes
+          .filter((c) => c.type === 'position' && !frameIds.has(c.id))
+          .map((c) => (c as { id: string }).id)
+      )
+      for (const c of changes) {
+        if (!('id' in c) || !frameIds.has(c.id)) {
+          tileChanges.push(c)
+          continue
+        }
+        if (c.type === 'position' && c.position) {
+          const fn = frameNodes.find((f) => f.id === c.id)!
+          const dx = c.position.x - fn.position.x
+          const dy = c.position.y - fn.position.y
+          // Every tile inside, through nested frames.
+          for (const m of frameTiles(frames, c.id)) {
+            // A member dragged in the same gesture (selected with its frame) moves itself,
+            // and one already moved by another frame in this batch (nested frames both
+            // selected) isn't moved twice.
+            if (movedTiles.has(m)) continue
+            movedTiles.add(m)
+            const n = nodesRef.current.find((x) => x.id === m)
+            if (n)
+              tileChanges.push({
+                type: 'position',
+                id: m,
+                position: { x: n.position.x + dx, y: n.position.y + dy },
+                dragging: c.dragging
+              })
+          }
+        } else if (c.type === 'select' && marqueeFrames.current) {
+          if (c.selected) marqueeFrames.current.add(c.id)
+          else marqueeFrames.current.delete(c.id)
+          setTouchedFrames([...marqueeFrames.current])
+        }
+      }
+      if (tileChanges.length) applyTileChanges(tileChanges)
+    },
+    [frameNodes, frames, applyTileChanges]
+  )
+  // Drag-select picks what it touches (React Flow's Partial mode). At its end, a tile in a group —
+  // or a group touched — stands for the outermost group holding it, which is selected whole.
+  const onMarqueeStart = useCallback((): void => {
+    marqueeFrames.current = new Set()
+    setTouchedFrames([])
+  }, [])
+  const onMarqueeEnd = useCallback((): void => {
+    const touched = [...(marqueeFrames.current ?? [])]
+    marqueeFrames.current = null
+    setTouchedFrames(null)
+    const tiles = useGraph
+      .getState()
+      .nodes.filter((n) => isStep(n) && n.selected)
+      .map((n) => n.id)
+    const picked = new Set(tiles)
+    for (const id of [...tiles, ...touched]) {
+      const top = outermostFrame(frames, id) ?? (frames.some((f) => f.id === id) ? id : null)
+      if (top) for (const t of frameTiles(frames, top)) picked.add(t)
+    }
+    selectTiles([...picked])
+  }, [frames, selectTiles])
   const edges = useGraph((s) => s.edges)
   const onEdgesChange = useGraph((s) => s.onEdgesChange)
   const onConnect = useGraph((s) => s.onConnect)
@@ -356,9 +554,10 @@ function Canvas() {
   const addPlaceholder = useGraph((s) => s.addPlaceholder)
   const cancelPlaceholder = useGraph((s) => s.cancelPlaceholder)
   const commit = useGraph((s) => s.commit)
-  const groupNodes = useGraph((s) => s.groupNodes)
-  const ungroupNodes = useGraph((s) => s.ungroupNodes)
+  const frameNodesAction = useGraph((s) => s.frameNodes)
   const cascadeNodes = useGraph((s) => s.cascadeNodes)
+  const tidyNodes = useGraph((s) => s.tidyNodes)
+  const setGroupsCollapsed = useGraph((s) => s.setGroupsCollapsed)
   const duplicateNodes = useGraph((s) => s.duplicateNodes)
   const deleteNode = useGraph((s) => s.deleteNode)
   // No data folder yet ⇒ guide the user to set one (via the folder chip) before adding steps.
@@ -391,7 +590,6 @@ function Canvas() {
       ro?.disconnect()
     }
   }, [needsFolder])
-  const { screenToFlowPosition, getViewport, setViewport } = useReactFlow()
   // Nudge the viewport for users without scroll input (the direction pad, below).
   const panBy = useCallback(
     (dx: number, dy: number) => {
@@ -401,11 +599,11 @@ function Canvas() {
     [getViewport, setViewport]
   )
 
-  // Marquee multi-selection (drag on empty canvas) drives the floating action bar.
+  // The selection (tiles only — frames follow them) drives the floating action bar.
   const [selectedIds, setSelectedIds] = useState<string[]>([])
   const onSelectionChange = useCallback(
     ({ nodes: sel }: { nodes: Array<{ id: string; type?: string }> }) => {
-      const ids = sel.filter((n) => n.type !== 'placeholder').map((n) => n.id)
+      const ids = sel.filter((n) => n.type === 'step').map((n) => n.id)
       setSelectedIds(ids)
       useGraph.getState().setCanvasSelection(ids)
       // Opening a node's config float is the job of a CLICK (onNodeClick) — a marquee drag
@@ -414,25 +612,20 @@ function Canvas() {
     },
     []
   )
-  // Group is offered only for ≥2 plotting tiles sharing one upstream (see store.groupNodes).
   const selStep = selectedIds
     .map((id) => nodes.find((n) => n.id === id))
     .filter((n): n is StepNode => !!n && isStep(n))
-  const oneUpstream = (() => {
-    const ups = new Set<string>()
-    for (const n of selStep) {
-      const u = edges.filter((e) => e.target === n.id).map((e) => e.source)
-      if (u.length !== 1) return false
-      ups.add(u[0])
-    }
-    return ups.size === 1
-  })()
-  const canGroup =
-    selStep.length >= 2 &&
-    selStep.length === selectedIds.length &&
-    selStep.every((n) => categoryOf(n.data.kind) === 'plotting') &&
-    oneUpstream
-  const canUngroup = selStep.some((n) => n.data.kind === 'plotGroup')
+  // Items selected: each whole group counts once, plus the tiles not in one.
+  const selGroupIds = topFullFrames(frames, (id) => selectedIds.includes(id))
+  const inSelGroup = new Set(selGroupIds.flatMap((id) => frameTiles(frames, id)))
+  const selCount = selGroupIds.length + selectedIds.filter((id) => !inSelGroup.has(id)).length
+  const canGroup = selStep.length > 0
+  const canUngroup = frames.some((f) => f.members.some((m) => selectedIds.includes(m)))
+  // Fold / unfold the selected plot groups' plot lists (see GroupBody); each offered when it'd change one.
+  const selGroups = selStep.filter((n) => n.data.kind === 'plotGroup')
+  const isFolded = (n: StepNode): boolean => !!(n.data.config as PlotGroupConfig).collapsed
+  const canCollapse = selGroups.some((n) => !isFolded(n))
+  const canExpand = selGroups.some(isFolded)
   const clearSelection = useCallback(() => setSelectedIds([]), [])
 
   // Any pending placeholder is dismissed when the user does anything but pick a type.
@@ -540,10 +733,13 @@ function Canvas() {
       onMouseMove={onCanvasMouseMove}
     >
       <ReactFlow
-        nodes={nodes}
+        nodes={shown}
         edges={edges}
         nodeTypes={nodeTypes}
         edgeTypes={edgeTypes}
+        // The line drawn while dragging out a connection: dashed (not made yet), in the grey and
+        // width of an incomplete connection (GraphEdge).
+        connectionLineStyle={CONNECTION_LINE}
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
         onConnect={onConnect}
@@ -556,6 +752,15 @@ function Canvas() {
           if (placing) return placeAt(e)
           if (node.type === 'placeholder') return // clicks inside are the type picker
           dismissPlaceholders()
+          // A frame selects its tiles on pointer-down (FrameNode); it has no settings to open.
+          if ((node.type as string) === 'frame') return selectNode(null)
+          // A click (not a drag) takes the selection to just this tile — out of a selected group
+          // too — unless adding to it with ⌘/Ctrl.
+          if (!e.metaKey && !e.ctrlKey) selectTiles([node.id])
+          // Clicking the tile whose panel is open again hides the panel (the tile stays selected);
+          // a group's subcards handle their own clicks, so picking one never lands here.
+          if (!e.metaKey && !e.ctrlKey && useGraph.getState().selectedId === node.id)
+            return selectNode(null)
           selectNode(node.id)
         }}
         onPaneClick={(e) => {
@@ -574,6 +779,11 @@ function Canvas() {
           useGraph.setState({ nodes: nodesRef.current, dirty: true })
         }}
         onSelectionChange={onSelectionChange}
+        // Don't lift a selected node above the rest: a selected frame would then cover its own tiles
+        // and swallow clicks meant for them. Tiles get their own stacking (store's elevate / lift).
+        elevateNodesOnSelect={false}
+        onSelectionStart={onMarqueeStart}
+        onSelectionEnd={onMarqueeEnd}
         onMoveStart={onMoveStart}
         onMoveEnd={onMoveEnd}
         // Scroll (trackpad two-finger / wheel, both axes) pans the canvas like a scrolling page —
@@ -630,22 +840,22 @@ function Canvas() {
         )}
         {selectedIds.length > 0 && (
           <SelectionActions
-            count={selectedIds.length}
+            count={selCount}
             canGroup={canGroup}
             canUngroup={canUngroup}
-            onGroup={() => {
-              groupNodes(selectedIds)
-              clearSelection()
-            }}
-            onUngroup={() => {
-              ungroupNodes(selectedIds)
-              clearSelection()
-            }}
+            onGroup={() => frameNodesAction(selectedIds)}
+            onUngroup={() => unframeNodes(selectedIds)}
+            onTidy={() => tidyNodes(selectedIds)}
             onCascade={() => cascadeNodes(selectedIds)}
+            canExpand={canExpand}
+            canCollapse={canCollapse}
+            onExpand={() => setGroupsCollapsed(selectedIds, false)}
+            onCollapse={() => setGroupsCollapsed(selectedIds, true)}
             // Copies land on top and become the selection (via node.selected), so the
             // action bar follows them — no clearSelection here.
             onDuplicate={() => duplicateNodes(selectedIds)}
             onDelete={() => {
+              // A selected group's tiles go with it (and so the group); Ungroup keeps them.
               selectedIds.forEach((id) => deleteNode(id))
               clearSelection()
             }}
@@ -660,8 +870,10 @@ function Canvas() {
             position="top-left"
             pannable
             zoomable
+            // Only step tiles have a category: a placeholder or a frame (no `kind`) gets a neutral
+            // colour — reading a frame's kind threw and blanked the app.
             nodeColor={(n) =>
-              n.type === 'placeholder' ? UI.border : accentOf(categoryOf((n.data as NodeData).kind))
+              n.type === 'step' ? accentOf(categoryOf((n.data as NodeData).kind)) : UI.border
             }
             style={{ background: UI.panel, width: 88, height: 60 }}
             maskColor="rgba(0,0,0,0.5)"
@@ -744,6 +956,11 @@ function SettingsPopover({
 }) {
   const preference = useUiTheme((s) => s.preference)
   const setPreference = useUiTheme((s) => s.setPreference)
+  const accent = useUiTheme((s) => s.accent)
+  const setAccent = useUiTheme((s) => s.setAccent)
+  const customAccent = useUiTheme((s) => s.customAccent)
+  const setCustomAccent = useUiTheme((s) => s.setCustomAccent)
+  const mode = useUiTheme((s) => s.mode)
   const copyFormat = useAppSettings((s) => s.copyFormat)
   const copyDpi = useAppSettings((s) => s.copyDpi)
   const downloadFormat = useAppSettings((s) => s.downloadFormat)
@@ -752,20 +969,17 @@ function SettingsPopover({
   const uiStyle = useAppSettings((s) => s.uiStyle)
   const updateSettings = useAppSettings((s) => s.update)
   const DPI_OPTS = DPI_CHOICES.map((d) => ({ v: String(d), label: `${d} dpi` }))
-  const [active, setActive] = useState<'layout' | 'plots' | 'export' | 'appearance' | 'about'>(
-    'layout'
-  )
+  const [active, setActive] = useState<'appearance' | 'plots' | 'export' | 'about'>('appearance')
   const showDot = update.updateAvailable && !silenced
   const APPEARANCE = [
-    { v: 'auto', label: '◐ Auto' },
+    { v: 'light', label: '☀ Light' },
     { v: 'dark', label: '☾ Dark' },
-    { v: 'light', label: '☀ Light' }
+    { v: 'auto', label: '◐ Auto' }
   ] as const
   const SECTIONS = [
-    { id: 'layout', title: 'Layout', dot: false },
+    { id: 'appearance', title: 'Appearance', dot: false },
     { id: 'plots', title: 'Plots', dot: false },
     { id: 'export', title: 'Export', dot: false },
-    { id: 'appearance', title: 'Appearance', dot: false },
     { id: 'about', title: 'About', dot: showDot }
   ] as const
   /** A settings choice: the app's ToggleSwitch. */
@@ -812,14 +1026,68 @@ function SettingsPopover({
             {active === 'appearance' ? (
               <>
                 <h2 style={styles.settingsContentTitle}>Appearance</h2>
+                <div style={styles.settingsSubTitle}>Colour scheme</div>
                 {seg(preference, APPEARANCE, (v) => setPreference(v))}
                 {preference === 'auto' && (
                   <div style={styles.settingsHint}>Following your system colour scheme.</div>
                 )}
-              </>
-            ) : active === 'layout' ? (
-              <>
-                <h2 style={styles.settingsContentTitle}>Layout</h2>
+                <div style={{ ...styles.settingsSubTitle, marginTop: 24 }}>Accent colour</div>
+                <div style={styles.accentRow} role="radiogroup" aria-label="Accent colour">
+                  {(['graphite', 'blue', 'orange'] as const).map((id) => {
+                    const on = accent === id
+                    const [color] = accentColors(id, mode, customAccent)
+                    return (
+                      <button
+                        key={id}
+                        role="radio"
+                        aria-checked={on}
+                        onClick={() => setAccent(id)}
+                        style={{
+                          ...styles.accentSwatch,
+                          outline: on ? `2px solid ${color}` : 'none'
+                        }}
+                      >
+                        <span style={{ ...styles.accentDot, background: color }} />
+                        <span style={styles.accentLabel}>{ACCENT_LABELS[id]}</span>
+                      </button>
+                    )
+                  })}
+                  {/* Custom: the label selects it (with its saved colour); the dot opens the app's
+                      colour picker — a pick also switches to it. */}
+                  <div
+                    style={{
+                      ...styles.accentSwatch,
+                      cursor: 'default',
+                      outline: accent === 'custom' ? `2px solid ${customAccent}` : 'none'
+                    }}
+                  >
+                    <ColorPicker
+                      value={customAccent}
+                      onPick={setCustomAccent}
+                      label="Custom accent colour"
+                      title="Pick the custom colour"
+                      triggerStyle={{
+                        ...styles.accentDot,
+                        background: customAccent,
+                        border: 'none',
+                        padding: 0,
+                        cursor: 'pointer',
+                        boxShadow: `0 0 0 1px ${UI.border}`
+                      }}
+                    >
+                      {null}
+                    </ColorPicker>
+                    <button
+                      role="radio"
+                      aria-checked={accent === 'custom'}
+                      onClick={() => setAccent('custom')}
+                      style={styles.accentLabelBtn}
+                    >
+                      {ACCENT_LABELS.custom}
+                    </button>
+                  </div>
+                </div>
+                <div style={{ ...styles.settingsSubTitle, marginTop: 24 }}>Layout</div>
                 <div style={styles.layoutTiles} role="radiogroup" aria-label="Layout">
                   {LAYOUTS.map((o) => {
                     const on = uiStyle === o.v
@@ -908,34 +1176,40 @@ function SettingsPopover({
             ) : (
               <>
                 <h2 style={styles.settingsContentTitle}>About</h2>
-                <div style={styles.aboutName}>
-                  {__APP_NAME__} · v{update.current}
-                </div>
-                {update.updateAvailable ? (
-                  <>
-                    <div style={styles.aboutUpdate}>
-                      <span style={styles.aboutDot} /> Update available — v{update.latest}
-                    </div>
+                {/* The namecard; the update status follows in full, so no tag on it here. */}
+                <AppCard update={update} showUpdate={false} />
+                <div style={styles.aboutStatus}>
+                  {update.updateAvailable ? (
+                    <>
+                      <div style={styles.aboutUpdate}>
+                        <span style={styles.aboutDot} /> Update available — v{update.latest}
+                      </div>
+                      <a
+                        href={update.releaseUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        style={styles.aboutLink}
+                      >
+                        Download the latest release →
+                      </a>
+                    </>
+                  ) : update.latest ? (
+                    <div style={styles.aboutMuted}>You&apos;re on the latest version.</div>
+                  ) : (
                     <a
-                      href={update.releaseUrl}
+                      href={RELEASES_URL}
                       target="_blank"
                       rel="noreferrer"
                       style={styles.aboutLink}
                     >
-                      Download the latest release →
+                      Releases on GitHub →
                     </a>
-                  </>
-                ) : update.latest ? (
-                  <div style={styles.aboutMuted}>You&apos;re on the latest version.</div>
-                ) : (
-                  <a href={RELEASES_URL} target="_blank" rel="noreferrer" style={styles.aboutLink}>
-                    Releases on GitHub →
-                  </a>
-                )}
-                <label style={styles.silenceRow}>
-                  <span>Silence update dot</span>
-                  <input type="checkbox" checked={silenced} onChange={onToggleSilence} />
-                </label>
+                  )}
+                  <label style={styles.silenceRow}>
+                    <span>Silence update dot</span>
+                    <input type="checkbox" checked={silenced} onChange={onToggleSilence} />
+                  </label>
+                </div>
               </>
             )}
           </div>
@@ -958,6 +1232,111 @@ const LAYOUTS = [
     hint: 'Workflow as a list of steps, each with its settings and plots beside it.'
   }
 ]
+
+/** Flow / Form, in the main nav after the workflow selector: the same setting as the Settings
+ *  tiles. */
+/** A nav dropdown's menu: drops open under its chip and lifts away on close (.oe-menu-in / -out,
+ *  as the gene selector's) — staying mounted through its exit, then unmounting. */
+function NavMenu({
+  open,
+  style,
+  children
+}: {
+  open: boolean
+  style: CSSProperties
+  children: ReactNode
+}) {
+  const [mounted, setMounted] = useState(open)
+  if (open && !mounted) setMounted(true)
+  const leaving = mounted && !open
+  if (!mounted) return null
+  return (
+    <div
+      className={leaving ? 'oe-menu-out' : 'oe-menu-in'}
+      style={{ ...style, ...(leaving ? { pointerEvents: 'none' } : null) }}
+      onAnimationEnd={(e) => {
+        if (e.target === e.currentTarget && leaving) setMounted(false)
+      }}
+    >
+      {children}
+    </div>
+  )
+}
+
+/** A nav dropdown's caret: the app's line chevron, pointing down, flipping up while it's open. */
+function NavCaret({ open }: { open: boolean }) {
+  return (
+    <span
+      style={{
+        display: 'inline-flex',
+        flex: '0 0 auto',
+        transform: open ? 'rotate(180deg)' : 'none',
+        transition: 'transform 160ms ease-out'
+      }}
+    >
+      <Chevron deg={90} size={10} />
+    </span>
+  )
+}
+
+function LayoutToggle() {
+  const uiStyle = useAppSettings((s) => s.uiStyle)
+  const update = useAppSettings((s) => s.update)
+  // The app's sliding switch, pill-shaped and in the subtle tone, so it sits as quietly as the
+  // folder / workflow chip beside it.
+  return (
+    <ToggleSwitch
+      label="Layout"
+      size="lg"
+      tone="subtle"
+      value={uiStyle}
+      options={LAYOUTS.map((o) => ({
+        value: o.v,
+        label: (
+          // One text line tall, so the switch matches the workflow chip's height; the negative
+          // margin takes back some of the padding meant for a word.
+          <span style={styles.layoutIconBox} aria-label={o.label}>
+            <LayoutIcon kind={o.v} />
+          </span>
+        ),
+        title: `${o.label} — ${o.hint}`
+      }))}
+      onChange={(v) => update({ uiStyle: v })}
+    />
+  )
+}
+
+/** A layout's small icon for the nav switch: the Settings glyph (below) redrawn at icon size —
+ *  Flow, one node wired to two; Form, a step list beside two panels. */
+function LayoutIcon({ kind }: { kind: 'flow' | 'form' }): ReactNode {
+  const common = {
+    width: 14,
+    height: 14,
+    viewBox: '0 0 16 16',
+    fill: 'none',
+    stroke: 'currentColor',
+    strokeWidth: 1.7,
+    strokeLinecap: 'round' as const,
+    strokeLinejoin: 'round' as const,
+    'aria-hidden': true,
+    style: { display: 'block', flex: '0 0 auto' }
+  }
+  return kind === 'flow' ? (
+    <svg {...common}>
+      <rect x="1" y="6" width="4" height="4" rx="1" />
+      <rect x="11" y="1.5" width="4" height="4" rx="1" />
+      <rect x="11" y="10.5" width="4" height="4" rx="1" />
+      <path d="M5 8 C8 8 8 3.5 11 3.5" />
+      <path d="M5 8 C8 8 8 12.5 11 12.5" />
+    </svg>
+  ) : (
+    <svg {...common}>
+      <rect x="1" y="1.5" width="5" height="13" rx="1" />
+      <rect x="8" y="1.5" width="7" height="5.5" rx="1" />
+      <rect x="8" y="9" width="7" height="5.5" rx="1" />
+    </svg>
+  )
+}
 
 /** A layout's glyph for its Settings tile, drawn in currentColor. Flow: three nodes wired left to
  *  right, the canvas in miniature. Form: a step list down the left beside a stack of panels. */
@@ -998,8 +1377,9 @@ function LayoutGlyph({ kind }: { kind: 'flow' | 'form' }): ReactNode {
  *  plot, on the dashboard and in the form alike, so it sits with the app-wide controls rather than
  *  inside one view. */
 function NavGeneSelector() {
-  const results = useGraph((s) => s.results)
-  const tabs = useGeneMenuTabs(results)
+  // Only the results' gene names and annotations, so a plot's run (which stores a marker) doesn't
+  // rebuild the menu — see menuParts.
+  const tabs = useGeneMenuTabs(useGraph(useShallow(menuParts)))
   return <GeneSelectMenu tabs={tabs} />
 }
 
@@ -1020,6 +1400,7 @@ function FolderChip() {
     <div style={{ position: 'relative' }}>
       <button
         id="oe-folder-chip"
+        data-open={open}
         style={{ ...styles.chipSeg, ...(dataDirMissing ? styles.chipSegWarn : null) }}
         title={dataDirMissing ? `Folder not found: ${active?.path}` : active?.path || 'folder'}
         onClick={() => setOpen((o) => !o)}
@@ -1027,91 +1408,86 @@ function FolderChip() {
         <span style={{ ...styles.chipIcon, ...(dataDirMissing ? { color: UI.warn } : null) }}>
           {dataDirMissing ? <StatusIcon kind="warn" /> : <IconFolder />}
         </span>
-        {label} ▾
+        {label}
+        <NavCaret open={open} />
       </button>
-      {open && (
-        <>
-          <div style={styles.scrim} onClick={() => setOpen(false)} />
-          <div style={styles.folderMenu}>
-            {folders.map((f) => {
-              const missing = f.id === activeFolderId && dataDirMissing
-              // A path-less folder is an unset placeholder: show a plain call-to-action to pick a
-              // folder, not a dummy "(no path)" tile (and nothing to delete).
-              const noPath = !f.path && !missing
-              return (
-                <div
-                  key={f.id}
-                  style={{
-                    ...styles.folderRow,
-                    background: f.id === activeFolderId ? UI.panelAlt : 'transparent'
-                  }}
-                >
-                  <button
-                    style={styles.folderPick}
-                    title={f.path || 'Select a data folder'}
-                    onClick={() => {
-                      // A missing OR path-less folder needs a folder picked for it; otherwise just
-                      // switch to it.
-                      if (missing || !f.path) void repathFolder(f.id)
-                      else switchFolder(f.id)
-                      setOpen(false)
-                    }}
-                  >
-                    {noPath ? (
-                      <span style={styles.folderName}>
-                        Select folder where project data is saved to
-                      </span>
-                    ) : (
-                      <>
-                        {missing ? (
-                          <StatusNote kind="warn" style={{ marginTop: 0, fontSize: 12 }}>
-                            {f.name} — not found
-                          </StatusNote>
-                        ) : (
-                          <span style={styles.folderName}>{f.name}</span>
-                        )}
-                        <span
-                          style={{ ...styles.folderPath, ...(missing ? styles.pathWarn : null) }}
-                        >
-                          {f.path || '—'}
-                        </span>
-                        {missing && (
-                          <StatusNote kind="warn" style={{ marginTop: 2, fontWeight: 600 }}>
-                            Click to re-select folder…
-                          </StatusNote>
-                        )}
-                      </>
-                    )}
-                  </button>
-                  {!noPath && (
-                    <button
-                      style={{ ...styles.rowIconBtn, color: '#e15759' }}
-                      title={
-                        folders.length > 1
-                          ? 'Delete folder'
-                          : 'Delete folder (resets to an empty folder)'
-                      }
-                      aria-label="Delete folder"
-                      onClick={() => deleteFolder(f.id)}
-                    >
-                      <IconTrash />
-                    </button>
-                  )}
-                </div>
-              )
-            })}
-            <button
-              style={styles.folderAdd}
-              onClick={() => {
-                void addFolder()
-                setOpen(false)
+      {open && <div style={styles.scrim} onClick={() => setOpen(false)} />}
+      <NavMenu open={open} style={styles.folderMenu}>
+        {folders.map((f) => {
+          const missing = f.id === activeFolderId && dataDirMissing
+          // A path-less folder is an unset placeholder: show a plain call-to-action to pick a
+          // folder, not a dummy "(no path)" tile (and nothing to delete).
+          const noPath = !f.path && !missing
+          return (
+            <div
+              key={f.id}
+              style={{
+                ...styles.folderRow,
+                background: f.id === activeFolderId ? UI.panelAlt : 'transparent'
               }}
             >
-              ＋ Add folder…
-            </button>
-          </div>
-        </>
-      )}
+              <button
+                style={styles.folderPick}
+                title={f.path || 'Select a data folder'}
+                onClick={() => {
+                  // A missing OR path-less folder needs a folder picked for it; otherwise just
+                  // switch to it.
+                  if (missing || !f.path) void repathFolder(f.id)
+                  else switchFolder(f.id)
+                  setOpen(false)
+                }}
+              >
+                {noPath ? (
+                  <span style={styles.folderName}>
+                    Select folder where project data is saved to
+                  </span>
+                ) : (
+                  <>
+                    {missing ? (
+                      <StatusNote kind="warn" style={{ marginTop: 0, fontSize: 12 }}>
+                        {f.name} — not found
+                      </StatusNote>
+                    ) : (
+                      <span style={styles.folderName}>{f.name}</span>
+                    )}
+                    <span style={{ ...styles.folderPath, ...(missing ? styles.pathWarn : null) }}>
+                      {f.path || '—'}
+                    </span>
+                    {missing && (
+                      <StatusNote kind="warn" style={{ marginTop: 2, fontWeight: 600 }}>
+                        Click to re-select folder…
+                      </StatusNote>
+                    )}
+                  </>
+                )}
+              </button>
+              {!noPath && (
+                <button
+                  style={{ ...styles.rowIconBtn, color: '#e15759' }}
+                  title={
+                    folders.length > 1
+                      ? 'Delete folder'
+                      : 'Delete folder (resets to an empty folder)'
+                  }
+                  aria-label="Delete folder"
+                  onClick={() => deleteFolder(f.id)}
+                >
+                  <IconTrash />
+                </button>
+              )}
+            </div>
+          )
+        })}
+        <button
+          style={styles.folderAdd}
+          onClick={() => {
+            void addFolder()
+            setOpen(false)
+          }}
+        >
+          ＋ Add folder…
+        </button>
+      </NavMenu>
     </div>
   )
 }
@@ -1139,87 +1515,91 @@ function WorkflowChip() {
 
   return (
     <div style={{ position: 'relative' }}>
-      <button style={styles.chipSeg} title="Workflow menu" onClick={() => setOpen((o) => !o)}>
+      <button
+        data-open={open}
+        style={styles.chipSeg}
+        title="Workflow menu"
+        onClick={() => setOpen((o) => !o)}
+      >
         <span style={styles.chipIcon}>⎇</span>
-        {active ? active.name : 'no workflow'} ▾
+        {active ? active.name : 'no workflow'}
+        <NavCaret open={open} />
       </button>
       {open && (
-        <>
+        <div
+          style={styles.scrim}
+          onClick={() => {
+            setOpen(false)
+            setRenamingId(null)
+          }}
+        />
+      )}
+      <NavMenu open={open} style={styles.projectMenu}>
+        <div style={styles.menuHead}>Workflows</div>
+        {workflows.map((w) => (
           <div
-            style={styles.scrim}
-            onClick={() => {
-              setOpen(false)
-              setRenamingId(null)
+            key={w.id}
+            style={{
+              ...styles.folderRow,
+              background: w.id === activeWorkflowId ? UI.panelAlt : 'transparent'
             }}
-          />
-          <div style={styles.projectMenu}>
-            <div style={styles.menuHead}>Workflows</div>
-            {workflows.map((w) => (
-              <div
-                key={w.id}
-                style={{
-                  ...styles.folderRow,
-                  background: w.id === activeWorkflowId ? UI.panelAlt : 'transparent'
+          >
+            {renamingId === w.id ? (
+              <input
+                autoFocus
+                style={styles.renameInput}
+                value={renameText}
+                onChange={(e) => setRenameText(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') commitRename()
+                  else if (e.key === 'Escape') setRenamingId(null)
+                }}
+                onBlur={commitRename}
+              />
+            ) : (
+              <button
+                style={styles.folderPick}
+                onClick={() => {
+                  switchWorkflow(w.id)
+                  setOpen(false)
                 }}
               >
-                {renamingId === w.id ? (
-                  <input
-                    autoFocus
-                    style={styles.renameInput}
-                    value={renameText}
-                    onChange={(e) => setRenameText(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter') commitRename()
-                      else if (e.key === 'Escape') setRenamingId(null)
-                    }}
-                    onBlur={commitRename}
-                  />
-                ) : (
-                  <button
-                    style={styles.folderPick}
-                    onClick={() => {
-                      switchWorkflow(w.id)
-                      setOpen(false)
-                    }}
-                  >
-                    <span style={styles.folderName}>{w.name}</span>
-                  </button>
-                )}
-                <button
-                  style={styles.rowIconBtn}
-                  title="Rename workflow"
-                  aria-label="Rename workflow"
-                  onClick={() => {
-                    setRenamingId(w.id)
-                    setRenameText(w.name)
-                  }}
-                >
-                  <IconEdit />
-                </button>
-                {workflows.length > 1 && (
-                  <button
-                    style={{ ...styles.rowIconBtn, color: '#e15759' }}
-                    title="Delete workflow"
-                    aria-label="Delete workflow"
-                    onClick={() => deleteWorkflow(w.id)}
-                  >
-                    <IconTrash />
-                  </button>
-                )}
-              </div>
-            ))}
+                <span style={styles.folderName}>{w.name}</span>
+              </button>
+            )}
             <button
-              style={styles.folderAdd}
+              style={styles.rowIconBtn}
+              title="Rename workflow"
+              aria-label="Rename workflow"
               onClick={() => {
-                addWorkflow()
-                setOpen(false)
+                setRenamingId(w.id)
+                setRenameText(w.name)
               }}
             >
-              ＋ New workflow
+              <IconEdit />
             </button>
+            {workflows.length > 1 && (
+              <button
+                style={{ ...styles.rowIconBtn, color: '#e15759' }}
+                title="Delete workflow"
+                aria-label="Delete workflow"
+                onClick={() => deleteWorkflow(w.id)}
+              >
+                <IconTrash />
+              </button>
+            )}
           </div>
-        </>
-      )}
+        ))}
+        <button
+          style={styles.folderAdd}
+          onClick={() => {
+            addWorkflow()
+            setOpen(false)
+          }}
+        >
+          ＋ New workflow
+        </button>
+      </NavMenu>
     </div>
   )
 }
@@ -1244,22 +1624,68 @@ function RunButton() {
         : { icon: '▶', title: 'Run all steps', bg: UI.accent, fg: UI.accentText }
 
   return (
-    <button
-      style={{
-        ...styles.navBtn,
-        background: rs.bg,
-        color: rs.fg,
-        borderColor: rs.bg,
-        fontSize: 13,
-        opacity: !hasRunnable && !runningAll ? 0.5 : 1
-      }}
-      disabled={!hasRunnable && !runningAll}
-      onClick={() => (runningAll ? stopAll() : void runAll())}
-      title={rs.title}
-      aria-label={rs.title}
-    >
-      {rs.icon}
-    </button>
+    <>
+      {/* While the whole pipeline runs, say so beside its Stop button. Positioned out of the
+          row's flow, so it never shifts the centred gene selector. */}
+      {runningAll && (
+        // zero width, and the header's 12px gap cancelled, so the row lays out as if absent
+        <span style={{ position: 'relative', width: 0, marginRight: -12, alignSelf: 'stretch' }}>
+          <StatusNote
+            kind="progress"
+            inline
+            style={{
+              position: 'absolute',
+              right: 6,
+              top: '50%',
+              transform: 'translateY(-50%)',
+              fontSize: 12
+            }}
+          >
+            Running…
+          </StatusNote>
+        </span>
+      )}
+      <button
+        style={{
+          ...styles.navBtn,
+          background: rs.bg,
+          color: rs.fg,
+          borderColor: rs.bg,
+          fontSize: 13,
+          opacity: !hasRunnable && !runningAll ? 0.5 : 1
+        }}
+        disabled={!hasRunnable && !runningAll}
+        onClick={() => (runningAll ? stopAll() : void runAll())}
+        title={rs.title}
+        aria-label={rs.title}
+      >
+        {rs.icon}
+      </button>
+    </>
+  )
+}
+
+/** Opens the project-folder viewer on the active data folder; disabled when there's none on disk. */
+function FolderViewerButton() {
+  const dataDir = useGraph((s) => s.dataDir)
+  const dataDirMissing = useGraph((s) => s.dataDirMissing)
+  const [open, setOpen] = useState(false)
+  const usable = !!dataDir && !dataDirMissing
+  const title = usable ? 'Project folder' : 'No project folder — add one from the folder chip'
+  return (
+    <>
+      <button
+        data-open={open}
+        style={{ ...styles.navBtn, opacity: usable ? 1 : 0.5 }}
+        disabled={!usable}
+        onClick={() => setOpen(true)}
+        title={title}
+        aria-label={title}
+      >
+        <IconFolderTree />
+      </button>
+      {open && dataDir && <ProjectFolderViewer root={dataDir} onClose={() => setOpen(false)} />}
+    </>
   )
 }
 
@@ -1270,6 +1696,7 @@ function ProjectMenu() {
   const projectName = useGraph((s) => s.projectName)
   const projectPath = useGraph((s) => s.projectPath)
   const dirty = useGraph((s) => s.dirty)
+  const saving = useGraph((s) => s.saving)
   const recents = useGraph((s) => s.recentProjects)
   const openProject = useGraph((s) => s.openProject)
   const newProject = useGraph((s) => s.newProject)
@@ -1279,81 +1706,84 @@ function ProjectMenu() {
   return (
     <div style={{ position: 'relative' }}>
       <button
+        data-open={open}
         style={{ ...styles.projectChip, color: projectOpen ? UI.text : UI.textMuted }}
         title="Project menu"
         onClick={() => setOpen((o) => !o)}
       >
         <span style={styles.projectChipName}>{projectOpen ? projectName : 'No project'}</span>
-        {projectOpen && (
-          <span
-            style={{ ...styles.statusDot, background: dirty ? '#e2b93b' : '#3fb950' }}
-            title={dirty ? 'Unsaved changes' : 'All changes saved'}
-          />
-        )}
-        <span style={styles.chipCaret}>▾</span>
+        {projectOpen &&
+          (saving ? (
+            // While a save is written: the spinner (on the compositor, so it turns regardless).
+            <span style={styles.savingIcon} title="Saving…">
+              <StatusIcon kind="progress" />
+            </span>
+          ) : (
+            <span
+              style={{ ...styles.statusDot, background: dirty ? '#e2b93b' : '#3fb950' }}
+              title={dirty ? 'Unsaved changes' : 'All changes saved'}
+            />
+          ))}
+        <NavCaret open={open} />
       </button>
-      {open && (
-        <>
-          <div style={styles.scrim} onClick={() => setOpen(false)} />
-          <div style={styles.projectMenu}>
-            <div style={styles.menuHead}>Recent projects</div>
-            {recents.length === 0 ? (
-              <div style={styles.menuEmpty}>None yet</div>
-            ) : (
-              recents.map((r) => (
-                <div
-                  key={r.path}
-                  style={{
-                    ...styles.menuRow,
-                    background: r.path === projectPath ? UI.panelAlt : 'transparent'
-                  }}
-                >
-                  <button
-                    title={r.path}
-                    style={styles.menuRowOpen}
-                    onClick={() => {
-                      void openProject(r.path)
-                      setOpen(false)
-                    }}
-                  >
-                    <span style={styles.menuName}>{r.name}</span>
-                    <span style={styles.menuPath}>{r.path}</span>
-                  </button>
-                  <button
-                    style={styles.recentForget}
-                    title="Remove from recents"
-                    onClick={(e) => {
-                      e.stopPropagation()
-                      forgetRecent(r.path)
-                    }}
-                  >
-                    ✕
-                  </button>
-                </div>
-              ))
-            )}
-            <div style={styles.menuDivider} />
-            <button
-              style={styles.menuAction}
-              onClick={() => {
-                void openProject()
-                setOpen(false)
+      {open && <div style={styles.scrim} onClick={() => setOpen(false)} />}
+      <NavMenu open={open} style={styles.projectMenu}>
+        <div style={styles.menuHead}>Recent projects</div>
+        {recents.length === 0 ? (
+          <div style={styles.menuEmpty}>None yet</div>
+        ) : (
+          recents.map((r) => (
+            <div
+              key={r.path}
+              style={{
+                ...styles.menuRow,
+                background: r.path === projectPath ? UI.panelAlt : 'transparent'
               }}
             >
-              Open project…
-            </button>
-            <button
-              style={styles.menuAction}
-              onClick={() => {
-                void newProject()
-                setOpen(false)
-              }}
-            >
-              New project
-            </button>
-          </div>
-        </>
-      )}
+              <button
+                title={r.path}
+                style={styles.menuRowOpen}
+                onClick={() => {
+                  void openProject(r.path)
+                  setOpen(false)
+                }}
+              >
+                <span style={styles.menuName}>{r.name}</span>
+                <span style={styles.menuPath}>{r.path}</span>
+              </button>
+              <button
+                style={styles.recentForget}
+                title="Remove from recents"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  forgetRecent(r.path)
+                }}
+              >
+                ✕
+              </button>
+            </div>
+          ))
+        )}
+        <div style={styles.menuDivider} />
+        <button
+          style={styles.menuAction}
+          onClick={() => {
+            void openProject()
+            setOpen(false)
+          }}
+        >
+          Open project…
+        </button>
+        <button
+          style={styles.menuAction}
+          onClick={() => {
+            void newProject()
+            setOpen(false)
+          }}
+        >
+          New project
+        </button>
+      </NavMenu>
     </div>
   )
 }
@@ -1377,12 +1807,12 @@ function IconSave() {
     </svg>
   )
 }
-function IconGuide() {
+function IconGuide({ size = 17 }: { size?: number } = {}) {
   // Open book — "user guide".
   return (
     <svg
-      width="17"
-      height="17"
+      width={size}
+      height={size}
       viewBox="0 0 24 24"
       fill="none"
       stroke="currentColor"
@@ -1395,6 +1825,73 @@ function IconGuide() {
     </svg>
   )
 }
+function IconStart({ size = 17 }: { size?: number } = {}) {
+  // A flag on its pole — the tutorial.
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.7"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M5 21V4" />
+      <path d="M5 4h11l-2 4 2 4H5" />
+    </svg>
+  )
+}
+function IconGlobe() {
+  // Globe — the project website.
+  return (
+    <svg
+      width="13"
+      height="13"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <circle cx="12" cy="12" r="9" />
+      <path d="M3 12h18" />
+      <path d="M12 3a14 14 0 0 1 0 18a14 14 0 0 1 0-18z" />
+    </svg>
+  )
+}
+
+function IconPaper({ size = 13 }: { size?: number }) {
+  // A page of text — the publication.
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M6 3h8l4 4v14H6z" />
+      <path d="M14 3v4h4" />
+      <path d="M9 12h6M9 16h6" />
+    </svg>
+  )
+}
+
+function IconGitHub() {
+  // GitHub mark — the source repository.
+  return (
+    <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor">
+      <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z" />
+    </svg>
+  )
+}
+
 function IconHome() {
   // House — "back to the project home".
   return (
@@ -1427,6 +1924,23 @@ function IconFolder() {
       strokeLinejoin="round"
     >
       <path d="M4 6.5h5l2 2h9V19H4z" />
+    </svg>
+  )
+}
+function IconFolderTree() {
+  // Plain folder outline — the project-folder viewer.
+  return (
+    <svg
+      width="16"
+      height="16"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.7"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M3.5 6.5h5l2 2h10V18.5h-17z" />
     </svg>
   )
 }
@@ -1476,12 +1990,24 @@ function ControlChip() {
   const canRedo = useGraph((s) => s.future.length > 0)
   const undo = useGraph((s) => s.undo)
   const redo = useGraph((s) => s.redo)
+  const saveError = useGraph((s) => s.saveError)
+  const saveWarning = useGraph((s) => s.saveWarning)
+  const clearSaveError = useGraph((s) => s.clearSaveError)
   return (
-    <div style={styles.ctrlChip}>
+    <div style={{ ...styles.ctrlChip, position: 'relative' }}>
+      {/* A failed save says why, just under the controls — as does a save whose folders couldn't
+          all be renamed to match. Click to dismiss. */}
+      {(saveError || saveWarning) && (
+        <div style={styles.saveError} onClick={clearSaveError} title="Dismiss">
+          <StatusNote kind={saveError ? 'error' : 'warn'} style={{ margin: 0 }}>
+            {saveError ?? saveWarning}
+          </StatusNote>
+        </div>
+      )}
       <button
         style={{
           ...styles.ctrlBtn,
-          color: dirty ? UI.text : UI.textMuted,
+          color: saveError ? UI.err : dirty ? UI.text : UI.textMuted,
           opacity: dirty ? 1 : 0.5,
           cursor: dirty ? 'pointer' : 'default'
         }}
@@ -1519,8 +2045,178 @@ function ControlChip() {
   )
 }
 
+const WEBSITE_URL = 'https://yjzhng.github.io/open-bioware/apps/omicexplorer/'
+
+/** The app's Website and GitHub buttons (part of the namecard, AppCard). */
+function AppLinks() {
+  return (
+    <div style={styles.homeLinks}>
+      <a href={WEBSITE_URL} target="_blank" rel="noreferrer" style={styles.homeLink}>
+        <IconGlobe />
+        Website
+      </a>
+      <a href={REPO_URL} target="_blank" rel="noreferrer" style={styles.homeLink}>
+        <IconGitHub />
+        GitHub
+      </a>
+    </div>
+  )
+}
+
+/** The app's namecard — logo, name, version (with the update tag), Website / GitHub, and how to
+ *  cite it. The same card on the home page's left column and in Settings → About; `children` go
+ *  between the name and the citation (the home page's Getting started section). */
+function AppCard({
+  update,
+  showUpdate,
+  children
+}: {
+  update: UpdateInfo
+  showUpdate: boolean
+  children?: ReactNode
+}) {
+  return (
+    <>
+      <div style={styles.homeBrand}>
+        <img src={appLogo} alt="" style={styles.homeLogo} draggable={false} />
+        <div>
+          <div style={styles.homeTitle}>{__APP_NAME__}</div>
+          <div style={styles.homeVersion}>
+            v{__APP_VERSION__}
+            {showUpdate && (
+              <a
+                href={update.releaseUrl}
+                target="_blank"
+                rel="noreferrer"
+                style={styles.homeUpdateTag}
+                title={`Download v${update.latest}`}
+              >
+                Update available · v{update.latest}
+              </a>
+            )}
+          </div>
+          <AppLinks />
+        </div>
+      </div>
+      {children}
+      <AppCitation />
+    </>
+  )
+}
+
+/** The namecard's "Cite this software": the reference (and DOI) from this version's release notes,
+ *  baked in at build time (config/citation.ts), with a copy button — or a note that there's none
+ *  yet. */
+function AppCitation() {
+  const [copied, setCopied] = useState(false)
+  const cite = __APP_CITATION__
+  const copy = (): void => {
+    if (!cite) return
+    void window.api.copyText(cite.reference).then(() => {
+      setCopied(true)
+      window.setTimeout(() => setCopied(false), 1200)
+    })
+  }
+  return (
+    <>
+      <div style={styles.recentHead}>Cite this software</div>
+      <div style={{ ...styles.homeCard, ...styles.citeCard }}>
+        {cite ? (
+          <>
+            <p style={styles.citeRef}>{cite.reference}</p>
+            <div style={styles.citeFoot}>
+              {/* doi.org resolves the DOI to the publication's page. */}
+              {cite.doi && (
+                <span style={styles.citeDoi}>
+                  DOI:{' '}
+                  <a
+                    href={`https://doi.org/${cite.doi}`}
+                    target="_blank"
+                    rel="noreferrer"
+                    style={styles.citeDoiLink}
+                    title={`Open the publication (https://doi.org/${cite.doi})`}
+                  >
+                    {cite.doi}
+                  </a>
+                </span>
+              )}
+              <button
+                style={{ ...styles.homeLink, ...styles.citeCopy }}
+                onClick={copy}
+                title="Copy the reference"
+              >
+                {copied ? '✓ Copied' : 'Copy'}
+              </button>
+            </div>
+          </>
+        ) : (
+          <p style={styles.citeNone}>No reference available yet.</p>
+        )}
+      </div>
+    </>
+  )
+}
+
+/** The home page's Getting started section, under the namecard: Tutorial (a walkthrough — not
+ *  ready yet, so shown disabled), Documentation (the user guide, as the nav's book button opens)
+ *  and Publication (the paper, by the DOI in this version's citation — config/citation.ts —
+ *  disabled until there is one). */
+function HomeGuides({ onGuide }: { onGuide: () => void }) {
+  const doi = __APP_CITATION__?.doi
+  return (
+    <>
+      <div style={styles.recentHead}>Getting started</div>
+      <div style={styles.homeGuides}>
+        <button
+          className="oe-press oe-guide-btn"
+          style={{ ...styles.homeSecondary, ...styles.homeGuideBtn, ...styles.homeGuideOff }}
+          disabled
+          title="Tutorial — coming soon"
+        >
+          <IconStart size={15} />
+          Tutorial
+        </button>
+        <button
+          className="oe-press oe-guide-btn"
+          style={{ ...styles.homeSecondary, ...styles.homeGuideBtn }}
+          onClick={onGuide}
+          title="User guide"
+        >
+          <IconGuide size={15} />
+          Documentation
+        </button>
+        <button
+          className="oe-press oe-guide-btn"
+          style={{
+            ...styles.homeSecondary,
+            ...styles.homeGuideBtn,
+            ...(doi ? null : styles.homeGuideOff)
+          }}
+          disabled={!doi}
+          onClick={() => doi && window.open(`https://doi.org/${doi}`, '_blank', 'noreferrer')}
+          title={
+            doi ? `The publication (https://doi.org/${doi})` : 'Publication — not available yet'
+          }
+        >
+          <IconPaper size={15} />
+          Publication
+        </button>
+      </div>
+    </>
+  )
+}
+
 /** Landing page: create/open a project, with a recent-projects list. */
-function Home() {
+function Home({
+  update,
+  showUpdate,
+  onGuide
+}: {
+  update: UpdateInfo
+  showUpdate: boolean
+  /** open the user guide */
+  onGuide: () => void
+}) {
   const newProject = useGraph((s) => s.newProject)
   const openProject = useGraph((s) => s.openProject)
   const resumeProject = useGraph((s) => s.resumeProject)
@@ -1544,104 +2240,116 @@ function Home() {
   return (
     <div style={styles.home}>
       <div style={styles.homeInner}>
-        <h1 style={styles.homeTitle}>{__APP_NAME__}</h1>
-        <p style={styles.homeSub}>Create or open a project to begin.</p>
-        <div style={styles.homeActions}>
-          <button style={styles.homePrimary} onClick={() => void newProject()}>
-            ＋ New project
-          </button>
-          <button style={styles.homeSecondary} onClick={() => void openProject()}>
-            Open project…
-          </button>
+        {/* Left: the app's namecard. */}
+        <div style={styles.homeLeft}>
+          <AppCard update={update} showUpdate={showUpdate}>
+            <HomeGuides onGuide={onGuide} />
+          </AppCard>
         </div>
-        {openError && (
-          <div style={styles.openError}>
-            <StatusNote kind="error" style={{ marginTop: 0, fontSize: 12 }}>
-              {openError}
-            </StatusNote>
+        {/* Right: projects — new / open, the last one, recent ones (only the list scrolls). */}
+        <div style={styles.homeRight}>
+          <p style={styles.homeSub}>Create or open a project to begin.</p>
+          <div style={styles.homeActions}>
+            <button style={styles.homePrimary} onClick={() => void newProject()}>
+              ＋ New project
+            </button>
+            <button style={styles.homeSecondary} onClick={() => void openProject()}>
+              Open project…
+            </button>
           </div>
-        )}
-        {last && (
-          <>
-            <div style={styles.recentHead}>Last project</div>
-            <div style={styles.recentList}>
-              <div style={styles.recentRow}>
-                <button
-                  style={styles.recentItem}
-                  title={
-                    last.mode === 'resume'
-                      ? 'Resume where you left off (keeps unsaved changes)'
-                      : (last.path ?? '')
-                  }
-                  onClick={() =>
-                    last.mode === 'resume'
-                      ? resumeProject()
-                      : void openProject(last.path ?? undefined)
-                  }
-                >
-                  <span
-                    style={{
-                      ...styles.recentName,
-                      display: 'inline-flex',
-                      alignItems: 'center',
-                      gap: 6
-                    }}
+          {openError && (
+            <div style={styles.openError}>
+              <StatusNote kind="error" style={{ marginTop: 0, fontSize: 12 }}>
+                {openError}
+              </StatusNote>
+            </div>
+          )}
+          {last && (
+            <>
+              <div style={styles.recentHead}>Last project</div>
+              <div style={styles.homeCard}>
+                <div style={styles.recentRow}>
+                  <button
+                    style={styles.recentItem}
+                    title={
+                      last.mode === 'resume'
+                        ? 'Resume where you left off (keeps unsaved changes)'
+                        : (last.path ?? '')
+                    }
+                    onClick={() =>
+                      last.mode === 'resume'
+                        ? resumeProject()
+                        : void openProject(last.path ?? undefined)
+                    }
                   >
                     <span
                       style={{
-                        ...styles.statusDot,
-                        background: last.dirty ? '#e2b93b' : '#3fb950'
+                        ...styles.recentName,
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: 6
                       }}
-                    />
-                    {last.name}
-                  </span>
-                  <span style={styles.recentPath}>
-                    {last.mode === 'resume'
-                      ? last.dirty
-                        ? 'Unsaved changes — resume to keep them'
-                        : (last.path ?? 'Resume this session')
-                      : (last.path ?? '')}
-                  </span>
-                </button>
+                    >
+                      <span
+                        style={{
+                          ...styles.statusDot,
+                          background: last.dirty ? '#e2b93b' : '#3fb950'
+                        }}
+                      />
+                      {last.name}
+                    </span>
+                    <span style={styles.recentPath}>
+                      {last.mode === 'resume'
+                        ? last.dirty
+                          ? 'Unsaved changes — resume to keep them'
+                          : (last.path ?? 'Resume this session')
+                        : (last.path ?? '')}
+                    </span>
+                  </button>
+                </div>
               </div>
-            </div>
-          </>
-        )}
-        {/* Recent list, minus whatever is already shown as the Last project. Only the fresh-fresh
-            case (no session, no recents) shows the empty state. */}
-        {(recentRest.length > 0 || !last) && (
-          <>
-            <div style={styles.recentHead}>Recent projects</div>
+            </>
+          )}
+          {/* Recent list, minus whatever is already shown as the Last project. This card fills the
+            rest of the window and is the only part that scrolls; the header above stays put. */}
+          <div style={styles.recentHead}>Recent projects</div>
+          <div
+            className="oe-scroll"
+            style={{ ...styles.homeCard, ...(recentRest.length > 2 ? styles.recentScroll : null) }}
+          >
             {recentRest.length === 0 ? (
-              <div style={styles.recentEmpty}>No recent projects yet.</div>
-            ) : (
-              <div style={styles.recentList}>
-                {recentRest.map((r) => (
-                  <div key={r.path} style={styles.recentRow}>
-                    <button
-                      style={styles.recentItem}
-                      title={r.path}
-                      onClick={() => void openProject(r.path)}
-                    >
-                      <span style={styles.recentName}>{r.name}</span>
-                      <span style={styles.recentPath}>{r.path}</span>
-                    </button>
-                    <button
-                      style={styles.recentForget}
-                      title="Remove from recents"
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        forgetRecent(r.path)
-                      }}
-                    >
-                      ✕
-                    </button>
-                  </div>
-                ))}
+              <div style={styles.recentEmpty}>
+                {last ? 'No other recent projects.' : 'No recent projects yet.'}
               </div>
+            ) : (
+              recentRest.map((r, i) => (
+                <div
+                  key={r.path}
+                  style={{ ...styles.recentRow, ...(i > 0 ? styles.recentDivider : null) }}
+                >
+                  <button
+                    style={styles.recentItem}
+                    title={r.path}
+                    onClick={() => void openProject(r.path)}
+                  >
+                    <span style={styles.recentName}>{r.name}</span>
+                    <span style={styles.recentPath}>{r.path}</span>
+                  </button>
+                  <button
+                    style={styles.recentForget}
+                    title="Remove from recents"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      forgetRecent(r.path)
+                    }}
+                  >
+                    ✕
+                  </button>
+                </div>
+              ))
             )}
-          </>
-        )}
+          </div>
+        </div>
       </div>
     </div>
   )
@@ -1649,8 +2357,9 @@ function Home() {
 
 export default function App() {
   const mode = useUiTheme((s) => s.mode)
-  // Keep the temp folder's Enrichment / STRING tables current in the background.
-  useTempResultExports()
+  // Read here so a change re-renders the app (portals pick it up through cssVars on their next render).
+  const accent = useUiTheme((s) => s.accent)
+  const customAccent = useUiTheme((s) => s.customAccent)
   const view = useAppView((s) => s.view)
   const uiStyle = useAppSettings((s) => s.uiStyle)
   const [settingsOpen, setSettingsOpen] = useState(false)
@@ -1692,8 +2401,12 @@ export default function App() {
   }, [mode])
 
   return (
-    <div style={{ ...styles.root, ...cssVars(PALETTES[mode]) }}>
-      <header style={styles.header}>
+    <div
+      style={{ ...styles.root, ...cssVars(PALETTES[mode], { id: accent, custom: customAccent }) }}
+    >
+      {/* "Working…" while the main thread is stuck on heavy work, so a pause doesn't read as a hang. */}
+      <FreezeNotice />
+      <header className="oe-nav" style={styles.header}>
         <button
           style={styles.navBtn}
           onClick={() => goHome()}
@@ -1713,6 +2426,8 @@ export default function App() {
               <div style={styles.chipDivider} />
               <WorkflowChip />
             </div>
+            {/* The layout, switchable from the nav as well as Settings. */}
+            <LayoutToggle />
           </>
         )}
         <div style={styles.navSpacer} />
@@ -1726,8 +2441,10 @@ export default function App() {
         )}
         {/* Workflow action: run/re-run, split from the general buttons. */}
         {projectOpen && <RunButton />}
+        {projectOpen && <FolderViewerButton />}
         {projectOpen && <div style={styles.navSep} />}
         <button
+          data-open={guideOpen}
           style={styles.navBtn}
           onClick={() => setGuideOpen(true)}
           title="User guide"
@@ -1736,6 +2453,7 @@ export default function App() {
           <IconGuide />
         </button>
         <button
+          data-open={settingsOpen}
           style={{ ...styles.navBtn, position: 'relative' }}
           onClick={() => setSettingsOpen((o) => !o)}
           title={showUpdateDot ? `Settings — v${update.latest} available` : 'Settings'}
@@ -1755,7 +2473,7 @@ export default function App() {
         {guideOpen && <UserGuide onClose={() => setGuideOpen(false)} />}
       </header>
       {!projectOpen ? (
-        <Home />
+        <Home update={update} showUpdate={showUpdateDot} onGuide={() => setGuideOpen(true)} />
       ) : uiStyle === 'form' ? (
         // Form mode has no Workflow/Results split — a step and its output are one view, so both
         // entries land on it (a project saved in Results still reopens on something).
@@ -1830,6 +2548,9 @@ const styles: Record<string, CSSProperties> = {
   },
   // Faint, thin separator inset from the chip's top/bottom borders (margin keeps it
   // from touching them).
+  // The layout switch's icon: one text line tall, with the side padding for a word cut back.
+  // Option = 2×12 padding − 2×4 margin + 14 icon = 30 wide, by 6 padding + 15.6 line ≈ 22 tall.
+  layoutIconBox: { display: 'flex', alignItems: 'center', height: '1.2em', margin: '0 -4px' },
   chipDivider: {
     width: 1,
     alignSelf: 'stretch',
@@ -1929,15 +2650,96 @@ const styles: Record<string, CSSProperties> = {
   home: {
     flex: 1,
     minHeight: 0,
+    // Fallback only: the recent-projects card takes the overflow unless the window is shorter than the
+    // header plus its minimum height.
     overflow: 'auto',
     display: 'flex',
     justifyContent: 'center',
     background: UI.bg
   },
-  homeInner: { width: 'min(680px, 92vw)', padding: '64px 0 40px' },
-  homeTitle: { fontSize: 30, fontWeight: 800, margin: 0 },
-  homeSub: { color: UI.textMuted, fontSize: 14, margin: '8px 0 28px' },
-  homeActions: { display: 'flex', gap: 12, marginBottom: 36 },
+  // Two columns: the app on the left, projects on the right. A narrow window wraps the right one
+  // below (the page then scrolls as a whole — see `home`).
+  homeInner: {
+    width: 'min(1040px, 94vw)',
+    padding: '64px 0 40px',
+    boxSizing: 'border-box',
+    display: 'flex',
+    flexWrap: 'wrap',
+    alignItems: 'stretch',
+    columnGap: 56,
+    rowGap: 32
+  },
+  homeLeft: { flex: '0 1 380px', minWidth: 0, display: 'flex', flexDirection: 'column' },
+  homeRight: {
+    flex: '1 1 420px',
+    minWidth: 0,
+    minHeight: 0,
+    display: 'flex',
+    flexDirection: 'column'
+  },
+  citeCard: { padding: '12px 14px' },
+  citeRef: {
+    margin: 0,
+    fontSize: 12.5,
+    lineHeight: 1.5,
+    color: UI.text,
+    userSelect: 'text',
+    overflowWrap: 'anywhere'
+  },
+  citeNone: { margin: 0, fontSize: 12.5, color: UI.textMuted },
+  citeFoot: { display: 'flex', alignItems: 'center', gap: 10, marginTop: 10 },
+  citeCopy: { marginLeft: 'auto', flex: '0 0 auto', background: 'transparent', cursor: 'pointer' },
+  citeDoi: {
+    flex: 1,
+    minWidth: 0,
+    fontSize: 12,
+    color: UI.textMuted,
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap'
+  },
+  // As the app's other links (About → releases): accent, underlined.
+  citeDoiLink: { color: UI.accent, textDecoration: 'underline', cursor: 'pointer' },
+  // The logo spans the three text rows (title, version, links): their pinned heights sum to 100px
+  // (36 + 6 + 22 + 10 + 26), so keep the logo size in step if any of them change.
+  homeBrand: { display: 'flex', alignItems: 'center', gap: 20 },
+  homeLogo: { width: 100, height: 100, flex: 'none', userSelect: 'none' },
+  homeTitle: { fontSize: 30, lineHeight: '36px', fontWeight: 800, margin: 0 },
+  homeVersion: {
+    color: UI.textMuted,
+    fontSize: 16,
+    fontWeight: 500,
+    marginTop: 6,
+    height: 22,
+    display: 'flex',
+    alignItems: 'center',
+    gap: 8
+  },
+  homeLinks: { display: 'flex', gap: 8, marginTop: 10 },
+  homeLink: {
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: 6,
+    color: UI.textMuted,
+    border: `1px solid ${UI.border}`,
+    borderRadius: 6,
+    padding: '4px 10px',
+    fontSize: 12,
+    lineHeight: '16px',
+    fontWeight: 500,
+    textDecoration: 'none'
+  },
+  homeUpdateTag: {
+    fontSize: 12,
+    fontWeight: 600,
+    color: '#fff',
+    background: '#3b82f6',
+    borderRadius: 999,
+    padding: '2px 8px',
+    textDecoration: 'none'
+  },
+  homeSub: { color: UI.textMuted, fontSize: 14, margin: '6px 0 20px' },
+  homeActions: { display: 'flex', gap: 12, marginBottom: 12 },
   homePrimary: {
     background: UI.accent,
     color: UI.accentText,
@@ -1948,6 +2750,21 @@ const styles: Record<string, CSSProperties> = {
     fontWeight: 600,
     cursor: 'pointer'
   },
+  // Getting started: Tutorial / Documentation / Publication side by side, each its own width
+  // (wrapping onto a second line in a narrow column).
+  homeGuides: { display: 'flex', flexWrap: 'wrap', gap: 8 },
+  homeGuideBtn: {
+    flex: '0 0 auto',
+    padding: '7px 14px',
+    fontSize: 12.5,
+    whiteSpace: 'nowrap',
+    borderRadius: 7,
+    display: 'inline-flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 5
+  },
+  homeGuideOff: { opacity: 0.45, cursor: 'not-allowed' },
   homeSecondary: {
     background: 'transparent',
     color: UI.text,
@@ -1967,7 +2784,18 @@ const styles: Record<string, CSSProperties> = {
     marginTop: 24,
     marginBottom: 10
   },
-  recentEmpty: { color: UI.textMuted, fontSize: 13 },
+  recentEmpty: { color: UI.textMuted, fontSize: 13, padding: '12px 14px' },
+  saveError: {
+    position: 'absolute',
+    top: 'calc(100% + 6px)',
+    right: 0,
+    width: 320,
+    zIndex: 60,
+    cursor: 'pointer',
+    background: UI.panel,
+    borderRadius: 6,
+    boxShadow: '0 6px 20px rgba(0,0,0,0.25)'
+  },
   openError: {
     marginTop: 12,
     padding: '8px 12px',
@@ -1977,16 +2805,18 @@ const styles: Record<string, CSSProperties> = {
     color: UI.text,
     fontSize: 12
   },
-  recentList: { display: 'flex', flexDirection: 'column', gap: 6 },
-  recentRow: {
-    display: 'flex',
-    alignItems: 'stretch',
-    gap: 4,
+  homeCard: {
+    flex: 'none',
     background: UI.panel,
     border: `1px solid ${UI.border}`,
-    borderRadius: 8,
+    borderRadius: 10,
     overflow: 'hidden'
   },
+  // Sized to its rows, shrinking (and scrolling) only when the window is too short to show them all.
+  // Short lists (≤ 2 rows) are already under the 120px floor, so they just keep their natural height.
+  recentScroll: { flex: '0 1 auto', minHeight: 120, overflowY: 'auto' },
+  recentRow: { display: 'flex', alignItems: 'stretch', gap: 4 },
+  recentDivider: { borderTop: `1px solid ${UI.border}` },
   recentItem: {
     flex: 1,
     display: 'flex',
@@ -2035,7 +2865,7 @@ const styles: Record<string, CSSProperties> = {
   },
   projectChipName: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
   statusDot: { width: 8, height: 8, borderRadius: '50%', flex: '0 0 auto' },
-  chipCaret: { color: UI.textMuted, fontSize: 11, flex: '0 0 auto' },
+  savingIcon: { display: 'inline-flex', flex: '0 0 auto', color: UI.textMuted },
   projectMenu: {
     position: 'absolute',
     top: '100%',
@@ -2162,8 +2992,17 @@ const styles: Record<string, CSSProperties> = {
     padding: '6px 8px',
     boxShadow: '0 6px 22px rgba(0,0,0,0.45)'
   },
-  actCount: { fontSize: 11, fontWeight: 700, color: UI.textMuted, padding: '0 6px' },
+  actCount: {
+    fontSize: 11,
+    fontWeight: 700,
+    color: UI.textMuted,
+    padding: '0 6px',
+    // "5 selected" on one line, never squeezed by the buttons beside it
+    whiteSpace: 'nowrap',
+    flex: '0 0 auto'
+  },
   actBtn: {
+    whiteSpace: 'nowrap',
     background: UI.panelAlt,
     color: UI.text,
     border: `1px solid ${UI.border}`,
@@ -2172,7 +3011,8 @@ const styles: Record<string, CSSProperties> = {
     fontSize: 11,
     fontWeight: 700
   },
-  actBtnDanger: { color: '#f2b8b9', borderColor: '#7a3a3f' },
+  // The theme's error red, so Delete reads in light mode too (a fixed pale pink vanished there).
+  actBtnDanger: { color: UI.err, borderColor: `color-mix(in srgb, ${UI.err} 55%, transparent)` },
   ghost: {
     position: 'fixed',
     transform: 'translate(-50%, -50%)',
@@ -2288,7 +3128,31 @@ const styles: Record<string, CSSProperties> = {
   },
   settingsHint: { marginTop: 8, fontSize: 11, color: UI.textMuted },
   settingsSubTitle: { fontSize: 12, fontWeight: 700, color: UI.text, marginBottom: 10 },
-  // Settings › Layout: two large side-by-side choices, glyph over name over description.
+  // Settings › Appearance › Accent colour: a swatch per choice, the chosen one ringed in its colour.
+  accentRow: { display: 'flex', flexWrap: 'wrap', gap: 8 },
+  accentSwatch: {
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: 6,
+    padding: '4px 10px 4px 6px',
+    borderRadius: 999,
+    border: `1px solid ${UI.border}`,
+    background: 'transparent',
+    color: UI.text,
+    cursor: 'pointer',
+    outlineOffset: 1
+  },
+  accentDot: { width: 14, height: 14, borderRadius: '50%', flex: 'none' },
+  accentLabel: { fontSize: 12 },
+  accentLabelBtn: {
+    fontSize: 12,
+    color: UI.text,
+    background: 'transparent',
+    border: 'none',
+    padding: 0,
+    cursor: 'pointer'
+  },
+  // Settings › Appearance › Layout: two large side-by-side choices, glyph over name over description.
   layoutTiles: { display: 'flex', gap: 12, flexWrap: 'wrap' },
   layoutTile: {
     flex: '1 1 180px',
@@ -2336,7 +3200,7 @@ const styles: Record<string, CSSProperties> = {
     color: UI.textMuted,
     marginBottom: 6
   },
-  aboutName: { fontSize: 12, color: UI.text, marginBottom: 6 },
+  aboutStatus: { marginTop: 20 },
   aboutMuted: { fontSize: 12, color: UI.textMuted },
   aboutUpdate: {
     display: 'flex',

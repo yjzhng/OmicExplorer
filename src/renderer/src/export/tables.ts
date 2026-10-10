@@ -7,6 +7,8 @@ import type { Edge } from '@xyflow/react'
 import {
   condLabel,
   condPresent,
+  curveMetrics,
+  CURVE_METRICS,
   customCondsIn,
   customSlug,
   isCustomCond,
@@ -17,6 +19,8 @@ import {
 } from '../engine'
 import { deriveGroups } from '../graph/groups'
 import {
+  condUnitsFor,
+  curveDoseUnit,
   isStep,
   type CompareConfig,
   type GraphNode,
@@ -100,11 +104,20 @@ function standardizeTable(
 /** Comparison table → columns + rows (two-way's log2FC is an interaction term). */
 function compareTable(
   result: Extract<NodeResult, { kind: 'compare' }>,
-  analysis: CompareConfig['analysis']
+  analysis: CompareConfig['analysis'],
+  dose: { unit?: string; scale: number } = { scale: 1 }
 ): { columns: string[]; rows: Cell[][] } {
   const dm = result.displayMap
   const src = result.cmp.rows
   const multiCmp = new Set(src.map((r) => r.comparison)).size > 1
+  const t = result.cmp.threshold
+  const metrics = src.map((r) =>
+    r.curve ? curveMetrics(r.log2FC, r.curve, t, dose.scale) : undefined
+  )
+  const curveCols =
+    analysis === 'curve_fit' || metrics.some(Boolean)
+      ? CURVE_METRICS.filter((k) => metrics.some((m) => m?.[k] != null))
+      : []
   const cols = [
     'uniqID',
     'gene',
@@ -115,18 +128,35 @@ function compareTable(
     ...(present(src, 'time') ? ['time'] : []),
     ...customCols(src),
     'log2FC',
+    // A curve fit's metrics, as CurveCurator lists them (see curveMetrics); those it has.
+    ...curveCols,
     'pP',
     'pQ',
     'signf',
-    'effect'
+    'effect',
+    // A curve fit's final model: the 4PL, or M0 (flat) where its F-test doesn't reject flat.
+    ...(src.some((r) => r.model) ? ['model'] : [])
   ]
-  const label = analysis === 'two_way_anova' ? 'interaction' : 'log2FC'
-  const headers = cols.map((c) => (c === 'log2FC' ? label : condLabel(c as ConditionKey)))
-  const rows = src.map((r) => {
+  const label =
+    analysis === 'two_way_anova'
+      ? 'interaction'
+      : analysis === 'curve_fit'
+        ? 'curve_log2FC'
+        : 'log2FC'
+  const headers = cols.map((c) =>
+    c === 'log2FC'
+      ? label
+      : c === 'EC50' && dose.unit
+        ? `EC50_${dose.unit.replace('µ', 'u')}`
+        : condLabel(c as ConditionKey)
+  )
+  const curveSet = new Set<string>(curveCols)
+  const rows = src.map((r, i) => {
     const gene = dm[r.uniqID] ?? ''
     return cols.map((c): Cell => {
       if (c === 'gene') return gene
       if (c === 'signf') return b(r.signf)
+      if (curveSet.has(c)) return metrics[i]?.[c as (typeof CURVE_METRICS)[number]] ?? null
       return cellOf(r, c)
     })
   })
@@ -201,7 +231,11 @@ export function collectTableExports(
     if (result.kind === 'standardize')
       built = standardizeTable(result, (node.data.config as StandardizeConfig).logTransform)
     else if (result.kind === 'compare')
-      built = compareTable(result, (node.data.config as CompareConfig).analysis)
+      built = compareTable(
+        result,
+        (node.data.config as CompareConfig).analysis,
+        curveDoseUnit(node.data.config as CompareConfig, condUnitsFor({ nodes, edges }, node.id))
+      )
     else if (result.kind === 'contrast') built = contrastTable(result)
     if (!built) continue
     out.push({

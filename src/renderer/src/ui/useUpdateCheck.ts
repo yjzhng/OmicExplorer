@@ -6,7 +6,8 @@ import { useEffect, useState } from 'react'
 // the About section. One unauthenticated request per app session; failures (offline, rate-limit,
 // CSP) are ignored silently. Adapted from the sibling UniOme app's useUpdateCheck.
 const REPO = 'yjzhng/OmicExplorer'
-export const RELEASES_URL = `https://github.com/${REPO}/releases`
+export const REPO_URL = `https://github.com/${REPO}`
+export const RELEASES_URL = `${REPO_URL}/releases`
 
 export interface UpdateInfo {
   current: string

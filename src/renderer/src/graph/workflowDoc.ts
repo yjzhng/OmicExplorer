@@ -4,10 +4,13 @@
  *  wrappers preserve the standalone `.json` round-trip. */
 import type { Edge } from '@xyflow/react'
 
+import { withoutTiles } from './frames'
+import { wrapLonePlots } from './plotGroups'
 import { orderedByWiring } from './sequence'
 
 import {
   isStep,
+  type CanvasFrame,
   type FavGene,
   type GeneSet,
   type GraphNode,
@@ -34,6 +37,8 @@ export interface WorkflowDoc {
   groupMeta?: Record<string, GroupMeta>
   /** named custom genesets for this workflow */
   geneSets?: GeneSet[]
+  /** canvas frames (labelled areas grouping tiles) */
+  frames?: CanvasFrame[]
   /** legacy: a single flat favourites list, migrated to a "Favourites" geneset on load */
   favourites?: FavGene[]
 }
@@ -45,6 +50,7 @@ export interface SerializeInput {
   groupLayouts: Record<string, PanelLayoutItem[]>
   groupMeta: Record<string, GroupMeta>
   geneSets: GeneSet[]
+  frames?: CanvasFrame[]
 }
 
 /** The undoable graph snapshot plus its (non-undoable) layout maps. */
@@ -55,6 +61,7 @@ export interface LoadedWorkflow {
   groupLayouts: Record<string, PanelLayoutItem[]>
   groupMeta: Record<string, GroupMeta>
   geneSets: GeneSet[]
+  frames: CanvasFrame[]
 }
 
 const pruneByRoot = <T>(m: Record<string, T>, live: Set<string>): Record<string, T> =>
@@ -88,6 +95,12 @@ export function buildWorkflowDoc(s: SerializeInput): WorkflowDoc {
   const stepIds = new Set(steps.map((n) => n.id))
   const groupLayouts = pruneByRoot(s.groupLayouts, stepIds)
   const groupMeta = pruneByRoot(s.groupMeta, stepIds)
+  // A frame keeps only tiles that still exist (and the frames nested in it); one left empty goes.
+  const frameIds = new Set((s.frames ?? []).map((f) => f.id))
+  const gone = new Set(
+    (s.frames ?? []).flatMap((f) => f.members).filter((m) => !stepIds.has(m) && !frameIds.has(m))
+  )
+  const frames = withoutTiles(s.frames ?? [], gone)
   return {
     version: 4,
     nextId: s.nextId,
@@ -106,7 +119,8 @@ export function buildWorkflowDoc(s: SerializeInput): WorkflowDoc {
       .map((e) => ({ id: e.id, source: e.source, target: e.target })),
     ...(Object.keys(groupLayouts).length ? { groupLayouts } : {}),
     ...(Object.keys(groupMeta).length ? { groupMeta } : {}),
-    ...(s.geneSets?.length ? { geneSets: s.geneSets } : {})
+    ...(s.geneSets?.length ? { geneSets: s.geneSets } : {}),
+    ...(frames.length ? { frames } : {})
   }
 }
 
@@ -145,17 +159,22 @@ export function parseWorkflowDoc(doc: WorkflowDoc): LoadedWorkflow {
     const k = Number(n.id.split('-').pop())
     return Number.isFinite(k) ? Math.max(m, k) : m
   }, 1)
+  const layouts =
+    version >= 2
+      ? kx === 1 && ky === 1
+        ? (doc.groupLayouts ?? {})
+        : scaleLayouts(doc.groupLayouts ?? {}, kx, ky)
+      : {}
+  // Every visualisation tile is a plot group now: a lone plot saved before that opens as a group of
+  // one (same tile id, name and place; its results tile moves to the subcard).
+  const wrapped = wrapLonePlots(ordered, doc.nextId ?? maxIdx + 1, layouts)
   return {
-    nodes: ordered,
+    nodes: wrapped.nodes,
     edges,
-    nextId: doc.nextId ?? maxIdx + 1,
-    groupLayouts:
-      version >= 2
-        ? kx === 1 && ky === 1
-          ? (doc.groupLayouts ?? {})
-          : scaleLayouts(doc.groupLayouts ?? {}, kx, ky)
-        : {},
+    nextId: wrapped.nextId,
+    groupLayouts: wrapped.layouts,
     groupMeta: version >= 2 ? (doc.groupMeta ?? {}) : {},
+    frames: doc.frames ?? [],
     // Legacy flat favourites migrate into a single "Favourites" geneset.
     geneSets:
       doc.geneSets ??

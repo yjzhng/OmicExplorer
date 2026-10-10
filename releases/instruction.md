@@ -27,3 +27,13 @@ Terminal alternative: `xattr -dr com.apple.quarantine /Applications/OmicExplorer
 2. First launch may be blocked by Windows security, if so: 
    - **SmartScreen** may warn "Windows protected your PC" → click **More info** → **Run anyway**.
    - Alternatively, if the file itself is blocked: **right-click** the .exe installer → Under **Properties** tab → check **Unblock** at the bottom → **OK** then run.
+
+## Cite this software
+
+If OmicExplorer helps your work, please cite:
+
+```text
+{{CITATION}}
+```
+
+DOI: {{DOI}}

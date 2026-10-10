@@ -2,6 +2,8 @@
 import {
   condPresent,
   condsIn,
+  replicateLog2FCs,
+  stdByGene,
   type ConditionKey,
   type ContrastSideRow,
   type StandardRow
@@ -10,33 +12,48 @@ import { resolveContrastSource, type ContrastConfig, type NodeResult } from './t
 
 /** A result as one side of a paired contrast: Compare → log2FC (+ significance); Standardize →
  *  per-sample log10 abundance (the engine averages replicates + unmatched dims to the matched
- *  context). Anything else can't be a side. */
-export function toContrastSide(r: NodeResult | undefined): ContrastSideRow[] {
-  if (r?.kind === 'compare')
-    return r.cmp.rows.map((row) => ({
-      uniqID: row.uniqID,
-      cell: row.cell ?? null,
-      cmpd: row.cmpd,
-      dose: row.dose,
-      time: row.time,
-      ...(row.extra ? { extra: row.extra } : null),
-      value: row.log2FC,
-      signf: row.signf,
-      effect: row.effect,
-      pP: row.pP,
-      pQ: row.pQ,
-      se: row.fcSE ?? null
-    }))
+ *  context). Anything else can't be a side. A side's replicates ride along for the DR's points:
+ *  a sample's own value, or — given the Clean data a Compare ran on (`cleanStd`) — each
+ *  replicate's log2 ratio to the control mean (previews leave it out). */
+export function toContrastSide(
+  r: NodeResult | undefined,
+  cleanStd?: StandardRow[]
+): ContrastSideRow[] {
+  if (r?.kind === 'compare') {
+    const byGene = cleanStd ? stdByGene(cleanStd) : undefined
+    return r.cmp.rows.map((row) => {
+      const reps = byGene ? replicateLog2FCs(row, byGene.get(row.uniqID) ?? []) : []
+      return {
+        uniqID: row.uniqID,
+        cell: row.cell ?? null,
+        cmpd: row.cmpd,
+        dose: row.dose,
+        time: row.time,
+        ...(row.extra ? { extra: row.extra } : null),
+        value: row.log2FC,
+        signf: row.signf,
+        effect: row.effect,
+        pP: row.pP,
+        pQ: row.pQ,
+        se: row.fcSE ?? null,
+        ...(reps.length ? { reps } : null)
+      }
+    })
+  }
   if (r?.kind === 'standardize')
-    return r.std.rows.map((row) => ({
-      uniqID: row.uniqID,
-      cell: row.cell,
-      cmpd: row.cmpd,
-      dose: row.dose,
-      time: row.time,
-      ...(row.extra ? { extra: row.extra } : null),
-      value: row.value != null && row.value > 0 ? Math.log10(row.value) : null
-    }))
+    return r.std.rows.map((row) => {
+      const value = row.value != null && row.value > 0 ? Math.log10(row.value) : null
+      return {
+        uniqID: row.uniqID,
+        cell: row.cell,
+        cmpd: row.cmpd,
+        dose: row.dose,
+        time: row.time,
+        ...(row.extra ? { extra: row.extra } : null),
+        value,
+        ...(value != null ? { reps: [value] } : null)
+      }
+    })
   return []
 }
 

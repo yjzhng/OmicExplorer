@@ -1,7 +1,24 @@
-import { mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises'
-import { basename, isAbsolute, join } from 'node:path'
+import { createReadStream, createWriteStream } from 'node:fs'
+import { mkdir, readdir, readFile, rename, stat, writeFile } from 'node:fs/promises'
+import { Readable } from 'node:stream'
+import { pipeline } from 'node:stream/promises'
+import { promisify } from 'node:util'
+import { createGzip, gunzip } from 'node:zlib'
+import { basename, dirname, isAbsolute, join, relative, sep } from 'node:path'
 
-import { dialog, ipcMain } from 'electron'
+import { dialog, ipcMain, shell } from 'electron'
+
+import { registerDataLayout } from './data-layout'
+import { parkFileOf } from './park'
+
+const gunzipAsync = promisify(gunzip)
+
+/** A project file's text: gzipped (as saved now) or plain JSON (older files). */
+async function readProjectText(path: string): Promise<string> {
+  const buf = await readFile(path)
+  const gz = buf.length > 2 && buf[0] === 0x1f && buf[1] === 0x8b
+  return (gz ? await gunzipAsync(buf) : buf).toString('utf8')
+}
 
 export interface OpenFileResult {
   path: string
@@ -38,12 +55,58 @@ function safeSeg(scope?: string): string | null {
   return cleaned && cleaned !== '..' ? cleaned : null
 }
 
+/** Where a workflow's generated files live. A string is the older form: a workflow name, nested
+ *  under the data folder. An object names the workflow's folder outright (`base`, absolute — see
+ *  the renderer's graph/diskNames.ts), with `legacy` the workflow name whose old
+ *  `<data folder>/<name>` subfolder is still read from. */
+type Scope = string | { base: string; legacy?: string } | undefined
+
+/** Where to read a workflow's file from, in order: its own folder, then (legacy) the old
+ *  per-workflow subfolder and the shared data-folder root — so files from older projects still
+ *  resolve. */
+function readRoots(dir: string, scope: Scope): string[] {
+  if (scope && typeof scope === 'object') {
+    const seg = safeSeg(scope.legacy)
+    return [scope.base, ...(seg ? [join(dir, seg)] : []), dir]
+  }
+  const seg = safeSeg(scope)
+  return seg ? [join(dir, seg), dir] : [dir]
+}
+
+/** A write's data folder must still be there: creating the workflow's folders under a data
+ *  folder deleted mid-session would silently bring it back holding only the app's files. The
+ *  renderer catches this and flags the folder missing. */
+async function requireDataDir(dir: string): Promise<void> {
+  const ok = await stat(dir).then(
+    (s) => s.isDirectory(),
+    () => false
+  )
+  if (!ok) throw new Error(`Data folder not found: ${dir}`)
+}
+
+/** Where to write a workflow's file: its own folder. */
+function writeRoot(dir: string, scope: Scope): string {
+  if (scope && typeof scope === 'object') return scope.base
+  const seg = safeSeg(scope)
+  return seg ? join(dir, seg) : dir
+}
+
 /**
  * Register the local-file IPC seam. The renderer is context-isolated and cannot
  * touch the filesystem, so file picking/reading/writing lives here in the main
  * process and is exposed to the renderer as `window.api.*`.
  */
+/** One entry of a folder listing (the project-folder viewer). */
+export interface DirEntry {
+  name: string
+  path: string
+  dir: boolean
+  size: number
+  mtime: number
+}
+
 export function registerFileIo(): void {
+  registerDataLayout()
   ipcMain.handle(
     'file:open',
     async (_evt, opts?: OpenFileOptions): Promise<OpenFileResult | null> => {
@@ -97,7 +160,7 @@ export function registerFileIo(): void {
     await writeFile(path, content, 'utf8')
   })
 
-  // ── input/ (raw data) + temp/ (processed data) under the workflow dir ────────
+  // ── input/ (raw data) under the workflow dir ─────────────────────────────────
   ipcMain.handle('wf:listInput', async (_evt, dir: string): Promise<string[]> => {
     const inputDir = join(dir, 'input')
     await mkdir(inputDir, { recursive: true })
@@ -122,35 +185,11 @@ export function registerFileIo(): void {
 
   ipcMain.handle(
     'wf:writeInput',
-    async (_evt, dir: string, name: string, content: string, scope?: string): Promise<void> => {
-      const seg = safeSeg(scope)
-      const inputDir = seg ? join(dir, seg, 'input') : join(dir, 'input')
+    async (_evt, dir: string, name: string, content: string, scope?: Scope): Promise<void> => {
+      await requireDataDir(dir)
+      const inputDir = join(writeRoot(dir, scope), 'input')
       await mkdir(inputDir, { recursive: true })
       await writeFile(join(inputDir, name), content, 'utf8')
-    }
-  )
-
-  // A generated file back from temp/ (the plot-table export's sidecar), or null when there's none.
-  ipcMain.handle(
-    'wf:readTemp',
-    async (_evt, dir: string, name: string, scope?: string): Promise<string | null> => {
-      const seg = safeSeg(scope)
-      const tempDir = seg ? join(dir, seg, 'temp') : join(dir, 'temp')
-      try {
-        return await readFile(join(tempDir, name), 'utf8')
-      } catch {
-        return null
-      }
-    }
-  )
-
-  ipcMain.handle(
-    'wf:writeTemp',
-    async (_evt, dir: string, name: string, content: string, scope?: string): Promise<void> => {
-      const seg = safeSeg(scope)
-      const tempDir = seg ? join(dir, seg, 'temp') : join(dir, 'temp')
-      await mkdir(tempDir, { recursive: true })
-      await writeFile(join(tempDir, name), content, 'utf8')
     }
   )
 
@@ -168,16 +207,37 @@ export function registerFileIo(): void {
     })
     if (res.canceled || res.filePaths.length === 0) return null
     const path = res.filePaths[0]
-    return { path, content: await readFile(path, 'utf8') }
+    return { path, content: await readProjectText(path) }
   })
 
   ipcMain.handle('proj:read', async (_evt, path: string): Promise<string> => {
-    return readFile(path, 'utf8')
+    return readProjectText(path)
   })
 
-  ipcMain.handle('proj:save', async (_evt, path: string, content: string): Promise<void> => {
-    await writeFile(path, content, 'utf8')
-  })
+  // Written to a temporary file first and moved over the project only once complete, so a save
+  // that fails part-way never leaves a truncated project behind. The text may come in pieces (a
+  // large project can't be one string); a `{ park }` piece is a parked workflow's results, streamed
+  // straight from its park file rather than sent over from the renderer.
+  ipcMain.handle(
+    'proj:save',
+    async (
+      _evt,
+      path: string,
+      content: string | Array<string | { park: string }>
+    ): Promise<void> => {
+      const pieces = Array.isArray(content) ? content : [content]
+      async function* text(): AsyncGenerator<string | Buffer> {
+        for (const p of pieces)
+          if (typeof p === 'string') yield p
+          else yield* createReadStream(parkFileOf(p.park))
+      }
+      // Gzipped as it's written; opening reads either form. Level 1: about 4× faster than the
+      // default 6 on a large project (0.7 s vs 3.4 s for 118 MB of JSON) for a ~14% larger file.
+      const tmp = `${path}.saving`
+      await pipeline(Readable.from(text()), createGzip({ level: 1 }), createWriteStream(tmp))
+      await rename(tmp, path)
+    }
+  )
 
   /** Native "save as" dialog; returns the chosen path (with .omicexplorer) or null. */
   ipcMain.handle(
@@ -202,6 +262,10 @@ export function registerFileIo(): void {
       _evt,
       opts: { defaultPath: string; ext: string; typeName: string }
     ): Promise<string | null> => {
+      // The suggested folder (a step's output/ subfolder) may not exist yet; the window only
+      // opens in a folder that does.
+      if (isAbsolute(opts.defaultPath))
+        await mkdir(dirname(opts.defaultPath), { recursive: true }).catch(() => undefined)
       const res = await dialog.showSaveDialog({
         title: 'Save as',
         defaultPath: opts.defaultPath,
@@ -236,28 +300,86 @@ export function registerFileIo(): void {
     }
   )
 
+  // ── project-folder viewer: list one level, reveal / open an entry ────────────
+  // Folders first, then files, each by name; dotfiles hidden. One level per call — the viewer
+  // expands lazily, so a deep or large folder never gets walked in full.
+  ipcMain.handle('fs:listDir', async (_evt, dir: string): Promise<DirEntry[]> => {
+    const ents = await readdir(dir, { withFileTypes: true })
+    const out = await Promise.all(
+      ents
+        .filter((e) => !e.name.startsWith('.'))
+        .map(async (e): Promise<DirEntry | null> => {
+          const path = join(dir, e.name)
+          try {
+            const s = await stat(path)
+            return { name: e.name, path, dir: s.isDirectory(), size: s.size, mtime: s.mtimeMs }
+          } catch {
+            return null // vanished mid-listing, or a dangling link
+          }
+        })
+    )
+    return out
+      .filter((e): e is DirEntry => e !== null)
+      .sort((a, b) =>
+        a.dir !== b.dir
+          ? a.dir
+            ? -1
+            : 1
+          : a.name.localeCompare(b.name, undefined, { numeric: true })
+      )
+  })
+  ipcMain.handle('fs:reveal', (_evt, p: string): void => shell.showItemInFolder(p))
+  /** Open in the default app; resolves to an error message, or '' on success. */
+  ipcMain.handle('fs:open', (_evt, p: string): Promise<string> => shell.openPath(p))
+
   // ── data folder (scanned for input files) ────────────────────────────────────
   // A project folder "contains input/output/data" — so scan the folder itself and
   // its common data subdirs, and resolve reads across the same locations.
   const DATA_SUBDIRS = ['', 'input', 'data']
 
-  ipcMain.handle('data:list', async (_evt, dir: string): Promise<string[]> => {
+  // With a `scope`, the workflow's own subfolder is scanned too — the same places data:read looks.
+  ipcMain.handle('data:list', async (_evt, dir: string, scope?: Scope): Promise<string[]> => {
     const names = new Set<string>()
-    for (const sub of DATA_SUBDIRS) {
-      try {
-        for (const n of await readdir(join(dir, sub))) {
-          if (!n.startsWith('.') && /\.(csv|tsv|txt)$/i.test(n)) names.add(n)
+    for (const root of readRoots(dir, scope)) {
+      for (const sub of DATA_SUBDIRS) {
+        try {
+          for (const n of await readdir(join(root, sub))) {
+            if (!n.startsWith('.') && /\.(csv|tsv|txt)$/i.test(n)) names.add(n)
+          }
+        } catch {
+          // subdir absent — skip
         }
-      } catch {
-        // subdir absent — skip
       }
     }
     return [...names].sort((a, b) => a.localeCompare(b))
   })
 
+  // The same files, each with the folder it's read from (relative to the data folder; '' = the folder
+  // itself) — the first location data:read would find it in, so the folder shown is the one used.
+  ipcMain.handle(
+    'data:listWhere',
+    async (_evt, dir: string, scope?: Scope): Promise<Record<string, string>> => {
+      const where: Record<string, string> = {}
+      for (const root of readRoots(dir, scope)) {
+        for (const sub of DATA_SUBDIRS) {
+          const folder = join(root, sub)
+          try {
+            for (const n of await readdir(folder)) {
+              if (n.startsWith('.') || !/\.(csv|tsv|txt)$/i.test(n) || n in where) continue
+              where[n] = relative(dir, folder).split(sep).join('/')
+            }
+          } catch {
+            // subdir absent — skip
+          }
+        }
+      }
+      return where
+    }
+  )
+
   ipcMain.handle(
     'data:read',
-    async (_evt, dir: string, name: string, scope?: string): Promise<string | null> => {
+    async (_evt, dir: string, name: string, scope?: Scope): Promise<string | null> => {
       // An absolute `name` is a matrix picked from outside the data folder (see data:pickFile) —
       // read it directly and ignore `dir`. Bare names resolve within the data folder's subdirs.
       if (name && isAbsolute(name)) {
@@ -267,11 +389,9 @@ export function registerFileIo(): void {
           return null
         }
       }
-      // Try the per-workflow subfolder first (when a scope is given), then the shared data-folder
-      // root — so a lone workflow's flat files, manual-mode files, and older projects still resolve.
-      const seg = safeSeg(scope)
-      const roots = seg ? [join(dir, seg), dir] : [dir]
-      for (const root of roots) {
+      // The workflow's own folder first, then the shared data-folder root (your own input files,
+      // and older projects' flat ones).
+      for (const root of readRoots(dir, scope)) {
         for (const sub of DATA_SUBDIRS) {
           try {
             return await readFile(join(root, sub, name), 'utf8')

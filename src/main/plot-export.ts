@@ -158,6 +158,9 @@ export function registerPlotExport(): void {
     else clipboard.writeImage(nativeImage.createFromBuffer(Buffer.from(payload.base64, 'base64')))
   })
 
+  /** Plain text on the clipboard (e.g. the home page's citation). */
+  ipcMain.handle('clip:text', (_evt, text: string): void => clipboard.writeText(text))
+
   ipcMain.handle('plots:reveal', async (_evt, dir: string): Promise<void> => {
     await shell.openPath(dir)
   })

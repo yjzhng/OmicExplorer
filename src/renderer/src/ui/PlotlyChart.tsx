@@ -14,6 +14,7 @@ import {
   applyPlotAxes,
   axisTitleText,
   PlotAxesContext,
+  truncateLabel,
   type AxisDefault,
   type AxisDefaults
 } from './plotAxes'
@@ -77,6 +78,12 @@ interface PlotlyChartProps {
    *  highlight): called with the live graph div after each render; return a cleanup run before the
    *  next render and on unmount. Prefer the built-in linked-selection for gene highlighting. */
   onGraphMount?: (el: PlotlyGraphDiv) => (() => void) | void
+  /** A click on an annotation drawn with `captureevents: true` (e.g. a clickable legend chip),
+   *  given that annotation's `name`. */
+  onAnnotationClick?: (name: string) => void
+  /** show Plotly's control bar (zoom/pan/download) on hover — default on; off where it would cover
+   *  the view's own controls (the enrichment plot's category chips) */
+  modeBar?: boolean
   /** Draggable threshold guides drawn as `layout.shapes`. A custom drag (not Plotly's built-in
    *  shape editing) constrains each guide to ONE axis so a line never slants, shows a resize
    *  cursor on hover, follows the cursor smoothly, and commits the new value via `onGuide`. */
@@ -339,6 +346,42 @@ function colorScaleOf(mk: NonNullable<Trace['marker']>): Record<string, unknown>
   return { colorscale: mk.colorscale, cmid: mk.cmid, cmin, cmax }
 }
 
+/** A colour stop's [r, g, b] (hex #rgb/#rrggbb or rgb()/rgba()); null for anything else. */
+function rgbOf(c: string): [number, number, number] | null {
+  const hex = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(c)
+  if (hex) {
+    const h = hex[1].length === 3 ? [...hex[1]].map((x) => x + x).join('') : hex[1]
+    const n = parseInt(h, 16)
+    return [(n >> 16) & 255, (n >> 8) & 255, n & 255]
+  }
+  const rgb = /^rgba?\(\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)/i.exec(c)
+  return rgb ? [Number(rgb[1]), Number(rgb[2]), Number(rgb[3])] : null
+}
+
+/** A colour-scaled trace's colour lookup: value → the colour Plotly draws it in, for a scale given
+ *  as explicit [position, colour] stops over the trace's own cmin/cmax (as colorScaleOf resolves
+ *  them). Null when the scale is a named one (e.g. 'Viridis') — the overlay then reuses the scale
+ *  itself instead. Resolving per trace is what keeps two differently-scaled traces (the enrichment
+ *  dots' Reds for up, Blues for down) each in their own colours when emphasised. */
+function scaleColorer(mk: NonNullable<Trace['marker']>): ((v: number) => string) | null {
+  const cs = mk.colorscale
+  if (!Array.isArray(cs) || cs.length < 2) return null
+  const stops = (cs as [number, string][]).map(([pos, c]) => ({ pos, rgb: rgbOf(c) }))
+  if (stops.some((st) => !st.rgb)) return null
+  const { cmin, cmax } = colorScaleOf(mk) as { cmin?: number; cmax?: number }
+  if (cmin == null || cmax == null) return null
+  return (v) => {
+    const t = cmax > cmin ? Math.max(0, Math.min(1, (v - cmin) / (cmax - cmin))) : 0
+    let i = 0
+    while (i < stops.length - 2 && t > stops[i + 1].pos) i++
+    const a = stops[i]
+    const b = stops[i + 1]
+    const f = b.pos > a.pos ? Math.max(0, Math.min(1, (t - a.pos) / (b.pos - a.pos))) : 0
+    const mix = (k: number): number => Math.round(a.rgb![k] + (b.rgb![k] - a.rgb![k]) * f)
+    return `rgb(${mix(0)},${mix(1)},${mix(2)})`
+  }
+}
+
 interface BaseOpacity {
   marker: number
   line: number
@@ -355,6 +398,9 @@ function traceIds(t: Trace): string[] | null {
 // A trace that draws a line is one series per feature → dim it wholesale (line +
 // its markers together). Pure marker traces dim per point.
 const isLine = (t: Trace): boolean => typeof t.mode === 'string' && t.mode.includes('lines')
+// A bar trace carries no overlay (a bar is its own emphasis), so it dims PER BAR: the active bars
+// keep their colour, the rest fade.
+const isBar = (t: Trace): boolean => (t as { type?: string }).type === 'bar'
 
 /** Snapshot each trace's configured opacity BEFORE any restyle. Plotly reuses the
  *  passed trace objects as gd.data and restyle mutates them in place, so reading the
@@ -367,7 +413,8 @@ function snapshotBases(data: unknown[]): BaseOpacity[] {
     // base (restyle would otherwise treat an array as a per-trace value list). Views that
     // want per-point emphasis use marker.color/size instead, which this layer never touches.
     const mo = t.marker?.opacity
-    return { marker: typeof mo === 'number' ? mo : 0.85, line: t.opacity ?? 1 }
+    // A bar draws opaque by default (a marker trace's resting look is 0.85).
+    return { marker: typeof mo === 'number' ? mo : isBar(t) ? 1 : 0.85, line: t.opacity ?? 1 }
   })
 }
 
@@ -408,13 +455,20 @@ function buildOverlay(data: unknown[], active: Set<string>, emph: ResolvedHighli
     if (
       !ids ||
       isLine(t) ||
+      // A bar is its own emphasis (it dims/brightens in place); a dot drawn over it reads as a
+      // stray marker.
+      (t as { type?: string }).type === 'bar' ||
       (t as { __oeNoOverlay?: boolean }).__oeNoOverlay ||
       !Array.isArray(t.x) ||
       !Array.isArray(t.y)
     )
       continue
     const mk = t.marker
-    const numeric = Array.isArray(mk?.color) && typeof (mk.color as unknown[])[0] === 'number'
+    const scaled = Array.isArray(mk?.color) && typeof (mk.color as unknown[])[0] === 'number'
+    // A scale of explicit stops → each point's own colour, resolved on ITS trace's scale; only a
+    // named scale falls back to carrying the (first such trace's) scale on the overlay.
+    const colorer = scaled && mk ? scaleColorer(mk) : null
+    const numeric = scaled && !colorer
     if (numeric && mk && !cmap) cmap = colorScaleOf(mk)
     const em = emphOf(t, emph)
     ids.forEach((id, k) => {
@@ -432,7 +486,9 @@ function buildOverlay(data: unknown[], active: Set<string>, emph: ResolvedHighli
         // …but COLOURED from the LAST trace drawn there: Plotly paints later traces on top, so
         // that is the colour the eye sees (e.g. a view's pinned-genes trace in a geneset's colour
         // over the effect-coloured cloud).
-        if (!numeric) color[prev] = at(mk?.color as string | string[], k, color[prev] as string)
+        if (colorer) color[prev] = colorer(at(mk?.color as number[], k, 0))
+        else if (!numeric)
+          color[prev] = at(mk?.color as string | string[], k, color[prev] as string)
         return
       }
       seen.set(posKey, x.length)
@@ -446,7 +502,11 @@ function buildOverlay(data: unknown[], active: Set<string>, emph: ResolvedHighli
       // Numeric → keep the raw value so the overlay's colorscale maps it; else the
       // point's own colour string.
       color.push(
-        numeric ? at(mk?.color as number[], k, 0) : at(mk?.color as string | string[], k, '#888')
+        colorer
+          ? colorer(at(mk?.color as number[], k, 0))
+          : numeric
+            ? at(mk?.color as number[], k, 0)
+            : at(mk?.color as string | string[], k, '#888')
       )
       // Carry the point's own label so the emphasised gene is named in place — this is
       // what surfaces a name on hover in the scatter/etc. A trace can opt out (bubble,
@@ -455,7 +515,7 @@ function buildOverlay(data: unknown[], active: Set<string>, emph: ResolvedHighli
       text.push(
         !em.label || (t as { __oeNoLabel?: boolean }).__oeNoLabel
           ? ''
-          : at(t.text as string | string[] | undefined, k, '')
+          : truncateLabel(at(t.text as string | string[] | undefined, k, ''))
       )
     })
   }
@@ -511,13 +571,24 @@ function renderedSize(marker: Trace['marker'] | undefined, k: number): number {
  *  opaque by the overlay on top, so a trace's state depends only on WHETHER something is selected —
  *  moving the hover from one gene to the next changes nothing but the overlay. */
 function traceSigs(data: unknown[], active: Set<string>, dimAll: boolean): string[] {
+  // Traces flagged __oeOwnIds carry ids of their own (an enrichment plot's terms, not genes): they
+  // react only when the active set holds one of THEIRS — a gene selected elsewhere, which none of
+  // them can match, would otherwise dim the whole plot.
+  const ownTouched = data.some((raw) => {
+    const t = raw as Trace & { __oeOwnIds?: boolean }
+    return t.__oeOwnIds && (traceIds(t) ?? []).some((id) => active.has(id))
+  })
   return data.map((raw) => {
     const t = raw as Trace
     const ids = traceIds(t)
     if (!ids || (t as { __oeNoOverlay?: boolean }).__oeNoOverlay) return ''
     if (dimAll) return 'gdim'
     if (active.size === 0) return 'off'
+    if ((t as { __oeOwnIds?: boolean }).__oeOwnIds && !ownTouched) return 'off'
     if (isLine(t)) return ids.some((id) => active.has(id)) ? 'on' : 'dim'
+    // A bar trace's state is which of its bars are active (see isBar), so a hover moving from one
+    // bar to the next restyles it.
+    if (isBar(t)) return `bar:${ids.flatMap((id, k) => (active.has(id) ? [k] : [])).join(',')}`
     return ids.length && ids.every((id) => active.has(id)) ? 'on' : 'dim'
   })
 }
@@ -527,6 +598,19 @@ function traceSigs(data: unknown[], active: Set<string>, dimAll: boolean): strin
  *  translucent. A highlighted LINE trace keeps its resting opacity: 'on' there only means "not
  *  dimmed" (a line trace can be a merged multi-series background at 0.22 holding every gene, and
  *  the emphasised series' own look — width, colour — is the view's), so it must not light up. */
+/** A trace's opacity in its highlight state: a scalar, or — for a bar trace with something active
+ *  — one per bar (the active ones fully opaque, the rest dimmed). */
+function traceOpacity(
+  t: Trace,
+  sig: string,
+  active: Set<string>,
+  base: BaseOpacity,
+  dim: number
+): number | number[] {
+  if (sig.startsWith('bar:')) return (traceIds(t) ?? []).map((id) => (active.has(id) ? 1 : dim))
+  return opacityFor(sig, isLine(t), base, dim)
+}
+
 function opacityFor(sig: string, line: boolean, base: BaseOpacity, dim: number): number {
   if (sig === 'gdim') return GUIDE_DIM
   if (sig === 'off') return line ? base.line : base.marker
@@ -610,9 +694,10 @@ function decorateData(
   const traces = data.map((raw, i) => {
     const t = raw as Trace
     if (!sigs[i]) return raw
-    const op = opacityFor(
+    const op = traceOpacity(
+      t,
       sigs[i],
-      isLine(t),
+      active,
       bases[i] ?? { marker: 0.85, line: 1 },
       emphOf(t, emph).dim
     )
@@ -622,6 +707,28 @@ function decorateData(
   })
   traces.push(buildOverlay(data, dimAll ? new Set() : active, emph))
   return { traces, sigs }
+}
+
+/** After a zoom / pan / reset, show again any point Plotly left hidden that's back in view.
+ *  While a plot carries an unclipped trace (the selection overlay, `cliponaxis: false`), Plotly
+ *  hides the points outside the zoomed range with `display="none"` — on every trace in the
+ *  subplot, not just that one — and after zooming back out some stayed hidden: only the genes
+ *  seen while zoomed came back, until a full redraw (a hover elsewhere moving this plot's overlay)
+ *  restored the rest. This re-checks every hidden point against the live ranges and unhides the
+ *  ones now inside. Deferred a frame so it runs after Plotly's own redraw. */
+function repaintPoints(el: PlotlyGraphDiv): void {
+  requestAnimationFrame(() => {
+    const fl = (el as unknown as { _fullLayout?: Record<string, unknown> })._fullLayout
+    const xr = (fl?.xaxis as { range?: [number, number] } | undefined)?.range
+    const yr = (fl?.yaxis as { range?: [number, number] } | undefined)?.range
+    if (!xr || !yr) return
+    const inside = (v: unknown, r: [number, number]): boolean =>
+      typeof v === 'number' && v >= Math.min(r[0], r[1]) && v <= Math.max(r[0], r[1])
+    el.querySelectorAll('.scatterlayer path.point[display="none"]').forEach((node) => {
+      const d = (node as unknown as { __data__?: { x?: unknown; y?: unknown } }).__data__
+      if (d && inside(d.x, xr) && inside(d.y, yr)) node.removeAttribute('display')
+    })
+  })
 }
 
 /**
@@ -661,13 +768,19 @@ function applyHighlight(
     data.forEach((raw, i) => {
       const t = raw as Trace
       if (!sigs[i] || sigs[i] === applied.current[i]) return
-      const op = opacityFor(
+      const op = traceOpacity(
+        t,
         sigs[i],
-        isLine(t),
+        active,
         bases[i] ?? { marker: 0.85, line: 1 },
         emphOf(t, emph).dim
       )
-      void Plotly.restyle(el, { [isLine(t) ? 'opacity' : 'marker.opacity']: op }, [i])
+      // A per-bar array goes in a one-trace wrapper (a bare array would read as one value per trace).
+      void Plotly.restyle(
+        el,
+        { [isLine(t) ? 'opacity' : 'marker.opacity']: Array.isArray(op) ? [op] : op },
+        [i]
+      )
     })
     applied.current = sigs
   }
@@ -804,8 +917,11 @@ function placeLabelAnnotations(
     fs: number
     r: number
   }> = []
-  for (const lab of labels) {
-    if (!lab.text || !inX(lab.x) || !inY(lab.y)) continue
+  for (const raw of labels) {
+    if (!raw.text || !inX(raw.x) || !inY(raw.y)) continue
+    // The plots' gene-name cap (plotAxes LABEL_MAX), so a protein group's joined names or a long
+    // description can't sprawl over the cloud; the full name stays in the hover.
+    const lab = { ...raw, text: truncateLabel(raw.text) }
     const fs = lab.fontSize ?? FS
     const CHAR = fs * 0.58 // rough advance width per character at this font size
     items.push({
@@ -1090,7 +1206,9 @@ export function PlotlyChart({
   boldTicks,
   onGraphMount,
   guides,
-  onGuide
+  onGuide,
+  onAnnotationClick,
+  modeBar = true
 }: PlotlyChartProps) {
   const ref = useRef<HTMLDivElement>(null)
   // The tile's per-axis overrides (title, fonts, range, ticks, …), merged over the view's layout
@@ -1172,6 +1290,8 @@ export function PlotlyChart({
   // latest without rebinding; `boldSig` is the last-applied bold pattern to skip redundant relayouts.
   const boldTicksRef = useRef(boldTicks)
   const boldSigRef = useRef('')
+  // The annotation-click handler, read by the once-bound Plotly listener.
+  const annotationClickRef = useRef(onAnnotationClick)
   // Bespoke imperative interaction (network neighbour highlight): kept in a ref so re-mounts see the
   // latest; `mountCleanup` runs the previous mount's teardown before re-mounting / on unmount.
   const onGraphMountRef = useRef(onGraphMount)
@@ -1351,7 +1471,7 @@ export function PlotlyChart({
         // disabled so the re-render doesn't reset hovermode and let a point tooltip flash back.
         ...(hoverSuppressedRef.current ? { hovermode: false } : {})
       },
-      { responsive: true, displaylogo: false }
+      { responsive: true, displaylogo: false, ...(modeBar ? null : { displayModeBar: false }) }
     )
       .then(() => {
         if (cancelled) return
@@ -1377,15 +1497,35 @@ export function PlotlyChart({
               ;(d as SVGElement & { style: CSSStyleDeclaration }).style.cursor = cursor
             })
           }
+          // The hover this chart set, until cleared. A redraw while hovering (a plot that re-texts its
+          // labels on hover — the enrichment terms) drops Plotly's hovered point WITHOUT a
+          // plotly_unhover, so if the cursor has already moved off, nothing would clear the hover and
+          // the rest of the plot stayed dimmed. A native mousemove checks Plotly's hover state after
+          // its own handling and clears an orphaned hover.
+          let ownHover: string | null = null
+          let moveRaf = 0
+          el.addEventListener('mousemove', () => {
+            if (!ownHover) return
+            cancelAnimationFrame(moveRaf)
+            moveRaf = requestAnimationFrame(() => {
+              const hd = (el as unknown as { _hoverdata?: unknown[] })._hoverdata
+              if (!ownHover || (hd && hd.length)) return
+              if (useSelection.getState().hoverId === ownHover) useSelection.getState().clearHover()
+              ownHover = null
+              setDragCursor('')
+            })
+          })
           el.on('plotly_hover', (e) => {
             if (overGuide) return // over a threshold line — don't highlight the point beneath it
             const id = idAt(e)
             if (id) {
+              ownHover = id
               useSelection.getState().setHover(id)
               setDragCursor('pointer')
             }
           })
           el.on('plotly_unhover', () => {
+            ownHover = null
             useSelection.getState().clearHover()
             setDragCursor('')
           })
@@ -1495,6 +1635,21 @@ export function PlotlyChart({
           const legendEvents = el as unknown as {
             on: (ev: string, cb: (e: { curveNumber: number }) => boolean | void) => void
           }
+          // A clickable annotation (captureevents) → the view's handler, by the annotation's name.
+          ;(
+            el as unknown as {
+              on: (
+                ev: string,
+                cb: (e: {
+                  fullAnnotation?: { name?: string }
+                  annotation?: { name?: string }
+                }) => void
+              ) => void
+            }
+          ).on('plotly_clickannotation', (e) => {
+            const name = e.fullAnnotation?.name ?? e.annotation?.name
+            if (name) annotationClickRef.current?.(name)
+          })
           legendEvents.on('plotly_legendclick', (e) => {
             const ids = groupIds(e.curveNumber)
             if (!ids) return true // non-gene legend → default (show/hide)
@@ -1516,6 +1671,12 @@ export function PlotlyChart({
             el as unknown as { on: (ev: string, cb: (ed: Record<string, unknown>) => void) => void }
           ).on('plotly_relayout', (ed) => {
             if (Object.keys(ed ?? {}).some((k) => k.includes('range'))) {
+              // A zoom box (or the reset button) can start with the cursor on a point, and Plotly
+              // then never sends that point's unhover — the hover stuck, every other gene stayed
+              // faded and its label lingered, until a hover elsewhere replaced it. A new view range
+              // always ends any hover.
+              if (useSelection.getState().hoverId) useSelection.getState().clearHover()
+              repaintPoints(el)
               scheduleLabels()
               rebindDom() // ticks (and legend) re-render on zoom/pan → reattach hover listeners
               publishRef.current()
@@ -1946,7 +2107,7 @@ export function PlotlyChart({
     return () => {
       cancelled = true
     }
-  }, [data, layout, axes, emphasis, scheduleLabels, rebindDom, reserveBoldMargin])
+  }, [data, layout, axes, emphasis, scheduleLabels, rebindDom, reserveBoldMargin, modeBar])
 
   // Drive the highlight from the selection store imperatively: subscribe once, restyle the
   // affected traces on change (rAF-coalesced so a mouse sweep is one redraw), WITHOUT
@@ -2110,6 +2271,9 @@ export function PlotlyChart({
     if (!reactPendingRef.current) scheduleLabels()
   }, [sortedLabels, labelColor, labelsAbove, scheduleLabels])
 
+  useEffect(() => {
+    annotationClickRef.current = onAnnotationClick
+  }, [onAnnotationClick])
   // Keep the (once-bound) selection handler's view of the bold-tick config current.
   useEffect(() => {
     boldTicksRef.current = boldTicks

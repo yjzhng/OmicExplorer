@@ -1,12 +1,24 @@
 import { useEffect, useMemo, useRef } from 'react'
 
-import type { ThresholdConfig, VolcanoData, VolcanoPoint } from '../engine'
-import { DEFAULT_EFFECT_LABELS, type EffectLabels, type PointStyle } from '../graph/types'
+import {
+  curveCuratorBoundary,
+  samBoundary,
+  SAM_S0,
+  type ThresholdConfig,
+  type VolcanoData,
+  type VolcanoPoint
+} from '../engine'
+import {
+  DEFAULT_EFFECT_LABELS,
+  type EffectColors,
+  type EffectLabels,
+  type PointStyle
+} from '../graph/types'
 import { useGraph } from '../graph/store'
 import { PlotlyChart, type GuideDrag } from './PlotlyChart'
 import { legendOn, resolveGroups, resolveHighlight } from './pointStyle'
-import { axisBase, guideLine, PALETTES, plotBase } from './theme'
-import { matchingGeneSet, useSelection } from './useSelection'
+import { axisBase, EFFECT_COLOR, guideLine, PALETTES, plotBase } from './theme'
+import { useSelectedGeneSets } from './useSelection'
 import { useUiTheme } from './useUiTheme'
 
 type Eff = 'up' | 'down' | 'none'
@@ -22,14 +34,28 @@ export function VolcanoView({
   onThresholdChange,
   labelTop = 0,
   effectLabels = DEFAULT_EFFECT_LABELS,
-  style
+  effectColors,
+  style,
+  curveNs,
+  samCut,
+  ccAlpha
 }: {
+  /** CurveCurator called by FDR: the effective α the target settled on — the boundary's shape and
+   *  cutoff (none when nothing was called) */
+  ccAlpha?: number
+  /** SAM permutation FDR: the |d| cutoff it settled on and the pooled t's degrees of freedom —
+   *  draws its boundary (none when nothing was called) */
+  samCut?: { c: number; df: number }
+  /** a curve fit's typical point count (control included) — draws CurveCurator's boundary */
+  curveNs?: number[]
   volcano: VolcanoData
   title?: string
   /** per-tile marker / highlight / legend look (unset fields use the volcano defaults) */
   style?: PointStyle
   /** display names for the down/up classes (from the Compare config) */
   effectLabels?: EffectLabels
+  /** the upstream Compare's effect colours — what each group's automatic colour follows */
+  effectColors?: EffectColors
   /** label only the top-N most significant genes; 0 offers every significant gene and lets the
    *  placement layer keep as many as fit */
   labelTop?: number
@@ -41,21 +67,14 @@ export function VolcanoView({
   onThresholdChange?: (partial: Partial<ThresholdConfig>) => void
 }) {
   const mode = useUiTheme((s) => s.mode)
-  // The linked selection, read only to tell whether it IS a saved geneset (selIds below) — not
-  // hoverId, and not per click: an ordinary pick is drawn by PlotlyChart's overlay.
-  const pinnedIds = useSelection((s) => s.pinnedIds)
-  // A selection that IS a saved geneset gets a legend entry under that geneset's name; an ad-hoc
-  // pick gets none (the overlay already marks and names each pinned gene).
+  // The point counts as a stable key (a fresh array each render would rebuild the plot).
+  const nsKey = curveNs?.join(',')
+  // The selected saved genesets (each its own trace: legend entry, and its colour if set). An
+  // ad-hoc pick gets none — PlotlyChart's shared overlay marks and names each pinned gene, restyled
+  // in place — and the sets stay stable across clicks that don't change them, so a click-select
+  // elsewhere doesn't rebuild this plot (a full redraw).
   const geneSets = useGraph((s) => s.geneSets)
-  const selSet = matchingGeneSet(pinnedIds, geneSets)
-  const selName = selSet?.name ?? null
-  // A geneset's own colour (set in the gene selector) replaces the effect colours for its points.
-  const selColor = selSet?.color ?? null
-  // The selection trace exists only for a saved geneset (its legend entry and colour), so the plot's
-  // data follows the MATCHED geneset, not every click: an ad-hoc pick is marked by PlotlyChart's
-  // shared overlay alone, restyled in place. Keyed on pinnedIds directly, each click-select anywhere
-  // in the app rebuilt this plot from scratch (a full redraw — the lag after a click).
-  const selIds = useMemo(() => (selSet ? new Set(selSet.genes.map((g) => g.id)) : null), [selSet])
+  const selSets = useSelectedGeneSets(geneSets)
   const yLabel = volcano.statType === 'pP' ? '−log P-value' : '−log Q-value'
   // Resolved once per config change (stable objects, so PlotlyChart doesn't re-render per hover).
   // Memo inputs are kept PRIMITIVE / stable: the parent hands a fresh `effectLabels` object and
@@ -63,9 +82,19 @@ export function VolcanoView({
   // (a full Plotly redraw) on each click anywhere in the app.
   const upName = effectLabels.up
   const downName = effectLabels.down
+  const noneName = effectLabels.none
+  const upColor = effectColors?.up ?? EFFECT_COLOR.up
+  const downColor = effectColors?.down ?? EFFECT_COLOR.down
+  const noneColor = effectColors?.none ?? EFFECT_COLOR.none
   const groups = useMemo(
-    () => resolveGroups(style, 'volcano', { up: upName, down: downName }),
-    [style, upName, downName]
+    () =>
+      resolveGroups(
+        style,
+        'volcano',
+        { up: upName, down: downName, none: noneName },
+        { up: upColor, down: downColor, none: noneColor }
+      ),
+    [style, upName, downName, noneName, upColor, downColor, noneColor]
   )
   const onThresholdRef = useRef(onThresholdChange)
   useEffect(() => {
@@ -111,17 +140,17 @@ export function VolcanoView({
         }
       }
     })
-    // A selection that is a saved geneset → its own trace (fully opaque, its legend entry and colour);
-    // any pinned gene's emphasis — enlarged, ringed, labelled — is PlotlyChart's shared overlay.
-    const sel = selIds ? volcano.points.filter((pt) => selIds.has(pt.uniqID)) : []
-    if (sel.length) {
+    // Each selected geneset → its own trace (fully opaque, its legend entry and colour); any pinned
+    // gene's emphasis — enlarged, ringed, labelled — is PlotlyChart's shared overlay.
+    for (const set of selSets) {
+      const sel = volcano.points.filter((pt) => set.ids.has(pt.uniqID))
+      if (!sel.length) continue
       traces.push({
         type: 'scatter',
         // Markers only — the pinned gene's LABEL comes from the shared selection overlay (which
         // labels each active gene exactly once); `text` here feeds the tooltip's %{text} only.
         mode: 'markers',
-        name: selName ? `${selName} (${sel.length})` : `Selected (${sel.length})`,
-        showlegend: selName !== null,
+        name: `${set.name} (${sel.length})`,
         x: sel.map((pt) => pt.x),
         y: sel.map((pt) => pt.y),
         text: sel.map((pt) => pt.label),
@@ -130,7 +159,7 @@ export function VolcanoView({
         // Same size as the cloud's dots: this trace exists for its (geneset) legend entry and to keep
         // the pinned genes fully opaque; the enlarged, ringed emphasis is PlotlyChart's shared overlay.
         marker: {
-          color: selColor ?? sel.map((pt) => look(pt.effect).color),
+          color: set.color ?? sel.map((pt) => look(pt.effect).color),
           size: sel.map((pt) => look(pt.effect).size),
           opacity: 1,
           line: {
@@ -149,13 +178,19 @@ export function VolcanoView({
       y1,
       line: guideLine(p)
     })
-    const yMax = Math.max(1, ...volcano.points.map((pt) => pt.y))
+    // A loop, not Math.max(...points): spreading every gene as an argument can overflow the stack.
+    let yMax = 1
+    for (const pt of volcano.points) yMax = Math.max(yMax, pt.y)
     // Pin explicit axis ranges (with padding) so the range never re-pads on hover — otherwise
     // the enlarged overlay marker on an edge point shifts the whole cloud, sliding the point
     // out from under the cursor and bouncing between hover/unhover.
-    const xs = volcano.points.map((pt) => pt.x)
-    const xLo = Math.min(volcano.fcLow, 0, ...xs)
-    const xHi = Math.max(volcano.fcHigh, 0, ...xs)
+    // Loops, not Math.min(...xs): one argument per gene can overflow the stack.
+    let xLo = Math.min(volcano.fcLow, 0)
+    let xHi = Math.max(volcano.fcHigh, 0)
+    for (const pt of volcano.points) {
+      xLo = Math.min(xLo, pt.x)
+      xHi = Math.max(xHi, pt.x)
+    }
     const xPad = (xHi - xLo || 2) * 0.05
 
     // Guide geometry follows the threshold TYPE. Non-linear (SAM): a hyperbola boundary
@@ -266,6 +301,77 @@ export function VolcanoView({
       // `b` has no separate handle — the whole curve is grabbable (see the 'curve' guide below).
       sam = { statMin, asym, asymL, s0: s0v, s0L, b, samPath }
     }
+    // CurveCurator's relevance boundary (a curve fit): fixed by α and the fold-change limits, for
+    // curves of `curveN` points — drawn, not dragged (both are set in the Compare's panel).
+    // SAM's boundary likewise: the |d| cutoff its permutation FDR settled on, for genes with the
+    // usual degrees of freedom — set by the FDR and s0 in the panel, not dragged.
+    const isCurveCurator = threshold?.type === 'curvecurator'
+    const isSamFdr = threshold?.type === 'sam_fdr'
+    const ccShapes: Record<string, unknown>[] = []
+    const samS0 = threshold?.samS0 ?? SAM_S0
+    // The required −log₁₀ p at |log₂FC| = x, and where the boundary's wall sits.
+    // A curve's boundary depends on its point count, so CurveCurator's is drawn for each count
+    // common in the comparison (the most common solid, others fainter) — a curve missing a dose
+    // is judged by its own.
+    const ns = nsKey ? nsKey.split(',').map(Number) : []
+    const ccAlphaUsed =
+      threshold?.ccCallBy === 'fdr'
+        ? ccAlpha
+        : threshold
+          ? Math.pow(10, -threshold.statMin)
+          : undefined
+    const needs: Array<{
+      at: (x: number, lim: number) => number
+      wallUp: number
+      wallDown: number
+      hardWall: boolean
+      faint: boolean
+    }> =
+      isCurveCurator && threshold && ccAlphaUsed != null
+        ? ns.map((n, i) => ({
+            at: (x: number, lim: number) => curveCuratorBoundary(x, n, lim, ccAlphaUsed),
+            wallUp: threshold.fcHigh,
+            wallDown: -threshold.fcLow,
+            // CurveCurator also requires |log₂FC| ≥ the limit outright: a vertical wall there,
+            // which shows whenever the score's own curve has flattened before reaching it.
+            hardWall: true,
+            faint: i > 0
+          }))
+        : isSamFdr && samCut
+          ? [
+              {
+                at: (x: number) => samBoundary(x, samCut.c, samS0, samCut.df),
+                wallUp: samCut.c * samS0,
+                wallDown: samCut.c * samS0,
+                hardWall: false,
+                faint: false
+              }
+            ]
+          : []
+    for (const need of needs) {
+      const yCap = yMax * 1.08 * 2
+      const branch = (lim: number, xEnd: number): Array<[number, number]> => {
+        const pts: Array<[number, number]> = []
+        const N = 140
+        for (let i = 0; i < N; i++) {
+          const x = lim + ((xEnd - lim) * i) / (N - 1)
+          const y = need.at(x, lim)
+          if (Number.isFinite(y)) pts.push([x, Math.min(y, yCap)])
+        }
+        // The fold-change wall: straight down from the top to where the curve starts at the limit.
+        if (need.hardWall && pts.length && pts[0][0] === lim && pts[0][1] < yCap)
+          pts.unshift([lim, yCap])
+        return pts
+      }
+      const toPath = (pts: Array<[number, number]>): string =>
+        pts.map(([x, y], i) => `${i ? 'L' : 'M'}${x},${y}`).join('')
+      const right = branch(need.wallUp, xHi + xPad)
+      const left = branch(need.wallDown, -(xLo - xPad)).map(([x, y]) => [-x, y] as [number, number])
+      const look = need.faint ? { ...guideLine(p), width: 1 } : guideLine(p)
+      const extra = need.faint ? { opacity: 0.45 } : null
+      if (right.length) ccShapes.push({ type: 'path', path: toPath(right), line: look, ...extra })
+      if (left.length) ccShapes.push({ type: 'path', path: toPath(left), line: look, ...extra })
+    }
 
     const lay: Record<string, unknown> = {
       ...plotBase(p),
@@ -295,24 +401,36 @@ export function VolcanoView({
       // stat cutoff as two horizontals ONLY outside ±fc (no line across the middle, where nothing is
       // significant). Order: [0]=fcLow, [1]=fcHigh, [2]=stat-left, [3]=stat-right.
       // SAM → [0]=curve, [1]=P asymptote, [2/3]=FC asymptotes.
-      shapes: isSam
-        ? samShapes
-        : [
-            line(volcano.fcLow, volcano.fcLow, volcano.statMin, yMax),
-            line(volcano.fcHigh, volcano.fcHigh, volcano.statMin, yMax),
-            line(xLo - xPad, volcano.fcLow, volcano.statMin, volcano.statMin),
-            line(volcano.fcHigh, xHi + xPad, volcano.statMin, volcano.statMin)
-          ]
+      shapes:
+        isCurveCurator || isSamFdr
+          ? ccShapes
+          : isSam
+            ? samShapes
+            : [
+                line(volcano.fcLow, volcano.fcLow, volcano.statMin, yMax),
+                line(volcano.fcHigh, volcano.fcHigh, volcano.statMin, yMax),
+                line(xLo - xPad, volcano.fcLow, volcano.statMin, volcano.statMin),
+                line(volcano.fcHigh, xHi + xPad, volcano.statMin, volcano.statMin)
+              ]
     }
     // Collision-managed labels for the genes of every group whose label switch is on (by default
-    // the significant ones), most significant first. PlotlyChart itself leaves out any pinned gene
-    // (the selection overlay names it).
-    const ranked = volcano.points.filter((pt) => look(pt.effect).label).sort((a, b) => b.y - a.y)
-    const labels = (labelTop > 0 ? ranked.slice(0, labelTop) : ranked).map((pt) => ({
+    // the significant ones), ranked by Manhattan distance from the origin — fold change and
+    // significance together, each scaled to its axis' extent so neither unit dominates (a gene far
+    // out on either axis, or moderately out on both, ranks high). The ranking runs before
+    // PlotlyChart's crowding gate and placement, which keep the highest-ranked that fit; it also
+    // decides what the label cap keeps. PlotlyChart leaves out any pinned gene (the selection
+    // overlay names it).
+    const xSpan = Math.max(Math.abs(xLo), Math.abs(xHi)) || 1
+    const manhattan = (pt: { x: number; y: number }): number => Math.abs(pt.x) / xSpan + pt.y / yMax
+    const ranked = volcano.points
+      .filter((pt) => look(pt.effect).label)
+      .map((pt) => ({ pt, d: manhattan(pt) }))
+      .sort((a, b) => b.d - a.d)
+    const labels = (labelTop > 0 ? ranked.slice(0, labelTop) : ranked).map(({ pt, d }) => ({
       x: pt.x,
       y: pt.y,
       text: pt.label,
-      priority: pt.y,
+      priority: d,
       id: pt.uniqID
     }))
     // A bracket CORNER (±fc, statMin) is a 2-D handle adjusting both fold change and stat at once:
@@ -350,7 +468,7 @@ export function VolcanoView({
       `${asymmetric ? (mx < 0 ? 'log₂FC ≤ −' : 'log₂FC ≥ ') : '|log₂FC| ≥ '}${Math.abs(mx).toFixed(2)}, ${yLabel} ≥ ${Math.max(0, my).toFixed(2)}`
     // Draggable guides (only when editing is wired). Shape indices match the `shapes` order above.
     const guides: GuideDrag[] | undefined =
-      !editable || (isSam && !sam)
+      !editable || isCurveCurator || isSamFdr || (isSam && !sam)
         ? undefined
         : isSam && sam
           ? [
@@ -493,15 +611,16 @@ export function VolcanoView({
     title,
     yLabel,
     mode,
-    selIds,
-    selName,
-    selColor,
+    selSets,
     threshold,
     editable,
     labelTop,
     groups,
     showLegend,
-    emphasis.label
+    emphasis.label,
+    nsKey,
+    samCut,
+    ccAlpha
   ])
 
   // Route a dragged guide's new value to the right threshold field (called once, on release).

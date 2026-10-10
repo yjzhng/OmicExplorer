@@ -5,10 +5,11 @@
  *  so a plot is configurable from either view. Everything applies live.
  *  Portalled to <body> because a dashboard tile sits inside react-grid-layout's transformed
  *  item, where a position:fixed panel would otherwise be offset instead of viewport-centred. */
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { ReactFlowProvider } from '@xyflow/react'
 
+import { ApplyStageContext, type ApplyStage } from '../graph/applyStage'
 import { PlotConfig } from '../graph/NodeConfigPanel'
 import { plotLabel } from '../graph/registry'
 import { useGraph } from '../graph/store'
@@ -179,6 +180,23 @@ export function PanelSettingsDialog({
           return n + kids.filter((c) => c.kind === kind && c.id !== selfId).length
         }, 0)
   )
+  // Edits that need a re-run (an upstream Compare's statistic) wait here for Apply; Close drops
+  // them. Everything else lands as it's made.
+  const staged = useRef(new Map<string, () => void>())
+  const stage = useMemo<ApplyStage>(
+    () => ({
+      stage: (key, action) => {
+        if (action) staged.current.set(key, action)
+        else staged.current.delete(key)
+      }
+    }),
+    []
+  )
+  const apply = (): void => {
+    for (const action of staged.current.values()) action()
+    staged.current.clear()
+    onClose()
+  }
   return (
     <TileDialog
       title={`Settings · ${title}`}
@@ -187,7 +205,8 @@ export function PanelSettingsDialog({
       onClose={onClose}
       footer={
         <>
-          {/* Edits land as they're made, so "Apply" only confirms and closes; "Apply to all"
+          {/* Edits land as they're made, except those that need a re-run (held until "Apply",
+              which then re-runs them); "Apply to all"
               copies these settings onto every other plot of the same kind — a write the user can't
               otherwise see happen (those tiles are usually off-screen), so it answers with a tick. */}
           {plotConfig && (
@@ -208,8 +227,8 @@ export function PanelSettingsDialog({
           )}
           <button
             style={styles.btnPrimary}
-            onClick={onClose}
-            title="Close — changes are applied as you make them"
+            onClick={apply}
+            title="Apply — re-runs the Compare if its statistic changed; other changes are already live"
           >
             Apply
           </button>
@@ -252,15 +271,17 @@ export function PanelSettingsDialog({
         // The canvas panel's sections, verbatim. Its Selects read React Flow's zoom to scale
         // their dropdowns; a fresh provider here pins that to 1 (screen scale) outside the canvas.
         <ReactFlowProvider>
-          <div style={styles.plotConfig}>
-            <PlotConfig
-              kind={plotConfig.kind}
-              config={plotConfig.config}
-              update={plotConfig.update}
-              edgeNodeId={plotConfig.edgeNodeId}
-              axisDefaults={axisDefaults}
-            />
-          </div>
+          <ApplyStageContext.Provider value={stage}>
+            <div style={styles.plotConfig}>
+              <PlotConfig
+                kind={plotConfig.kind}
+                config={plotConfig.config}
+                update={plotConfig.update}
+                edgeNodeId={plotConfig.edgeNodeId}
+                axisDefaults={axisDefaults}
+              />
+            </div>
+          </ApplyStageContext.Provider>
         </ReactFlowProvider>
       )}
     </TileDialog>

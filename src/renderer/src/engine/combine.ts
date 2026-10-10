@@ -45,6 +45,8 @@ export function combineStandardize(stds: StandardizeResult[]): StandardizeResult
   // presented on the first input's scale.
   return {
     rows,
+    // Pooled like the rows; only when every input kept its samples (else the shape reads rows).
+    ...(stds.every((s) => s.samples) ? { samples: stds.flatMap((s) => s.samples!) } : {}),
     displayMap,
     annotationMap,
     keggCategories,

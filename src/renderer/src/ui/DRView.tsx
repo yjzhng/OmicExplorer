@@ -1,6 +1,8 @@
 import { useMemo } from 'react'
 
 import type { DRData, DRSeries } from '../engine'
+import { drLook, type DRLook } from '../graph/types'
+import { AUTO } from './ColorPicker'
 import { PlotlyChart } from './PlotlyChart'
 import { truncateLabel } from './plotAxes'
 import { divergeColor } from './colormap'
@@ -20,8 +22,25 @@ import { useUiTheme } from './useUiTheme'
  */
 /** Fold-change axis title, naming the comparison ("log₂FC · A | B") when the rows share one. */
 const fcLabel = (dr: DRData): string => (dr.comparison ? `log₂FC · ${dr.comparison}` : 'log₂FC')
+/** A point's x as plotted: measured levels are categories (strings); fitted curves are numbers
+ *  on a log axis. */
+const xOf = (dr: DRData, x: number): string | number => (dr.continuous ? x : String(x))
+const xHover = (dr: DRData): string => (dr.continuous ? '%{x:.3g}' : '%{x}')
+const DEFAULT_LOOK = drLook({})
 
-export function DRView({ dr, title }: { dr: DRData; title?: string }) {
+export function DRView({
+  dr,
+  title,
+  axisLabel,
+  look = DEFAULT_LOOK
+}: {
+  dr: DRData
+  title?: string
+  /** the dose/time axis's title, with its unit (absent = the bare axis name) */
+  axisLabel?: string
+  /** the coloured curves' line look (the tile's settings; points/error are the focused view's) */
+  look?: DRLook
+}) {
   const mode = useUiTheme((s) => s.mode)
   const hoverId = useSelection((s) => s.hoverId)
   const pinnedIds = useSelection((s) => s.pinnedIds)
@@ -32,13 +51,13 @@ export function DRView({ dr, title }: { dr: DRData; title?: string }) {
   // so a hover only re-draws the handful of coloured curves on top.
   const background = useMemo(() => {
     const p = PALETTES[mode]
-    const bx: (string | null)[] = []
+    const bx: (string | number | null)[] = []
     const by: (number | null)[] = []
     const btext: (string | null)[] = []
     const bid: (string | null)[] = []
     for (const s of dr.series) {
       for (const pt of s.points) {
-        bx.push(String(pt.x))
+        bx.push(xOf(dr, pt.x))
         by.push(pt.y)
         btext.push(s.label)
         bid.push(s.uniqID) // per-point uniqID → hovering/clicking a background line drives selection
@@ -59,7 +78,7 @@ export function DRView({ dr, title }: { dr: DRData; title?: string }) {
       y: by,
       text: btext,
       customdata: bid,
-      hovertemplate: `%{text}<br>${dr.axis}=%{x}<br>${fcLabel(dr)}=%{y:.3f}<extra></extra>`,
+      hovertemplate: `%{text}<br>${dr.axis}=${xHover(dr)}<br>${fcLabel(dr)}=%{y:.3f}<extra></extra>`,
       line: { color: p.textMuted, width: 1 },
       opacity: 0.22,
       showlegend: false
@@ -84,13 +103,16 @@ export function DRView({ dr, title }: { dr: DRData; title?: string }) {
       mode: 'lines',
       // The legend name is capped in length; the hover keeps the full one.
       name: truncateLabel(s.label),
-      x: s.points.map((pt) => String(pt.x)),
+      x: s.points.map((pt) => xOf(dr, pt.x)),
       y: s.points.map((pt) => pt.y),
       customdata: s.points.map(() => s.uniqID),
-      hovertemplate: `${s.label}<br>${dr.axis}=%{x}<br>${fcLabel(dr)}=%{y:.3f}<extra></extra>`,
+      hovertemplate: `${s.label}<br>${dr.axis}=${xHover(dr)}<br>${fcLabel(dr)}=%{y:.3f}<extra></extra>`,
       line: { color, width },
+      opacity: look.lineOpacity,
       showlegend
     })
+    // One colour for every curve when set, else the palette (top-N) / the diverging scale (extra).
+    const fixed = look.lineColor !== AUTO ? look.lineColor : null
 
     // Foreground: top-N differential genes, colored, with identity for linked highlight.
     // Clamp the colored count so a huge N can't re-explode the trace count.
@@ -101,17 +123,25 @@ export function DRView({ dr, title }: { dr: DRData; title?: string }) {
     // so it never duplicates its own legend item.
     const colored = top.map((s, i) => {
       const on = active.has(s.uniqID)
-      return line(s, CATEGORICAL[i % CATEGORICAL.length], on ? 4 : 2)
+      return line(
+        s,
+        fixed ?? CATEGORICAL[i % CATEGORICAL.length],
+        on ? look.lineWidth + 2 : look.lineWidth
+      )
     })
     // A hovered/pinned gene that ISN'T a top-N curve has no colour of its own (it lives in the grey
     // background), so draw it as an emphasis overlay — coloured by its peak |log₂FC| on the shared
     // diverging (down→up) scale (not a flat accent), so it matches the bubble/heatmap palette.
     const extra = dr.series.filter((s) => active.has(s.uniqID) && !topIds.has(s.uniqID))
-    const absMax = Math.max(1e-9, ...dr.series.flatMap((s) => s.points.map((pt) => Math.abs(pt.y))))
+    // A loop, not Math.max(...points): spreading every point as an argument overflows the stack
+    // once there are ~100k of them (fitted curves are sampled finely).
+    let absMax = 1e-9
+    for (const s of dr.series) for (const pt of s.points) absMax = Math.max(absMax, Math.abs(pt.y))
     const dcolor = divergeColor(absMax)
     const peak = (s: DRSeries): number =>
       s.points.reduce((best, pt) => (Math.abs(pt.y) > Math.abs(best) ? pt.y : best), 0)
-    for (const s of extra) colored.push(line(s, dcolor(peak(s)), 3.5, false))
+    for (const s of extra)
+      colored.push(line(s, fixed ?? dcolor(peak(s)), look.lineWidth + 1.5, false))
 
     const lay: Record<string, unknown> = {
       ...plotBase(p),
@@ -121,17 +151,20 @@ export function DRView({ dr, title }: { dr: DRData; title?: string }) {
       // Vertically centre the (right-side) legend rather than top-aligning it.
       legend: { yanchor: 'middle', y: 0.5 },
       title: title ? { text: title, font: { size: 13 } } : undefined,
-      xaxis: {
-        ...axisBase(p),
-        title: dr.axis,
-        type: 'category',
-        categoryorder: 'array',
-        categoryarray: cats
-      },
+      // Fitted curves run continuously over dose, on a log axis; measured levels are categories.
+      xaxis: dr.continuous
+        ? { ...axisBase(p), title: axisLabel ?? dr.axis, type: 'log', dtick: 1 }
+        : {
+            ...axisBase(p),
+            title: axisLabel ?? dr.axis,
+            type: 'category',
+            categoryorder: 'array',
+            categoryarray: cats
+          },
       yaxis: { ...axisBase(p), title: fcLabel(dr), zeroline: true }
     }
     return { data: [background, ...colored], layout: lay }
-  }, [dr, title, mode, hoverId, pinnedIds, background])
+  }, [dr, title, axisLabel, mode, hoverId, pinnedIds, background, look])
 
   return <PlotlyChart data={data} layout={layout} />
 }

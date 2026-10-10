@@ -2,6 +2,7 @@ import { useLayoutEffect, useMemo, useRef, useState } from 'react'
 
 import { condLabel, isNumericCond, metaValue, type ConditionKey, type HeatmapData } from '../engine'
 import { PlotlyChart } from './PlotlyChart'
+import { truncatedTicks } from './plotAxes'
 import { axisBase, CATEGORICAL, CATEGORICAL_ALT, PALETTES, plotBase } from './theme'
 import { useUiTheme } from './useUiTheme'
 
@@ -195,40 +196,54 @@ function buildTracks(
   return { trace, shapes }
 }
 
-/** Interactive heatmap of genes × samples (log₁₀ intensity). Portrait keeps genes down
- *  the y axis (samples across the top); landscape transposes so genes run across x. */
+/** Interactive heatmap of genes × samples, on the scale Clean data presents its values on (see
+ *  HeatmapTile). Portrait keeps genes down the y axis (samples across the top); landscape
+ *  transposes so genes run across x. */
 export function HeatmapView({
   heatmap,
   title,
-  orient = 'portrait'
+  orient = 'portrait',
+  valueLabel = 'log abundance',
+  condBar = true
 }: {
   heatmap: HeatmapData
   title?: string
   orient?: 'landscape' | 'portrait'
+  /** the colour bar's title — the value scale, e.g. "log₂ abundance" (see abundanceLabel) */
+  valueLabel?: string
+  /** draw the condition tracks along the samples (off: the heatmap takes their room) */
+  condBar?: boolean
 }) {
   const mode = useUiTheme((s) => s.mode)
   // Measure the tile so the condition-track band can be JUST tall enough for its row labels: each
   // track needs about one label's height or Plotly drops overlapping tick labels.
   const wrapRef = useRef<HTMLDivElement>(null)
   const [plotH, setPlotH] = useState(0)
+  // …and its width, for how many gene labels fit along a landscape x axis
+  const [plotW, setPlotW] = useState(0)
   useLayoutEffect(() => {
     const el = wrapRef.current
     if (!el) return
-    const ro = new ResizeObserver(() => setPlotH(el.clientHeight))
+    const ro = new ResizeObserver(() => {
+      setPlotH(el.clientHeight)
+      setPlotW(el.clientWidth)
+    })
     ro.observe(el)
     setPlotH(el.clientHeight)
+    setPlotW(el.clientWidth)
     return () => ro.disconnect()
   }, [])
 
   const { data, layout } = useMemo(() => {
     const p = PALETTES[mode]
     const landscape = orient === 'landscape'
-    const tracks = buildTracks(heatmap, landscape, p.panel)
+    const tracks = condBar ? buildTracks(heatmap, landscape, p.panel) : null
     // Reserve a band for the condition tracks. In portrait the tracks stack vertically, so size the
     // band to ~one label height per track (measured from the tile) — just tall enough that Plotly
     // doesn't drop overlapping row labels, no taller. Landscape lays them out horizontally where
     // labels angle and don't collide, so a modest fixed fraction suffices.
-    const nT = heatmap.conds.length
+    // No band (and no gap) while the condition bar is hidden — the heatmap takes the room.
+    const nT = tracks ? heatmap.conds.length : 0
     const PER_TRACK_PX = 16 // ~9px label + line spacing
     const areaH = plotH > 0 ? Math.max(plotH - 75 /* Plotly top+bottom margins */, 80) : 0
     const band =
@@ -241,6 +256,10 @@ export function HeatmapView({
             : Math.min(0.26, nT * 0.05)
     const gap = nT > 0 ? 0.028 : 0
     const mainEnd = 1 - band - gap
+    // Hover: "log=2.31" on a logged scale; a linear value's size varies too much for fixed decimals.
+    const logged = valueLabel.startsWith('log')
+    const valueKey = logged ? valueLabel.split(' ')[0] : 'value'
+    const zDigits = logged ? '2f' : '4~g'
     const traces: Array<Record<string, unknown>> = [
       {
         type: 'heatmap',
@@ -249,10 +268,13 @@ export function HeatmapView({
         x: landscape ? heatmap.y : heatmap.x,
         y: landscape ? heatmap.x : heatmap.y,
         colorscale: 'Viridis',
-        colorbar: { title: { text: 'log abundance', side: 'right' }, thickness: 12 },
+        colorbar: {
+          title: { text: valueLabel, side: 'right' },
+          thickness: 12
+        },
         hovertemplate: landscape
-          ? 'gene=%{x}<br>sample=%{y}<br>log=%{z:.2f}<extra></extra>'
-          : 'gene=%{y}<br>sample=%{x}<br>log=%{z:.2f}<extra></extra>'
+          ? `gene=%{x}<br>sample=%{y}<br>${valueKey}=%{z:.${zDigits}}<extra></extra>`
+          : `gene=%{y}<br>sample=%{x}<br>${valueKey}=%{z:.${zDigits}}<extra></extra>`
       }
     ]
     if (tracks) traces.push(tracks.trace)
@@ -261,6 +283,9 @@ export function HeatmapView({
       title: 'gene',
       automargin: true,
       tickfont: { size: 9 },
+      // Gene names cut short like every plot's (the full name is in the hover) — as many as fit
+      // along the axis.
+      ...truncatedTicks(heatmap.y, landscape ? plotW : plotH),
       // Angle the gene ticks only when they sit on the x axis (landscape).
       ...(landscape ? { tickangle: -45 } : {})
     }
@@ -302,7 +327,7 @@ export function HeatmapView({
       if (tracks) lay.yaxis2 = { ...trackAxis, domain: [mainEnd + gap, 1], anchor: 'x' }
     }
     return { data: traces, layout: lay }
-  }, [heatmap, title, orient, mode, plotH])
+  }, [heatmap, title, orient, mode, plotH, plotW, valueLabel, condBar])
 
   return (
     <div ref={wrapRef} style={{ width: '100%', height: '100%' }}>

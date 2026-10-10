@@ -25,6 +25,22 @@ export interface StatusInfo {
   color: string
   label: string
   pulse: boolean
+  /** complete: has results (a run step) or is ready to draw (a plot, a configured Load) */
+  ok?: boolean
+}
+
+/** A plot's status: its run lifecycle, where done means ready to view in the results; not run yet,
+ *  the reason it can't run (`block`) when there is one. */
+// eslint-disable-next-line react-refresh/only-export-components
+export function plotStatusInfo(
+  status: StepStatus,
+  error: string | undefined,
+  block: string | null
+): StatusInfo {
+  if (status === 'running') return runStatusInfo(status)
+  if (status === 'done') return { color: '#3fae5a', label: 'Ready to view', pulse: false, ok: true }
+  if (status === 'error') return { color: '#e5484d', label: error ?? 'Error', pulse: false }
+  return block ? { color: UI.textMuted, label: block, pulse: false } : runStatusInfo('idle')
 }
 
 /** Status shown for a runnable step from its run lifecycle. */
@@ -33,7 +49,7 @@ function runStatusInfo(status: StepStatus): StatusInfo {
     case 'running':
       return { color: '#e2b93b', label: 'Running…', pulse: true }
     case 'done':
-      return { color: '#3fae5a', label: 'Completed', pulse: false }
+      return { color: '#3fae5a', label: 'Completed', pulse: false, ok: true }
     case 'error':
       return { color: '#e5484d', label: 'Error', pulse: false }
     default:
@@ -48,9 +64,18 @@ function runStatusInfo(status: StepStatus): StatusInfo {
 // eslint-disable-next-line react-refresh/only-export-components
 export function useStepStatus(id: string, data: NodeData): StatusInfo {
   const spec = NODE_SPECS[data.kind]
-  const upId = useGraph((s) => (spec.hasRun ? undefined : s.upstreamId(id)))
+  const isPlot = spec.category === 'plotting'
+  const upId = useGraph((s) => (spec.hasRun && !isPlot ? undefined : s.upstreamId(id)))
   const facts = useUpstreamFacts(upId)
-  if (spec.hasRun) return runStatusInfo(data.status)
+  // The upstream step re-running: its previous result stays on show until the new one lands, so a
+  // plot drawn from it isn't "Ready" yet — it's about to change.
+  const upRunning = useGraph((s) => {
+    const n = upId ? s.nodes.find((x) => x.id === upId) : undefined
+    return !!n && n.type === 'step' && n.data.status === 'running'
+  })
+  if (spec.hasRun && !isPlot) return runStatusInfo(data.status)
+  if (upRunning && data.status === 'done')
+    return { color: '#e2b93b', label: 'Updating — upstream re-running', pulse: true }
   const block = ((): string | null => {
     if (data.kind === 'load') return unconfiguredLoad(data.config as LoadConfig)
     if (!upId) return 'Waiting for data'
@@ -62,12 +87,32 @@ export function useStepStatus(id: string, data: NodeData): StatusInfo {
       const why = unmetRequirement(k.kind, k.config, facts)
       if (why) return kinds.length > 1 ? `${plotLabel(k.kind, k.config)}: ${why}` : why
     }
-    if (!facts.result) return 'Waiting for data'
+    if (!facts.result) return 'Run the step it reads from first'
     return null
   })()
+  if (isPlot) return plotStatusInfo(data.status, data.error, block)
   return block
     ? { color: UI.textMuted, label: block, pulse: false }
-    : { color: '#3fae5a', label: 'Ready', pulse: false }
+    : { color: '#3fae5a', label: 'Ready', pulse: false, ok: true }
+}
+
+/** Why a plot (or a group's plots) can't run yet — no upstream, its step not run, a requirement
+ *  the data doesn't meet — or null when it can. Gates its Run control. */
+// eslint-disable-next-line react-refresh/only-export-components
+export function usePlotGate(id: string, data: NodeData): string | null {
+  const isPlot = NODE_SPECS[data.kind].category === 'plotting'
+  const upId = useGraph((s) => (isPlot ? s.upstreamId(id) : undefined))
+  const facts = useUpstreamFacts(upId)
+  if (!isPlot) return null
+  if (!upId || !facts.result) return 'Run the step it reads from first'
+  const kinds =
+    data.kind === 'plotGroup'
+      ? (data.config as PlotGroupConfig).children.map((c) => ({ kind: c.kind, config: c.config }))
+      : [{ kind: data.kind, config: data.config }]
+  // A group can run while any of its plots can (the others fail with their reason).
+  const why = kinds.map((k) => unmetRequirement(k.kind, k.config, facts))
+  if (kinds.length > 0 && why.every(Boolean)) return why[0]
+  return null
 }
 
 /** The status as a dot, its meaning on hover (and to a screen reader). */
@@ -97,13 +142,16 @@ export function RunControl({
   accent,
   onRun,
   onStop,
-  gate
+  gate,
+  gateLabel = 'Set up first'
 }: {
   status: StepStatus
   accent: string
   onRun: () => void
   onStop: () => void
   gate?: string | null
+  /** the blocked chip's text (the reason is its tooltip) */
+  gateLabel?: string
 }): ReactNode {
   const chip = (label: string, color: string, fn: () => void) => (
     <button
@@ -124,7 +172,7 @@ export function RunControl({
         title={gate}
         style={{ ...runChip, color: UI.textMuted, borderColor: UI.border, cursor: 'not-allowed' }}
       >
-        Set up first
+        {gateLabel}
       </span>
     )
   }

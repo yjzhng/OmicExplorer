@@ -41,7 +41,7 @@ export function resolveFacets<T extends ContextRow>(
   rows: T[],
   dims: FacetKey[],
   sel: Record<string, string>
-): { bars: FacetBar[]; rows: T[] } {
+): { bars: FacetBar[]; rows: T[]; key: string } {
   const groups = facetCompareRows(rows, dims)
   const valueOf = (g: FacetGroup<T>, d: FacetKey): string | number =>
     g.values.find((v) => v.dim === d)?.value as string | number
@@ -69,7 +69,8 @@ export function resolveFacets<T extends ContextRow>(
     bars.push({ dim: d, value, options })
     candidates = candidates.filter((g) => String(valueOf(g, d)) === String(value))
   }
-  return { bars, rows: candidates[0]?.rows ?? [] }
+  // `key`: the facet's FacetGroup key — what a plot's run keys its per-facet results by.
+  return { bars, rows: candidates[0]?.rows ?? [], key: candidates[0]?.key ?? '' }
 }
 
 interface FacetState {

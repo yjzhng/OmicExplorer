@@ -19,9 +19,12 @@ import {
   type MatrixPreset
 } from '../engine/interactive'
 import {
-  applyThreshold,
+  applyCurveFdr,
+  classifyCompareRow,
   combineStandardize,
-  presentStd,
+  presentScaleOf,
+  replicateLog2FCs,
+  stdByGene,
   crossPairs,
   condsIn,
   ctxValue,
@@ -41,19 +44,36 @@ import type {
   ThresholdConfig
 } from '../engine'
 import { EXAMPLE_LOAD_CONFIG } from './example'
-import { orderedByWiring } from './sequence'
+import { dropOrder, groupedOrder, type DropSlot } from './frameOrder'
 import {
   deserializeProject,
   emptyWorkflow,
   newFolder,
   newProjectFile,
-  serializeProject,
+  packedResultsChunks,
+  isNewerVersion,
+  ParkedRef,
+  PROJECT_VERSION,
+  savedByVersion,
+  serializeProjectChunks,
+  unpackParked,
   type ProjectFile,
-  type ProjectFolder
+  type ProjectFolder,
+  type ProjectWorkflow
 } from './project'
+import {
+  dataFolderName,
+  dataRootOf,
+  outDirName,
+  pathSeg,
+  planRenames,
+  withDiskNames,
+  workflowDirOf
+} from './diskNames'
+import { diskWrite, exclusiveDisk } from './diskWrites'
 import { childPanelId } from './groups'
 import { loadRecents, pushRecent, removeRecent, saveRecents, type RecentProject } from './recents'
-import { canConnect, categoryOf, maxInputsFor, NODE_SPECS } from './registry'
+import { canConnect, categoryOf, maxInputsFor, NODE_SPECS, stepTitle } from './registry'
 import { isPairable, pairSides, selectSource, toContrastSide } from './contrastPair'
 import {
   DEFAULT_EFFECT_LABELS,
@@ -63,11 +83,13 @@ import {
   resolveContrastSource,
   resolveLoadMode,
   type CompareConfig,
+  type CondUnits,
   type EffectLabels,
   type ContrastConfig,
   type FavGene,
   cleanupOn,
   imputeOn,
+  type CanvasFrame,
   type GeneSet,
   type GraphNode,
   type GroupMeta,
@@ -81,9 +103,12 @@ import {
   type PlaceholderNode,
   type PlotChild,
   type PlotGroupConfig,
+  plotResultKey,
   type StandardizeConfig,
-  type StepNode
+  type StepNode,
+  type StepStatus
 } from './types'
+import { runPlot } from './plotRun'
 import {
   buildWorkflowDoc,
   parseWorkflowDoc,
@@ -93,27 +118,20 @@ import {
 import { useAppSettings } from '../ui/useAppSettings'
 import { useAppView } from '../ui/useAppView'
 import { loadLastView, saveLastView } from './lastView'
+import { groupInto, ungroupFrom, withoutTiles } from './frames'
+import { isLonePlot, wrapPlot } from './plotGroups'
+import { tidyLayout } from './tidy'
+import { downstreamOf, runOrder } from './runOrder'
 
-/** Minimal objects → CSV for writing processed data to <dir>/temp. */
-function rowsToCsv(rows: Array<Record<string, unknown>>): string {
-  if (rows.length === 0) return ''
-  const cols = Object.keys(rows[0])
-  const esc = (v: unknown): string => {
-    const s = v == null ? '' : String(v)
-    return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
-  }
-  const head = cols.join(',')
-  const body = rows.map((r) => cols.map((c) => esc(r[c])).join(',')).join('\n')
-  return `${head}\n${body}\n`
-}
-
-/** Keep the node list consistent with the wiring: a step never sits before one of its inputs. The
- *  list is the form layout's section order, so it has to agree with the edges no matter which view
- *  drew them — hence this runs on every edge change rather than inside the form. Returns the SAME
- *  array when nothing needs moving, so an unaffected edit doesn't churn React Flow's node identity. */
-function sortStepsByWiring(nodes: GraphNode[], edges: Edge[]): GraphNode[] {
+/** Keep the node list consistent with the wiring: a step never sits before one of its inputs — and
+ *  each group's steps sit together wherever the wiring allows (see frameOrder.groupedOrder). The
+ *  list is the form layout's section order, so it has to agree with the edges and groups no matter
+ *  which view changed them — hence this runs on every edge or group change rather than inside the
+ *  form. Returns the SAME array when nothing needs moving, so an unaffected edit doesn't churn React
+ *  Flow's node identity. */
+function sortStepsByWiring(nodes: GraphNode[], edges: Edge[], frames: CanvasFrame[]): GraphNode[] {
   const order = nodes.map((n) => n.id)
-  const sorted = orderedByWiring(order, edges)
+  const sorted = groupedOrder(order, edges, frames)
   if (sorted.every((id, i) => id === order[i])) return nodes
   const byId = new Map(nodes.map((n) => [n.id, n]))
   return sorted.flatMap((id) => {
@@ -176,9 +194,17 @@ interface GraphState {
   setCompareThreshold: (id: string, partial: Partial<ThresholdConfig>) => void
   /** Rename a Compare's effect classes (display-only: the result stays `done`; undoable). */
   setCompareEffectLabels: (id: string, labels: Partial<EffectLabels>) => void
-  /** Set Clean data's log-transform — the scale its values are PRESENTED on. Display-only: its rows
-   *  (and so every analysis) stay linear, so nothing is invalidated; the result's presentation
-   *  scale updates in place. */
+  /** a Compare's effect colours (unset = the default); display-only, as the labels */
+  setCompareEffectColors: (
+    id: string,
+    colors: Partial<Record<'up' | 'down' | 'none', string | undefined>>
+  ) => void
+  /** Set a curve fit's dose unit (pEC50's molar scale). Display-only — never stales the result. */
+  /** Set a Load tile's condition units. Display-only — downstream results stay current. */
+  setLoadUnits: (id: string, units: CondUnits) => void
+  /** Set Clean data's log-transform — the scale its values are PRESENTED on, and the scale a
+   *  Compare downstream tests on (log or not). Its own rows stay linear and its result stays as it
+   *  is; the Compares (and what follows them) go stale, to be re-run on the new scale. */
   setStdLogTransform: (id: string, logTransform: 'none' | 'log2' | 'log10') => void
   /** Clean data's data-scale preview, straight from its upstream Load step's data file — no run
    *  needed: the detected scale and a value sample. Null when there's no data file to read yet
@@ -189,6 +215,9 @@ interface GraphState {
   /** Move a step to sit just before `beforeId` in the node list (null = to the end). The list is
    *  creation order, which is what the form layout reads as its section order. */
   moveStep: (id: string, beforeId: string | null) => void
+  /** Form mode's drag: move a step or a whole group (frame) to `slot`, among its own siblings only
+   *  (see frameOrder.dropOrder); a drop that isn't allowed does nothing. */
+  moveItem: (item: string, slot: DropSlot) => void
   /** Copy one plot tile's settings onto EVERY other plot of the same kind — standalone tiles and
    *  group subcards alike (undoable). `axis` is left alone: it's what makes a dose-response tile a
    *  dose one, so copying it would retarget the other tiles rather than restyle them. */
@@ -218,13 +247,22 @@ interface GraphState {
     targetId: string,
     place: 'before' | 'after'
   ) => void
+  /** Fold (or unfold) the plot lists of the plot groups among `ids` on the canvas (one undo step). */
+  setGroupsCollapsed: (ids: string[], collapsed: boolean) => void
+  /** Lay the selected tiles out as a left-to-right flow along their edges (undoable; see tidy.ts). */
+  tidyNodes: (ids: string[]) => void
   /** Auto-arrange the selected tiles in a neat cascade from the top-left-most (undoable). */
   cascadeNodes: (ids: string[]) => void
   /** Switch a node's operation within its category, resetting config + pruning now-invalid edges. */
   changeOp: (id: string, op: NodeKind) => void
 
   runNode: (id: string) => Promise<void>
+  /** Run a step, then every compute step downstream of it (in wiring order) — after a setting
+   *  that changes its result is applied from somewhere other than its own Run button. */
+  rerunFrom: (id: string) => Promise<void>
   cancelNode: (id: string) => void
+  /** Run ONE plot inside a group tile (each has its own status; the group is done when all are). */
+  runPlotChild: (groupId: string, childId: string) => Promise<void>
   /** True while `runAll` is executing the pipeline. */
   runningAll: boolean
   /** Run every runnable step once, in dependency (topological) order. */
@@ -248,13 +286,24 @@ interface GraphState {
   projectOpen: boolean
   /** active folder's path, scanned for input files (kept in sync from folders) */
   dataDir: string | null
-  /** folder a per-tile download was last saved to in this project (null = none yet — the
-   *  save-as window then suggests `<dataDir>/output`). Persisted with the project. */
-  saveDir: string | null
-  setSaveDir: (dir: string) => void
+  /** this app run's scratch folder: an unsaved project's files live under it until the first save
+   *  moves them into the data folder (see graph/diskNames.ts). null until fetched at launch. */
+  scratchRoot: string | null
+  /** A processing step's output/ folder (absolute) in the active workflow — where its downloads go.
+   *  Pins the folder's name on first use. null without a data folder. */
+  outputDirFor: (stepId: string) => string | null
+  /** The active workflow's output/ folder (absolute), and each listed processing step's subfolder
+   *  name in it (pinned on first use) — for the Export window. null without a data folder. */
+  outputLayoutFor: (stepIds: string[]) => { root: string; names: Record<string, string> } | null
+  /** A processing step's output/ subfolder name in a given workflow (pinned on first use) — for
+   *  background writers that must stay with the workflow they started in. */
+  outputSubdirFor: (stepId: string, folderId: string, workflowId: string) => string | null
   dirty: boolean
   /** input files available in the active data folder */
   inputFiles: string[]
+  /** each input file's folder, relative to the data folder ('' = the folder itself); empty with an
+   *  older main process (before a restart) */
+  inputFileFolders: Record<string, string>
   /** the active folder has a path set, but it no longer exists on disk */
   dataDirMissing: boolean
   folders: ProjectFolder[]
@@ -265,6 +314,13 @@ interface GraphState {
   recentProjects: RecentProject[]
   /** last error from opening a project (shown on the Home screen); null when none */
   openError: string | null
+  /** why the last save failed (cleared by the next successful one) */
+  saveError: string | null
+  /** the last save went through, but some folders couldn't be renamed/moved to match */
+  saveWarning: string | null
+  /** a save is being written (the project chip's dot turns into a spinner meanwhile) */
+  saving: boolean
+  clearSaveError: () => void
 
   initProject: () => Promise<void>
   goHome: () => void
@@ -327,6 +383,20 @@ interface GraphState {
 
   // ── custom genesets: named, saved gene selections (persisted with the workflow) ──
   geneSets: GeneSet[]
+  /** canvas frames: labelled areas around tiles that move them together (Group on the canvas) */
+  frames: CanvasFrame[]
+  /** Frame the selected tiles and frames (see frames.groupInto: frames nest whole); one undo step. */
+  frameNodes: (ids: string[]) => void
+  /** Ungroup the selected tiles' frames, handing their members back (see frames.ungroupFrom). */
+  unframeNodes: (ids: string[]) => void
+  /** Set the canvas selection to these tiles (or add them, `additive`); a connection is selected
+   *  when both its ends are. Selection is kept on tiles only — a frame is selected when all of its
+   *  tiles are. Not an undo step. */
+  selectTiles: (ids: string[], additive?: boolean) => void
+  /** Fold / unfold a group in form mode (its steps hidden under the header); saved with the
+   *  workflow, not an undo step. */
+  setFrameFolded: (id: string, folded: boolean) => void
+  renameFrame: (id: string, label: string) => void
   /** Create a geneset from `genes` (typically the current selection); returns its new id. */
   createGeneSet: (name: string, genes: FavGene[]) => string
   /** Rename a geneset. */
@@ -373,10 +443,17 @@ function makeNode(id: string, op: NodeKind, position: { x: number; y: number }):
 /** Raise the store-selected node's React Flow zIndex so its config-detail float (which floats to
  *  the right of the tile, over neighbours) always paints above sibling tiles — a node's own
  *  zIndex governs the whole `.react-flow__node` stacking context, which the float can't escape. */
-const SELECTED_Z = 1000
+const SELECTED_Z = 1_000_000
+/** Tiles brought to the front (a plot group just expanded / collapsed — it may now overlap its
+ *  neighbours), each above the ones lifted before it; below the selected tile's float. */
+const lifted = new Map<string, number>()
+let liftTop = 0
+function lift(ids: Iterable<string>): void {
+  for (const id of ids) lifted.set(id, ++liftTop)
+}
 function elevate(nodes: GraphNode[], selId: string | null): GraphNode[] {
   return nodes.map((n) => {
-    const z = n.id === selId ? SELECTED_Z : undefined
+    const z = n.id === selId ? SELECTED_Z : lifted.get(n.id)
     return n.zIndex === z ? n : { ...n, zIndex: z }
   })
 }
@@ -429,8 +506,9 @@ const SEED_NODES: GraphNode[] = [
   seedLoad,
   makeNode('std-1', 'standardize', { x: 290, y: 80 }),
   makeNode('cmp-1', 'compare', { x: 580, y: 40 }),
-  makeNode('vol-1', 'volcano', { x: 900, y: 0 }),
-  makeNode('heat-1', 'heatmap', { x: 900, y: 210 })
+  // Visualisations are always plot groups (see plotGroups.ts), even of one plot.
+  wrapPlot(makeNode('vol-1', 'volcano', { x: 900, y: 0 }), 'sub-vol-1'),
+  wrapPlot(makeNode('heat-1', 'heatmap', { x: 900, y: 210 }), 'sub-heat-1')
 ]
 const SEED_EDGES: Edge[] = [
   { id: 'e-load-std', source: 'load-1', target: 'std-1' },
@@ -439,10 +517,20 @@ const SEED_EDGES: Edge[] = [
   { id: 'e-std-heat', source: 'std-1', target: 'heat-1' }
 ]
 
+/** The default name for a new frame: "Group n", the lowest n not already taken. */
+function nextGroupName(frames: CanvasFrame[]): string {
+  const taken = new Set(frames.map((f) => f.label))
+  let n = 1
+  while (taken.has(`Group ${n}`)) n++
+  return `Group ${n}`
+}
+
 interface Snapshot {
   nodes: GraphNode[]
   edges: Edge[]
   nextId: number
+  /** absent in a snapshot taken without it (keeps the frames as they are on restore) */
+  frames?: CanvasFrame[]
 }
 
 // ── project helpers (module scope; take the store's set/get) ──────────────────
@@ -456,35 +544,233 @@ function docFromLive(s: GraphState): WorkflowDoc {
     nextId: s.nextId,
     groupLayouts: s.groupLayouts,
     groupMeta: s.groupMeta,
-    geneSets: s.geneSets
+    geneSets: s.geneSets,
+    frames: s.frames
   })
 }
 
 const activeFolder = (s: GraphState): ProjectFolder | undefined =>
   s.folders.find((f) => f.id === s.activeFolderId)
 
-/** The active workflow's name. READS pass this always: main tries the per-workflow subfolder first
- *  then falls back to the shared data-folder root, so a file resolves whether it was written nested
- *  (multi-workflow folder) or flat (single workflow, or a pre-workflow-level project) — which also
- *  makes growing/shrinking the workflow count safe. undefined when no workflow is active. */
 /** Clean data's data-scale previews, per data file (dir | workflow | name) — a file is parsed once
  *  per session for its preview; a re-converted import writes a new set of rows the next run sees,
  *  and the preview follows on the next session. */
 const scalePreviews = new Map<string, ScalePreview>()
 
-const readScope = (s: GraphState): string | undefined =>
-  activeFolder(s)?.workflows.find((w) => w.id === s.activeWorkflowId)?.name
-
-/** WRITES nest generated files under the workflow subfolder ONLY when the data folder holds more
- *  than one workflow; a lone workflow writes straight into the shared data folder (no needless
- *  nesting). undefined = write to the root input/temp dirs. */
-const writeScope = (s: GraphState): string | undefined => {
-  const folder = activeFolder(s)
-  return folder && folder.workflows.length > 1 ? readScope(s) : undefined
+/** Where a workflow's files live: its data folder (`dir`, also where your own input files are
+ *  read from) and its folder in the project data layout (`scope.base` — see graph/diskNames.ts),
+ *  with its name as `scope.legacy` so older projects' `<data folder>/<workflow>` files still read.
+ *  The active workflow by default. null without a data folder (or before the scratch folder is
+ *  known, for an unsaved project). Exported for writers outside the store (export/autoTables.ts). */
+export interface WorkflowLocation {
+  dir: string
+  scope: { base: string; legacy: string }
 }
-/** Where a generated temp file goes for the current workflow — for writers outside the store (the
- *  background export of plot tables, export/tempResults.ts). */
-export const tempWriteScope = (s: GraphState): string | undefined => writeScope(s)
+export function locationOf(
+  s: GraphState,
+  folderId: string | null = s.activeFolderId,
+  workflowId: string | null = s.activeWorkflowId
+): WorkflowLocation | null {
+  const folder = s.folders.find((f) => f.id === folderId)
+  const wf = folder?.workflows.find((w) => w.id === workflowId)
+  if (!folder?.path || !wf) return null
+  const root = dataRootOf(folder, {
+    saved: !!s.projectPath,
+    projectName: s.projectName,
+    scratch: s.scratchRoot
+  })
+  return root
+    ? { dir: folder.path, scope: { base: workflowDirOf(root, wf), legacy: wf.name } }
+    : null
+}
+
+/** Pin output/ folder names for these processing steps of a workflow (the active one by default;
+ *  first use takes the step's current name); returns each one's name. Not undoable and doesn't
+ *  dirty the project — a name not yet saved is simply re-derived from the step's name next time. */
+function pinOutDirs(
+  get: Getter,
+  set: Setter,
+  stepIds: string[],
+  folderId: string | null = get().activeFolderId,
+  workflowId: string | null = get().activeWorkflowId
+): Record<string, string> {
+  const s = get()
+  const folder = s.folders.find((f) => f.id === folderId)
+  const wf = folder?.workflows.find((w) => w.id === workflowId)
+  if (!folder || !wf) return {}
+  const titles = stepTitlesOf(s, folder.id, wf)
+  const outDirs = { ...(wf.outDirs ?? {}) }
+  const names: Record<string, string> = {}
+  let changed = false
+  for (const id of stepIds) {
+    const title = titles.get(id)
+    if (title == null) continue
+    if (!outDirs[id]) {
+      outDirs[id] = outDirName(outDirs, id, title)
+      changed = true
+    }
+    names[id] = outDirs[id]
+  }
+  if (changed)
+    set({
+      folders: s.folders.map((f) =>
+        f.id !== folder.id
+          ? f
+          : { ...f, workflows: f.workflows.map((w) => (w.id === wf.id ? { ...w, outDirs } : w)) }
+      )
+    })
+  return names
+}
+
+/** A workflow's steps and wiring — the live graph for the open workflow, else its saved doc. */
+function graphOf(s: GraphState, folderId: string, wf: ProjectWorkflow) {
+  const live = folderId === s.activeFolderId && wf.id === s.activeWorkflowId
+  return live ? { nodes: s.nodes.filter(isStep), edges: s.edges } : wf.doc
+}
+
+/** A workflow's step names, by id. */
+function stepTitlesOf(s: GraphState, folderId: string, wf: ProjectWorkflow): Map<string, string> {
+  return new Map(graphOf(s, folderId, wf).nodes.map((n) => [n.id, stepTitle(n)]))
+}
+
+/**
+ * The folder renames the next save will make (applyDiskLayout's plain save, worked out without
+ * touching the disk): the project data folder after the project, each workflow's folder after the
+ * workflow, each step's output/ folder after the step — full path on disk now → the name it gets.
+ * Empty for a project not saved yet (its files are in the session scratch, moved in whole on the
+ * first save). For the project-folder viewer, to show what a save will rename.
+ */
+export function pendingRenames(s: GraphState): Map<string, string> {
+  const out = new Map<string, string>()
+  if (!s.projectPath) return out
+  const want = dataFolderName(s.projectName)
+  for (const f of s.folders) {
+    if (!f.path || !f.dataName) continue
+    const root = `${f.path}/${f.dataName}`
+    if (f.dataName !== want) out.set(root, want)
+    const wfPlan = planRenames(
+      f.workflows.map((w) => ({
+        key: w.id,
+        dir: w.dir ?? pathSeg(w.name, 'Workflow'),
+        want: pathSeg(w.name, 'Workflow')
+      }))
+    )
+    for (const p of wfPlan) if (p.to !== p.dir) out.set(`${root}/${p.dir}`, p.to)
+    for (const w of f.workflows) {
+      const dir = w.dir ?? pathSeg(w.name, 'Workflow')
+      const titles = stepTitlesOf(s, f.id, w)
+      const tracked = Object.entries(w.outDirs ?? {}).filter(([id]) => titles.has(id))
+      const outPlan = planRenames(
+        tracked.map(([id, d]) => ({ key: id, dir: d, want: pathSeg(titles.get(id)!, 'Step') }))
+      )
+      for (const p of outPlan) if (p.to !== p.dir) out.set(`${root}/${dir}/output/${p.dir}`, p.to)
+    }
+  }
+  return out
+}
+
+/**
+ * Bring the disk in line with the project as it's being saved (see graph/diskNames.ts), per data
+ * folder: first the project data folder itself — moved out of scratch on the first save, copied to
+ * the new name on Save as (the original project keeps its own), else renamed after the project —
+ * then each renamed workflow's folder, then each renamed step's output/ folder. Runs with file
+ * writes held back (graph/diskWrites.ts). Records the names that resulted (a failed move keeps the
+ * old one) and returns what couldn't be done, for the save to report.
+ */
+async function applyDiskLayout(
+  get: Getter,
+  set: Setter,
+  mode: 'first' | 'copy' | 'rename'
+): Promise<string[]> {
+  return exclusiveDisk(async () => {
+    const warnings: string[] = []
+    const fail = (what: string, err?: string): void => {
+      warnings.push(err ? `${what}: ${err}` : what)
+    }
+    const nameOf = (p: string): string => p.split(/[/\\]/).pop() ?? p
+    const want = dataFolderName(get().projectName)
+    const scratch = get().scratchRoot
+    const folders: ProjectFolder[] = []
+    for (const f of get().folders) {
+      if (!f.path) {
+        folders.push(f)
+        continue
+      }
+      // 1 · the project data folder
+      let dataName = f.dataName ?? want
+      if (mode === 'first') {
+        if (scratch) {
+          const [r] = await window.api.applyDirOps([
+            { from: `${scratch}/${f.id}`, to: `${f.path}/${want}`, mode: 'move', unique: true }
+          ])
+          dataName = r.ok && !r.skipped ? nameOf(r.to) : want
+          if (!r.ok) fail(`Couldn't move this session's files into ${f.path}`, r.error)
+        } else dataName = want
+      } else if (mode === 'copy' && f.dataName) {
+        const [r] = await window.api.applyDirOps([
+          { from: `${f.path}/${f.dataName}`, to: `${f.path}/${want}`, mode: 'copy', unique: true }
+        ])
+        if (r.ok) dataName = r.skipped ? want : nameOf(r.to)
+        else
+          fail(`Couldn't copy ${f.dataName} to ${want} (still shared with the original)`, r.error)
+      } else if (f.dataName && f.dataName !== want) {
+        const [r] = await window.api.applyDirOps([
+          { from: `${f.path}/${f.dataName}`, to: `${f.path}/${want}`, mode: 'rename' }
+        ])
+        if (r.ok) dataName = want
+        else fail(`Couldn't rename ${f.dataName} to ${want}`, r.error)
+      }
+      const root = `${f.path}/${dataName}`
+
+      // 2 · workflow folders
+      const wfPlan = planRenames(
+        f.workflows.map((w) => ({
+          key: w.id,
+          dir: w.dir ?? pathSeg(w.name, 'Workflow'),
+          want: pathSeg(w.name, 'Workflow')
+        }))
+      )
+      const wfMoves = wfPlan.filter((p) => p.to !== p.dir)
+      const wfRes = await window.api.applyDirOps(
+        wfMoves.map((p) => ({ from: `${root}/${p.dir}`, to: `${root}/${p.to}`, mode: 'rename' }))
+      )
+      const dirOf = new Map(wfPlan.map((p) => [p.key, p.to]))
+      wfMoves.forEach((p, i) => {
+        if (wfRes[i].ok) return
+        dirOf.set(p.key, p.dir)
+        fail(`Couldn't rename workflow folder ${p.dir} to ${p.to}`, wfRes[i].error)
+      })
+
+      // 3 · each workflow's step output folders
+      const workflows: ProjectWorkflow[] = []
+      for (const w of f.workflows) {
+        const dir = dirOf.get(w.id) ?? w.dir
+        const titles = stepTitlesOf(get(), f.id, w)
+        // A deleted step's folder stays on disk; it just stops being tracked.
+        const tracked = Object.entries(w.outDirs ?? {}).filter(([id]) => titles.has(id))
+        const outPlan = planRenames(
+          tracked.map(([id, d]) => ({ key: id, dir: d, want: pathSeg(titles.get(id)!, 'Step') }))
+        )
+        const outMoves = outPlan.filter((p) => p.to !== p.dir)
+        const out = `${root}/${dir}/output`
+        const outRes = await window.api.applyDirOps(
+          outMoves.map((p) => ({ from: `${out}/${p.dir}`, to: `${out}/${p.to}`, mode: 'rename' }))
+        )
+        const outDirs = Object.fromEntries(outPlan.map((p) => [p.key, p.to]))
+        outMoves.forEach((p, i) => {
+          if (outRes[i].ok) return
+          outDirs[p.key] = p.dir
+          fail(`Couldn't rename output folder ${p.dir} to ${p.to}`, outRes[i].error)
+        })
+
+        workflows.push({ ...w, dir, outDirs })
+      }
+      folders.push({ ...f, dataName, workflows })
+    }
+    set({ folders })
+    return warnings
+  })
+}
 
 /** Union of every HIDDEN geneset's gene uniqIDs — the project-wide significance mask. */
 const hiddenGeneIds = (s: GraphState): Set<string> => {
@@ -517,10 +803,15 @@ function reapplyGeneMask(get: Getter, set: Setter): void {
     const threshold = (n.data.config as CompareConfig).threshold
     const label = thresholdLabel(threshold)
     const rows = res.cmp.rows.map((r) => {
-      const stat = threshold.statType === 'pP' ? r.pP : r.pQ
-      const cls = applyThreshold(r.log2FC ?? NaN, stat ?? NaN, threshold)
+      const cls = classifyCompareRow(r, threshold)
       const signf = cls.signf && !hidden.has(r.uniqID)
-      return { ...r, thrsh: label, signf, effect: signf ? cls.effect : 'none' }
+      return {
+        ...r,
+        thrsh: label,
+        signf,
+        effect: signf ? cls.effect : 'none',
+        ...(cls.model ? { model: cls.model } : null)
+      }
     })
     results[n.id] = { ...res, cmp: { ...res.cmp, rows, threshold } }
   }
@@ -528,6 +819,12 @@ function reapplyGeneMask(get: Getter, set: Setter): void {
   // Re-run every already-computed contrast so the mask propagates downstream automatically.
   for (const n of get().nodes)
     if (isStep(n) && n.data.kind === 'contrast' && get().results[n.id]) void get().runNode(n.id)
+}
+
+/** A failed save's reason, for the message by the Save button. */
+function saveErrorText(err: unknown): string {
+  const msg = err instanceof Error ? err.message : String(err)
+  return `Couldn't save the project: ${msg.replace(/^Error invoking remote method '[^']+': /, '')}`
 }
 
 /** Flush the live graph + results into the active folder's active workflow. */
@@ -550,25 +847,91 @@ function syncActiveSlot(get: Getter, set: Setter): void {
 }
 
 /** Check out a folder + workflow as the live graph (restoring embedded results). */
+/** A group tile's status: the roll-up of its plots' — running while any is, an error if any failed,
+ *  done only when every plot is (and it has some), else idle. With the first failure's reason. */
+function groupStatus(children: PlotChild[]): { status: StepStatus; error?: string } {
+  const st = children.map((c) => c.status ?? 'idle')
+  if (st.includes('running')) return { status: 'running' }
+  const failed = children.find((c) => c.status === 'error')
+  if (failed) return { status: 'error', error: failed.error }
+  return { status: children.length > 0 && st.every((x) => x === 'done') ? 'done' : 'idle' }
+}
+
+/** A group node with its plots' statuses set by `statusOf` (and its own rolled up from them). */
+function withChildStatuses(
+  n: StepNode,
+  statusOf: (c: PlotChild) => { status: StepStatus; error?: string }
+): StepNode {
+  const cfg = n.data.config as PlotGroupConfig
+  const children = cfg.children.map((c) => {
+    const st = statusOf(c)
+    return { ...c, status: st.status, error: st.error }
+  })
+  const roll = groupStatus(children)
+  return {
+    ...n,
+    data: { ...n.data, config: { ...cfg, children }, status: roll.status, error: roll.error }
+  }
+}
+
+/** Clear the run results of the plots in these nodes — a standalone plot's own, and each plot of a
+ *  group tile (kept under plotResultKey) — and set them idle. For an upstream re-run / re-wire. */
+function clearPlotResults(
+  nodes: GraphNode[],
+  results: Record<string, NodeResult>,
+  ids: Set<string>
+): { nodes: GraphNode[]; results: Record<string, NodeResult> } {
+  const out = { ...results }
+  for (const key of Object.keys(out)) {
+    const slash = key.indexOf('/')
+    if (slash > 0 && ids.has(key.slice(0, slash))) delete out[key]
+  }
+  return {
+    results: out,
+    nodes: nodes.map((n) =>
+      ids.has(n.id) && isStep(n) && n.data.kind === 'plotGroup'
+        ? withChildStatuses(n, () => ({ status: 'idle' }))
+        : n
+    )
+  }
+}
+
+/** Run statuses from the results a workflow was restored with: a step or plot with a result is
+ *  done (Re-run, not Run) — a group tile's plots each by their own. */
+function restoredStatuses(nodes: GraphNode[], results: Record<string, NodeResult>): GraphNode[] {
+  return nodes.map((n) => {
+    if (!isStep(n)) return n
+    if (n.data.kind === 'plotGroup')
+      return withChildStatuses(n, (c) => ({
+        status: results[plotResultKey(n.id, c.id)] ? 'done' : 'idle'
+      }))
+    return results[n.id] ? { ...n, data: { ...n.data, status: 'done' as const } } : n
+  })
+}
+
 function loadSlot(get: Getter, set: Setter, folderId: string, workflowId?: string): void {
+  // Pin on-disk folder names before anything can be written (see graph/diskNames.ts).
+  const pinned = withDiskNames(get().folders, !!get().projectPath, get().projectName)
+  if (pinned !== get().folders) set({ folders: pinned })
   const folder = get().folders.find((f) => f.id === folderId)
   if (!folder) return
   const wfId = workflowId ?? folder.activeWorkflowId ?? folder.workflows[0]?.id
   const slot = folder.workflows.find((w) => w.id === wfId) ?? folder.workflows[0]
   if (!slot) return
   const loaded: LoadedWorkflow = parseWorkflowDoc(slot.doc)
-  const results = slot.results ?? {}
+  // A parked workflow's results come back from disk a moment later (unparkActive).
+  const results = slot.parked ? {} : (slot.results ?? {})
   // Restore run state so a resumed session shows results (Re-run, not Run).
-  const nodes: GraphNode[] = loaded.nodes.map((n) =>
-    isStep(n) && results[n.id] ? { ...n, data: { ...n.data, status: 'done' as const } } : n
-  )
+  const nodes: GraphNode[] = restoredStatuses(loaded.nodes, results)
   set({
-    nodes,
+    // Groups kept together in the step order (a workflow saved before they were may not be).
+    nodes: sortStepsByWiring(nodes, loaded.edges, loaded.frames),
     edges: loaded.edges,
     nextId: loaded.nextId,
     groupLayouts: loaded.groupLayouts,
     groupMeta: loaded.groupMeta,
     geneSets: loaded.geneSets,
+    frames: loaded.frames,
     results,
     // Record the checked-out workflow on the folder too: that's what the saved file (and a
     // later switchFolder) resume, so it must follow the user's last switch, not the last add.
@@ -582,21 +945,150 @@ function loadSlot(get: Getter, set: Setter, folderId: string, workflowId?: strin
     past: [],
     future: []
   })
+  if (slot.parked) unparkActive(get, set, folderId, slot.id, slot.parked)
+  // Only the open workflow's results stay in memory; the one just left (and any other) is parked.
+  parkInactive(get, set)
 }
+
+// ── parking: only the open workflow's results are kept in memory ─────────────────────────────
+// Every other workflow's results wait on disk (main/park.ts) in the project file's packed form,
+// and come back when it's opened again. Parking and unparking run one at a time, in order.
+
+/** Workflows whose results were read back from a park file, with that very object — parked again
+ *  unchanged, they reuse the file instead of writing it anew. */
+const fromPark = new Map<string, { key: string; results: Record<string, NodeResult> }>()
+let parkQueue: Promise<void> = Promise.resolve()
+let parkSeq = 0
+const queuePark = (job: () => Promise<void>): void => {
+  parkQueue = parkQueue.then(job).catch(() => undefined)
+}
+
+/** Park every workflow that isn't the open one and still holds its results in memory. */
+function parkInactive(get: Getter, set: Setter): void {
+  queuePark(async () => {
+    for (const f of get().folders)
+      for (const w of f.workflows) {
+        const s = get()
+        if (s.activeFolderId === f.id && s.activeWorkflowId === w.id) continue
+        const cur = s.folders.find((x) => x.id === f.id)?.workflows.find((x) => x.id === w.id)
+        if (!cur || cur.parked || Object.keys(cur.results ?? {}).length === 0) continue
+        const results = cur.results
+        const prior = fromPark.get(w.id)
+        let key: string
+        if (prior && prior.results === results) key = prior.key
+        else {
+          key = `wf${++parkSeq}`
+          try {
+            await window.api.parkWrite(key, packedResultsChunks(results))
+          } catch {
+            return // no park store (e.g. the screenshot harness): keep results in memory
+          }
+          if (prior) void window.api.parkDrop(prior.key).catch(() => undefined)
+        }
+        fromPark.delete(w.id)
+        // Only if it's still not the open workflow and its results are still those written.
+        const now = get()
+        if (now.activeFolderId === f.id && now.activeWorkflowId === w.id) continue
+        set({
+          folders: now.folders.map((ff) =>
+            ff.id !== f.id
+              ? ff
+              : {
+                  ...ff,
+                  workflows: ff.workflows.map((ww) =>
+                    ww.id === w.id && ww.results === results
+                      ? { ...ww, results: {}, parked: key }
+                      : ww
+                  )
+                }
+          )
+        })
+      }
+  })
+}
+
+/** Bring the open workflow's parked results back into memory (and its steps back to done). */
+function unparkActive(
+  get: Getter,
+  set: Setter,
+  folderId: string,
+  workflowId: string,
+  key: string
+): void {
+  queuePark(async () => {
+    let loaded: Record<string, NodeResult>
+    try {
+      loaded = unpackParked(await window.api.parkRead(key))
+    } catch (err) {
+      set({ saveError: `Couldn't reload this workflow's results: ${String(err)}` })
+      return
+    }
+    const s = get()
+    if (s.activeFolderId !== folderId || s.activeWorkflowId !== workflowId) return // left again
+    // Anything run in the meantime wins over what was parked.
+    const results = { ...loaded, ...s.results }
+    fromPark.set(workflowId, { key, results })
+    set({
+      results,
+      nodes: s.nodes.map((n) =>
+        isStep(n) && n.data.kind === 'plotGroup'
+          ? withChildStatuses(n, (c) =>
+              results[plotResultKey(n.id, c.id)] || c.status === 'done'
+                ? { status: 'done' }
+                : { status: c.status ?? 'idle', error: c.error }
+            )
+          : isStep(n) && loaded[n.id] && !s.results[n.id] && n.data.status === 'idle'
+            ? { ...n, data: { ...n.data, status: 'done' as const } }
+            : n
+      ),
+      folders: s.folders.map((f) =>
+        f.id !== folderId
+          ? f
+          : {
+              ...f,
+              workflows: f.workflows.map((w) =>
+                w.id === workflowId ? { ...w, results, parked: undefined } : w
+              )
+            }
+      )
+    })
+  })
+}
+
+/** The project file with every parked workflow's results as a reference to its park file
+ *  (ParkedRef): the main process copies the file's packed text into the save itself, so it's never
+ *  read into the renderer and sent back. */
+async function withParkedResults(p: ProjectFile): Promise<ProjectFile> {
+  await parkQueue // let any parking in flight settle first
+  const folders = p.folders.map((f) => ({
+    ...f,
+    workflows: f.workflows.map((w) =>
+      w.parked
+        ? { ...w, results: new ParkedRef(w.parked) as unknown as Record<string, NodeResult> }
+        : w
+    )
+  }))
+  return { ...p, folders }
+}
+
+/** A save's folder problems as one message (null when there were none). */
+const layoutWarning = (warnings: string[]): string | null =>
+  warnings.length ? `Saved, but some folders weren't updated — ${warnings.join('; ')}` : null
 
 function buildProjectFile(get: Getter): ProjectFile {
   const s = get()
   const av = useAppView.getState()
   return {
     format: 'omicexplorer-project',
-    version: 2,
+    version: PROJECT_VERSION,
+    // Named when an older app version is asked to open this file (see deserializeProject).
+    ...(typeof __APP_VERSION__ === 'string' ? { appVersion: __APP_VERSION__ } : null),
     name: s.projectName,
     folders: s.folders,
     activeFolderId: s.activeFolderId ?? s.folders[0]?.id ?? '',
     // Persist which page the user was on so opening the project resumes it (see openProject).
     view: av.view,
-    resultsTab: av.resultsTab,
-    saveDir: s.saveDir
+    resultsTab: av.resultsTab
   }
 }
 
@@ -611,23 +1103,93 @@ export const useGraph = create<GraphState>()((set, get) => ({
   runningAll: false,
 
   projectPath: null,
-  saveDir: null,
-  // A UI preference like view/resultsTab: remembered, written with the next save, never dirties.
-  setSaveDir: (dir) => set({ saveDir: dir }),
+  scratchRoot: null,
+  outputDirFor: (stepId) => {
+    const loc = locationOf(get())
+    if (!loc) return null
+    const name = pinOutDirs(get, set, [stepId])[stepId]
+    return name ? `${loc.scope.base}/output/${name}` : null
+  },
+  outputLayoutFor: (stepIds) => {
+    const loc = locationOf(get())
+    if (!loc) return null
+    return { root: `${loc.scope.base}/output`, names: pinOutDirs(get, set, stepIds) }
+  },
+  outputSubdirFor: (stepId, folderId, workflowId) =>
+    pinOutDirs(get, set, [stepId], folderId, workflowId)[stepId] ?? null,
   projectName: 'Untitled project',
   projectOpen: false,
   dataDir: null,
   dirty: false,
   inputFiles: [],
+  inputFileFolders: {},
   dataDirMissing: false,
   folders: [],
   activeFolderId: null,
   activeWorkflowId: null,
   recentProjects: [],
   openError: null,
+  saveError: null,
+  saving: false,
+  saveWarning: null,
+  clearSaveError: () => set({ saveError: null, saveWarning: null }),
   groupLayouts: {},
   groupMeta: {},
   geneSets: [],
+  frames: [],
+  frameNodes: (ids) => {
+    const { nodes, frames, nextId } = get()
+    const steps = new Set(nodes.filter(isStep).map((n) => n.id))
+    const frameIds = new Set(frames.map((f) => f.id))
+    const next = groupInto(frames, ids, (id) => steps.has(id) || frameIds.has(id), {
+      id: `frame-${nextId}`,
+      // Named Group 1, Group 2, …: the first number no frame in this workflow is using.
+      label: nextGroupName(frames)
+    })
+    if (next === frames) return
+    get().commit()
+    set({
+      frames: next,
+      nextId: nextId + 1,
+      nodes: sortStepsByWiring(nodes, get().edges, next)
+    })
+  },
+  unframeNodes: (ids) => {
+    const next = ungroupFrom(get().frames, ids)
+    if (next === get().frames) return
+    get().commit()
+    set({ frames: next, nodes: sortStepsByWiring(get().nodes, get().edges, next) })
+  },
+  selectTiles: (ids, additive = false) => {
+    const pick = new Set(ids)
+    set((s) => {
+      const nodes = s.nodes.map((n) => {
+        const on = pick.has(n.id) || (additive && !!n.selected)
+        return !!n.selected === on ? n : { ...n, selected: on }
+      })
+      const sel = new Set(nodes.filter((n) => n.selected).map((n) => n.id))
+      const edges = s.edges.map((e) => {
+        const on = sel.has(e.source) && sel.has(e.target)
+        return !!e.selected === on ? e : { ...e, selected: on }
+      })
+      // Mirrors React Flow's onSelectionChange, which doesn't run while the canvas isn't shown.
+      const canvasSelection = nodes.filter((n) => isStep(n) && n.selected).map((n) => n.id)
+      return { nodes, edges, canvasSelection }
+    })
+  },
+  setFrameFolded: (id, folded) =>
+    set((s) => ({
+      frames: s.frames.map((f) => (f.id === id ? { ...f, folded } : f)),
+      dirty: true
+    })),
+  renameFrame: (id, label) => {
+    const f = get().frames.find((x) => x.id === id)
+    // An emptied name keeps the frame's current one.
+    const name = label.trim() || f?.label || ''
+    if (!f || f.label === name) return
+    get().commit()
+    set((s) => ({ frames: s.frames.map((x) => (x.id === id ? { ...x, label: name } : x)) }))
+  },
   past: [],
   future: [],
 
@@ -655,8 +1217,11 @@ export const useGraph = create<GraphState>()((set, get) => ({
     const keep = maxInputs > 1 ? existing.slice(existing.length - (maxInputs - 1)) : []
     const pruned = edges.filter((e) => e.target !== conn.target || keep.includes(e))
     const next = addEdge({ ...conn, id: `e-${conn.source}-${conn.target}` }, pruned)
-    set({ edges: next, nodes: sortStepsByWiring(get().nodes, next) })
-    get().invalidateDownstream(conn.source) // new wiring ⇒ downstream stale
+    set({ edges: next, nodes: sortStepsByWiring(get().nodes, next, get().frames) })
+    // Only the tile that gained an input (and what it feeds) is out of date. Staling everything
+    // downstream of the SOURCE also cleared its other branches — wiring a second Compare from
+    // Clean data emptied the first Compare and its plots.
+    get().markStale(conn.target)
   },
 
   onReconnect: (oldEdge, conn) => {
@@ -675,7 +1240,7 @@ export const useGraph = create<GraphState>()((set, get) => ({
       (e) => e.id === oldEdge.id || e.target !== conn.target || keep.includes(e)
     )
     const moved = reconnectEdge(oldEdge, conn, pruned)
-    set({ edges: moved, nodes: sortStepsByWiring(get().nodes, moved) })
+    set({ edges: moved, nodes: sortStepsByWiring(get().nodes, moved, get().frames) })
     // both the previous and new target lost/changed their input
     for (const t of new Set([oldEdge.target, conn.target])) get().markStale(t)
   },
@@ -703,10 +1268,16 @@ export const useGraph = create<GraphState>()((set, get) => ({
     get().commit()
     const id = `${op}-${get().nextId}`
     const pos = opts?.position ?? { x: 120 + Math.min(get().nodes.length, 8) * 24, y: 340 }
+    // A visualisation comes as a plot group of one (its subcard takes the next id).
+    const plain = makeNode(id, op, pos)
+    const lone = isLonePlot(plain)
+    const node = lone ? wrapPlot(plain, `sub-${get().nextId + 1}`) : plain
     set((s) => ({
-      nodes: [...s.nodes, makeNode(id, op, pos)],
-      nextId: s.nextId + 1,
-      selectedId: id
+      nodes: [...s.nodes, node],
+      nextId: s.nextId + (lone ? 2 : 1),
+      // A new tile isn't opened: its settings window would cover the canvas just as it's placed.
+      selectedId: null,
+      selectedSub: null
     }))
     // optional: wire an edge from an upstream node (used by the node "+" affordance)
     const from = opts?.connectFrom
@@ -768,7 +1339,9 @@ export const useGraph = create<GraphState>()((set, get) => ({
     // its config (e.g. a dr pick's axis = dose/time), on top of the kind's defaults.
     const configFor = (pick: { kind: NodeKind; override?: Record<string, unknown> }): NodeConfig =>
       startingConfig(pick.kind, pick.override)
-    if (picks.length === 1) {
+    // A single plot is a group of one, the same as several (handled below) — every visualisation
+    // tile is a plot group.
+    if (picks.length === 1 && categoryOf(picks[0].kind) !== 'plotting') {
       const pick = picks[0]
       set((s) => ({
         nodes: s.nodes.map((n) => {
@@ -776,7 +1349,8 @@ export const useGraph = create<GraphState>()((set, get) => ({
           const node = makeNode(id, pick.kind, n.position)
           return { ...node, data: { ...node.data, config: configFor(pick) } }
         }),
-        selectedId: id,
+        // Not opened on creation (see addNode); the form selects it itself.
+        selectedId: null,
         selectedSub: null
       }))
       return
@@ -788,8 +1362,8 @@ export const useGraph = create<GraphState>()((set, get) => ({
     set((s) => ({
       nodes: s.nodes.map((n) => (n.id === id ? makeGroupNode(id, n.position, children) : n)),
       nextId: s.nextId + picks.length,
-      selectedId: id,
-      selectedSub: children[0]?.id ?? null
+      selectedId: null,
+      selectedSub: null
     }))
   },
 
@@ -810,7 +1384,9 @@ export const useGraph = create<GraphState>()((set, get) => ({
         nodes: s.nodes.filter((n) => n.id !== id),
         edges: s.edges.filter((e) => e.source !== id && e.target !== id),
         results,
-        selectedId: s.selectedId === id ? null : s.selectedId
+        selectedId: s.selectedId === id ? null : s.selectedId,
+        // out of its frame too; a frame left empty goes (and a parent it empties)
+        frames: withoutTiles(s.frames, new Set([id]))
       }
     })
   },
@@ -852,7 +1428,8 @@ export const useGraph = create<GraphState>()((set, get) => ({
         copies.length === 1 ? copies[0].id : null
       ),
       nextId,
-      selectedId: copies.length === 1 ? copies[0].id : null,
+      // Copies stay selected on the canvas but aren't opened (see addNode).
+      selectedId: null,
       selectedSub: null
     }))
   },
@@ -865,6 +1442,8 @@ export const useGraph = create<GraphState>()((set, get) => ({
 
   updateConfig: (id, partial) => {
     get().commit()
+    const before = get().nodes.find((n) => n.id === id)
+    const prevConfig = before && isStep(before) ? before.data.config : undefined
     set((s) => ({
       nodes: s.nodes.map((n) =>
         n.id === id && isStep(n)
@@ -872,9 +1451,19 @@ export const useGraph = create<GraphState>()((set, get) => ({
           : n
       )
     }))
-    // compute nodes go stale on config change; plot nodes re-render live.
+    // A runnable node goes stale on a config change — a step on any; a plot only on one outside
+    // what its run computed (its spec's staleOn; view settings just re-render).
     const kind = get().nodeKind(id)
-    if (kind && NODE_SPECS[kind].hasRun) {
+    const spec = kind ? NODE_SPECS[kind] : undefined
+    const after = get().nodes.find((n) => n.id === id)
+    const stale =
+      !!spec?.hasRun &&
+      (!spec.staleOn ||
+        (!!prevConfig &&
+          !!after &&
+          isStep(after) &&
+          spec.staleOn(after.data.config, prevConfig, get().results[id])))
+    if (stale) {
       set((s) => ({
         nodes: s.nodes.map((n) =>
           n.id === id && isStep(n)
@@ -905,6 +1494,39 @@ export const useGraph = create<GraphState>()((set, get) => ({
       dirty: true
     }))
   },
+  setCompareEffectColors: (id, colors) => {
+    const node = get().nodes.find((n) => n.id === id)
+    if (!node || !isStep(node) || node.data.kind !== 'compare') return
+    const cfg = node.data.config as CompareConfig
+    const effectColors = { ...cfg.effectColors, ...colors }
+    get().commit()
+    // Display-only, so patch the config directly (updateConfig would stale the compare).
+    set((s) => ({
+      nodes: s.nodes.map((n) =>
+        n.id === id && isStep(n)
+          ? { ...n, data: { ...n.data, config: { ...cfg, effectColors } as NodeConfig } }
+          : n
+      ),
+      dirty: true
+    }))
+  },
+  setLoadUnits: (id, units) => {
+    const node = get().nodes.find((n) => n.id === id)
+    if (!node || !isStep(node) || node.data.kind !== 'load') return
+    const cfg = node.data.config as LoadConfig
+    const next: CondUnits = { ...cfg.units, ...units }
+    if (next.dose === cfg.units?.dose && next.time === cfg.units?.time) return
+    get().commit()
+    // Display-only, so patch the config directly (updateConfig would stale everything below).
+    set((s) => ({
+      nodes: s.nodes.map((n) =>
+        n.id === id && isStep(n)
+          ? { ...n, data: { ...n.data, config: { ...cfg, units: next } as NodeConfig } }
+          : n
+      ),
+      dirty: true
+    }))
+  },
   previewStdScale: async (id) => {
     const state = get()
     const upId = state.upstreamId(id)
@@ -912,8 +1534,8 @@ export const useGraph = create<GraphState>()((set, get) => ({
     const load = up && isStep(up) && up.data.kind === 'load' ? (up.data.config as LoadConfig) : null
     const dir = state.dataDir
     if (!load?.data || !dir) return null
-    const wf = readScope(state)
-    const key = `${dir}|${wf ?? ''}|${load.data}`
+    const wf = locationOf(state)?.scope
+    const key = `${dir}|${wf?.base ?? ''}|${load.data}`
     const hit = scalePreviews.get(key)
     if (hit) return hit
     const text = await window.api.readDataFile(dir, load.data, wf)
@@ -927,8 +1549,9 @@ export const useGraph = create<GraphState>()((set, get) => ({
     if (!node || !isStep(node) || node.data.kind !== 'standardize') return
     const cfg = node.data.config as StandardizeConfig
     get().commit()
-    // Config only: the result is left exactly as it is — the scale is read from this choice where
-    // the table is drawn (presentScaleOf), so nothing built from the result rebuilds.
+    // Its own result is left exactly as it is — the scale is read from this choice where the table
+    // and plots are drawn (presentScaleOf / plotScaleOf). But a Compare tests on it (logged or
+    // not), so whatever was computed downstream is stale.
     set((s) => ({
       nodes: s.nodes.map((n) =>
         n.id === id && isStep(n)
@@ -937,6 +1560,7 @@ export const useGraph = create<GraphState>()((set, get) => ({
       ),
       dirty: true
     }))
+    if ((cfg.logTransform ?? 'none') !== logTransform) get().invalidateDownstream(id)
   },
   setCompareThreshold: (id, partial) => {
     const node = get().nodes.find((n) => n.id === id)
@@ -966,20 +1590,12 @@ export const useGraph = create<GraphState>()((set, get) => ({
       delete threshold.s0Down
     }
     // No-op guard: dragging that lands back on the same value shouldn't spawn an undo step or
-    // needlessly stale a downstream contrast.
-    if (
-      threshold.type === cur.type &&
-      threshold.fcLow === cur.fcLow &&
-      threshold.fcHigh === cur.fcHigh &&
-      threshold.statMin === cur.statMin &&
-      threshold.b === cur.b &&
-      threshold.s0 === cur.s0 &&
-      threshold.s0Down === cur.s0Down &&
-      threshold.asymmetric === cur.asymmetric &&
-      threshold.statType === cur.statType &&
-      threshold.fdrMethod === cur.fdrMethod
-    )
-      return
+    // needlessly stale a downstream contrast. Every field is compared (not a list that a new
+    // setting could be missing from).
+    const fields = new Set([...Object.keys(threshold), ...Object.keys(cur)]) as Set<
+      keyof ThresholdConfig
+    >
+    if ([...fields].every((k) => threshold[k] === cur[k])) return
     get().commit()
     // Patch the threshold on the Compare config WITHOUT going through updateConfig — the statistics
     // are unchanged, so the compare must stay `done` (updateConfig would stale it and force a re-run).
@@ -1002,14 +1618,36 @@ export const useGraph = create<GraphState>()((set, get) => ({
     if (res?.kind === 'compare') {
       const label = thresholdLabel(threshold)
       const hidden = hiddenGeneIds(get())
-      const rows = res.cmp.rows.map((r) => {
-        const stat = threshold.statType === 'pP' ? r.pP : r.pQ
-        const cls = applyThreshold(r.log2FC ?? NaN, stat ?? NaN, threshold)
+      // A curve fit's target–decoy q-values and FDR follow CurveCurator's alpha and fold-change
+      // limits — re-derived from the decoys kept with the result (absent under other thresholds)
+      // BEFORE the calls, which (called by FDR) read them.
+      const withQ = applyCurveFdr(res.cmp.rows, res.cmp.decoys, threshold)
+      const rows = withQ.rows.map((r) => {
+        const cls = classifyCompareRow(r, threshold)
         const signf = cls.signf && !hidden.has(r.uniqID) // keep the geneset mask across threshold edits
-        return { ...r, thrsh: label, signf, effect: signf ? cls.effect : 'none' }
+        return {
+          ...r,
+          thrsh: label,
+          signf,
+          effect: signf ? cls.effect : 'none',
+          ...(cls.model ? { model: cls.model } : null)
+        }
       })
+      const fdr = { rows, fdr: withQ.fdr, alphas: withQ.alphas }
       set((s) => ({
-        results: { ...s.results, [id]: { ...res, cmp: { ...res.cmp, rows, threshold } } }
+        results: {
+          ...s.results,
+          [id]: {
+            ...res,
+            cmp: {
+              ...res.cmp,
+              rows: fdr.rows,
+              threshold,
+              curveFdr: fdr.fdr,
+              ccAlpha: fdr.alphas
+            }
+          }
+        }
       }))
     }
     // Downstream COMPUTE nodes (contrast) mask by the compare's per-gene call, so a threshold change
@@ -1028,11 +1666,30 @@ export const useGraph = create<GraphState>()((set, get) => ({
     // Normalised, not just inserted: the rule that a step never precedes its input holds for every
     // caller, so a move that would break it is corrected rather than trusted. The form's drag
     // already refuses such a drop (see canMoveBefore); this is what makes it true regardless.
-    const next = sortStepsByWiring([...rest.slice(0, at), moved, ...rest.slice(at)], get().edges)
+    const next = sortStepsByWiring(
+      [...rest.slice(0, at), moved, ...rest.slice(at)],
+      get().edges,
+      get().frames
+    )
     // A move that lands where it started changes nothing, and must not take an undo step with it.
     if (next.every((n, i) => n.id === nodes[i].id)) return
     get().commit()
     set(() => ({ nodes: next }))
+  },
+
+  moveItem: (item, slot) => {
+    const { nodes, edges, frames } = get()
+    const next = dropOrder(
+      nodes.map((n) => n.id),
+      edges,
+      frames,
+      item,
+      slot
+    )
+    if (!next) return
+    get().commit()
+    const byId = new Map(nodes.map((n) => [n.id, n]))
+    set({ nodes: next.map((id) => byId.get(id)!) })
   },
 
   renameNode: (id, name) => {
@@ -1080,8 +1737,13 @@ export const useGraph = create<GraphState>()((set, get) => ({
   },
   updateChildConfig: (groupId, childId, partial) => {
     get().commit()
-    // Children are plot subcards (never `hasRun`), so they re-render live — no result to
-    // wipe, no downstream to invalidate. Just patch the matching child in place.
+    // Children are plot subcards: a setting re-renders live, unless it's outside what the plot's run
+    // computed (its spec's staleOn) — then its result is cleared and it must run again.
+    const group = get().nodes.find((n) => n.id === groupId)
+    const prev =
+      group && isStep(group) && group.data.kind === 'plotGroup'
+        ? (group.data.config as PlotGroupConfig).children.find((c) => c.id === childId)
+        : undefined
     set((s) => ({
       nodes: s.nodes.map((n) => {
         if (n.id !== groupId || !isStep(n) || n.data.kind !== 'plotGroup') return n
@@ -1098,6 +1760,22 @@ export const useGraph = create<GraphState>()((set, get) => ({
           }
         }
       })
+    }))
+    if (!prev) return
+    const key = plotResultKey(groupId, childId)
+    const next = { ...prev.config, ...partial } as NodeConfig
+    if (!NODE_SPECS[prev.kind].staleOn?.(next, prev.config, get().results[key])) return
+    const results = { ...get().results }
+    delete results[key]
+    set((s) => ({
+      results,
+      nodes: s.nodes.map((n) =>
+        n.id === groupId && isStep(n)
+          ? withChildStatuses(n, (c) =>
+              c.id === childId ? { status: 'idle' } : { status: c.status ?? 'idle', error: c.error }
+            )
+          : n
+      )
     }))
   },
 
@@ -1134,6 +1812,12 @@ export const useGraph = create<GraphState>()((set, get) => ({
         ? (n.data.config as PlotGroupConfig).children.map((c) => childPanelId(n.id, c.id))
         : [n.id]
     )
+    // …and where each one's run result is held, so a plot that has run stays run in its new group.
+    const oldResultKeys = sel.flatMap((n) =>
+      n.data.kind === 'plotGroup'
+        ? (n.data.config as PlotGroupConfig).children.map((c) => plotResultKey(n.id, c.id))
+        : [n.id]
+    )
     const startId = get().nextId
     const children = toChildren(specs, startId)
     const groupId = `plotGroup-${startId + specs.length}`
@@ -1150,11 +1834,16 @@ export const useGraph = create<GraphState>()((set, get) => ({
     const selIds = new Set(sel.map((n) => n.id))
     set((s) => {
       const results = { ...s.results }
+      children.forEach((c, i) => {
+        const r = s.results[oldResultKeys[i]]
+        if (r) results[plotResultKey(groupId, c.id)] = r
+        delete results[oldResultKeys[i]]
+      })
       for (const nid of selIds) delete results[nid]
       return {
         nodes: elevate(
           [...s.nodes.filter((n) => !selIds.has(n.id)), makeGroupNode(groupId, pos, children)],
-          groupId
+          null
         ),
         edges: [
           ...s.edges.filter((e) => !selIds.has(e.target) && !selIds.has(e.source)),
@@ -1163,8 +1852,9 @@ export const useGraph = create<GraphState>()((set, get) => ({
         results,
         groupLayouts: remapLayouts(s.groupLayouts, layoutRemap),
         nextId: startId + specs.length + 1,
-        selectedId: groupId,
-        selectedSub: children[0]?.id ?? null
+        // Not opened on creation (see addNode).
+        selectedId: null,
+        selectedSub: null
       }
     })
   },
@@ -1174,43 +1864,52 @@ export const useGraph = create<GraphState>()((set, get) => ({
     const groups = ids
       .map((id) => nodes.find((n) => n.id === id))
       .filter((n): n is StepNode => !!n && isStep(n) && n.data.kind === 'plotGroup')
+      // A group of one has nothing to split.
+      .filter((n) => (n.data.config as PlotGroupConfig).children.length > 1)
     if (groups.length === 0) return
     get().commit()
     let nextId = get().nextId
     const addNodes: StepNode[] = []
     const addEdges: Edge[] = []
     const removeIds = new Set<string>()
-    // Each freed subcard becomes a standalone plot node; carry its saved grid slot over by
-    // remapping the old `${groupId}::${childId}` panel id to the new node id (see remapLayouts).
+    // Each subcard becomes its own plot group of one (every visualisation tile is a group); carry
+    // its saved grid slot over by remapping its `${groupId}::${childId}` panel id to the new tile's.
     const layoutRemap = new Map<string, string>()
+    // Each plot's run result follows it to its new tile.
+    const resultRemap = new Map<string, string>()
     for (const g of groups) {
       const upstream = edges.find((e) => e.target === g.id)?.source
       const kids = (g.data.config as PlotGroupConfig).children
       kids.forEach((c, i) => {
-        const nid = `${c.kind}-${nextId++}`
-        addNodes.push({
-          id: nid,
-          type: 'step',
-          position: { x: g.position.x + i * 28, y: g.position.y + i * 46 },
-          data: { kind: c.kind, config: structuredClone(c.config), status: 'idle' }
-        })
-        layoutRemap.set(childPanelId(g.id, c.id), nid)
+        const nid = `plotGroup-${nextId++}`
+        addNodes.push(
+          makeGroupNode(nid, { x: g.position.x + i * 28, y: g.position.y + i * 46 }, [
+            { ...c, config: structuredClone(c.config) }
+          ])
+        )
+        layoutRemap.set(childPanelId(g.id, c.id), childPanelId(nid, c.id))
+        resultRemap.set(plotResultKey(g.id, c.id), plotResultKey(nid, c.id))
         if (upstream) addEdges.push({ id: `e-${upstream}-${nid}`, source: upstream, target: nid })
       })
       removeIds.add(g.id)
     }
     set((s) => ({
-      nodes: elevate(
-        [...s.nodes.filter((n) => !removeIds.has(n.id)), ...addNodes],
-        addNodes[0]?.id ?? null
-      ),
+      nodes: elevate([...s.nodes.filter((n) => !removeIds.has(n.id)), ...addNodes], null),
       edges: [
         ...s.edges.filter((e) => !removeIds.has(e.source) && !removeIds.has(e.target)),
         ...addEdges
       ],
+      results: (() => {
+        const r = { ...s.results }
+        for (const [from, to] of resultRemap) {
+          if (r[from]) r[to] = r[from]
+          delete r[from]
+        }
+        return r
+      })(),
       groupLayouts: remapLayouts(s.groupLayouts, layoutRemap),
       nextId,
-      selectedId: addNodes[0]?.id ?? null,
+      selectedId: null,
       selectedSub: null
     }))
   },
@@ -1329,6 +2028,55 @@ export const useGraph = create<GraphState>()((set, get) => ({
     }))
   },
 
+  setGroupsCollapsed: (ids, collapsed) => {
+    const want = new Set(ids)
+    const hits = get().nodes.filter(
+      (n) =>
+        want.has(n.id) &&
+        isStep(n) &&
+        n.data.kind === 'plotGroup' &&
+        !!(n.data.config as PlotGroupConfig).collapsed !== collapsed
+    )
+    if (!hits.length) return
+    get().commit()
+    const ok = new Set(hits.map((n) => n.id))
+    // Folding or unfolding changes the tile's height, so bring it to the front of its neighbours.
+    lift(ok)
+    set((s) => ({
+      nodes: elevate(
+        s.nodes.map((n) =>
+          ok.has(n.id) && isStep(n)
+            ? { ...n, data: { ...n.data, config: { ...n.data.config, collapsed } as NodeConfig } }
+            : n
+        ),
+        s.selectedId
+      )
+    }))
+  },
+
+  tidyNodes: (ids) => {
+    const sel = ids
+      .map((id) => get().nodes.find((n) => n.id === id))
+      .filter((n): n is StepNode => !!n && isStep(n))
+    if (sel.length < 2) return
+    get().commit()
+    // Height as last drawn; one never drawn on the canvas (made in the form) is estimated — a
+    // plot group grows a row per plot.
+    const height = (n: StepNode): number =>
+      n.measured?.height ??
+      120 +
+        (n.data.kind === 'plotGroup'
+          ? ((n.data.config as PlotGroupConfig).children?.length ?? 0) * 30
+          : 0)
+    const pos = tidyLayout(
+      sel.map((n) => ({ id: n.id, x: n.position.x, y: n.position.y, h: height(n) })),
+      get().edges
+    )
+    set((s) => ({
+      nodes: s.nodes.map((n) => (pos.has(n.id) ? { ...n, position: pos.get(n.id)! } : n))
+    }))
+  },
+
   cascadeNodes: (ids) => {
     const sel = ids
       .map((id) => get().nodes.find((n) => n.id === id))
@@ -1393,14 +2141,57 @@ export const useGraph = create<GraphState>()((set, get) => ({
     const node = state.nodes.find((n) => n.id === id)
     if (!node || !isStep(node)) return
     const kind = node.data.kind
-    const setStatus = (status: NodeData['status'], error?: string) =>
+    // A finished run stores new results, and results are saved in the project — so it's an unsaved
+    // change: without marking it, Save stayed disabled ("All changes saved") after a run, and
+    // closing didn't offer to save.
+    const setStatus = (status: NodeData['status'], error?: string, note?: string) =>
       set((s) => ({
         nodes: s.nodes.map((n) =>
-          n.id === id && isStep(n) ? { ...n, data: { ...n.data, status, error } } : n
-        )
+          n.id === id && isStep(n) ? { ...n, data: { ...n.data, status, error, note } } : n
+        ),
+        ...(status === 'done' ? { dirty: true } : {})
       }))
 
     const upId = state.upstreamId(id)
+
+    // Plots: a group runs each of its plots (each with its own status); a plot computes what it
+    // needs to be viewed (plotRun.ts).
+    if (kind === 'plotGroup') {
+      // The plots not done yet — or, when all are (Re-run), every one.
+      const kids = (node.data.config as PlotGroupConfig).children
+      const todo = kids.some((c) => c.status !== 'done')
+        ? kids.filter((c) => c.status !== 'done')
+        : kids
+      for (const c of todo) {
+        await get().runPlotChild(id, c.id)
+        // Stopped (the plot was set back to idle): leave the rest as they are.
+        const g = get().nodes.find((n) => n.id === id)
+        const now =
+          g && isStep(g)
+            ? (g.data.config as PlotGroupConfig).children.find((x) => x.id === c.id)
+            : undefined
+        if (!now || (now.status ?? 'idle') === 'idle') return
+      }
+      return
+    }
+    if (categoryOf(kind) === 'plotting') {
+      setStatus('running')
+      try {
+        const r = await runPlot(
+          kind,
+          node.data.config,
+          upId ? get().results[upId] : undefined,
+          () => get().nodes.find((n) => n.id === id)?.data.status !== 'running'
+        )
+        if (get().nodes.find((n) => n.id === id)?.data.status !== 'running') return // cancelled
+        set((s) => ({ results: { ...s.results, [id]: r } }))
+        setStatus('done')
+      } catch (err) {
+        if (get().nodes.find((n) => n.id === id)?.data.status !== 'running') return
+        setStatus('error', err instanceof Error ? err.message : String(err))
+      }
+      return
+    }
 
     try {
       if (kind === 'standardize') {
@@ -1423,13 +2214,12 @@ export const useGraph = create<GraphState>()((set, get) => ({
           return
         }
         setStatus('running')
-        // Generated standard files may live under the workflow's own subfolder; the read falls back
-        // to the shared data-folder root, so a lone workflow's flat files, manual-mode files, and
-        // pre-workflow-level projects all still resolve.
-        const wf = readScope(state)
+        // Generated standard files live in the workflow's folder; the read falls back to the shared
+        // data-folder root, so your own input files and older projects' flat ones still resolve.
+        const wf = locationOf(state)?.scope
         // The file is being read afresh: drop its cached preview so the settings re-read it too
         // (a re-converted import keeps the same file name).
-        scalePreviews.delete(`${dir}|${wf ?? ''}|${load.data}`)
+        scalePreviews.delete(`${dir}|${wf?.base ?? ''}|${load.data}`)
         const [dataText, samplesheetText, dbText] = await Promise.all([
           window.api.readDataFile(dir, load.data, wf),
           window.api.readDataFile(dir, load.samplesheet, wf),
@@ -1470,13 +2260,13 @@ export const useGraph = create<GraphState>()((set, get) => ({
         })
         if (get().nodes.find((n) => n.id === id)?.data.status !== 'running') return // cancelled
         set((s) => ({ results: { ...s.results, [id]: { kind: 'standardize', std } } }))
-        setStatus('done')
-        void window.api.writeTempFile(
-          dir,
-          `${id}.standardized.csv`,
-          // On its presented scale (the chosen log-transform); the result's own rows stay linear.
-          rowsToCsv(presentStd(std).rows as unknown as Array<Record<string, unknown>>),
-          writeScope(state)
+        // A DB is optional, so a missing one doesn't stop the run — but say so.
+        setStatus(
+          'done',
+          undefined,
+          load.db && dbText == null
+            ? `DB file not found (${load.db}) — ran without annotations.`
+            : undefined
         )
         get().invalidateDownstream(id)
       } else if (kind === 'merge') {
@@ -1514,6 +2304,15 @@ export const useGraph = create<GraphState>()((set, get) => ({
           return
         }
         const std = combineStandardize(stds)
+        const cleanId = state.upstreamIds(id).find((u) => state.results[u]?.kind === 'standardize')
+        const cleanNode = cleanId ? state.nodes.find((n) => n.id === cleanId) : undefined
+        const testsLogged =
+          presentScaleOf(
+            stds[0],
+            cleanNode && isStep(cleanNode)
+              ? (cleanNode.data.config as StandardizeConfig).logTransform
+              : undefined
+          ) !== 'linear'
         // Migrate any legacy veh_norm/direct config to the explicit num/den/match model, and
         // persist it so the stored workflow is updated on first run.
         const cfg = normalizeCompareConfig(node.data.config as CompareConfig)
@@ -1521,7 +2320,26 @@ export const useGraph = create<GraphState>()((set, get) => ({
           get().updateConfig(id, cfg as unknown as Record<string, unknown>)
 
         let cmp: CompareTableResult
-        if (cfg.analysis === 'compare') {
+        if (cfg.analysis === 'curve_fit') {
+          const numPinned = Object.values(cfg.num).some((v) => v && v.length > 0)
+          const denPinned = Object.values(cfg.den).some((v) => v && v.length > 0)
+          if (!numPinned || !denPinned) {
+            setStatus('error', 'Open “Configure comparison” to define the treatment and control.')
+            return
+          }
+          setStatus('running')
+          // Fitted on ratios to the control of the linear values (CurveCurator's definition), so
+          // Clean data's log-transform setting doesn't enter.
+          cmp = await engine.curveFit({
+            rows: std.rows,
+            num: cfg.num,
+            den: cfg.den,
+            match: cfg.match,
+            activeConditions: std.activeConditions,
+            curveAxis: cfg.curveAxis ?? 'dose',
+            threshold: cfg.threshold
+          })
+        } else if (cfg.analysis === 'compare') {
           const numPinned = Object.values(cfg.num).some((v) => v && v.length > 0)
           const denPinned = Object.values(cfg.den).some((v) => v && v.length > 0)
           if (!numPinned || !denPinned) {
@@ -1536,7 +2354,10 @@ export const useGraph = create<GraphState>()((set, get) => ({
             match: cfg.match,
             activeConditions: std.activeConditions,
             method: cfg.method,
-            transform: cfg.transform,
+            // Tested on Clean data's scale: in log space when it presents its values logged (a
+            // log₂ or log₁₀ choice, or an already-logged input left as it arrived), on the values
+            // as they are when not. The first Clean data input decides.
+            transform: testsLogged,
             threshold: cfg.threshold
           })
         } else {
@@ -1586,18 +2407,23 @@ export const useGraph = create<GraphState>()((set, get) => ({
           }
         }))
         setStatus('done')
-        const dir = get().dataDir
-        if (dir)
-          void window.api.writeTempFile(
-            dir,
-            `${id}.${cfg.analysis}.csv`,
-            rowsToCsv(cmp.rows as unknown as Array<Record<string, unknown>>),
-            writeScope(get())
-          )
         get().invalidateDownstream(id)
       } else if (kind === 'contrast') {
         const cfg = node.data.config as ContrastConfig
         const ups = state.upstreamIds(id)
+        // The Clean data a Compare input ran on (its Standardize inputs pooled, as its run does) —
+        // the source of each side's replicates. Undefined for anything but a Compare.
+        const compareStd = (cid: string): StandardRow[] | undefined => {
+          if (state.results[cid]?.kind !== 'compare') return undefined
+          const stds = state
+            .upstreamIds(cid)
+            .map((u) => state.results[u])
+            .filter(
+              (r): r is Extract<NodeResult, { kind: 'standardize' }> => r?.kind === 'standardize'
+            )
+            .map((r) => r.std)
+          return stds.length ? combineStandardize(stds).rows : undefined
+        }
         let ctr: ContrastResult
         let displayMap: Record<string, string>
         if (resolveContrastSource(cfg, ups.length) === 'pair') {
@@ -1627,8 +2453,8 @@ export const useGraph = create<GraphState>()((set, get) => ({
           }
           setStatus('running')
           ctr = await engine.contrastPair({
-            sideA: toContrastSide(ra),
-            sideB: toContrastSide(rb),
+            sideA: toContrastSide(ra, compareStd(idA)),
+            sideB: toContrastSide(rb, compareStd(idB)),
             match: cfg.match ?? [],
             fix: cfg.pairFix,
             relationship: cfg.relationship,
@@ -1654,9 +2480,8 @@ export const useGraph = create<GraphState>()((set, get) => ({
           // Several inputs wired: the groups come from the ONE the config picks (the others are
           // idle for this tile). A single input needs no pick.
           const from = selectSource(cfg, ups)
-          const upResults = (from ? [from] : ups)
-            .map((u) => state.results[u])
-            .filter((r): r is NodeResult => !!r)
+          const fromIds = from ? [from] : ups
+          const upResults = fromIds.map((u) => state.results[u]).filter((r): r is NodeResult => !!r)
           const compares = upResults.filter(
             (r): r is Extract<NodeResult, { kind: 'compare' }> => r.kind === 'compare'
           )
@@ -1668,6 +2493,40 @@ export const useGraph = create<GraphState>()((set, get) => ({
             return
           }
           const isAbundance = !compares.length // all-Standardize input → abundance split
+          // Each pooled row's replicates (on its value's scale), for the DR's points.
+          const repsOf = new WeakMap<CompareResultRow, number[]>()
+          // One abundance group as a pseudo primary row: its mean log10 abundance, with the
+          // replicate SE carried as fcSE (the DR error band).
+          const poolRow = (row: StandardRow, logs: number[]): CompareResultRow => {
+            const mean = logs.reduce((s, v) => s + v, 0) / logs.length
+            // SE of the mean abundance = SD / √n (matches the fold-change SE convention).
+            const sd =
+              logs.length >= 2
+                ? Math.sqrt(logs.reduce((s, v) => s + (v - mean) ** 2, 0) / (logs.length - 1)) /
+                  Math.sqrt(logs.length)
+                : null
+            return {
+              uniqID: row.uniqID,
+              cmpd: row.cmpd,
+              dose: row.dose,
+              time: row.time,
+              cell: row.cell,
+              ...(row.extra ? { extra: row.extra } : null),
+              cmp_cond: '',
+              comparison: '',
+              mean1: null,
+              mean2: null,
+              sd1: null,
+              sd2: null,
+              log2FC: mean,
+              fcSE: sd,
+              pP: null,
+              pQ: null,
+              thrsh: '',
+              signf: false,
+              effect: 'none'
+            }
+          }
           // Standardize → pseudo primary rows. Replicates are aggregated per (gene × conditions) to
           // mean log10 abundance, with the replicate SD carried as fcSE (the DR error band). This
           // both collapses replicates cleanly and gives an honest per-condition abundance spread.
@@ -1688,38 +2547,24 @@ export const useGraph = create<GraphState>()((set, get) => ({
                   g.logs.push(Math.log10(row.value))
                 }
                 return [...groups.values()].map(({ row, logs }): CompareResultRow => {
-                  const mean = logs.reduce((s, v) => s + v, 0) / logs.length
-                  // SE of the mean abundance = SD / √n (matches the fold-change SE convention).
-                  const sd =
-                    logs.length >= 2
-                      ? Math.sqrt(
-                          logs.reduce((s, v) => s + (v - mean) ** 2, 0) / (logs.length - 1)
-                        ) / Math.sqrt(logs.length)
-                      : null
-                  return {
-                    uniqID: row.uniqID,
-                    cmpd: row.cmpd,
-                    dose: row.dose,
-                    time: row.time,
-                    cell: row.cell,
-                    ...(row.extra ? { extra: row.extra } : null),
-                    cmp_cond: '',
-                    comparison: '',
-                    mean1: null,
-                    mean2: null,
-                    sd1: null,
-                    sd2: null,
-                    log2FC: mean,
-                    fcSE: sd,
-                    pP: null,
-                    pQ: null,
-                    thrsh: '',
-                    signf: false,
-                    effect: 'none'
-                  }
+                  const out = poolRow(row, logs)
+                  repsOf.set(out, logs)
+                  return out
                 })
               })()
             : compares.flatMap((r) => r.cmp.rows)
+          // A Compare's rows: each replicate's log2 ratio to the control mean.
+          if (!isAbundance)
+            for (const cid of fromIds) {
+              const r = state.results[cid]
+              const cstd = compareStd(cid)
+              if (r?.kind !== 'compare' || !cstd) continue
+              const byGene = stdByGene(cstd)
+              for (const row of r.cmp.rows) {
+                const reps = replicateLog2FCs(row, byGene.get(row.uniqID) ?? [])
+                if (reps.length) repsOf.set(row, reps)
+              }
+            }
           if (!pooled.length) {
             setStatus('error', 'The upstream tile has no results.')
             return
@@ -1753,7 +2598,8 @@ export const useGraph = create<GraphState>()((set, get) => ({
             effect: row.effect,
             pP: row.pP,
             pQ: row.pQ,
-            se: row.fcSE ?? null
+            se: row.fcSE ?? null,
+            ...(repsOf.has(row) ? { reps: repsOf.get(row) } : null)
           })
           const selLabel = (sel: CondSelector): string => {
             const parts = selConds
@@ -1789,14 +2635,6 @@ export const useGraph = create<GraphState>()((set, get) => ({
         ctr = { ...ctr, rows: maskSignf(ctr.rows, hiddenGeneIds(get())) }
         set((s) => ({ results: { ...s.results, [id]: { kind: 'contrast', ctr, displayMap } } }))
         setStatus('done')
-        const dir = get().dataDir
-        if (dir)
-          void window.api.writeTempFile(
-            dir,
-            `${id}.contrast.csv`,
-            rowsToCsv(ctr.rows as unknown as Array<Record<string, unknown>>),
-            writeScope(get())
-          )
         get().invalidateDownstream(id)
       }
     } catch (err) {
@@ -1810,44 +2648,116 @@ export const useGraph = create<GraphState>()((set, get) => ({
     engine.cancel()
     set((s) => ({
       nodes: s.nodes.map((n) =>
-        n.id === id && isStep(n)
-          ? { ...n, data: { ...n.data, status: 'idle', error: undefined } }
-          : n
+        n.id !== id || !isStep(n)
+          ? n
+          : n.data.kind === 'plotGroup'
+            ? // its running plot stops; the others keep what they have
+              withChildStatuses(n, (c) =>
+                c.status === 'running'
+                  ? { status: 'idle' }
+                  : { status: c.status ?? 'idle', error: c.error }
+              )
+            : { ...n, data: { ...n.data, status: 'idle', error: undefined } }
       )
     }))
+  },
+
+  runPlotChild: async (groupId, childId) => {
+    const group = get().nodes.find((n) => n.id === groupId)
+    if (!group || !isStep(group) || group.data.kind !== 'plotGroup') return
+    const child = (group.data.config as PlotGroupConfig).children.find((c) => c.id === childId)
+    if (!child) return
+    const key = plotResultKey(groupId, childId)
+    const childOf = (): PlotChild | undefined => {
+      const g = get().nodes.find((n) => n.id === groupId)
+      return g && isStep(g)
+        ? (g.data.config as PlotGroupConfig).children.find((c) => c.id === childId)
+        : undefined
+    }
+    const setChild = (status: StepStatus, error?: string): void =>
+      set((s) => ({
+        nodes: s.nodes.map((n) =>
+          n.id === groupId && isStep(n)
+            ? withChildStatuses(n, (c) =>
+                c.id === childId
+                  ? { status, error }
+                  : { status: c.status ?? 'idle', error: c.error }
+              )
+            : n
+        ),
+        // A finished run stores a result saved with the project — an unsaved change.
+        ...(status === 'done' ? { dirty: true } : {})
+      }))
+    setChild('running')
+    const upId = get().upstreamId(groupId)
+    try {
+      const r = await runPlot(
+        child.kind,
+        child.config,
+        upId ? get().results[upId] : undefined,
+        () => childOf()?.status !== 'running'
+      )
+      if (childOf()?.status !== 'running') return // cancelled
+      set((s) => ({ results: { ...s.results, [key]: r } }))
+      setChild('done')
+    } catch (err) {
+      if (childOf()?.status !== 'running') return
+      setChild('error', err instanceof Error ? err.message : String(err))
+    }
+  },
+
+  rerunFrom: async (id) => {
+    await get().runNode(id)
+    if (get().nodes.find((n) => n.id === id && isStep(n))?.data.status !== 'done') return
+    const { edges } = get()
+    const downstream = new Set<string>()
+    let frontier = [id]
+    while (frontier.length) {
+      const next: string[] = []
+      for (const f of frontier)
+        for (const e of edges)
+          if (e.source === f && !downstream.has(e.target)) {
+            downstream.add(e.target)
+            next.push(e.target)
+          }
+      frontier = next
+    }
+    // The node list keeps every step after its inputs (sortStepsByWiring), so its order runs
+    // each downstream step after what it reads.
+    for (const n of get().nodes) {
+      if (!downstream.has(n.id)) continue
+      const kind = get().nodeKind(n.id)
+      if (!kind || !NODE_SPECS[kind].hasRun) continue
+      await get().runNode(n.id)
+      if (get().nodes.find((x) => x.id === n.id && isStep(x))?.data.status === 'error') return
+    }
   },
 
   runAll: async () => {
     if (get().runningAll) return
     const { nodes, edges } = get()
-    const steps = nodes.filter(isStep)
-    const ids = new Set(steps.map((n) => n.id))
-    // Kahn topological sort so a step never runs before its upstream is done.
-    const indeg = new Map<string, number>(steps.map((n) => [n.id, 0]))
-    const dag = edges.filter((e) => ids.has(e.source) && ids.has(e.target))
-    for (const e of dag) indeg.set(e.target, (indeg.get(e.target) ?? 0) + 1)
-    const queue = steps.filter((n) => (indeg.get(n.id) ?? 0) === 0).map((n) => n.id)
-    const order: string[] = []
-    while (queue.length) {
-      const id = queue.shift() as string
-      order.push(id)
-      for (const e of dag) {
-        if (e.source !== id) continue
-        const d = (indeg.get(e.target) ?? 0) - 1
-        indeg.set(e.target, d)
-        if (d === 0) queue.push(e.target)
-      }
-    }
-    for (const n of steps) if (!order.includes(n.id)) order.push(n.id) // cycle safety
+    // Branch by branch: a finished branch can be viewed while the others still run (runOrder).
+    const order = runOrder(
+      nodes.filter(isStep).map((n) => n.id),
+      edges
+    )
 
     set({ runningAll: true })
+    // Steps below a failed one: they'd only fail too, so they're skipped — but the other branches
+    // still run.
+    const skipped = new Set<string>()
     for (const id of order) {
       if (!get().runningAll) break // stopped by the user
+      if (skipped.has(id)) continue
       const kind = get().nodeKind(id)
       if (!kind || !NODE_SPECS[kind].hasRun) continue
       await get().runNode(id)
-      // a failed step means everything downstream would fail too → stop the chain
-      if (get().nodes.find((n) => n.id === id)?.data.status === 'error') break
+      // A plot's failure skips nothing — nothing reads from it.
+      if (
+        categoryOf(kind) !== 'plotting' &&
+        get().nodes.find((n) => n.id === id)?.data.status === 'error'
+      )
+        for (const d of downstreamOf(id, get().edges)) skipped.add(d)
     }
     set({ runningAll: false })
   },
@@ -1857,9 +2767,16 @@ export const useGraph = create<GraphState>()((set, get) => ({
     set((s) => ({
       runningAll: false,
       nodes: s.nodes.map((n) =>
-        isStep(n) && n.data.status === 'running'
-          ? { ...n, data: { ...n.data, status: 'idle', error: undefined } }
-          : n
+        !isStep(n) || n.data.status !== 'running'
+          ? n
+          : n.data.kind === 'plotGroup'
+            ? // its running plot stops; the others keep what they have
+              withChildStatuses(n, (c) =>
+                c.status === 'running'
+                  ? { status: 'idle' }
+                  : { status: c.status ?? 'idle', error: c.error }
+              )
+            : { ...n, data: { ...n.data, status: 'idle', error: undefined } }
       )
     }))
   },
@@ -1881,27 +2798,24 @@ export const useGraph = create<GraphState>()((set, get) => ({
     if (downstream.size === 0) return
     const clearedResults = { ...results }
     for (const d of downstream) delete clearedResults[d]
-    set({
-      results: clearedResults,
-      nodes: nodes.map((n) =>
-        downstream.has(n.id) && isStep(n)
-          ? { ...n, data: { ...n.data, status: 'idle', error: undefined } }
-          : n
-      )
-    })
+    const idled = nodes.map((n) =>
+      downstream.has(n.id) && isStep(n)
+        ? { ...n, data: { ...n.data, status: 'idle' as const, error: undefined } }
+        : n
+    )
+    // …and a group tile's plots, each kept under its own key.
+    set(clearPlotResults(idled, clearedResults, downstream))
   },
 
   markStale: (id) => {
     const results = { ...get().results }
     delete results[id]
-    set((s) => ({
-      results,
-      nodes: s.nodes.map((n) =>
-        n.id === id && isStep(n)
-          ? { ...n, data: { ...n.data, status: 'idle', error: undefined } }
-          : n
-      )
-    }))
+    const idled = get().nodes.map((n) =>
+      n.id === id && isStep(n)
+        ? { ...n, data: { ...n.data, status: 'idle' as const, error: undefined } }
+        : n
+    )
+    set(clearPlotResults(idled, results, new Set([id])))
     get().invalidateDownstream(id)
   },
 
@@ -1919,7 +2833,10 @@ export const useGraph = create<GraphState>()((set, get) => ({
   initProject: () => {
     // Show the home page on launch; a project is created/opened from there.
     set({ recentProjects: loadRecents(), projectOpen: false })
-    return Promise.resolve()
+    return window.api
+      .scratchDir()
+      .then((scratchRoot) => set({ scratchRoot }))
+      .catch(() => undefined)
   },
   goHome: () => {
     // Flush live edits back into the project so switching away loses nothing.
@@ -1949,9 +2866,9 @@ export const useGraph = create<GraphState>()((set, get) => ({
       projectOpen: true,
       folders: proj.folders,
       activeFolderId: proj.activeFolderId,
-      saveDir: null,
       dirty: false,
-      inputFiles: []
+      inputFiles: [],
+      inputFileFolders: {}
     })
     loadSlot(get, set, proj.activeFolderId)
     // A fresh project always starts on the Workflow canvas.
@@ -1970,6 +2887,13 @@ export const useGraph = create<GraphState>()((set, get) => ({
         if (!picked) return
         p = picked.path
         text = picked.content
+      }
+      // Saved by a newer app: it may still open, so warn and carry on rather than refuse.
+      const savedBy = savedByVersion(text)
+      const current = typeof __APP_VERSION__ === 'string' ? __APP_VERSION__ : null
+      if (savedBy && current && isNewerVersion(savedBy, current)) {
+        const file = p ? (p.split(/[/\\]/).pop() ?? p) : 'This project'
+        await window.api.warnNewerProject(file, savedBy, current)
       }
       const proj = deserializeProject(text)
       // The project's display name follows its filename (like Save As), so renaming the
@@ -1999,7 +2923,6 @@ export const useGraph = create<GraphState>()((set, get) => ({
         projectOpen: true,
         folders,
         activeFolderId,
-        saveDir: proj.saveDir ?? null,
         dirty: false,
         recentProjects: pushRecent(get().recentProjects, { path: p as string, name: projectName })
       })
@@ -2026,9 +2949,23 @@ export const useGraph = create<GraphState>()((set, get) => ({
     syncActiveSlot(get, set)
     if (!get().projectPath) return get().saveProjectAs()
     const path = get().projectPath as string
-    await window.api.saveProject(path, serializeProject(buildProjectFile(get)))
+    set({ saving: true })
+    let warnings: string[]
+    try {
+      warnings = await applyDiskLayout(get, set, 'rename')
+      syncActiveSlot(get, set) // edits made while folders moved
+      const file = await withParkedResults(buildProjectFile(get))
+      await window.api.saveProject(path, serializeProjectChunks(file))
+    } catch (err) {
+      set({ saveError: saveErrorText(err) })
+      return false
+    } finally {
+      set({ saving: false })
+    }
     set({
       dirty: false,
+      saveError: null,
+      saveWarning: layoutWarning(warnings),
       recentProjects: pushRecent(get().recentProjects, { path, name: get().projectName })
     })
     return true
@@ -2038,9 +2975,32 @@ export const useGraph = create<GraphState>()((set, get) => ({
     if (!path) return false
     const name = (path.split(/[/\\]/).pop() ?? 'project').replace(/\.omicexplorer$/i, '')
     syncActiveSlot(get, set)
+    const prevPath = get().projectPath
     set({ projectPath: path, projectName: name })
-    await window.api.saveProject(path, serializeProject(buildProjectFile(get)))
-    set({ dirty: false, recentProjects: pushRecent(get().recentProjects, { path, name }) })
+    set({ saving: true })
+    let warnings: string[]
+    try {
+      // First save: out of scratch. A new file: copy the data (the original keeps its own).
+      warnings = await applyDiskLayout(
+        get,
+        set,
+        !prevPath ? 'first' : prevPath !== path ? 'copy' : 'rename'
+      )
+      syncActiveSlot(get, set)
+      const file = await withParkedResults(buildProjectFile(get))
+      await window.api.saveProject(path, serializeProjectChunks(file))
+    } catch (err) {
+      set({ saveError: saveErrorText(err) })
+      return false
+    } finally {
+      set({ saving: false })
+    }
+    set({
+      dirty: false,
+      saveError: null,
+      saveWarning: layoutWarning(warnings),
+      recentProjects: pushRecent(get().recentProjects, { path, name })
+    })
     return true
   },
   refreshDataFiles: async () => {
@@ -2065,7 +3025,14 @@ export const useGraph = create<GraphState>()((set, get) => ({
       set({ inputFiles: [], dataDirMissing: true })
       return
     }
-    set({ inputFiles: await window.api.listDataFiles(dir), dataDirMissing: false })
+    const scope = locationOf(get())?.scope
+    // Folders are best-effort: a main process from before a restart has no listWhere.
+    const folders = await window.api.listDataFileFolders?.(dir, scope).catch(() => ({}))
+    set({
+      inputFiles: await window.api.listDataFiles(dir, scope),
+      inputFileFolders: folders ?? {},
+      dataDirMissing: false
+    })
   },
 
   detectInteractive: async (id, preset = 'none') => {
@@ -2147,12 +3114,18 @@ export const useGraph = create<GraphState>()((set, get) => ({
       samplesheet: `${base}_samplesheet.csv`,
       db: `${base}_DB.csv`
     }
-    // Generated files nest under the workflow's subfolder when the data folder holds more than one
-    // workflow (else they go flat into the shared data folder).
-    const wf = writeScope(get())
-    await window.api.writeInputFile(dir, files.data, adapted.dataText, wf)
-    await window.api.writeInputFile(dir, files.samplesheet, adapted.samplesheetText, wf)
-    await window.api.writeInputFile(dir, files.db, adapted.dbText, wf)
+    // Generated files go to the workflow folder's input/.
+    try {
+      await diskWrite(async () => {
+        const wf = locationOf(get())?.scope
+        await window.api.writeInputFile(dir, files.data, adapted.dataText, wf)
+        await window.api.writeInputFile(dir, files.samplesheet, adapted.samplesheetText, wf)
+        await window.api.writeInputFile(dir, files.db, adapted.dbText, wf)
+      })
+    } catch (e) {
+      void get().refreshDataFiles()
+      return { ok: false, error: e instanceof Error ? e.message : 'Failed to write inputs.' }
+    }
     // Point the Load tile's standard fields at the generated files — from here the
     // pipeline runs the standard path, identical to a manual custom-format project.
     get().updateConfig(id, { data: files.data, samplesheet: files.samplesheet, db: files.db })
@@ -2266,6 +3239,7 @@ export const useGraph = create<GraphState>()((set, get) => ({
       dirty: true
     })
     loadSlot(get, set, folder.id, wf.id)
+    void get().refreshDataFiles()
     // A new workflow is empty and built on the canvas — land there rather than leaving the user
     // on a now-blank Results dashboard (which reads as "stuck").
     useAppView.getState().setView('canvas')
@@ -2275,6 +3249,7 @@ export const useGraph = create<GraphState>()((set, get) => ({
     syncActiveSlot(get, set)
     const fid = get().activeFolderId
     if (fid) loadSlot(get, set, fid, id)
+    void get().refreshDataFiles()
   },
   renameWorkflow: (id, name) => {
     const clean = name.trim() || 'Workflow'
@@ -2285,6 +3260,7 @@ export const useGraph = create<GraphState>()((set, get) => ({
       })),
       dirty: true
     })
+    if (id === get().activeWorkflowId) void get().refreshDataFiles()
   },
   deleteWorkflow: (id) => {
     const folder = activeFolder(get())
@@ -2295,7 +3271,10 @@ export const useGraph = create<GraphState>()((set, get) => ({
       folders: get().folders.map((f) => (f.id === folder.id ? { ...f, workflows: remaining } : f)),
       dirty: true
     })
-    if (wasActive) loadSlot(get, set, folder.id, remaining[0].id)
+    if (wasActive) {
+      loadSlot(get, set, folder.id, remaining[0].id)
+      void get().refreshDataFiles()
+    }
   },
   setGroupLayout: (rootId, layout) => {
     set((s) => ({ groupLayouts: { ...s.groupLayouts, [rootId]: layout }, dirty: true }))
@@ -2360,12 +3339,12 @@ export const useGraph = create<GraphState>()((set, get) => ({
     })
   },
   deleteGeneSet: (id) => {
-    set((s) => {
-      if (!s.geneSets.some((g) => g.id === id)) return {}
-      return { geneSets: s.geneSets.filter((g) => g.id !== id), dirty: true }
-    })
-    // Deleting a hidden set changes the mask → re-apply.
-    reapplyGeneMask(get, set)
+    const gone = get().geneSets.find((g) => g.id === id)
+    if (!gone) return
+    set((s) => ({ geneSets: s.geneSets.filter((g) => g.id !== id), dirty: true }))
+    // Only a HIDDEN set is part of the mask. Re-applying it rebuilds every Compare result (so every
+    // plot redraws) and re-runs every Contrast — work a visible set's deletion doesn't need.
+    if (gone.hidden) reapplyGeneMask(get, set)
   },
   toggleGeneSetHidden: (id) => {
     set((s) => {
@@ -2380,23 +3359,29 @@ export const useGraph = create<GraphState>()((set, get) => ({
 
   // ── undo / redo ────────────────────────────────────────────────────────────
   commit: () => {
-    const { nodes, edges, nextId, past } = get()
-    const snap: Snapshot = {
-      nodes: structuredClone(nodes),
-      edges: structuredClone(edges),
-      nextId
-    }
+    const { nodes, edges, nextId, past, frames } = get()
+    // A snapshot keeps the current lists by REFERENCE, not a deep copy: every change replaces the
+    // objects it touches (never edits them in place), so an untouched node — say an interactive
+    // Load holding megabytes of fetched annotations — is shared by every step of the history
+    // instead of copied into each.
+    const snap: Snapshot = { nodes, edges, nextId, frames }
     set({ past: [...past, snap].slice(-50), future: [], dirty: true })
   },
   undo: () => {
-    const { past, future, nodes, edges, nextId } = get()
+    const { past, future, nodes, edges, nextId, frames } = get()
     if (past.length === 0) return
     const prev = past[past.length - 1]
-    const cur: Snapshot = { nodes: structuredClone(nodes), edges: structuredClone(edges), nextId }
+    const cur: Snapshot = {
+      nodes,
+      edges,
+      nextId,
+      frames
+    }
     set({
       nodes: prev.nodes,
       edges: prev.edges,
       nextId: prev.nextId,
+      frames: prev.frames ?? frames,
       past: past.slice(0, -1),
       future: [...future, cur],
       results: {},
@@ -2405,14 +3390,20 @@ export const useGraph = create<GraphState>()((set, get) => ({
     })
   },
   redo: () => {
-    const { past, future, nodes, edges, nextId } = get()
+    const { past, future, nodes, edges, nextId, frames } = get()
     if (future.length === 0) return
     const next = future[future.length - 1]
-    const cur: Snapshot = { nodes: structuredClone(nodes), edges: structuredClone(edges), nextId }
+    const cur: Snapshot = {
+      nodes,
+      edges,
+      nextId,
+      frames
+    }
     set({
       nodes: next.nodes,
       edges: next.edges,
       nextId: next.nextId,
+      frames: next.frames ?? frames,
       future: future.slice(0, -1),
       past: [...past, cur],
       results: {},
@@ -2448,6 +3439,53 @@ useGraph.subscribe((s, prev) => {
 })
 useAppView.subscribe((s, prev) => {
   if (s.view !== prev.view || s.resultsTab !== prev.resultsTab) rememberLastView()
+})
+
+// ── Form → Flow: tidy the canvas ─────────────────────────────────────────────
+// The form has no canvas positions to speak of (it stacks steps as a list), so arriving on the
+// canvas from it lays every tile out with Tidy — a readable left-to-right flow. Undoable.
+useAppSettings.subscribe((s, prev) => {
+  if (prev.uiStyle !== 'form' || s.uiStyle !== 'flow') return
+  const g = useGraph.getState()
+  g.tidyNodes(g.nodes.filter(isStep).map((n) => n.id))
+})
+
+// ── plot-group runs kept in step with the group's plots ──────────────────────
+// A group tile's plots change in many ways (add, remove, group / ungroup, duplicate, undo …). After
+// any of them: each plot's status follows whether its result is held (running and failed ones stay
+// as they are), the group's rolls up from its plots', and results of plots no longer in a group are
+// dropped. Nodes are replaced only when something actually changed, so a drag costs nothing.
+useGraph.subscribe((s, prev) => {
+  if (s.nodes === prev.nodes) return
+  let changed = false
+  const nodes = s.nodes.map((n) => {
+    if (!isStep(n) || n.data.kind !== 'plotGroup') return n
+    const kids = (n.data.config as PlotGroupConfig).children
+    const want = kids.map((c) =>
+      c.status === 'running' || (c.status === 'error' && !s.results[plotResultKey(n.id, c.id)])
+        ? { status: c.status, error: c.error }
+        : { status: (s.results[plotResultKey(n.id, c.id)] ? 'done' : 'idle') as StepStatus }
+    )
+    const roll = groupStatus(kids.map((c, i) => ({ ...c, ...want[i] })))
+    const same =
+      kids.every((c, i) => (c.status ?? 'idle') === want[i].status) &&
+      n.data.status === roll.status &&
+      (n.data.error ?? undefined) === (roll.error ?? undefined)
+    if (same) return n
+    changed = true
+    return withChildStatuses(n, (c) => want[kids.indexOf(c)])
+  })
+  // Results of plots that are no longer any group's.
+  const live = new Set<string>()
+  for (const n of nodes)
+    if (isStep(n) && n.data.kind === 'plotGroup')
+      for (const c of (n.data.config as PlotGroupConfig).children)
+        live.add(plotResultKey(n.id, c.id))
+  const orphans = Object.keys(s.results).filter((k) => k.includes('/') && !live.has(k))
+  if (!changed && orphans.length === 0) return
+  const results = { ...s.results }
+  for (const k of orphans) delete results[k]
+  useGraph.setState({ ...(changed ? { nodes } : null), ...(orphans.length ? { results } : null) })
 })
 
 // ── unsaved-changes guard (main-process close prompt) ────────────────────────

@@ -27,3 +27,13 @@ test_project/
 test.omicexplorer
 test_examples/pressure_test/
 test_examples/decryptE_demo/
+test_examples/kinobeads
+test_examples/decryptM/
+# Synthetic curve-fit benchmark — kept local (generator, calibration, generated data)
+test_examples/SynthData/
+
+# Curve-fit benchmark evaluation — kept local
+bench/
+
+# Design docs — kept local
+docs/

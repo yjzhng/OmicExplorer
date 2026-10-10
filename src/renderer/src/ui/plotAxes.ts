@@ -71,6 +71,11 @@ function applyAxis(
   extent: () => [number, number] | undefined
 ): Record<string, unknown> {
   const out: Record<string, unknown> = { ...ax }
+  // On a log axis Plotly takes the range and tick step in log₁₀ units; the settings are in the
+  // axis's own (data) units, so they're converted — a range of 1–1000 is [0, 3], an interval of
+  // 10 a tick every decade.
+  const log = ax.type === 'log'
+  const toAxis = (v: number): number => (log ? (v > 0 ? Math.log10(v) : NaN) : v)
   // Title: the view's may be a string or { text, font }. Keep its text unless overridden; keep
   // its font, sized per the style.
   const t = ax.title
@@ -86,9 +91,11 @@ function applyAxis(
   if (st.tickSize) out.tickfont = { ...((ax.tickfont as object) ?? {}), size: st.tickSize }
   if (st.min != null || st.max != null) {
     const cur = Array.isArray(ax.range) ? (ax.range as [number, number]) : undefined
-    const base = cur ?? extent()
-    const lo = st.min ?? base?.[0]
-    const hi = st.max ?? base?.[1]
+    const ext = extent()
+    // The view's own range is already in axis units; the data extent (and the settings) aren't.
+    const base = cur ?? (ext && [toAxis(Math.max(ext[0], ext[1] * 1e-6)), toAxis(ext[1])])
+    const lo = st.min != null ? toAxis(st.min) : base?.[0]
+    const hi = st.max != null ? toAxis(st.max) : base?.[1]
     if (
       typeof lo === 'number' &&
       typeof hi === 'number' &&
@@ -100,11 +107,11 @@ function applyAxis(
     }
   }
   if (st.ticks) out.ticks = st.ticks === 'none' ? '' : st.ticks
-  if (st.interval && st.interval > 0) {
+  if (st.interval && st.interval > 0 && !(log && st.interval <= 1)) {
     // `dtick` only applies under the linear tick mode; set it explicitly rather than relying on
-    // Plotly inferring the mode from dtick's presence.
+    // Plotly inferring the mode from dtick's presence. On a log axis it's a factor (10 = decades).
     out.tickmode = 'linear'
-    out.dtick = st.interval
+    out.dtick = log ? Math.log10(st.interval) : st.interval
   }
   if (st.grid != null) out.showgrid = st.grid
   if (st.gridStyle) out.griddash = st.gridStyle
@@ -254,10 +261,25 @@ export function applyPlotAxes(
 }
 
 /** Longest gene label shown on a plot's axis or legend before it's cut short. */
-export const LABEL_MAX = 20
+export const LABEL_MAX = 10
 /** A label capped at `max` characters, the rest replaced by "…" — for gene names on an axis or in
  *  a legend, where one long name (a protein group's joined genes, a long description) would crowd
  *  out the plot. The full name stays in the hover. */
 export function truncateLabel(label: string, max = LABEL_MAX): string {
   return label.length > max ? `${label.slice(0, max - 1).trimEnd()}…` : label
+}
+
+/** A category axis's tick labels cut short by truncateLabel (Plotly can't shorten a category
+ *  itself, and renaming the categories would merge any two that shorten alike). Every label when
+ *  they fit in `room` px at `perTick` px each, else every n-th one — as Plotly's own ticks thin
+ *  out — since explicit ticks are all drawn, overlapping or not. No `room` → every label. */
+export function truncatedTicks(
+  labels: string[],
+  room?: number,
+  perTick = 11
+): { tickmode: 'array'; tickvals: string[]; ticktext: string[] } {
+  const fit = room && room > 0 ? Math.max(1, Math.floor(room / perTick)) : labels.length
+  const step = Math.max(1, Math.ceil(labels.length / Math.max(1, fit)))
+  const tickvals = labels.filter((_, i) => i % step === 0)
+  return { tickmode: 'array', tickvals, ticktext: tickvals.map((l) => truncateLabel(l)) }
 }

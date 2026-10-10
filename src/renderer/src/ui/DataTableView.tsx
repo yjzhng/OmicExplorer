@@ -1,4 +1,12 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type RefObject } from 'react'
+import {
+  Fragment,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type RefObject
+} from 'react'
 import { createPortal } from 'react-dom'
 
 import { cssVars, PALETTES, UI } from './theme'
@@ -7,12 +15,24 @@ import { useUiTheme } from './useUiTheme'
 
 export interface Column {
   key: string
+  /** header text; ` · ` separates parts (e.g. the conditions of a sample), each shown on its own
+   *  line so long multi-condition labels don't make the column wide */
   label: string
+  /** the header as named lines (e.g. a sample's conditions: cell WT / dose 10 / rep 1): each
+   *  value on its own line with its name in small faint text to its left. Overrides splitting
+   *  `label` (which still names the column everywhere else). */
+  labelLines?: HeaderLine[]
   align?: 'left' | 'right'
   format?: (v: unknown) => string
   /** optional per-cell style (e.g. a heat-map background + matching text colour); undefined =
    *  default cell. A solid background overrides the row's zebra/hover tint for that cell. */
   cellStyle?: (v: unknown) => CSSProperties | undefined
+}
+
+/** One line of a stacked column header: a condition's (faint) name and its value. */
+export interface HeaderLine {
+  key: string
+  value: string
 }
 
 interface DataTableProps {
@@ -34,6 +54,9 @@ interface SortState {
 }
 
 const strKey = (v: unknown): string => (v == null ? '' : String(v))
+
+/** The separator matrix views join a column's parts with; the header stacks them as lines. */
+const LABEL_SEP = ' · '
 
 // Row backgrounds, applied imperatively (see the painter in DataTableView). Neutral
 // tints rather than `accent` so they read the same in both themes; the inset bar marks
@@ -222,6 +245,43 @@ export function DataTableView({ columns, rows, maxRows = 500, idKey = 'uniqID' }
     return useSelection.subscribe(paint)
   })
 
+  // Whether rows run on above (hidden under the sticky header) or below the visible window, and
+  // the header's height (where the top fade starts). Set only when one changes, so a scroll
+  // doesn't re-render the table.
+  const [edges, setEdges] = useState({ top: false, bottom: false, head: 0, barX: 0, barY: 0 })
+  const measureEdges = (): void => {
+    const sc = scrollRef.current
+    if (!sc) return
+    const top = sc.scrollTop > 1
+    const bottom = sc.scrollTop + sc.clientHeight < sc.scrollHeight - 1
+    // Where the stuck header ends inside the scroller: a header CELL's bottom edge (the cells are
+    // what's sticky — the <thead> box itself scrolls away with the rows), rounded down so the fade
+    // butts against it rather than leaving a slit.
+    const th = sc.querySelector('th')
+    const head = th
+      ? Math.max(0, Math.floor(th.getBoundingClientRect().bottom - sc.getBoundingClientRect().top))
+      : 0
+    // The scrollbars' thickness (vertical, horizontal), so the fades stop short of them.
+    const barY = sc.offsetWidth - sc.clientWidth
+    const barX = sc.offsetHeight - sc.clientHeight
+    setEdges((e) =>
+      e.top === top && e.bottom === bottom && e.head === head && e.barX === barX && e.barY === barY
+        ? e
+        : { top, bottom, head, barX, barY }
+    )
+  }
+  // Re-measure when the box or its content resizes (a tile resize, a filter shrinking the rows).
+  useEffect(() => {
+    const sc = scrollRef.current
+    if (!sc) return
+    measureEdges()
+    const ro = new ResizeObserver(() => measureEdges())
+    ro.observe(sc)
+    const table = sc.querySelector('table')
+    if (table) ro.observe(table)
+    return () => ro.disconnect()
+  }, [])
+
   const reset = (): void => {
     setQuery('')
     setSort(null)
@@ -278,87 +338,121 @@ export function DataTableView({ columns, rows, maxRows = 500, idKey = 'uniqID' }
           Reset
         </button>
       </div>
-      <div
-        style={styles.scroll}
-        ref={scrollRef}
-        onMouseEnter={() => {
-          localHover.current = true
-        }}
-        onMouseLeave={() => {
-          localHover.current = false
-          if (idKey) useSelection.getState().clearHover()
-        }}
-      >
-        <table style={styles.table}>
-          <thead>
-            <tr>
-              {columns.map((c) => {
-                const sorted = sort?.key === c.key ? sort.dir : null
-                const filtered = !!filters[c.key]
+      {/* The scroller sits in a positioned box so the edge fades can overlay it. */}
+      <div style={styles.scrollBox}>
+        <div
+          style={styles.scroll}
+          ref={scrollRef}
+          onScroll={measureEdges}
+          onMouseEnter={() => {
+            localHover.current = true
+          }}
+          onMouseLeave={() => {
+            localHover.current = false
+            if (idKey) useSelection.getState().clearHover()
+          }}
+        >
+          <table style={styles.table}>
+            <thead>
+              <tr>
+                {columns.map((c) => {
+                  const sorted = sort?.key === c.key ? sort.dir : null
+                  const filtered = !!filters[c.key]
+                  return (
+                    <th
+                      key={c.key}
+                      className="oe-dt-th"
+                      data-col-menu
+                      onClick={(e) => openMenu(c.key, e.currentTarget)}
+                      style={{
+                        ...styles.th,
+                        textAlign: 'center',
+                        color: filtered || sorted ? UI.accent : UI.text
+                      }}
+                      title="Sort & filter"
+                    >
+                      <span style={styles.thInner}>
+                        {c.labelLines?.length ? (
+                          // Name | value per line; the names right-aligned against their values.
+                          <span style={styles.thLines}>
+                            {c.labelLines.map((l, i) => (
+                              <Fragment key={i}>
+                                <span style={styles.thKey}>{l.key}</span>
+                                <span style={styles.thValue}>{l.value}</span>
+                              </Fragment>
+                            ))}
+                          </span>
+                        ) : (
+                          <span style={styles.thLabel}>
+                            {c.label.split(LABEL_SEP).map((part, i) => (
+                              <span key={i}>{part}</span>
+                            ))}
+                          </span>
+                        )}
+                        {sorted && <span>{sorted === 'asc' ? '▲' : '▼'}</span>}
+                        {filtered && <span style={styles.filterDot} />}
+                        <span style={styles.caret}>▾</span>
+                      </span>
+                    </th>
+                  )
+                })}
+              </tr>
+            </thead>
+            <tbody>
+              {shown.map((r, i) => {
+                const id = idKey ? strKey(r[idKey]) : ''
+                const alt = i % 2 === 1
                 return (
-                  <th
-                    key={c.key}
-                    className="oe-dt-th"
-                    data-col-menu
-                    onClick={(e) => openMenu(c.key, e.currentTarget)}
-                    style={{
-                      ...styles.th,
-                      textAlign: c.align ?? 'left',
-                      color: filtered || sorted ? UI.accent : UI.text
+                  <tr
+                    key={`${id}\u0000${rowIndex.get(r) ?? i}`}
+                    ref={(el) => {
+                      // React 19 ref callbacks may return a cleanup; this one tracks the element
+                      // explicitly so the map never holds a stale row.
+                      trackRow(id, el, alt)
+                      return () => {
+                        if (el) untrackRow(id, el)
+                      }
                     }}
-                    title="Sort & filter"
+                    onMouseEnter={id ? () => useSelection.getState().setHover(id) : undefined}
+                    // Click toggles the gene's pin — the same gesture as clicking a point in a plot —
+                    // so selecting a second row adds to the selection instead of replacing it.
+                    onClick={id ? () => useSelection.getState().togglePin(id) : undefined}
+                    // Background is owned by the imperative painter above (which also
+                    // draws the zebra stripe), so React must not set it here and fight it.
+                    style={{ cursor: id ? 'pointer' : undefined }}
                   >
-                    <span style={styles.thInner}>
-                      <span>{c.label}</span>
-                      {sorted && <span>{sorted === 'asc' ? '▲' : '▼'}</span>}
-                      {filtered && <span style={styles.filterDot} />}
-                      <span style={styles.caret}>▾</span>
-                    </span>
-                  </th>
+                    {columns.map((c) => (
+                      <td
+                        key={c.key}
+                        style={{
+                          ...styles.td,
+                          textAlign: c.align ?? 'left',
+                          ...c.cellStyle?.(r[c.key])
+                        }}
+                      >
+                        {fmt(c, r[c.key])}
+                      </td>
+                    ))}
+                  </tr>
                 )
               })}
-            </tr>
-          </thead>
-          <tbody>
-            {shown.map((r, i) => {
-              const id = idKey ? strKey(r[idKey]) : ''
-              const alt = i % 2 === 1
-              return (
-                <tr
-                  key={`${id}\u0000${rowIndex.get(r) ?? i}`}
-                  ref={(el) => {
-                    // React 19 ref callbacks may return a cleanup; this one tracks the element
-                    // explicitly so the map never holds a stale row.
-                    trackRow(id, el, alt)
-                    return () => {
-                      if (el) untrackRow(id, el)
-                    }
-                  }}
-                  onMouseEnter={id ? () => useSelection.getState().setHover(id) : undefined}
-                  // Click toggles the gene's pin — the same gesture as clicking a point in a plot —
-                  // so selecting a second row adds to the selection instead of replacing it.
-                  onClick={id ? () => useSelection.getState().togglePin(id) : undefined}
-                  // Background is owned by the imperative painter above (which also
-                  // draws the zebra stripe), so React must not set it here and fight it.
-                  style={{ cursor: id ? 'pointer' : undefined }}
-                >
-                  {columns.map((c) => (
-                    <td
-                      key={c.key}
-                      style={{
-                        ...styles.td,
-                        textAlign: c.align ?? 'left',
-                        ...c.cellStyle?.(r[c.key])
-                      }}
-                    >
-                      {fmt(c, r[c.key])}
-                    </td>
-                  ))}
-                </tr>
-              )
-            })}
-          </tbody>
-        </table>
+            </tbody>
+          </table>
+        </div>
+        {/* Faint fades where rows run on out of view: under the sticky header once scrolled down,
+          and at the bottom while there's more below. Overlays — they never take a click. */}
+        {edges.top && (
+          <div
+            style={{ ...styles.fade, ...styles.fadeTop, top: edges.head, right: edges.barY }}
+            aria-hidden
+          />
+        )}
+        {edges.bottom && (
+          <div
+            style={{ ...styles.fade, ...styles.fadeBottom, bottom: edges.barX, right: edges.barY }}
+            aria-hidden
+          />
+        )}
       </div>
       <div style={styles.footer}>
         showing {shown.length.toLocaleString()} of {processed.length.toLocaleString()} rows
@@ -644,9 +738,19 @@ const styles: Record<string, CSSProperties> = {
     cursor: 'pointer',
     whiteSpace: 'nowrap'
   },
-  selBtnOn: { background: UI.accent, color: UI.accentText, borderColor: UI.accent },
+  selBtnOn: { background: UI.accent, color: UI.accentText, border: `1px solid ${UI.accent}` },
   caption: { padding: '6px 10px', color: UI.textMuted, fontSize: 12, flex: '0 0 auto' },
+  scrollBox: {
+    position: 'relative',
+    flex: 1,
+    minHeight: 0,
+    display: 'flex',
+    flexDirection: 'column'
+  },
   scroll: { overflow: 'auto', flex: 1, minHeight: 0 },
+  fade: { position: 'absolute', left: 0, right: 0, height: 18, pointerEvents: 'none', zIndex: 2 },
+  fadeTop: { background: `linear-gradient(to bottom, ${UI.panel}, transparent)` },
+  fadeBottom: { background: `linear-gradient(to top, ${UI.panel}, transparent)` },
   table: {
     borderCollapse: 'collapse',
     width: '100%',
@@ -659,13 +763,38 @@ const styles: Record<string, CSSProperties> = {
     background: UI.panelAlt,
     color: UI.text,
     padding: '6px 10px',
-    borderBottom: `1px solid ${UI.border}`,
+    // The rule under the header as an inset shadow, not a border: with collapsed borders a sticky
+    // cell's border stays behind in the table, leaving a 1px slit the rows show through.
+    boxShadow: `inset 0 -1px 0 ${UI.border}`,
     whiteSpace: 'nowrap',
+    // multi-line labels grow the header row; keep single-line ones on its bottom line
+    verticalAlign: 'bottom',
     cursor: 'pointer',
     userSelect: 'none',
     zIndex: 1
   },
   thInner: { display: 'inline-flex', alignItems: 'center', gap: 4 },
+  thLines: {
+    display: 'inline-grid',
+    gridTemplateColumns: 'auto auto',
+    columnGap: 4,
+    alignItems: 'baseline',
+    lineHeight: 1.25
+  },
+  thKey: {
+    justifySelf: 'end',
+    fontSize: 9,
+    fontWeight: 400,
+    color: UI.textMuted,
+    opacity: 0.8
+  },
+  thValue: { justifySelf: 'start' },
+  thLabel: {
+    display: 'inline-flex',
+    flexDirection: 'column',
+    alignItems: 'center',
+    lineHeight: 1.25
+  },
   caret: { fontSize: 8, opacity: 0.55 },
   filterDot: {
     width: 6,
@@ -713,7 +842,7 @@ const styles: Record<string, CSSProperties> = {
     cursor: 'pointer',
     whiteSpace: 'nowrap'
   },
-  sortActive: { background: UI.accent, color: UI.accentText, borderColor: UI.accent },
+  sortActive: { background: UI.accent, color: UI.accentText, border: `1px solid ${UI.accent}` },
   menuDivider: { height: 1, background: UI.border, margin: '2px 0' },
   menuBody: { display: 'flex', flexDirection: 'column', gap: 6 },
   menuLabel: {

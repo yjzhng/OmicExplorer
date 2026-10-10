@@ -1,13 +1,23 @@
 import { useMemo } from 'react'
 
 import type { TdrData } from '../engine'
+import { axisTitle, type CondUnits } from '../graph/types'
 import { reds } from './colormap'
 import { PlotlyChart } from './PlotlyChart'
 import { axisBase, PALETTES, plotBase } from './theme'
 import { useUiTheme } from './useUiTheme'
 
 /** One gene's time-series dose-response: x = dose, one line per time level, y = log2FC. */
-export function TdrView({ tdr, title }: { tdr: TdrData; title?: string }) {
+export function TdrView({
+  tdr,
+  title,
+  units = {}
+}: {
+  tdr: TdrData
+  title?: string
+  /** the dose / time units (axis title, series names) */
+  units?: CondUnits
+}) {
   const mode = useUiTheme((s) => s.mode)
 
   const { data, layout } = useMemo(() => {
@@ -28,7 +38,7 @@ export function TdrView({ tdr, title }: { tdr: TdrData; title?: string }) {
       return {
         type: 'scatter',
         mode: 'lines+markers',
-        name: `time ${s.time}`,
+        name: `time ${s.time}${units.time ? ` ${units.time}` : ''}`,
         x: s.points.map((q) => String(q.x)),
         y: s.points.map((q) => q.y),
         line: { color, width: 2 },
@@ -40,7 +50,7 @@ export function TdrView({ tdr, title }: { tdr: TdrData; title?: string }) {
       title: title ? { text: title, font: { size: 13 } } : undefined,
       xaxis: {
         ...axisBase(p),
-        title: 'dose',
+        title: axisTitle('dose', units),
         type: 'category',
         categoryorder: 'array',
         categoryarray: cats
@@ -52,7 +62,7 @@ export function TdrView({ tdr, title }: { tdr: TdrData; title?: string }) {
       }
     }
     return { data: traces, layout: lay }
-  }, [tdr, title, mode])
+  }, [tdr, title, units, mode])
 
   return <PlotlyChart data={data} layout={layout} />
 }

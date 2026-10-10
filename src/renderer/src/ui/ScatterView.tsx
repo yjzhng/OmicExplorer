@@ -1,7 +1,12 @@
 import { useMemo } from 'react'
 
 import type { ScatterData, ScatterPoint } from '../engine'
-import { DEFAULT_EFFECT_LABELS, type EffectLabels, type PointStyle } from '../graph/types'
+import {
+  DEFAULT_EFFECT_LABELS,
+  type EffectColors,
+  type EffectLabels,
+  type PointStyle
+} from '../graph/types'
 import { useGraph } from '../graph/store'
 import { PlotlyChart } from './PlotlyChart'
 import {
@@ -11,8 +16,8 @@ import {
   resolveHighlight,
   type ResolvedGroup
 } from './pointStyle'
-import { axisBase, CATEGORICAL, guideLine, PALETTES, plotBase } from './theme'
-import { matchingGeneSet, useSelection } from './useSelection'
+import { axisBase, EFFECT_COLOR, CATEGORICAL, guideLine, PALETTES, plotBase } from './theme'
+import { useSelectedGeneSets } from './useSelection'
 import { useUiTheme } from './useUiTheme'
 
 type Eff = 'up' | 'down' | 'none'
@@ -29,6 +34,7 @@ export function ScatterView({
   title,
   labelTop = 0,
   effectLabels = DEFAULT_EFFECT_LABELS,
+  effectColors,
   style
 }: {
   scatter: ScatterData
@@ -38,20 +44,16 @@ export function ScatterView({
   style?: PointStyle
   /** display names for the down/up classes (from the upstream Compare/Contrast config) */
   effectLabels?: EffectLabels
+  /** the upstream Compare's effect colours — what each group's automatic colour follows */
+  effectColors?: EffectColors
 }) {
   const mode = useUiTheme((s) => s.mode)
-  // The linked selection, read only to tell whether it IS a saved geneset (selIds below) — not
-  // hoverId, and not per click: an ordinary pick is drawn by PlotlyChart's overlay.
-  const pinnedIds = useSelection((s) => s.pinnedIds)
+  // The selected saved genesets (each its own trace: legend entry, and its colour if set). An
+  // ad-hoc pick gets none — PlotlyChart's shared overlay marks and names each pinned gene, restyled
+  // in place — and the sets stay stable across clicks that don't change them, so a click-select
+  // elsewhere doesn't rebuild this plot (a full redraw).
   const geneSets = useGraph((s) => s.geneSets)
-  const selSet = matchingGeneSet(pinnedIds, geneSets)
-  const selName = selSet?.name ?? null
-  const selColor = selSet?.color ?? null
-  // The selection trace exists only for a saved geneset (its legend entry and colour), so the plot's
-  // data follows the MATCHED geneset, not every click: an ad-hoc pick is marked by PlotlyChart's
-  // shared overlay alone, restyled in place. Keyed on pinnedIds directly, each click-select anywhere
-  // in the app rebuilt this plot from scratch (a full redraw — the lag after a click).
-  const selIds = useMemo(() => (selSet ? new Set(selSet.genes.map((g) => g.id)) : null), [selSet])
+  const selSets = useSelectedGeneSets(geneSets)
   // Point groups depend on the relationship. A correlated (OLS) contrast colours genes by
   // whether they sit above/below the line of identity — up (red) / down (blue) / none (grey),
   // matching volcano/MA. An independent (marginal) contrast instead colours by QUADRANT: the
@@ -61,10 +63,19 @@ export function ScatterView({
   // Memo inputs kept primitive (the parent hands a fresh `effectLabels` object per render).
   const upName = effectLabels.up
   const downName = effectLabels.down
+  const noneName = effectLabels.none
+  const upColor = effectColors?.up ?? EFFECT_COLOR.up
+  const downColor = effectColors?.down ?? EFFECT_COLOR.down
+  const noneColor = effectColors?.none ?? EFFECT_COLOR.none
   const groups = useMemo(
     () =>
-      resolveGroups(style, marginal ? 'scatterQuad' : 'scatter', { up: upName, down: downName }),
-    [style, marginal, upName, downName]
+      resolveGroups(
+        style,
+        marginal ? 'scatterQuad' : 'scatter',
+        { up: upName, down: downName, none: noneName },
+        { up: upColor, down: downColor, none: noneColor }
+      ),
+    [style, marginal, upName, downName, noneName, upColor, downColor, noneColor]
   )
   const emphasis = useMemo(() => resolveHighlight(style), [style])
   const showLegend = legendOn(style)
@@ -217,17 +228,22 @@ export function ScatterView({
           : [identity] // no guide (e.g. too few points) — fall back to the line of identity
 
     // Collision-managed labels for the genes of every group whose label switch is on (by default
-    // the significant / divergent ones), most divergent first. labelTop > 0 caps the candidate
-    // pool; 0 (the default) offers them all and lets the placement layer keep as many as fit —
-    // more appear as you zoom in.
+    // the significant / divergent ones), ranked by Manhattan distance from what the mode measures
+    // against: the line of identity for a correlated contrast (|y − x|, the distance to y = x along
+    // either axis), the centre for an independent one (|x| + |y|). Both axes share units, so no
+    // scaling. The ranking runs before PlotlyChart's crowding gate and placement, and decides what
+    // labelTop keeps; 0 (the default) offers them all, and more appear as you zoom in.
+    const distance = (pt: ScatterPoint): number =>
+      marginal ? Math.abs(pt.x) + Math.abs(pt.y) : Math.abs(pt.y - pt.x)
     const ranked = scatter.points
       .filter((pt) => look(keyOf(pt)).label)
-      .sort((a, b) => Math.abs(b.fcdiff) - Math.abs(a.fcdiff))
-    const labels = (labelTop > 0 ? ranked.slice(0, labelTop) : ranked).map((pt) => ({
+      .map((pt) => ({ pt, d: distance(pt) }))
+      .sort((a, b) => b.d - a.d)
+    const labels = (labelTop > 0 ? ranked.slice(0, labelTop) : ranked).map(({ pt, d }) => ({
       x: pt.x,
       y: pt.y,
       text: pt.label,
-      priority: Math.abs(pt.fcdiff),
+      priority: d,
       id: pt.uniqID
     }))
 
@@ -253,47 +269,35 @@ export function ScatterView({
       showlegend: showLegend,
       legend: { orientation: 'h', yanchor: 'bottom', y: 1.02, xanchor: 'center', x: 0.5 }
     }
-    // A selection that is a saved geneset → its genes on top as their own trace (markers only; the
-    // overlay names them), with its legend entry and its colour if it has one.
-    const sel = selIds ? scatter.points.filter((pt) => selIds.has(pt.uniqID)) : []
-    const selTrace = sel.length
-      ? [
-          {
-            type: 'scatter',
-            mode: 'markers',
-            name: selName ? `${selName} (${sel.length})` : `Selected (${sel.length})`,
-            showlegend: selName !== null,
-            x: sel.map((pt) => pt.x),
-            y: sel.map((pt) => pt.y),
-            text: sel.map((pt) => pt.label),
-            customdata: sel.map((pt) => pt.uniqID),
-            hovertemplate: hover,
-            marker: {
-              color: selColor ?? sel.map((pt) => look(keyOf(pt)).color),
-              size: sel.map((pt) => look(keyOf(pt)).size),
-              opacity: 1,
-              line: {
-                width: sel.map((pt) => look(keyOf(pt)).outline),
-                color: sel.map((pt) => look(keyOf(pt)).outlineColor ?? p.text)
-              }
+    // Each selected geneset → its genes on top as their own trace (markers only; the overlay names
+    // them), with its legend entry and its colour if it has one.
+    const selTrace = selSets.flatMap((set) => {
+      const sel = scatter.points.filter((pt) => set.ids.has(pt.uniqID))
+      if (!sel.length) return []
+      return [
+        {
+          type: 'scatter',
+          mode: 'markers',
+          name: `${set.name} (${sel.length})`,
+          x: sel.map((pt) => pt.x),
+          y: sel.map((pt) => pt.y),
+          text: sel.map((pt) => pt.label),
+          customdata: sel.map((pt) => pt.uniqID),
+          hovertemplate: hover,
+          marker: {
+            color: set.color ?? sel.map((pt) => look(keyOf(pt)).color),
+            size: sel.map((pt) => look(keyOf(pt)).size),
+            opacity: 1,
+            line: {
+              width: sel.map((pt) => look(keyOf(pt)).outline),
+              color: sel.map((pt) => look(keyOf(pt)).outlineColor ?? p.text)
             }
           }
-        ]
-      : []
+        }
+      ]
+    })
     return { data: [...guideTraces, ...pointTraces, ...selTrace], layout: lay, labels }
-  }, [
-    scatter,
-    title,
-    labelTop,
-    mode,
-    marginal,
-    groups,
-    showLegend,
-    emphasis.label,
-    selIds,
-    selName,
-    selColor
-  ])
+  }, [scatter, title, labelTop, mode, marginal, groups, showLegend, emphasis.label, selSets])
 
   return (
     <PlotlyChart

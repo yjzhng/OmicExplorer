@@ -7,7 +7,7 @@
  */
 import Papa from 'papaparse'
 
-import type { StandardizeInput, StandardizeResult, StandardRow } from './types'
+import type { SampleConds, StandardizeInput, StandardizeResult, StandardRow } from './types'
 import {
   condsIn,
   customCond,
@@ -410,7 +410,18 @@ export function standardize(input: StandardizeInput): StandardizeResult {
       )
       .join('¦')
   const sampleGroup = new Map<string, string>()
+  const samples: SampleConds[] = []
   for (const m of merged) {
+    if (!allSamples.has(m.sample))
+      samples.push({
+        sample: m.sample,
+        cell: m.cell,
+        cmpd: m.cmpd,
+        dose: m.dose,
+        time: m.time,
+        rep: repOf.get(m.sample) ?? m.rep,
+        ...(customConds.length ? { extra: m.extra } : null)
+      })
     allSamples.add(m.sample)
     if (!sampleGroup.has(m.sample)) sampleGroup.set(m.sample, groupOf(m))
     const uniqID = uniqOf.get(m.id) ?? m.id
@@ -515,6 +526,7 @@ export function standardize(input: StandardizeInput): StandardizeResult {
 
   return {
     rows,
+    samples,
     displayMap,
     annotationMap,
     // Pathway → pathway category: from the data's own aligned KEGG / KEGG_cat columns, over any

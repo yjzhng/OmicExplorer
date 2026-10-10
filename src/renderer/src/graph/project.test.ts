@@ -2,9 +2,17 @@ import { describe, expect, it } from 'vitest'
 
 import {
   deserializeProject,
+  isNewerVersion,
   newProjectFile,
   nextWorkflowId,
+  packedResultsChunks,
+  ParkedRef,
+  PROJECT_VERSION,
+  RawJson,
+  savedByVersion,
   serializeProject,
+  serializeProjectChunks,
+  unpackParked,
   type ProjectFile
 } from './project'
 import type { NodeResult } from './types'
@@ -70,7 +78,7 @@ describe('project (folders) serialization', () => {
       ]
     })
     const back = deserializeProject(v1)
-    expect(back.version).toBe(2)
+    expect(back.version).toBe(PROJECT_VERSION)
     expect(back.folders).toHaveLength(1)
     expect(back.folders[0].path).toBe('/old/data')
     expect(back.folders[0].workflows.map((w) => w.name)).toEqual(['A', 'B'])
@@ -258,3 +266,150 @@ describe('project (folders) serialization', () => {
     expect(p.activeFolderId).toBe(p.folders[0].id)
   })
 })
+
+describe('project format version', () => {
+  it('records and reads back the app version that saved a file', () => {
+    const text = serializeProject({ ...newProjectFile('P'), appVersion: '0.3.5' })
+    expect(savedByVersion(text)).toBe('0.3.5')
+    expect(savedByVersion(serializeProject(newProjectFile('P')))).toBeNull()
+  })
+
+  it('opens a file from a newer app or format (the open path only warns)', () => {
+    const text = serializeProject({
+      ...newProjectFile('P'),
+      version: PROJECT_VERSION + 1,
+      appVersion: '9.9.9'
+    })
+    expect(deserializeProject(text).name).toBe('P')
+  })
+
+  it('compares dotted versions numerically', () => {
+    expect(isNewerVersion('0.3.10', '0.3.5')).toBe(true)
+    expect(isNewerVersion('0.4.0', '0.3.5')).toBe(true)
+    expect(isNewerVersion('0.3.5', '0.3.5')).toBe(false)
+    expect(isNewerVersion('0.3.4', '0.3.5')).toBe(false)
+  })
+})
+
+describe('serializeProjectChunks', () => {
+  it('round-trips a project exactly as JSON would, results packed', () => {
+    const rows = Array.from({ length: 80 }, (_, i) => ({
+      uniqID: `g${i}`,
+      cmpd: i % 2 ? 'A' : 'B',
+      dose: i % 3 ? i : null,
+      value: i === 5 ? NaN : i * 1.5,
+      thrsh: 'linear, log2FC ∉ (-1.0, 1.0)',
+      ...(i % 4 ? { cell: 'WT' } : null),
+      curve: i % 5 ? { pec50: -i / 10, n: 6, axis: 'dose' } : undefined,
+      extra: i % 7 ? null : { geno: 'x"y' },
+      flag: i % 2 === 0
+    }))
+    const annot = { P1: { GO_BP: 'a;b' }, P2: { GO_BP: 'c' } }
+    const proj = {
+      format: 'omicexplorer-project',
+      version: 2,
+      name: 'p',
+      folders: [
+        {
+          id: 'folder-1',
+          name: 'f',
+          path: '',
+          activeWorkflowId: 'wf-1',
+          workflows: [
+            {
+              id: 'wf-1',
+              name: 'w',
+              doc: { version: 1, nextId: 3, nodes: [], edges: [] },
+              results: {
+                s: { kind: 'standardize', std: { rows, annotationMap: annot } },
+                c: {
+                  kind: 'compare',
+                  cmp: { rows, comparisons: ['A | B'] },
+                  annotationMap: annot,
+                  displayMap: {}
+                }
+              }
+            }
+          ]
+        }
+      ],
+      activeFolderId: 'folder-1'
+    } as unknown as Parameters<typeof serializeProjectChunks>[0]
+    const text = serializeProjectChunks(proj).join('')
+    expect(() => JSON.parse(text)).not.toThrow()
+    // The annotation table is stored once, the row field names once per column.
+    expect(text.split('"GO_BP"').length - 1).toBe(2)
+    expect(text.split('"uniqID"').length - 1).toBe(2)
+    const back = deserializeProject(text)
+    const plain = JSON.parse(JSON.stringify(proj.folders[0].workflows[0].results))
+    expect(back.folders[0].workflows[0].results).toEqual(plain)
+    // Both results share one annotation table again, as they did in memory.
+    const r = back.folders[0].workflows[0].results as unknown as Record<
+      string,
+      { std?: { annotationMap: unknown }; annotationMap?: unknown }
+    >
+    expect(r.s.std!.annotationMap).toBe(r.c.annotationMap)
+  })
+
+  it('still opens results saved unpacked (older files)', () => {
+    const results = { s: { kind: 'standardize', std: { rows: [{ uniqID: 'a', value: 1 }] } } }
+    const text = JSON.stringify({
+      format: 'omicexplorer-project',
+      version: 2,
+      name: 'old',
+      folders: [{ id: 'folder-1', path: '', workflows: [{ id: 'wf-1', results }] }],
+      activeFolderId: 'folder-1'
+    })
+    expect(deserializeProject(text).folders[0].workflows[0].results).toEqual(results)
+  })
+})
+
+describe('parked workflows in a saved project', () => {
+  it('writes parked results as their packed text, identical on open, without the park key', () => {
+    const results = {
+      s: {
+        kind: 'standardize',
+        std: { rows: Array.from({ length: 50 }, (_, i) => ({ uniqID: `g${i}`, value: i })) }
+      }
+    } as unknown as ProjectWorkflowResults
+    const parkedText = packedResultsChunks(results).join('')
+    expect(unpackParked(parkedText)).toEqual(results)
+    const proj = {
+      format: 'omicexplorer-project',
+      version: 2,
+      name: 'p',
+      folders: [
+        {
+          id: 'folder-1',
+          name: 'f',
+          path: '',
+          activeWorkflowId: 'wf-1',
+          workflows: [
+            {
+              id: 'wf-2',
+              name: 'other',
+              doc: { version: 1, nextId: 1, nodes: [], edges: [] },
+              results: new RawJson(parkedText),
+              parked: 'wf7'
+            }
+          ]
+        }
+      ],
+      activeFolderId: 'folder-1'
+    } as unknown as Parameters<typeof serializeProjectChunks>[0]
+    const text = serializeProjectChunks(proj).join('')
+    expect(text).not.toContain('"parked"')
+    expect(deserializeProject(text).folders[0].workflows[0].results).toEqual(results)
+
+    // Saved by reference instead (the save path): a { park } piece where the text was, which the
+    // main process fills from the park file — giving exactly the same file.
+    const wf = proj.folders[0].workflows[0] as unknown as Record<string, unknown>
+    wf.results = new ParkedRef('wf7')
+    const pieces = serializeProjectChunks(proj)
+    expect(pieces).toContainEqual({ park: 'wf7' })
+    const filled = pieces.map((p) => (typeof p === 'string' ? p : parkedText)).join('')
+    expect(filled).toBe(text)
+  })
+})
+
+type ProjectWorkflowResults = Parameters<typeof packedResultsChunks>[0]

@@ -10,14 +10,32 @@ import {
   condPresent,
   condValue,
   finaliseCompare,
+  groupKey,
   groupRowsBy,
   log2Pos,
   setCond,
   valEq,
   type RawStatRow
 } from './compare'
-import { DEFAULT_THRESHOLD, welchTTest, type ThresholdConfig } from './stats'
-import { orderConds } from './types'
+import {
+  applyCurveFdr,
+  classifyCompareRow,
+  curveModel,
+  curveGroupKey,
+  fitCurve,
+  simulateDecoys,
+  type DecoyCurve,
+  type TargetCurve
+} from './curveFit'
+import { samTest, type SamGene } from './sam'
+import {
+  DEFAULT_THRESHOLD,
+  SAM_PERMUTATIONS,
+  SAM_S0,
+  welchTTest,
+  type ThresholdConfig
+} from './stats'
+import { condLabel, orderConds } from './types'
 import type {
   CompareInput,
   CompareResultRow,
@@ -47,6 +65,14 @@ export interface DirectInput {
 export interface CompareTableResult {
   rows: CompareResultRow[]
   comparisons: string[]
+  /** curve fit only: the simulated null (decoy) curves per comparison group (curveGroupKey) — kept
+   *  so CurveCurator's q-values follow its threshold without a re-run */
+  decoys?: Record<string, import('./curveFit').DecoyCurve[]>
+  /** curve fit under CurveCurator's threshold: the estimated FDR of its calls (target–decoy) */
+  curveFdr?: number
+  /** curve fit called by a target FDR: the effective α each comparison group settled on (its
+   *  score's shape and cutoff), by curveGroupKey — what the volcano draws the boundary from */
+  ccAlpha?: Record<string, number>
   /** The threshold the rows' calls (signf/effect) were made with. Plots draw their guide lines
    *  from THIS, not from the node config, so the boundary always matches the colours even while
    *  the config has moved on (e.g. an FDR-method change awaiting a re-run). Optional only for
@@ -263,21 +289,41 @@ function denLevels(
   return combos
 }
 
-/**
- * Run an explicit numerator-vs-denominator comparison. The comparison *axis* is the ONE condition
- * pinned on both sides with differing values (e.g. cmpd: drug vs dmso) — that becomes `cmp_cond`,
- * excluded from downstream faceting. Every other present condition faceting the numerator is
- * carried as context and matched like-for-like on the denominator — except conditions the
- * denominator is invariant on (see classifyConditions), whose single slice serves every level.
- */
-export function runCompare(input: CompareInput): CompareTableResult {
-  const { num, den, activeConditions: active } = input
-  const transform = input.transform ?? true
-  const method = input.method ?? 'ttest'
-  const threshold: ThresholdConfig = input.threshold ?? { ...DEFAULT_THRESHOLD, statType: 'pQ' }
-  const transformed = transform && method === 'ttest'
-  const statValue = (r: StandardRow): number => (transformed ? log2Pos(r.value) : (r.value ?? NaN))
+/** A numerator group's value on a compared condition, for its label — or, when that condition is
+ *  the curve's own axis (dose > 0 vs 0), the curve itself: its levels are all in the group. */
+const axisValueLabel = (
+  c: ConditionKey,
+  rep: StandardRow,
+  curveAxis: ConditionKey | undefined
+): string => (c === curveAxis ? `${condLabel(c)} curve` : String(condValue(rep, c) ?? ''))
 
+/** One numerator group and the denominator slice it is compared against. */
+export interface CompareSlice {
+  /** the numerator group's rows */
+  grp: StandardRow[]
+  denSlice: StandardRow[]
+  /** "num | den" */
+  label: string
+  /** the group's representative row (its context values) */
+  rep: StandardRow
+}
+
+/**
+ * The numerator groups of an explicit comparison and each one's denominator slice. The comparison
+ * *axis* is the ONE condition pinned on both sides with differing values (e.g. cmpd: drug vs dmso)
+ * — that becomes `cmp_cond`, excluded from downstream faceting. Every other present condition
+ * faceting the numerator is carried as context and matched like-for-like on the denominator —
+ * except conditions the denominator is invariant on (see classifyConditions), whose single slice
+ * serves every level. A curve fit's `curveAxis` is neither: each group pools all its levels.
+ */
+export function compareSlices(input: CompareInput): {
+  slices: CompareSlice[]
+  comparisons: string[]
+  cmpCond: string
+  /** the conditions whose values each result row carries */
+  contextDims: ConditionKey[]
+} {
+  const { num, den, activeConditions: active, curveAxis } = input
   const numRows = input.rows.filter((r) => selectorMatch(num, r, active))
   const denRows = input.rows.filter((r) => selectorMatch(den, r, active))
 
@@ -285,12 +331,18 @@ export function runCompare(input: CompareInput): CompareTableResult {
   const axisDims = roles.axis
   const axisSet = new Set(axisDims)
   const invariantSet = new Set(roles.invariant)
-  // Facet the numerator by every present condition except the axis. A multi-value numerator pin
-  // ON the axis also fans out (each level is its own comparison), so include those in grouping.
-  const facetDims = active.filter((c) => !axisSet.has(c) && condPresent(numRows, c))
-  const numMultiAxis = axisDims.filter((c) => (num[c]?.length ?? 0) > 1)
+  // Facet the numerator by every present condition except the axis (and a curve's x-axis). A
+  // multi-value numerator pin ON the axis also fans out (each level is its own comparison), so
+  // include those in grouping.
+  const facetDims = active.filter(
+    (c) => !axisSet.has(c) && c !== curveAxis && condPresent(numRows, c)
+  )
+  // …except a curve's own axis compared against its 0 (dose > 0 vs 0): its levels are the
+  // curve's points, pooled into one curve per group.
+  const numMultiAxis = axisDims.filter((c) => c !== curveAxis && (num[c]?.length ?? 0) > 1)
   const groupDims = [...facetDims, ...numMultiAxis]
-  const contextDims = [...facetDims, ...axisDims] // values carried onto each result row
+  // Values carried onto each result row (not a curve's axis: the row is the whole curve).
+  const contextDims = [...facetDims, ...axisDims.filter((c) => c !== curveAxis)]
   // Matched context: the caller's match list, minus the axis (defines the comparison, not the
   // context) and minus conditions the denominator is invariant on (nothing there to match).
   const matchSet = new Set(input.match.filter((c) => !axisSet.has(c) && !invariantSet.has(c)))
@@ -304,7 +356,7 @@ export function runCompare(input: CompareInput): CompareTableResult {
       .map((c) => (sel[c] as string[]).join('/'))
       .join(' · ')
   const groups = groupRowsBy(numRows, groupDims)
-  const raw: RawStatRow[] = []
+  const slices: CompareSlice[] = []
   const comparisons: string[] = []
   const cmpCond = axisDims.length
     ? axisDims.join(':')
@@ -328,39 +380,206 @@ export function runCompare(input: CompareInput): CompareTableResult {
       if (grp.length === 0 || denSlice.length === 0) continue
 
       const numAxisLabel = hasAxis
-        ? axisDims.map((c) => String(condValue(rep, c) ?? '')).join(' · ')
+        ? axisDims.map((c) => axisValueLabel(c, rep, curveAxis)).join(' · ')
         : pinLabel(num)
       const denAxisLabel = hasAxis ? level.map(([, v]) => v).join(' · ') : pinLabel(den)
       const label = `${numAxisLabel || '(num)'} | ${denAxisLabel || '(den)'}`
       if (!comparisons.includes(label)) comparisons.push(label)
-
-      const numAgg = grp.map((r) => ({ uniqID: r.uniqID, value: statValue(r) }))
-      const denAgg = denSlice.map((r) => ({ uniqID: r.uniqID, value: statValue(r) }))
-      const res = welchTTest(numAgg, denAgg, transformed)
-      for (const w of res) {
-        const row: RawStatRow = {
-          uniqID: w.uniqID,
-          cmp_cond: cmpCond,
-          comparison: label,
-          mean1: w.mean1,
-          mean2: w.mean2,
-          sd1: w.sd1,
-          sd2: w.sd2,
-          log2FC: w.log2FC,
-          pVal: w.pVal,
-          fcSE: w.fcSE
-        }
-        for (const c of contextDims) setCond(row, c, condValue(rep, c))
-        raw.push(row)
-      }
+      slices.push({ grp, denSlice, label, rep })
     }
+  return { slices, comparisons, cmpCond, contextDims }
+}
 
-  return { rows: finaliseCompare(raw, threshold), comparisons, threshold }
+/** Run an explicit numerator-vs-denominator comparison: a Welch t-test per numerator group
+ *  against its denominator slice (see compareSlices). */
+export function runCompare(input: CompareInput): CompareTableResult {
+  const threshold: ThresholdConfig = input.threshold ?? { ...DEFAULT_THRESHOLD, statType: 'pQ' }
+  // SAM's moderated difference only means anything on log values, so it always tests in log₂.
+  const sam = threshold.type === 'sam_fdr'
+  const transform = sam || (input.transform ?? true)
+  const method = input.method ?? 'ttest'
+  const transformed = transform && method === 'ttest'
+  const statValue = (r: StandardRow): number => (transformed ? log2Pos(r.value) : (r.value ?? NaN))
+  // A sample within one comparison: its every condition value and replicate.
+  const sampleOf = (r: StandardRow): string =>
+    groupKey([...input.activeConditions.map((c) => condValue(r, c)), r.rep])
+
+  const { slices, comparisons, cmpCond, contextDims } = compareSlices(input)
+  const raw: RawStatRow[] = []
+  const samStats: Array<SamGene | undefined> = []
+  slices.forEach(({ grp, denSlice, label, rep }, si) => {
+    const numAgg = grp.map((r) => ({ uniqID: r.uniqID, value: statValue(r) }))
+    const denAgg = denSlice.map((r) => ({ uniqID: r.uniqID, value: statValue(r) }))
+    const res = welchTTest(numAgg, denAgg, transformed)
+    const samRes = sam
+      ? samTest(
+          grp.map((r) => ({ uniqID: r.uniqID, sample: sampleOf(r), value: statValue(r) })),
+          denSlice.map((r) => ({ uniqID: r.uniqID, sample: sampleOf(r), value: statValue(r) })),
+          {
+            s0: threshold.samS0 ?? SAM_S0,
+            permutations: threshold.permutations ?? SAM_PERMUTATIONS,
+            seed: si + 1
+          }
+        )
+      : undefined
+    for (const w of res) {
+      const s = samRes?.get(w.uniqID)
+      samStats.push(s)
+      const row: RawStatRow = {
+        uniqID: w.uniqID,
+        cmp_cond: cmpCond,
+        comparison: label,
+        mean1: w.mean1,
+        mean2: w.mean2,
+        sd1: w.sd1,
+        sd2: w.sd2,
+        log2FC: w.log2FC,
+        // SAM reports the pooled t-test its d moderates, so the volcano and its boundary agree.
+        pVal: samRes ? (s?.pVal ?? NaN) : w.pVal,
+        fcSE: w.fcSE
+      }
+      for (const c of contextDims) setCond(row, c, condValue(rep, c))
+      raw.push(row)
+    }
+  })
+
+  const rows = finaliseCompare(raw, threshold)
+  if (!sam) return { rows, comparisons, threshold }
+  // SAM: q is the permutation q-value (not BH), and the calls follow from it.
+  return {
+    rows: rows.map((r, i) => {
+      const s = samStats[i]
+      const q = s && Number.isFinite(s.q) ? -Math.log10(Math.max(s.q, 1e-300)) : null
+      const row: CompareResultRow = {
+        ...r,
+        pQ: q,
+        ...(s ? { sam: { d: s.d, df: s.df } } : null)
+      }
+      return { ...row, ...classifyCompareRow(row, threshold) }
+    }),
+    comparisons,
+    threshold
+  }
+}
+
+/**
+ * Dose–response curve fit (CurveCurator; see curveFit.ts): per numerator group, one curve per
+ * gene over `curveAxis`. The response is each value's RATIO to the gene's mean in the denominator
+ * slice (the control), on the linear values — CurveCurator's definition, whatever scale Clean data
+ * presents. Levels of the axis at or below 0 aren't doses on a log axis and are left out (the
+ * control is the curve's x = −∞). The row's log2FC is the curve fold change, its p the
+ * recalibrated F-test; both then go through the usual FDR and threshold calls.
+ */
+export function runCurveFit(input: CompareInput & { curveAxis: ConditionKey }): CompareTableResult {
+  const threshold: ThresholdConfig = input.threshold ?? { ...DEFAULT_THRESHOLD, statType: 'pQ' }
+  const axis = input.curveAxis
+  const { slices, comparisons, cmpCond, contextDims } = compareSlices(input)
+  const raw: RawStatRow[] = []
+  const fits: Array<CompareResultRow['curve']> = []
+  // Per slice: its decoys, and the index of its first result row (whose group key they file under).
+  const sliceDecoys: Array<{ first: number; decoys: DecoyCurve[] }> = []
+  slices.forEach(({ grp, denSlice, label, rep }, si) => {
+    // The control's mean per gene (the ratio's denominator), and its samples (for the QC).
+    const ctrl = new Map<
+      string,
+      { sum: number; n: number; v: number[]; rep: Array<number | null> }
+    >()
+    for (const r of denSlice) {
+      if (r.value == null || !Number.isFinite(r.value)) continue
+      const c = ctrl.get(r.uniqID) ?? { sum: 0, n: 0, v: [], rep: [] }
+      c.sum += r.value
+      c.n++
+      c.v.push(r.value)
+      c.rep.push(r.rep ?? null)
+      ctrl.set(r.uniqID, c)
+    }
+    // Each gene's treated points: log₁₀ dose and ratio to the control.
+    const pts = new Map<string, { x: number[]; y: number[]; rep: Array<number | null> }>()
+    for (const r of grp) {
+      const dose = Number(condValue(r, axis))
+      const c = ctrl.get(r.uniqID)
+      if (!(dose > 0) || !c || r.value == null) continue
+      const base = c.sum / c.n
+      if (!(base > 0)) continue
+      let p = pts.get(r.uniqID)
+      if (!p) pts.set(r.uniqID, (p = { x: [], y: [], rep: [] }))
+      p.rep.push(r.rep ?? null)
+      p.x.push(Math.log10(dose))
+      p.y.push(r.value / base)
+    }
+    const first = raw.length
+    const targets: TargetCurve[] = []
+    for (const [uniqID, p] of pts) {
+      const fit = fitCurve(p.x, p.y)
+      if (!fit) continue
+      targets.push({ doseX: p.x, ratios: p.y, fit })
+      const { log2FC, pVal, ...curve } = fit
+      const row: RawStatRow = {
+        uniqID,
+        cmp_cond: cmpCond,
+        comparison: label,
+        mean1: NaN,
+        mean2: NaN,
+        sd1: NaN,
+        sd2: NaN,
+        log2FC,
+        pVal,
+        fcSE: NaN
+      }
+      for (const c of contextDims) setCond(row, c, condValue(rep, c))
+      raw.push(row)
+      // The measured points too (log₁₀ dose, ratio to the control, replicate), for drawing a
+      // gene's curve and the per-sample QC; and the control samples' own ratios.
+      const c = ctrl.get(uniqID)!
+      const base = c.sum / c.n
+      fits.push({
+        ...curve,
+        axis,
+        x: p.x,
+        y: p.y,
+        rep: p.rep,
+        cy: c.v.map((v) => v / base),
+        crep: c.rep
+      })
+    }
+    // CurveCurator's null: one decoy per curve, on this slice's dose layout (the fullest curve's
+    // points) and its usual number of control samples.
+    if (targets.length) {
+      let layout: number[] = []
+      for (const p of pts.values()) if (p.x.length > layout.length) layout = p.x
+      const nCtrl = new Map<number, number>()
+      for (const c of ctrl.values()) nCtrl.set(c.n, (nCtrl.get(c.n) ?? 0) + 1)
+      let nControls = 1
+      let most = 0
+      for (const [k, v] of nCtrl) if (v > most) [nControls, most] = [k, v]
+      sliceDecoys.push({ first, decoys: simulateDecoys(targets, layout, nControls, si + 1) })
+    }
+  })
+  const finals = finaliseCompare(raw, threshold).map((r, i) => ({ ...r, curve: fits[i] }))
+  const decoys: Record<string, DecoyCurve[]> = {}
+  for (const { first, decoys: d } of sliceDecoys) decoys[curveGroupKey(finals[first])] = d
+  // CurveCurator's calls need each row's curve, and by FDR its decoy q — so they come last.
+  const withQ = applyCurveFdr(finals, decoys, threshold)
+  // Under any other threshold the calls stand as finaliseCompare made them (before the curves were
+  // attached) — but every curve still gets its final model (4PL, or M0 where flat isn't rejected).
+  const rows =
+    threshold.type === 'curvecurator'
+      ? withQ.rows.map((r) => ({ ...r, ...classifyCompareRow(r, threshold) }))
+      : withQ.rows.map((r) => (r.curve ? { ...r, model: curveModel(r, threshold) } : r))
+  const fdr = withQ.fdr
+  return {
+    rows,
+    comparisons,
+    threshold,
+    decoys,
+    ...(fdr != null ? { curveFdr: fdr } : null),
+    ...(withQ.alphas ? { ccAlpha: withQ.alphas } : null)
+  }
 }
 
 /** Dry-run the grouping of an explicit comparison (no t-tests) for live config feedback. */
 export function previewCompare(input: CompareInput): ComparePreview {
-  const { num, den, activeConditions: active } = input
+  const { num, den, activeConditions: active, curveAxis } = input
   const numRows = input.rows.filter((r) => selectorMatch(num, r, active))
   const denRows = input.rows.filter((r) => selectorMatch(den, r, active))
   const anyPin = (sel: CondSelector): boolean => active.some((c) => pinned(sel, c))
@@ -397,10 +616,32 @@ export function previewCompare(input: CompareInput): ComparePreview {
       `${c}: ${shared} is on both sides — pick different values for numerator and denominator.`
     )
   }
-  const facetDims = active.filter((c) => !axisSet.has(c) && condPresent(numRows, c))
-  const numMultiAxis = axisDims.filter((c) => (num[c]?.length ?? 0) > 1)
+  const facetDims = active.filter(
+    (c) => !axisSet.has(c) && c !== curveAxis && condPresent(numRows, c)
+  )
+  // …except a curve's own axis compared against its 0 (dose > 0 vs 0): its levels are the
+  // curve's points, pooled into one curve per group.
+  const numMultiAxis = axisDims.filter((c) => c !== curveAxis && (num[c]?.length ?? 0) > 1)
   const groupDims = [...facetDims, ...numMultiAxis]
   const matchSet = new Set(input.match.filter((c) => !axisSet.has(c) && !invariantSet.has(c)))
+  // A curve needs doses to fit: more than 4 points with the control, so 4 doses above 0.
+  if (curveAxis) {
+    const doses = new Set<number>()
+    let atZero = false
+    for (const r of numRows) {
+      const d = Number(condValue(r, curveAxis))
+      if (d > 0) doses.add(d)
+      else if (condValue(r, curveAxis) != null) atZero = true
+    }
+    if (anyPin(num) && doses.size < 4)
+      warnings.push(
+        `A curve fit needs at least 4 ${condLabel(curveAxis)} levels above 0 in the numerator (it has ${doses.size}).`
+      )
+    if (atZero)
+      notes.push(
+        `Numerator samples at ${condLabel(curveAxis)} 0 are left out — the control is the curve's baseline.`
+      )
+  }
   // With a real axis, label by the differing values; with none (degenerate overlap), fall back to
   // each side's full pin list so the string is never blank.
   const hasAxis = axisDims.length > 0
@@ -439,7 +680,7 @@ export function previewCompare(input: CompareInput): ComparePreview {
           })
       )
       const numAxisLabel = hasAxis
-        ? axisDims.map((c) => String(condValue(rep, c) ?? '')).join(' · ')
+        ? axisDims.map((c) => axisValueLabel(c, rep, curveAxis)).join(' · ')
         : pinLabel(num)
       const denAxisLabel = hasAxis ? level.map(([, v]) => v).join(' · ') : pinLabel(den)
       labels.add(`${numAxisLabel || '(num)'} | ${denAxisLabel || '(den)'}`)

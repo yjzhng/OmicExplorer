@@ -1,23 +1,26 @@
 /**
- * The one way to show a status message inline. Four kinds, each with a fixed icon + colour so the
+ * The one way to show a status message inline. Five kinds, each with a fixed icon + colour so the
  * meaning reads at a glance anywhere in the app:
- *   info  — (i) blue: a tip / what to do next
- *   warn  — ⚠ amber: needs attention, nothing is broken yet
- *   error — ⊗ red: something failed
- *   ok    — ✓ green: a result / ready
+ *   info     — (i) blue: a tip / what to do next
+ *   warn     — ⚠ amber: needs attention, nothing is broken yet
+ *   error    — ⊗ red: something failed
+ *   ok       — ✓ green: a result / ready
+ *   progress — ◌ grey, spinning: work under way (it'll clear itself when done)
  * Use it instead of hand-placed "✓ …" / "⚠ …" text.
  */
 import type { CSSProperties, ReactNode } from 'react'
 
 import { UI } from './theme'
 
-export type StatusKind = 'info' | 'warn' | 'error' | 'ok'
+export type StatusKind = 'info' | 'warn' | 'error' | 'ok' | 'progress'
 
 const COLOR: Record<StatusKind, string> = {
   info: UI.info,
   warn: UI.warn,
   error: UI.err,
-  ok: UI.ok
+  ok: UI.ok,
+  // Neutral: nothing to act on, just under way.
+  progress: UI.textMuted
 }
 
 const svg = {
@@ -59,6 +62,18 @@ export function StatusIcon({ kind }: { kind: StatusKind }): ReactNode {
         <svg {...svg}>
           <path d="M5 12.5l4.5 4.5L19 7.5" />
         </svg>
+      )
+    case 'progress':
+      // A faint ring with a turning arc (app.css `oe-spin`; still under reduced motion). Turned as
+      // an HTML box round the SVG, which the compositor can animate while the main thread is busy
+      // — an SVG's own animation would freeze with it.
+      return (
+        <span className="oe-spin" style={{ display: 'inline-flex' }}>
+          <svg {...svg}>
+            <circle cx="12" cy="12" r="9" opacity="0.3" />
+            <path d="M12 3a9 9 0 0 1 9 9" />
+          </svg>
+        </span>
       )
   }
 }

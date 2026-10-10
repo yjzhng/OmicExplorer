@@ -39,7 +39,20 @@ export interface Plan {
   arrowKey: ConditionKey | null
 }
 
-export function planAesthetics(varying: Set<ConditionKey>, conds: ConditionKey[]): Plan {
+/** The user's channel choices (ClusterConfig.scheme*): colour's conditions in order, and shade /
+ *  arrow as a numeric condition or 'none'. Unset = automatic. */
+export interface PlanOverrides {
+  color?: ConditionKey[]
+  shade?: ConditionKey | 'none'
+  arrow?: ConditionKey | 'none'
+}
+
+export function planAesthetics(
+  varying: Set<ConditionKey>,
+  conds: ConditionKey[],
+  ov: PlanOverrides = {}
+): Plan {
+  if (ov.color?.length || ov.shade || ov.arrow) return planWithOverrides(varying, conds, ov)
   const Q = conds.filter((c) => varying.has(c) && !isNumericCond(c))
   const N = conds.filter((c) => varying.has(c) && isNumericCond(c))
   let grouped = false
@@ -75,4 +88,67 @@ export function planAesthetics(varying: Set<ConditionKey>, conds: ConditionKey[]
     arrowKey = freeQuant[0]
   }
   return { grouped, quals: Q, colorKey, colorRamp, shadeKey, arrowKey }
+}
+
+/**
+ * The plan with the user's choices applied, the rest filled automatically by the same preferences
+ * as planAesthetics. A choice the data can't take falls back to automatic: a colour condition that
+ * doesn't vary is skipped, and shade / arrow take only a NUMERIC varying condition not already on
+ * colour — the ordered channels never get a categorical one, whatever was chosen.
+ */
+function planWithOverrides(
+  varying: Set<ConditionKey>,
+  conds: ConditionKey[],
+  ov: PlanOverrides
+): Plan {
+  const N = conds.filter((c) => varying.has(c) && isNumericCond(c))
+  // Colour: the chosen conditions that vary (several categoricals → grouped hues; one → its own
+  // colours; only numerics → a ramp on the first), else the automatic choice.
+  const chosen = (ov.color ?? []).filter((c) => varying.has(c))
+  let quals = chosen.filter((c) => !isNumericCond(c))
+  let colorKey: ConditionKey | null = null
+  let colorRamp = false
+  if (!chosen.length) {
+    const auto = planAesthetics(varying, conds)
+    quals = auto.quals
+    colorKey = auto.grouped ? null : auto.colorKey
+    colorRamp = auto.colorRamp
+    if (!auto.grouped) quals = []
+  } else if (quals.length === 1) colorKey = quals[0]
+  else if (quals.length === 0) {
+    colorKey = chosen[0]
+    colorRamp = true
+  }
+  const grouped = quals.length >= 2
+  // Numeric conditions left for the ordered channels.
+  const onColour = new Set<ConditionKey>(grouped ? quals : colorKey ? [colorKey] : [])
+  const pool = N.filter((c) => !onColour.has(c))
+  const take = (k: ConditionKey): ConditionKey => {
+    pool.splice(pool.indexOf(k), 1)
+    return k
+  }
+  const valid = (k: ConditionKey | 'none' | undefined): k is ConditionKey =>
+    !!k && k !== 'none' && pool.includes(k)
+  let shadeKey: ConditionKey | null = valid(ov.shade) ? take(ov.shade) : null
+  let arrowKey: ConditionKey | null = valid(ov.arrow) ? take(ov.arrow) : null
+  const pick = (prefer: ConditionKey): ConditionKey | null =>
+    pool.length ? take(pool.includes(prefer) ? prefer : pool[0]) : null
+  const autoShade = ov.shade === undefined && !shadeKey
+  const autoArrow = ov.arrow === undefined && !arrowKey
+  // Fill what was left automatic with planAesthetics' preferences: grouped or ramp colour → arrows
+  // first (dose preferred); one categorical colour → shade first, and with two numerics left,
+  // shade by time and arrows by dose.
+  if (grouped || colorRamp) {
+    if (autoArrow) arrowKey = pick('dose')
+    if (autoShade && grouped) shadeKey = pick('time')
+  } else {
+    if (autoShade && autoArrow && pool.length >= 2) {
+      shadeKey = pick('time')
+      arrowKey = pick('dose')
+    } else {
+      if (autoShade) shadeKey = pick('time')
+      if (autoArrow && pool.length) arrowKey = pick('dose')
+    }
+  }
+  return { grouped, quals: grouped ? quals : [], colorKey, colorRamp, shadeKey, arrowKey }
 }

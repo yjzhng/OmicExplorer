@@ -4,6 +4,7 @@
  *  re-renders the pipeline canvas. Highlighting is applied imperatively in
  *  PlotlyChart via restyle, so this slice only holds the selected ids.
  */
+import { useMemo } from 'react'
 import { create } from 'zustand'
 
 import type { GeneSet } from '../graph/types'
@@ -59,22 +60,37 @@ export const useSelection = create<SelectionState>((set) => ({
   clearPins: () => set((s) => (s.pinnedIds.size === 0 ? s : { pinnedIds: new Set() }))
 }))
 
-/** The saved geneset the pinned selection IS, if any: its gene ids equal the pinned set exactly
- *  (first match wins). Views name a selection-derived legend entry after it — an ad-hoc pick has
- *  no name worth a legend row, so they hide the entry when this is null. */
-export function matchingGeneSet(pinnedIds: Set<string>, geneSets: GeneSet[]): GeneSet | null {
-  if (pinnedIds.size === 0) return null
-  for (const gs of geneSets) {
-    const ids = new Set(gs.genes.map((g) => g.id))
-    if (ids.size !== pinnedIds.size) continue
-    let same = true
-    for (const id of pinnedIds) {
-      if (!ids.has(id)) {
-        same = false
-        break
-      }
-    }
-    if (same) return gs
-  }
-  return null
+/** The saved genesets the pinned selection is made of: every (non-empty) set whose genes are all
+ *  pinned — provided together they account for the whole selection. A selection with any ad-hoc
+ *  gene beyond them returns none: views name selection-derived legend entries after these sets,
+ *  and an ad-hoc pick has no name worth a legend row (the overlay marks each pinned gene). */
+export function selectedGeneSets(pinnedIds: Set<string>, geneSets: GeneSet[]): GeneSet[] {
+  if (pinnedIds.size === 0) return []
+  const sets = geneSets.filter(
+    (gs) => gs.genes.length > 0 && gs.genes.every((g) => pinnedIds.has(g.id))
+  )
+  const covered = new Set(sets.flatMap((gs) => gs.genes.map((g) => g.id)))
+  return covered.size === pinnedIds.size ? sets : []
+}
+
+/** `selectedGeneSets` for a plot: each set's name, colour and ids. Stable while the same sets stay
+ *  selected, so a click that doesn't change them doesn't rebuild the plot (a full redraw). */
+export function useSelectedGeneSets(
+  geneSets: GeneSet[]
+): { name: string; color: string | null; ids: Set<string> }[] {
+  const key = useSelection((s) =>
+    selectedGeneSets(s.pinnedIds, geneSets)
+      .map((gs) => gs.id)
+      .join('\u0000')
+  )
+  return useMemo(() => {
+    const ids = new Set(key.split('\u0000'))
+    return geneSets
+      .filter((gs) => ids.has(gs.id))
+      .map((gs) => ({
+        name: gs.name,
+        color: gs.color ?? null,
+        ids: new Set(gs.genes.map((g) => g.id))
+      }))
+  }, [key, geneSets])
 }

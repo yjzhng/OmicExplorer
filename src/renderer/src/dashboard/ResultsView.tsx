@@ -12,7 +12,7 @@ import {
   topoStepOrder,
   type AnalysisGroup
 } from '../graph/groups'
-import { NODE_SPECS, stepTitle } from '../graph/registry'
+import { NODE_SPECS, safeTileName, stepTitle } from '../graph/registry'
 import { useGraph } from '../graph/store'
 import { isStep, type NodeResult, type PlotGroupConfig, type StepNode } from '../graph/types'
 import type { PanelLayoutItem } from '../graph/types'
@@ -63,6 +63,7 @@ export function ResultsView(): ReactNode {
   // Back to the canvas — the counterpart of the canvas's "Results →" button.
   const backToWorkflow = (
     <button
+      className="oe-view-btn oe-press"
       style={styles.backBtn}
       onClick={() => setView('canvas')}
       title="Back to the workflow canvas"
@@ -119,6 +120,21 @@ export function ResultsView(): ReactNode {
   }
 
   const nodeById = useMemo(() => new Map(nodes.filter(isStep).map((n) => [n.id, n])), [nodes])
+  // Clicking the open tab again renames it — the name of the step the analysis comes from, the same
+  // name its canvas tile shows (and its downloads lead with). Enter / leaving the field saves,
+  // Esc cancels; an empty name goes back to the default.
+  const renameNode = useGraph((s) => s.renameNode)
+  // `width`: the tab's own, so the field takes its place without growing the chip.
+  const [renaming, setRenaming] = useState<{
+    id: string
+    rootId: string
+    draft: string
+    width: number
+  } | null>(null)
+  const commitTabName = (): void => {
+    if (renaming) renameNode(renaming.rootId, safeTileName(renaming.draft).trim())
+    setRenaming(null)
+  }
 
   if (groups.length === 0) {
     return (
@@ -163,41 +179,76 @@ export function ResultsView(): ReactNode {
               return (
                 <Fragment key={g.id}>
                   {dropIndex === i && dragId && <div style={styles.dropMark} />}
-                  <button
-                    draggable
-                    onClick={() => openTab(g.id)}
-                    onDragStart={(e) => {
-                      setDragId(g.rootId)
-                      e.dataTransfer.effectAllowed = 'move'
-                    }}
-                    onDragOver={(e) => {
-                      if (!dragId) return
-                      e.preventDefault() // allow the drop
-                      e.dataTransfer.dropEffect = 'move'
-                      // Insert before this tab or after it, by which half the cursor is over.
-                      const r = e.currentTarget.getBoundingClientRect()
-                      const after = e.clientX > r.left + r.width / 2
-                      const idx = i + (after ? 1 : 0)
-                      if (idx !== dropIndex) setDropIndex(idx)
-                    }}
-                    onDrop={(e) => {
-                      e.preventDefault()
-                      if (dragId && dropIndex != null) dropTabAt(dragId, dropIndex)
-                      endDrag()
-                    }}
-                    onDragEnd={endDrag}
-                    style={{
-                      ...styles.tab,
-                      ...(isActive ? styles.tabActive : {}),
-                      ...(dragId === g.rootId ? { opacity: 0.4 } : {})
-                    }}
-                    title={groupTitle(g, results)}
-                  >
-                    {groupLabel(g, nodeById.get(g.rootId))}
-                    {/* Real panel count: plot groups unfold into one panel per subcard, so this
+                  {renaming?.id === g.id ? (
+                    <input
+                      autoFocus
+                      value={renaming.draft}
+                      placeholder={NODE_SPECS[g.kind].label}
+                      // File-name-safe, like the tile's own rename (the name leads downloads).
+                      onChange={(e) =>
+                        setRenaming({ ...renaming, draft: safeTileName(e.target.value) })
+                      }
+                      onFocus={(e) => e.currentTarget.select()}
+                      onBlur={commitTabName}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') commitTabName()
+                        else if (e.key === 'Escape') setRenaming(null)
+                      }}
+                      style={{ ...styles.tab, ...styles.tabInput, width: renaming.width }}
+                    />
+                  ) : (
+                    <button
+                      draggable
+                      onClick={(e) => {
+                        const root = nodeById.get(g.rootId)
+                        if (isActive && root)
+                          setRenaming({
+                            id: g.id,
+                            rootId: g.rootId,
+                            draft: root.data.name ?? '',
+                            width: e.currentTarget.getBoundingClientRect().width
+                          })
+                        else openTab(g.id)
+                      }}
+                      onDragStart={(e) => {
+                        setDragId(g.rootId)
+                        e.dataTransfer.effectAllowed = 'move'
+                      }}
+                      onDragOver={(e) => {
+                        if (!dragId) return
+                        e.preventDefault() // allow the drop
+                        e.dataTransfer.dropEffect = 'move'
+                        // Insert before this tab or after it, by which half the cursor is over.
+                        const r = e.currentTarget.getBoundingClientRect()
+                        const after = e.clientX > r.left + r.width / 2
+                        const idx = i + (after ? 1 : 0)
+                        if (idx !== dropIndex) setDropIndex(idx)
+                      }}
+                      onDrop={(e) => {
+                        e.preventDefault()
+                        if (dragId && dropIndex != null) dropTabAt(dragId, dropIndex)
+                        endDrag()
+                      }}
+                      onDragEnd={endDrag}
+                      style={{
+                        ...styles.tab,
+                        ...(isActive ? styles.tabActive : {}),
+                        ...(dragId === g.rootId ? { opacity: 0.4 } : {})
+                      }}
+                      title={
+                        isActive
+                          ? `${groupTitle(g, results)} — click to rename`
+                          : groupTitle(g, results)
+                      }
+                    >
+                      {groupLabel(g, nodeById.get(g.rootId))}
+                      {/* Real panel count: plot groups unfold into one panel per subcard, so this
                         matches the tiles actually shown (a folded group is not counted as 1). */}
-                    <span style={styles.tabCount}>{expandMembers(g.memberIds, nodes).length}</span>
-                  </button>
+                      <span style={styles.tabCount}>
+                        {expandMembers(g.memberIds, nodes).length}
+                      </span>
+                    </button>
+                  )}
                 </Fragment>
               )
             })}
@@ -399,8 +450,28 @@ const styles: Record<string, CSSProperties> = {
     fontWeight: 600,
     cursor: 'pointer'
   },
-  tabActive: { color: UI.accentText, background: UI.accent, borderColor: UI.accent },
+  // The whole `border`, not just its colour: React clears a longhand (borderColor) set over the
+  // shorthand when the style drops it, which left the last active tab with a dark outline.
+  // A click on the open tab renames it, so it shows the text cursor like the app's other names.
+  tabActive: {
+    color: UI.accentText,
+    background: UI.accent,
+    border: `1px solid ${UI.accent}`,
+    cursor: 'text'
+  },
   tabCount: { fontSize: 10, opacity: 0.7 },
+  // The open tab while it's being renamed: the tab itself, as a text field.
+  // The open tab while it's being renamed: the same chip, its colours flipped (the accent becomes
+  // the text and outline, the accent's text colour the fill), so it reads as being edited.
+  tabInput: {
+    outline: 'none',
+    cursor: 'text',
+    boxSizing: 'border-box',
+    fontFamily: 'inherit',
+    background: UI.accentText,
+    color: UI.accent,
+    border: `1px solid ${UI.accent}`
+  },
   empty: {
     display: 'flex',
     alignItems: 'center',

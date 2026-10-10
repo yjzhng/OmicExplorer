@@ -40,6 +40,9 @@ export interface InteractiveSampleCond {
   rep: string
   /** custom condition name → value, for the axes the user added beyond the five presets */
   extra?: Record<string, string>
+  /** the conditions whose value was set by hand (typed, or renamed) rather than mapped off the
+   *  sample name — a later mapping of that condition clears it. The samplesheet outlines these. */
+  edited?: string[]
 }
 
 export interface InteractiveAdapted {

@@ -22,7 +22,7 @@ function rows(nGenes: number, doses = [2.5, 5, 10]): CompareResultRow[] {
         pP: 1,
         pQ: 1,
         thrsh: '',
-        signf: false,
+        signf: true, // bubble's top-N only draws from significant genes
         effect: 'none'
       })
     }

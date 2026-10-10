@@ -30,7 +30,10 @@ export function LoadingView({ cluster, title }: { cluster: ClusterData; title?: 
     ]
     // Square, symmetric limits centred on the origin: direction is the thing being read, and an
     // auto-fitted asymmetric box would shear the angles.
-    const extent = Math.max(...lo.flatMap((l) => [Math.abs(l.x), Math.abs(l.y)]), 1e-9) * 1.25
+    // A loop, not Math.max(...loadings): one argument per gene can overflow the stack.
+    let peak = 1e-9
+    for (const l of lo) peak = Math.max(peak, Math.abs(l.x), Math.abs(l.y))
+    const extent = peak * 1.25
 
     const lay: Record<string, unknown> = {
       ...plotBase(p),

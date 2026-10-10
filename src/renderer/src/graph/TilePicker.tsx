@@ -1,4 +1,4 @@
-import { useState, type CSSProperties, type ReactNode } from 'react'
+import { useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 
 import { UI } from '../ui/theme'
 import {
@@ -210,32 +210,36 @@ export function TilePicker({
           </div>
         )}
       </div>
-      <div style={body}>
-        {current
-          ? plotting
-            ? plotSections.map((s) => (
-                <div key={s.label}>
-                  <div style={sectionHead}>{s.label}</div>
-                  {s.entries.map((e) => optRow(e, accentOf(current.cat)))}
-                </div>
-              ))
-            : current.ops.map((op) =>
-                row(
-                  op,
-                  accentOf(current.cat),
-                  NODE_SPECS[op].label,
-                  '',
-                  () => onPick([{ kind: op }]),
-                  NODE_SPECS[op].subtitle
+      {/* The option list scrolls within the tile once it's long (the plot list, with its sections),
+          keeping the header and the Add button in view (see CrispScroll). */}
+      <CrispScroll maxHeight={LIST_MAX_H}>
+        <div style={body}>
+          {current
+            ? plotting
+              ? plotSections.map((s) => (
+                  <div key={s.label}>
+                    <div style={sectionHead}>{s.label}</div>
+                    {s.entries.map((e) => optRow(e, accentOf(current.cat)))}
+                  </div>
+                ))
+              : current.ops.map((op) =>
+                  row(
+                    op,
+                    accentOf(current.cat),
+                    NODE_SPECS[op].label,
+                    '',
+                    () => onPick([{ kind: op }]),
+                    NODE_SPECS[op].subtitle
+                  )
                 )
-              )
-          : byCat.map((g) =>
-              row(g.cat, accentOf(g.cat), CATEGORIES[g.cat].label, g.ops.length, () => {
-                if (g.ops.length === 1) onPick([{ kind: g.ops[0] }])
-                else setCat(g.cat)
-              })
-            )}
-      </div>
+            : byCat.map((g) =>
+                row(g.cat, accentOf(g.cat), CATEGORIES[g.cat].label, g.ops.length, () => {
+                  if (g.ops.length === 1) onPick([{ kind: g.ops[0] }])
+                  else setCat(g.cat)
+                })
+              )}
+        </div>
+      </CrispScroll>
       {plotting && (
         <div style={footer}>
           <button
@@ -263,7 +267,7 @@ const card: CSSProperties = {
   width: 230,
   background: UI.panelRaised,
   border: `1px solid ${UI.border}`,
-  borderTop: `3px dashed ${UI.accent}`,
+  borderTop: `5px dashed ${UI.accent}`,
   borderRadius: 8,
   color: UI.text,
   fontSize: 12,
@@ -322,6 +326,57 @@ const backBtn: CSSProperties = {
 const backArrow: CSSProperties = { fontSize: 16, lineHeight: 1, fontWeight: 700, display: 'block' }
 const backText: CSSProperties = { lineHeight: 1, display: 'block' }
 const body: CSSProperties = { padding: 4, display: 'flex', flexDirection: 'column', gap: 2 }
+const LIST_MAX_H = 300
+
+/** A height-capped area scrolled by the wheel / trackpad — WITHOUT a native scroller. On the
+ *  canvas the picker sits inside React Flow's zoom transform, and a real scroll container there is
+ *  rasterised as its own layer and then scaled, which blurred the list. This clips the content
+ *  and shifts it (a plain 2-D translate, painted with the tile, so it stays sharp), with a thin
+ *  indicator of where the view is. `nowheel` keeps the canvas from zooming under the wheel. */
+function CrispScroll({ maxHeight, children }: { maxHeight: number; children: ReactNode }) {
+  const inner = useRef<HTMLDivElement>(null)
+  const [contentH, setContentH] = useState(0)
+  const [top, setTop] = useState(0)
+  // Measured whenever the list's size changes (a category opened, a section added).
+  useLayoutEffect(() => {
+    const el = inner.current
+    if (!el) return
+    const ro = new ResizeObserver(() => setContentH(el.offsetHeight))
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [])
+  const range = Math.max(0, contentH - maxHeight)
+  const y = Math.min(top, range)
+  const thumbH = range ? Math.max(24, (maxHeight * maxHeight) / contentH) : 0
+  return (
+    <div
+      className="nowheel"
+      onWheel={(e) => {
+        if (!range) return
+        setTop(Math.max(0, Math.min(range, y + e.deltaY)))
+      }}
+      style={{ position: 'relative', maxHeight, overflow: 'hidden' }}
+    >
+      <div ref={inner} style={{ transform: `translateY(${-y}px)` }}>
+        {children}
+      </div>
+      {range > 0 && (
+        <div
+          style={{
+            position: 'absolute',
+            right: 2,
+            width: 3,
+            borderRadius: 2,
+            background: UI.border,
+            top: (y / range) * (maxHeight - thumbH),
+            height: thumbH,
+            pointerEvents: 'none'
+          }}
+        />
+      )}
+    </div>
+  )
+}
 const sectionHead: CSSProperties = {
   fontSize: 9,
   fontWeight: 700,

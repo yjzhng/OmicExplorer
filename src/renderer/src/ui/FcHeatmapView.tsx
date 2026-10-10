@@ -1,8 +1,9 @@
-import { useMemo } from 'react'
+import { useLayoutEffect, useMemo, useRef, useState } from 'react'
 
 import type { FcHeatmapData } from '../engine'
 import { DIVERGE_SCALE } from './colormap'
 import { PlotlyChart } from './PlotlyChart'
+import { truncatedTicks } from './plotAxes'
 import { axisBase, PALETTES, plotBase } from './theme'
 import { useUiTheme } from './useUiTheme'
 
@@ -28,6 +29,18 @@ export function FcHeatmapView({
   orient?: 'landscape' | 'portrait'
 }) {
   const mode = useUiTheme((s) => s.mode)
+  // The tile's size, for how many gene labels fit along the gene axis.
+  const wrapRef = useRef<HTMLDivElement>(null)
+  const [size, setSize] = useState({ w: 0, h: 0 })
+  useLayoutEffect(() => {
+    const el = wrapRef.current
+    if (!el) return
+    const measure = (): void => setSize({ w: el.clientWidth, h: el.clientHeight })
+    const ro = new ResizeObserver(measure)
+    ro.observe(el)
+    measure()
+    return () => ro.disconnect()
+  }, [])
 
   const { data: traces, layout } = useMemo(() => {
     const p = PALETTES[mode]
@@ -54,6 +67,8 @@ export function FcHeatmapView({
       title: 'gene',
       automargin: true,
       tickfont: { size: 9 },
+      // Gene names cut short like every plot's (the full name is in the hover).
+      ...truncatedTicks(data.genes, landscape ? size.w : size.h),
       ...(landscape ? { tickangle: -45 } : {})
     }
     const compAxis = {
@@ -70,7 +85,11 @@ export function FcHeatmapView({
       yaxis: landscape ? compAxis : geneAxis
     }
     return { data: [trace], layout: lay }
-  }, [data, title, orient, mode])
+  }, [data, title, orient, mode, size])
 
-  return <PlotlyChart data={traces} layout={layout} />
+  return (
+    <div ref={wrapRef} style={{ width: '100%', height: '100%' }}>
+      <PlotlyChart data={traces} layout={layout} />
+    </div>
+  )
 }

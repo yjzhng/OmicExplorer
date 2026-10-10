@@ -13,7 +13,9 @@ import { styles } from './tileDialogStyles'
  *  is the tile's, used only to keep a short window from hanging past it. */
 export type Anchor = Pick<DOMRect, 'top' | 'bottom' | 'left' | 'right'>
 
-const POP_W = 340
+// The canvas details panel's default width: the plot settings shown here are the same controls, laid
+// out for it (narrower, the statistic's cutoff rows overflowed into a horizontal scroll).
+const POP_W = 420
 const GAP = 8 // between the tile and the window
 const MARGIN = 8 // kept clear of the viewport edges
 
@@ -21,7 +23,8 @@ const MARGIN = 8 // kept clear of the viewport edges
  * The window shell shared by a tile's settings and download popovers: a card BESIDE the tile —
  * to its right, or to its left when the right would cross the viewport edge — so a change applies
  * in full view of the plot instead of behind the window. Aligned to the tile's top and clamped
- * inside the viewport (its body scrolls when it's taller than the screen). An invisible click-away
+ * inside the viewport (its body scrolls when it's taller than the screen; the footer's buttons
+ * stay put below it). An invisible click-away
  * layer closes it; there is no dimming scrim. Themed explicitly because it portals outside the app
  * root.
  */
@@ -75,10 +78,9 @@ export function TileDialog({
       <div style={styles.clickAway} onClick={busy ? undefined : onClose} />
       <div style={{ ...styles.popover, left, width, ...place }} role="dialog" aria-label={label}>
         <div style={styles.head}>{title}</div>
-        <div style={styles.body}>
-          {children}
-          <div style={styles.foot}>{footer}</div>
-        </div>
+        <div style={styles.body}>{children}</div>
+        {/* Outside the scrolling body, so the buttons stay in view however long the settings run. */}
+        <div style={styles.foot}>{footer}</div>
       </div>
     </div>,
     document.body

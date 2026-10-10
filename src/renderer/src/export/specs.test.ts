@@ -34,9 +34,15 @@ describe('collectSpecs', () => {
     groupNode('grp-4', [child('c1', 'heatmap'), child('c2', 'geneBar')])
   ]
   const edges = [edge('load-1', 'std-2'), edge('std-2', 'volcano-3'), edge('std-2', 'grp-4')]
+  // Every plot has run (only a plot that has can be drawn — see the last case).
+  const ran: Record<string, NodeResult> = {
+    'volcano-3': { kind: 'plot' },
+    'grp-4/c1': { kind: 'plot' },
+    'grp-4/c2': { kind: 'plot' }
+  }
 
   it('enumerates standalone plots and expands group subcards; skips tables/load', () => {
-    const specs = collectSpecs(nodes, edges, {})
+    const specs = collectSpecs(nodes, edges, ran)
     const keys = specs.map((s) => s.key).sort()
     // volcano node + two group children; the load and standardize (tables) are excluded.
     expect(keys).toEqual(['grp-4_c1', 'grp-4_c2', 'volcano-3'])
@@ -63,7 +69,8 @@ describe('collectSpecs', () => {
         kind: 'compare',
         displayMap: {},
         cmp: { rows: [], comparisons: ['DrugA_vs_Veh'] }
-      } as unknown as NodeResult
+      } as unknown as NodeResult,
+      'volcano-3': { kind: 'plot' }
     }
     void results
     const specs = collectSpecs(cmpNodes, cmpEdges, cmpResults)
@@ -71,13 +78,18 @@ describe('collectSpecs', () => {
   })
 
   it('honours the selection filter (a selected group contributes all its children)', () => {
-    const specs = collectSpecs(nodes, edges, {}, new Set(['grp-4']))
+    const specs = collectSpecs(nodes, edges, ran, new Set(['grp-4']))
     expect(specs.map((s) => s.key).sort()).toEqual(['grp-4_c1', 'grp-4_c2'])
   })
 
   it('tags each spec with its analysis root and no selected-only variant when nothing is selected', () => {
-    const specs = collectSpecs(nodes, edges, {})
+    const specs = collectSpecs(nodes, edges, ran)
     expect(specs.every((s) => s.rootId === 'std-2')).toBe(true)
     expect(specs.every((s) => s.hasSelection === false)).toBe(true)
+  })
+
+  it('skips a plot that has not run (it has nothing to draw)', () => {
+    const specs = collectSpecs(nodes, edges, { 'grp-4/c2': { kind: 'plot' } })
+    expect(specs.map((s) => s.key)).toEqual(['grp-4_c2'])
   })
 })

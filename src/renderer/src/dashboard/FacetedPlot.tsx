@@ -24,7 +24,9 @@ export function FacetedPlot<T extends ContextRow>({
 }: {
   rows: T[]
   exclude?: ConditionKey[]
-  children: (contextRows: T[]) => ReactNode
+  /** the facet on show: its rows, and its key (FacetGroup key, '' unfaceted) — what a plot's run
+   *  keys its per-facet results by */
+  children: (contextRows: T[], facetKey: string) => ReactNode
   /** when set, the selection is driven externally — the shared results-header control, or
    *  batch export forcing one facet per file — so this plot renders no tabs of its own.
    *  Undefined = standalone, with its own interactive tabs. */
@@ -33,17 +35,21 @@ export function FacetedPlot<T extends ContextRow>({
   const dims = useMemo(() => facetDims(rows, exclude), [rows, exclude])
   const [selState, setSel] = useState<Record<string, string>>({})
   const sel = facetSel ?? selState
-  const { bars, rows: groupRows } = useMemo(() => resolveFacets(rows, dims, sel), [rows, dims, sel])
+  const {
+    bars,
+    rows: groupRows,
+    key: facetKey
+  } = useMemo(() => resolveFacets(rows, dims, sel), [rows, dims, sel])
 
-  if (dims.length === 0) return <div style={styles.single}>{children(rows)}</div>
+  if (dims.length === 0) return <div style={styles.single}>{children(rows, '')}</div>
 
   // Shared/forced selection: a global control (or export) owns it, so just render the
   // resolved facet — no tabs here.
-  if (facetSel) return <div style={styles.single}>{children(groupRows)}</div>
+  if (facetSel) return <div style={styles.single}>{children(groupRows, facetKey)}</div>
 
   return (
     <div style={styles.root}>
-      <div style={styles.bars}>
+      <div className="oe-switch-strip" style={styles.bars}>
         {bars.map(({ dim, value, options }) => (
           <div key={dim} style={styles.bar}>
             <span style={styles.barLabel}>{facetKeyLabel(dim)}</span>
@@ -67,7 +73,7 @@ export function FacetedPlot<T extends ContextRow>({
           </div>
         ))}
       </div>
-      <div style={styles.body}>{children(groupRows)}</div>
+      <div style={styles.body}>{children(groupRows, facetKey)}</div>
     </div>
   )
 }
@@ -83,7 +89,6 @@ const styles: Record<string, CSSProperties> = {
     rowGap: 4,
     columnGap: 14,
     padding: '3px 10px',
-    borderBottom: `1px solid ${UI.border}`,
     flex: '0 0 auto'
   },
   bar: { display: 'inline-flex', alignItems: 'center', gap: 6, flex: '0 0 auto' },

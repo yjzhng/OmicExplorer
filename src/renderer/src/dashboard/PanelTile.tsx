@@ -16,7 +16,9 @@ import type { Edge } from '@xyflow/react'
 import { facetDims, type ConditionKey, type ContextRow } from '../engine'
 import { copyGd, gdToExportItem } from '../export/plotExport'
 import { sanitize } from '../export/paths'
+import { exportPlotData, plotDataTarget } from '../export/plotData'
 import { collectTableExports } from '../export/tables'
+import { deriveGroups } from '../graph/groups'
 import { accentOf, categoryOf, PLOT_CONFIG_KINDS, plotLabel } from '../graph/registry'
 import { IconGear } from '../ui/icons'
 import { PlotAxesContext, swapAxes, type AxisDefaults } from '../ui/plotAxes'
@@ -31,7 +33,7 @@ import { PanelBody } from './PanelBody'
 import { enqueueReveal } from './renderQueue'
 import { PanelSettingsDialog, type TilePlotConfig } from './PanelSettingsDialog'
 import type { Anchor } from './TileDialog'
-import { useInView } from './useInView'
+import { useNearView } from './useInView'
 
 /** Header-button glyphs (16px stroke icons on currentColor). */
 const glyph = {
@@ -65,6 +67,18 @@ function IconCheck(): ReactNode {
 }
 
 /** Download: tray with a downward arrow (matches the top-nav export glyph). */
+/** Data (a file: folded corner, lines of text) — saving a table: a Data table tile's download, and
+ *  the Enrichment / STRING tiles' Export data button. */
+function IconData(): ReactNode {
+  return (
+    <svg {...glyph}>
+      <path d="M6 3h8l4 4v14H6z" />
+      <path d="M14 3v4h4" />
+      <path d="M9 12h6M9 16h6" />
+    </svg>
+  )
+}
+
 function IconDownload(): ReactNode {
   return (
     <svg {...glyph}>
@@ -107,7 +121,7 @@ export const PanelTile = memo(function PanelTile({
   // A tile's header shows its plot kind (a dr tile shows its axis: Dose- vs Time-response).
   const kind = child ? child.kind : node.data.kind
   const label = plotLabel(kind, child ? child.config : node.data.config)
-  const [bodyRef, inView] = useInView<HTMLDivElement>()
+  const bodyRef = useRef<HTMLDivElement>(null)
   // Per-tile view state: plot all genes (default) or only the selected genes. Only offered for
   // kinds that otherwise draw all genes (see SUBSET_TOGGLE_KINDS).
   const [selectedOnly, setSelectedOnly] = useState(false)
@@ -155,6 +169,20 @@ export const PanelTile = memo(function PanelTile({
   const hasSettings = canToggle || canOrient || !!plotConfig
   // The popovers open beside the tile: each open state holds the tile's box as the anchor.
   const tileRef = useRef<HTMLDivElement>(null)
+  // What the plot shows lags what it's given. A condition switch or a re-run hands EVERY tile its
+  // new selection / results at once, and rebuilding them all in one go froze the app for as long
+  // as the whole tab took. So a tile takes the new ones on its own frame (the reveal queue, one
+  // tile per frame, as on first mount), showing a spinner over the old plot until then — tiles on
+  // screen first; one scrolled away (or in a hidden tab) in the background once they're done, or
+  // straight away if it comes back into view first. Gene highlighting and hover-focus don't come
+  // through here (they read the shared selection directly), so they stay live on every tile.
+  const near = useNearView(tileRef)
+  const [applied, setApplied] = useState({ facetSel, results })
+  const behind = applied.facetSel !== facetSel || applied.results !== results
+  useEffect(() => {
+    if (!behind) return
+    return enqueueReveal(() => setApplied({ facetSel, results }), near)
+  }, [behind, near, facetSel, results])
   const [settingsAt, setSettingsAt] = useState<Anchor | null>(null)
   // What the plot draws on each axis with no override (title + the range actually drawn). The
   // charts report it only while the settings window is open — it's just for its placeholders, so
@@ -180,12 +208,15 @@ export const PanelTile = memo(function PanelTile({
   type Feedback = { ok: true } | { ok: false; why: string } | null
   const [copied, setCopied] = useState<Feedback>(null)
   const [saved, setSaved] = useState<Feedback>(null)
+  const [exported, setExported] = useState<Feedback>(null)
   const copiedTimer = useRef<number | undefined>(undefined)
   const savedTimer = useRef<number | undefined>(undefined)
+  const exportedTimer = useRef<number | undefined>(undefined)
   useEffect(
     () => () => {
       window.clearTimeout(copiedTimer.current)
       window.clearTimeout(savedTimer.current)
+      window.clearTimeout(exportedTimer.current)
     },
     []
   )
@@ -225,7 +256,7 @@ export const PanelTile = memo(function PanelTile({
    *  (DR/bubble axis; TDR's dose × time). */
   function viewed(): { comparison: string | null; context: string[] } {
     const upId = edges.find((e) => e.target === node.id)?.source
-    const up = upId ? results[upId] : undefined
+    const up = upId ? applied.results[upId] : undefined
     const rows: ContextRow[] | null =
       up?.kind === 'compare' ? up.cmp.rows : up?.kind === 'contrast' ? up.ctr.rows : null
     const comparisons =
@@ -242,7 +273,7 @@ export const PanelTile = memo(function PanelTile({
           ? ['dose', 'time']
           : undefined
     const dims = facetDims(rows, exclude)
-    const bars = dims.length ? resolveFacets(rows, dims, facetSel ?? EMPTY_SEL).bars : []
+    const bars = dims.length ? resolveFacets(rows, dims, applied.facetSel ?? EMPTY_SEL).bars : []
     const context = bars
       .filter((b) => b.dim !== 'comparison')
       // Bare values in hierarchy order (cell, cmpd, dose, time, then any custom condition) — the
@@ -279,10 +310,16 @@ export const PanelTile = memo(function PanelTile({
     )
     const fmt = isPlot ? downloadFormat : tableFormat
     const dpi = downloadDpi
-    // Native save-as: the OS window names the file and picks its folder. Open in the folder the
-    // last download in this project went to, else the project's `output/` folder.
-    const { dataDir, saveDir } = useGraph.getState()
-    const dir = saveDir ?? (dataDir ? `${dataDir}/output` : null)
+    // Native save-as: the OS window names the file and picks its folder. It opens in the workflow's
+    // output/ subfolder for this tile's processing step (graph/diskNames.ts).
+    const g = useGraph.getState()
+    const rootId =
+      tableRootId ?? deriveGroups(g.nodes, edges).find((x) => x.memberIds.includes(node.id))?.rootId
+    // …unless the data folder was deleted meanwhile: then the window opens wherever the OS picks,
+    // rather than quietly recreating the folder, and the chip is flagged.
+    const dataThere = !!g.dataDir && (await window.api.pathExists(g.dataDir)).dir
+    if (g.dataDir && !dataThere) void g.refreshDataFiles()
+    const dir = rootId && dataThere ? g.outputDirFor(rootId) : null
     const typeName = {
       svg: 'SVG image',
       png: 'PNG image',
@@ -305,7 +342,6 @@ export const PanelTile = memo(function PanelTile({
     const cut = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'))
     const baseDir = path.slice(0, cut)
     const fileName = path.slice(cut + 1)
-    useGraph.getState().setSaveDir(baseDir) // remembered for this project's next download
     setBusy(true)
     try {
       let written = 0
@@ -324,7 +360,7 @@ export const PanelTile = memo(function PanelTile({
         const [t] = collectTableExports(
           useGraph.getState().nodes,
           edges,
-          results,
+          applied.results,
           new Set([tableRootId!])
         )
         if (t) {
@@ -349,6 +385,53 @@ export const PanelTile = memo(function PanelTile({
         window.clearTimeout(savedTimer.current)
         savedTimer.current = window.setTimeout(() => setSaved(null), 1000)
       } else fail(errors[0] ?? 'nothing was written')
+    } catch (e) {
+      fail(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  /** Enrichment / STRING: save the plot's data — every facet, not just the one drawn — as tables,
+   *  through the OS save window (export/plotData.ts). STRING writes `<name>_nodes` and
+   *  `<name>_edges`. Opens in the step's output/ folder, like Download. */
+  const canExportData = kind === 'enrich' || kind === 'string'
+  async function runDataExport(): Promise<void> {
+    if (busy) return
+    const flash = (fb: Feedback, ms: number): void => {
+      setExported(fb)
+      window.clearTimeout(exportedTimer.current)
+      exportedTimer.current = window.setTimeout(() => setExported(null), ms)
+    }
+    const fail = (why: string): void => {
+      console.error('data export failed:', why)
+      flash({ ok: false, why }, 3000)
+    }
+    const found = plotDataTarget(node.id, child?.id)
+    if ('error' in found) return fail(found.error)
+    const { target } = found
+    const g = useGraph.getState()
+    // As Download: the step's output/ folder, unless the data folder was deleted meanwhile.
+    const dataThere = !!g.dataDir && (await window.api.pathExists(g.dataDir)).dir
+    if (g.dataDir && !dataThere) void g.refreshDataFiles()
+    const dir = dataThere ? g.outputDirFor(target.upstreamId) : null
+    const fmt = tableFormat
+    let path: string | null
+    try {
+      path = await window.api.pickSavePath({
+        defaultPath: dir ? `${dir}/${target.stem}.${fmt}` : `${target.stem}.${fmt}`,
+        ext: fmt,
+        typeName: fmt === 'xlsx' ? 'Excel workbook' : 'CSV table'
+      })
+    } catch (e) {
+      return fail(e instanceof Error ? e.message : String(e))
+    }
+    if (!path) return // cancelled
+    setBusy(true)
+    try {
+      const res = await exportPlotData(target, path, fmt)
+      if (res.written > 0 && res.errors.length === 0) flash({ ok: true }, 1000)
+      else fail(res.errors[0] ?? 'nothing was written')
     } catch (e) {
       fail(e instanceof Error ? e.message : String(e))
     } finally {
@@ -407,7 +490,32 @@ export const PanelTile = memo(function PanelTile({
                 ...(saved ? (saved.ok ? styles.btnOk : styles.btnFail) : null)
               }}
             >
-              {saved?.ok ? <IconCheck /> : <IconDownload />}
+              {/* The icon says what's saved: the arrow for a plot image, the file for data — the
+                  same file as the Enrichment / STRING tiles' Export data button. */}
+              {saved?.ok ? <IconCheck /> : isPlot ? <IconDownload /> : <IconData />}
+            </button>
+          )}
+          {canExportData && (
+            <button
+              onClick={() => void runDataExport()}
+              disabled={busy}
+              title={
+                exported
+                  ? exported.ok
+                    ? 'Saved'
+                    : `Export failed — ${exported.why}`
+                  : `Export data (${tableFormat.toUpperCase()}, every facet${kind === 'string' ? ' — nodes + edges' : ''})…`
+              }
+              aria-label="Export data"
+              className="oe-tilebtn"
+              data-tint={exported ? (exported.ok ? 'ok' : 'fail') : undefined}
+              onMouseDown={noFocus}
+              style={{
+                ...styles.dlBtn,
+                ...(exported ? (exported.ok ? styles.btnOk : styles.btnFail) : null)
+              }}
+            >
+              {exported?.ok ? <IconCheck /> : <IconData />}
             </button>
           )}
           {hasSettings && (
@@ -445,21 +553,26 @@ export const PanelTile = memo(function PanelTile({
         />
       )}
       <div style={styles.body} ref={bodyRef}>
-        {inView ? (
-          <DeferredMount>
+        {
+          // Built on screen first, then — in the background — the tiles further down the page.
+          <DeferredMount urgent={near}>
             {/* The tile's axis overrides reach every PlotlyChart inside (faceted plots too). */}
             <PlotAxesContext.Provider value={axesCtx}>
               <PanelBody
                 node={node}
                 edges={edges}
-                results={results}
+                results={applied.results}
                 child={child}
                 selectedOnly={selectedOnly}
-                facetSel={facetSel}
+                facetSel={applied.facetSel}
               />
             </PlotAxesContext.Provider>
           </DeferredMount>
-        ) : null}
+        }
+        {/* Waiting its turn to show the new condition / results (see `applied`): the old plot
+            dimmed, with a spinner, so it doesn't read as the new one. */}
+        {behind && <div style={styles.staleVeil} />}
+        {behind && near && <Spinner size={20} />}
       </div>
     </div>
   )
@@ -469,10 +582,15 @@ export const PanelTile = memo(function PanelTile({
  *  frame). Building a tile's plot data is synchronous and can block for a while (clustering,
  *  correlation, big pivots); deferring lets the spinner show first, and pacing reveals through
  *  the queue keeps the app responsive when many heavy tiles mount at once (tab/project switch)
- *  instead of freezing while they all build in the same frame. Remounts show the spinner again. */
-function DeferredMount({ children }: { children: ReactNode }): ReactNode {
+ *  instead of freezing while they all build in the same frame. `urgent` (on screen) goes ahead of
+ *  the rest, which build in the background after; a waiting tile that comes into view moves to
+ *  the front. Remounts show the spinner again. */
+function DeferredMount({ children, urgent }: { children: ReactNode; urgent: boolean }): ReactNode {
   const [show, setShow] = useState(false)
-  useEffect(() => enqueueReveal(() => setShow(true)), [])
+  useEffect(() => {
+    if (show) return
+    return enqueueReveal(() => setShow(true), urgent)
+  }, [show, urgent])
   return show ? <>{children}</> : <Spinner />
 }
 
@@ -527,5 +645,12 @@ const styles: Record<string, CSSProperties> = {
   // border at currentColor — a stuck dark outline.
   btnOk: { background: UI.accent, color: UI.accentText, border: `1px solid ${UI.accent}` },
   btnFail: { background: '#e0678f', color: '#fff', border: '1px solid #e0678f' },
-  body: { flex: 1, minHeight: 0, overflow: 'auto', position: 'relative' }
+  body: { flex: 1, minHeight: 0, overflow: 'auto', position: 'relative' },
+  // Over a plot that's waiting to update: the panel colour, half see-through.
+  staleVeil: {
+    position: 'absolute',
+    inset: 0,
+    background: `color-mix(in srgb, ${UI.panel} 55%, transparent)`,
+    pointerEvents: 'none'
+  }
 }

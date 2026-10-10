@@ -7,6 +7,7 @@
  * canvas passes its `zoom`, to draw the grid at the tile's scale, and a `closeKey` that changes
  * when the canvas pans or zooms (a fixed overlay can't follow it, so it closes instead).
  */
+import { slashBackground } from './slash'
 import type { CSSProperties, ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 
@@ -16,6 +17,34 @@ import { useUiTheme } from './useUiTheme'
 
 /** A cleared colour: drawn as nothing. The grid's clear chip sets it, and marks itself on it. */
 export const CLEAR = 'transparent'
+/** The automatic colour: the plot picks it (e.g. a bar's group colour). The grid's "Automatic" row
+ *  sets it, and marks itself on it; a trigger shows it as the letter A (AutoMark). */
+export const AUTO = 'auto'
+
+/** The automatic colour's chip background: diagonal stripes of a few plot colours — "it picks
+ *  the colour itself". The letter A (AutoMark) sits on it. */
+export const AUTO_BACKGROUND =
+  'linear-gradient(135deg, #4e79a7 0 25%, #f28e2b 25% 50%, #59a14f 50% 75%, #e15759 75% 100%)'
+
+/** The automatic colour's mark: the letter A, white with a soft shadow so it reads on the
+ *  stripes (AUTO_BACKGROUND) — in a trigger chip or the grid's top row. */
+export function AutoMark({ size = 11 }: { size?: number }): ReactNode {
+  return (
+    <span
+      aria-hidden
+      style={{
+        fontSize: size,
+        fontWeight: 800,
+        lineHeight: 1,
+        fontFamily: 'inherit',
+        color: '#ffffff',
+        textShadow: '0 0 2px rgba(0,0,0,0.75)'
+      }}
+    >
+      A
+    </span>
+  )
+}
 
 /** The picker's palette: a spectrum grid (hue across, light → dark down) over a greyscale row,
  *  like the swatch grid iPadOS shows. Generated rather than hand-listed so the steps stay even. */
@@ -62,6 +91,8 @@ export function ColorPicker({
   onPick,
   onClear,
   clearLabel = 'Default',
+  onAuto,
+  autoLabel = 'Automatic',
   label,
   title,
   triggerStyle,
@@ -75,6 +106,9 @@ export function ColorPicker({
   /** when given, the grid offers a chip that unsets the colour */
   onClear?: () => void
   clearLabel?: string
+  /** when given, the grid offers an "Automatic" row on top that sets AUTO */
+  onAuto?: () => void
+  autoLabel?: string
   label: string
   title?: string
   triggerStyle: CSSProperties
@@ -147,6 +181,46 @@ export function ColorPicker({
               gap: 4 * z
             }}
           >
+            {onAuto && (
+              <button
+                onClick={() => {
+                  onAuto()
+                  setOpen(false)
+                }}
+                aria-pressed={norm === AUTO}
+                title={autoLabel}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 6 * z,
+                  padding: `${2 * z}px ${4 * z}px`,
+                  borderRadius: 4 * z,
+                  border: norm === AUTO ? `2px solid ${p.text}` : `1px solid ${p.border}`,
+                  background: p.panel,
+                  color: p.text,
+                  fontSize: 11 * z,
+                  cursor: 'pointer',
+                  boxSizing: 'border-box'
+                }}
+              >
+                <span
+                  style={{
+                    width: 16 * z,
+                    height: 16 * z,
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    borderRadius: 3 * z,
+                    border: `1px solid ${p.border}`,
+                    boxSizing: 'border-box',
+                    background: AUTO_BACKGROUND
+                  }}
+                >
+                  <AutoMark size={10 * z} />
+                </span>
+                {autoLabel}
+              </button>
+            )}
             <div style={grid}>
               {LEVELS.map((lv, r) => HUES.map((h) => chip(hslHex(h, lv.s, lv.l), `${r}-${h}`)))}
             </div>
@@ -170,7 +244,7 @@ export function ColorPicker({
                     border: cleared ? `2px solid ${p.text}` : `1px solid ${p.border}`,
                     boxSizing: 'border-box',
                     // A diagonal slash — the "no colour of its own" convention.
-                    background: `linear-gradient(to bottom right, transparent 44%, ${p.err} 44%, ${p.err} 56%, transparent 56%)`
+                    background: slashBackground(p.err)
                   }}
                 />
               )}

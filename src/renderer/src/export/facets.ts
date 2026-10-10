@@ -10,7 +10,16 @@ import type { NodeKind, NodeResult } from '../graph/types'
 import type { ExportSpec } from './specs'
 
 /** Plot kinds wrapped in FacetedPlot (draw per context tuple); others render once. */
-const FACETED_KINDS = new Set<NodeKind>(['volcano', 'ma', 'dr', 'bubble', 'dumbbell', 'scatter'])
+const FACETED_KINDS = new Set<NodeKind>([
+  'volcano',
+  'ma',
+  'dr',
+  'potency',
+  'curveMad',
+  'bubble',
+  'dumbbell',
+  'scatter'
+])
 
 export interface FacetView {
   /** forced FacetedPlot selection for this tuple ({} = the single, unfaceted view) */

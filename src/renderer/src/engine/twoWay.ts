@@ -31,7 +31,13 @@ import {
   studentTTwoSided,
   type ThresholdConfig
 } from './stats'
-import type { CondSelector, ConditionKey, Pair, StandardRow } from './types'
+import {
+  condLabel,
+  type CondSelector,
+  type ConditionKey,
+  type Pair,
+  type StandardRow
+} from './types'
 
 export interface TwoWayFactor {
   condition: ConditionKey
@@ -289,7 +295,12 @@ export function previewTwoWay(input: TwoWayInput): TwoWayPreview {
   return {
     factors: `${f1.condition} × ${f2.condition}`,
     context,
-    columns: ['comparison', f1.condition, f2.condition, ...context],
+    columns: [
+      'comparison',
+      condLabel(f1.condition),
+      condLabel(f2.condition),
+      ...context.map(condLabel)
+    ],
     rows: tableRows,
     groups: tableRows.length,
     fixed,

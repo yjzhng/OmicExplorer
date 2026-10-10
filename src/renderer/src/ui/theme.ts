@@ -2,6 +2,7 @@ import { type CSSProperties } from 'react'
 
 /** A concrete color palette for one theme mode. */
 export interface Palette {
+  mode: 'dark' | 'light'
   bg: string
   panel: string
   panelAlt: string
@@ -28,6 +29,7 @@ export interface Palette {
 /** Minimal neutral-grey themes (no blue hues). */
 export const PALETTES: Record<'dark' | 'light', Palette> = {
   dark: {
+    mode: 'dark',
     bg: '#181818',
     panel: '#202020',
     panelAlt: '#2a2a2a',
@@ -45,6 +47,7 @@ export const PALETTES: Record<'dark' | 'light', Palette> = {
     ok: '#3fae5a'
   },
   light: {
+    mode: 'light',
     bg: '#ffffff',
     panel: '#f7f7f7',
     panelAlt: '#ededed',
@@ -84,8 +87,64 @@ export const UI = {
   ok: 'var(--ok)'
 }
 
-/** CSS custom properties for a palette — spread onto the app root's style. */
-export function cssVars(p: Palette): CSSProperties {
+/** The accent colour choices (Settings → Appearance): the palettes' own monochrome Graphite, the
+ *  logo's blue and orange (sampled from build-resources/icon.png), or a custom colour. The blue is
+ *  the logo's #7780fc lightened 25% toward white, so the dark text on it reads at 7.3:1 (WCAG AAA)
+ *  rather than 5.2:1. */
+export type AccentId = 'graphite' | 'blue' | 'orange' | 'custom'
+export const ACCENT_LABELS: Record<AccentId, string> = {
+  graphite: 'Graphite',
+  blue: 'Blue',
+  orange: 'Orange',
+  custom: 'Custom'
+}
+const LOGO_BLUE = '#99a0fd'
+const LOGO_ORANGE = '#eab400'
+/** The Custom accent's colour until one is picked: a mid grey. */
+export const DEFAULT_CUSTOM_ACCENT = '#8c8c8c'
+
+/** Text that reads on `hex`: near-black on a light colour, white on a dark one (WCAG relative
+ *  luminance, split where the two contrasts are equal). */
+export function textOn(hex: string): string {
+  const m = /^#?([0-9a-f]{6})$/i.exec(hex.trim())
+  if (!m) return '#ffffff'
+  const lin = (c: number): number => {
+    const v = c / 255
+    return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4
+  }
+  const n = parseInt(m[1], 16)
+  const L = 0.2126 * lin((n >> 16) & 255) + 0.7152 * lin((n >> 8) & 255) + 0.0722 * lin(n & 255)
+  return L > 0.179 ? '#1a1a1a' : '#ffffff'
+}
+
+/** An accent's colour, and the text colour on it, for one theme. */
+export function accentColors(
+  id: AccentId,
+  mode: 'dark' | 'light',
+  custom: string
+): [accent: string, text: string] {
+  const c =
+    id === 'blue' ? LOGO_BLUE : id === 'orange' ? LOGO_ORANGE : id === 'custom' ? custom : null
+  return c ? [c, textOn(c)] : [PALETTES[mode].accent, PALETTES[mode].accentText]
+}
+
+/** The accent in effect — set by the theme store (useUiTheme), read by cssVars, so every surface
+ *  built from a palette picks it up. */
+let accentInEffect: { id: AccentId; custom: string } = {
+  id: 'graphite',
+  custom: DEFAULT_CUSTOM_ACCENT
+}
+export const setAccentInEffect = (id: AccentId, custom: string): void => {
+  accentInEffect = { id, custom }
+}
+
+/** CSS custom properties for a palette, with the chosen accent — spread onto the app root's style
+ *  (and any portal that renders outside it). */
+export function cssVars(
+  p: Palette,
+  chosen: { id: AccentId; custom: string } = accentInEffect
+): CSSProperties {
+  const [accent, accentText] = accentColors(chosen.id, p.mode, chosen.custom)
   return {
     '--bg': p.bg,
     '--panel': p.panel,
@@ -94,8 +153,8 @@ export function cssVars(p: Palette): CSSProperties {
     '--border': p.border,
     '--text': p.text,
     '--text-muted': p.textMuted,
-    '--accent': p.accent,
-    '--accent-text': p.accentText,
+    '--accent': accent,
+    '--accent-text': accentText,
     '--info': p.info,
     '--warn': p.warn,
     '--err': p.err,
@@ -115,6 +174,22 @@ export const EFFECT_COLOR: Record<'up' | 'down' | 'none', string> = {
 export const HIGHLIGHT = '#ff2d95'
 
 /** Categorical series colors (Tableau-10, colorblind-tolerant) for lines/groups. */
+/** QC colour — a calm steel blue (matches the app's `data` category), distinct from the
+ *  greyscale accent so the violins/boxes/bars read clearly in both themes. */
+export const QC_FILL = '#6ea8fe'
+
+/** A hex (#rgb / #rrggbb) or rgb() colour at an opacity, as rgba — for the Plotly parts that take
+ *  no opacity of their own (error bars, fills). Any other colour string passes through unchanged. */
+export function withAlpha(color: string, alpha: number): string {
+  const rgb = /^rgb\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\)$/i.exec(color)
+  if (rgb) return `rgba(${rgb[1]},${rgb[2]},${rgb[3]},${alpha})`
+  const m = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(color)
+  if (!m) return color
+  const h = m[1].length === 3 ? [...m[1]].map((c) => c + c).join('') : m[1]
+  const n = parseInt(h, 16)
+  return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${alpha})`
+}
+
 export const CATEGORICAL: string[] = [
   '#4e79a7',
   '#f28e2b',

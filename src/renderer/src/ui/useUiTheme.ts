@@ -1,11 +1,15 @@
 import { create } from 'zustand'
 
+import { ACCENT_LABELS, DEFAULT_CUSTOM_ACCENT, setAccentInEffect, type AccentId } from './theme'
+
 /** The resolved theme the app actually renders (palettes are keyed by this). */
 export type ThemeMode = 'dark' | 'light'
 /** What the user picked; `auto` follows the OS `prefers-color-scheme`. */
 export type ThemePreference = 'dark' | 'light' | 'auto'
 
 const KEY = 'omicexplorer-theme'
+const ACCENT_KEY = 'omicexplorer-accent'
+const CUSTOM_KEY = 'omicexplorer-accent-custom'
 
 /** The OS's current colour scheme (defaults to dark if unavailable). */
 function systemMode(): ThemeMode {
@@ -23,12 +27,32 @@ function initialPreference(): ThemePreference {
   } catch {
     /* ignore */
   }
-  return 'auto' // default: follow the OS colour scheme
+  return 'light' // default
 }
 
-function persist(preference: ThemePreference): void {
+function initialAccent(): AccentId {
   try {
-    localStorage.setItem(KEY, preference)
+    const v = localStorage.getItem(ACCENT_KEY)
+    if (v && v in ACCENT_LABELS) return v as AccentId
+  } catch {
+    /* ignore */
+  }
+  return 'graphite'
+}
+
+function initialCustom(): string {
+  try {
+    const v = localStorage.getItem(CUSTOM_KEY)
+    if (v && /^#[0-9a-f]{6}$/i.test(v)) return v
+  } catch {
+    /* ignore */
+  }
+  return DEFAULT_CUSTOM_ACCENT
+}
+
+function persist(key: string, value: string): void {
+  try {
+    localStorage.setItem(key, value)
   } catch {
     /* ignore */
   }
@@ -44,6 +68,13 @@ interface UiThemeState {
   mode: ThemeMode
   /** set the preference (the Settings appearance switch, incl. `auto`) */
   setPreference: (preference: ThemePreference) => void
+  /** the accent colour (Settings → Appearance); applied through theme.ts's cssVars */
+  accent: AccentId
+  setAccent: (accent: AccentId) => void
+  /** the Custom accent's colour (#rrggbb) — kept when another accent is chosen */
+  customAccent: string
+  /** pick the Custom accent's colour, and switch to it */
+  setCustomAccent: (color: string) => void
 }
 
 /** Global theme, persisted to localStorage. `preference` may be `auto`, in which case
@@ -59,12 +90,28 @@ export const useUiTheme = create<UiThemeState>((set, get) => {
   }
 
   const preference = initialPreference()
+  const accent = initialAccent()
+  const customAccent = initialCustom()
+  setAccentInEffect(accent, customAccent)
   return {
     preference,
     mode: resolve(preference),
     setPreference: (preference) => {
-      persist(preference)
+      persist(KEY, preference)
       set({ preference, mode: resolve(preference) })
+    },
+    accent,
+    setAccent: (accent) => {
+      persist(ACCENT_KEY, accent)
+      setAccentInEffect(accent, get().customAccent)
+      set({ accent })
+    },
+    customAccent,
+    setCustomAccent: (customAccent) => {
+      persist(ACCENT_KEY, 'custom')
+      persist(CUSTOM_KEY, customAccent)
+      setAccentInEffect('custom', customAccent)
+      set({ accent: 'custom', customAccent })
     }
   }
 })

@@ -12,33 +12,8 @@ export function sanitize(s: string): string {
 }
 
 /**
- * Assign each analysis root a unique subfolder name. Distinct analyses can share a label
- * (e.g. two "clpP | WT" comparisons); when a sanitised label is claimed by more than one
- * root, disambiguate by appending the root id so their outputs never land in one folder.
- */
-export function buildFolderMap(
-  entries: Array<{ rootId: string; analysis: string }>
-): Map<string, string> {
-  // One label per root (first wins; all entries for a root carry the same analysis).
-  const byRoot = new Map<string, string>()
-  for (const e of entries) if (!byRoot.has(e.rootId)) byRoot.set(e.rootId, e.analysis)
-
-  const labelUses = new Map<string, number>()
-  for (const label of byRoot.values()) {
-    const s = sanitize(label)
-    labelUses.set(s, (labelUses.get(s) ?? 0) + 1)
-  }
-  const out = new Map<string, string>()
-  for (const [rootId, label] of byRoot) {
-    const s = sanitize(label)
-    out.set(rootId, (labelUses.get(s) ?? 0) > 1 ? `${s}_${sanitize(rootId)}` : s)
-  }
-  return out
-}
-
-/**
- * Build the path (relative to the export base dir) for one output. `folder` is the resolved
- * per-analysis folder name (see buildFolderMap). Selected-only variants are filed under a
+ * Build the path (relative to the export base dir) for one output. `folder` is the output
+ * subfolder name (a processing step's — see graph/diskNames.ts). Selected-only variants are filed under a
  * `selected` subfolder so they never overwrite the all-genes version of the same plot.
  */
 export function exportPath(
@@ -49,6 +24,7 @@ export function exportPath(
   selected = false
 ): string {
   const file = `${sanitize(fileBase)}.${ext}`
-  if (structure === 'subfolder') return selected ? `${folder}/selected/${file}` : `${folder}/${file}`
+  if (structure === 'subfolder')
+    return selected ? `${folder}/selected/${file}` : `${folder}/${file}`
   return selected ? `selected/${folder}__${file}` : `${folder}__${file}`
 }

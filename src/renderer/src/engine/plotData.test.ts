@@ -12,7 +12,9 @@ import {
   buildDumbbell,
   buildBubble,
   buildTdr,
-  buildGeneBar
+  buildGeneBar,
+  buildDR,
+  pickBalanced
 } from './plotData'
 import type { CompareResultRow, ContrastResultRow, StandardRow } from './types'
 
@@ -161,12 +163,88 @@ describe('buildResponseCluster (responsome PCA)', () => {
   })
 })
 
+describe('bubble top genes', () => {
+  it('only genes significant at one level or more are top-N candidates', () => {
+    const rows = [
+      // biggest fold change, but never significant → left out
+      cmp({ uniqID: 'big', dose: 1, log2FC: 5 }),
+      cmp({ uniqID: 'big', dose: 10, log2FC: 6 }),
+      // significant at the low dose only → in, ranked by its top-dose |log2FC|
+      cmp({ uniqID: 'lowSig', dose: 1, log2FC: 2, signf: true }),
+      cmp({ uniqID: 'lowSig', dose: 10, log2FC: 1 }),
+      cmp({ uniqID: 'topSig', dose: 10, log2FC: -3, signf: true })
+    ]
+    const b = buildBubble(rows, { axis: 'dose', topGenes: 0 })
+    expect(new Set(b.genes)).toEqual(new Set(['lowSig', 'topSig']))
+    // focus genes still show as given, significant or not
+    expect(buildBubble(rows, { axis: 'dose', topGenes: 0, focus: ['big'] }).genes).toEqual(['big'])
+  })
+})
+
+describe('pickBalanced', () => {
+  const side = (prefix: string, n: number, sign: number) =>
+    Array.from({ length: n }, (_, i) => ({ id: `${prefix}${i}`, signed: sign * (10 - i * 0.1) }))
+
+  it('splits the top N in proportion to each side', () => {
+    // 70 up / 30 down → 10 picks split 7:3, even though the down side has the larger magnitudes
+    const up = side('u', 70, 1)
+    const down = side('d', 30, -1).map((c) => ({ ...c, signed: c.signed * 3 }))
+    const got = pickBalanced([...up, ...down], 10)
+    expect(got.filter((id) => id.startsWith('u'))).toHaveLength(7)
+    expect(got.filter((id) => id.startsWith('d'))).toHaveLength(3)
+    // within a side, the largest first
+    expect(got).toContain('u0')
+    expect(got).toContain('d0')
+  })
+
+  it('hands a short side’s slots to the other, and returns everything when N covers it', () => {
+    const cands = [...side('u', 2, 1), ...side('d', 1, -1)]
+    expect(pickBalanced(cands, 10)).toHaveLength(3)
+    // a 1-gene side gives what it has; the rest go to the other side
+    const lopsided = [...side('u', 9, 1), ...side('d', 1, -1)]
+    const got = pickBalanced(lopsided, 4)
+    expect(got.filter((id) => id.startsWith('d'))).toEqual(['d0'])
+    expect(got).toHaveLength(4)
+  })
+
+  it('gives each side at least a quarter, rounded up', () => {
+    // 96:4 of 10 would round to 10:0; the floor keeps ceil(10 / 4) = 3 for down
+    const got = pickBalanced([...side('u', 96, 1), ...side('d', 4, -1)], 10)
+    expect(got.filter((id) => id.startsWith('d'))).toHaveLength(3)
+    expect(got.filter((id) => id.startsWith('u'))).toHaveLength(7)
+  })
+})
+
+describe('dose-response top genes', () => {
+  it('colours significant genes only, split up / down in proportion, at the front', () => {
+    const rows: CompareResultRow[] = []
+    const gene = (id: string, top: number, signf: boolean) => {
+      rows.push(cmp({ uniqID: id, dose: 1, log2FC: top / 2, signf }))
+      rows.push(cmp({ uniqID: id, dose: 10, log2FC: top, signf }))
+    }
+    gene('upA', 3, true)
+    gene('upB', 2.5, true)
+    gene('upC', 2, true)
+    gene('downA', -1, true)
+    gene('noise', 9, false) // biggest change, never significant
+    const dr = buildDR(rows, { axis: 'dose', topGenes: 2 })
+    // 3 up : 1 down of 2 would round to 2:0; the quarter floor keeps one down
+    expect(dr.highlight).toBe(2)
+    expect(dr.series.slice(0, 2).map((s) => s.uniqID)).toEqual(['upA', 'downA'])
+    // every curve is still drawn behind
+    expect(dr.series.map((s) => s.uniqID)).toContain('noise')
+    const all = buildDR(rows, { axis: 'dose', topGenes: 0 })
+    expect(all.highlight).toBe(4)
+    expect(all.series.slice(0, 4).map((s) => s.uniqID)).not.toContain('noise')
+  })
+})
+
 describe('focus genes', () => {
   it('bubble focus shows exactly the focus genes (not top-N)', () => {
     const rows = [
-      cmp({ uniqID: 'g1', dose: 1, log2FC: 0.1 }),
-      cmp({ uniqID: 'g2', dose: 1, log2FC: 3 }),
-      cmp({ uniqID: 'g3', dose: 1, log2FC: -2 })
+      cmp({ uniqID: 'g1', dose: 1, log2FC: 0.1, signf: true }),
+      cmp({ uniqID: 'g2', dose: 1, log2FC: 3, signf: true }),
+      cmp({ uniqID: 'g3', dose: 1, log2FC: -2, signf: true })
     ]
     const all = buildBubble(rows, { axis: 'dose', topGenes: 0 })
     expect(all.genes.length).toBe(3)
@@ -177,9 +255,9 @@ describe('focus genes', () => {
 
   it('bubble appends `extra` genes after the base set, without reshuffling it', () => {
     const rows = [
-      cmp({ uniqID: 'g1', dose: 1, log2FC: 0.1 }),
-      cmp({ uniqID: 'g2', dose: 1, log2FC: 3 }),
-      cmp({ uniqID: 'g3', dose: 1, log2FC: -2 })
+      cmp({ uniqID: 'g1', dose: 1, log2FC: 0.1, signf: true }),
+      cmp({ uniqID: 'g2', dose: 1, log2FC: 3, signf: true }),
+      cmp({ uniqID: 'g3', dose: 1, log2FC: -2, signf: true })
     ]
     // top-1 base is g2 (largest |log2FC|); g3 is appended by the linked selection.
     const b = buildBubble(rows, { axis: 'dose', topGenes: 1, extra: ['g3'] })
@@ -334,5 +412,20 @@ describe('buildMA / buildDumbbell', () => {
     expect(buildDumbbell(data, { topGenes: 1, extra: ['g2'] }).rows.map((r) => r.label)).toEqual([
       'g2'
     ])
+  })
+})
+
+describe('gene bar error bars', () => {
+  const row = (rep: number, value: number): StandardRow =>
+    ({ uniqID: 'g', cell: 'c', cmpd: 'x', dose: null, time: null, rep, value }) as StandardRow
+  const rows = [row(1, 1), row(2, 2), row(3, 3)] // mean 2, sd 1, n 3
+  const err = (e: 'sd' | 'sem' | 'ci95'): number =>
+    buildGeneBar(rows, ['g'], undefined, false, e).bars[0].errUp
+
+  it('shows SD, SEM or the t-based 95% CI of the mean', () => {
+    expect(err('sd')).toBeCloseTo(1)
+    expect(err('sem')).toBeCloseTo(1 / Math.sqrt(3))
+    // t(0.975, df 2) ≈ 4.303
+    expect(err('ci95')).toBeCloseTo((4.303 * 1) / Math.sqrt(3), 2)
   })
 })

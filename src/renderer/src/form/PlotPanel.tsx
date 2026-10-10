@@ -131,7 +131,13 @@ function StepTileCard({ node, activeChild }: { node: StepNode; activeChild?: str
             style={styles.iconBtn}
             title="Duplicate step"
             aria-label="Duplicate step"
-            onClick={() => duplicateNode(id)}
+            onClick={() => {
+              duplicateNode(id)
+              // The form shows the copy (the canvas leaves new tiles closed); copies land last.
+              const g = useGraph.getState()
+              const copy = g.nodes[g.nodes.length - 1]
+              if (copy && copy.id !== id) g.selectNode(copy.id)
+            }}
           >
             <IconCopy />
           </button>

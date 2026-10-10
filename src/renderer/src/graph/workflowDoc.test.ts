@@ -2,8 +2,9 @@ import { readFileSync } from 'node:fs'
 import type { Edge } from '@xyflow/react'
 import { describe, expect, it } from 'vitest'
 
+import { childPanelId } from './groups'
 import { deserializeWorkflow, serializeWorkflow } from './workflowDoc'
-import type { GraphNode, NodeKind, PanelLayoutItem } from './types'
+import type { GraphNode, NodeKind, PanelLayoutItem, PlotGroupConfig } from './types'
 
 function step(id: string, kind: NodeKind): GraphNode {
   return {
@@ -20,6 +21,9 @@ const edge = (source: string, target: string): Edge => ({
 })
 
 const NODES: GraphNode[] = [step('standardize-1', 'standardize'), step('heatmap-2', 'heatmap')]
+// The lone heatmap loads as a plot group of one (every visualisation tile is a group), its subcard
+// minted from nextId (3) — so its results tile's panel id moves to the subcard's.
+const HEAT_PANEL = childPanelId('heatmap-2', 'sub-3')
 const EDGES = [edge('standardize-1', 'heatmap-2')]
 const LAYOUT: Record<string, PanelLayoutItem[]> = {
   'standardize-1': [
@@ -27,6 +31,31 @@ const LAYOUT: Record<string, PanelLayoutItem[]> = {
     { i: 'heatmap-2', x: 6, y: 0, w: 6, h: 8 }
   ]
 }
+
+describe('lone plots load as plot groups', () => {
+  it('wraps a lone plot in a group of one, keeping its id, name and settings', () => {
+    const heat = step('heatmap-2', 'heatmap')
+    if (heat.type === 'step')
+      heat.data = { ...heat.data, name: 'my heat', config: { topN: 50 } as never }
+    const back = deserializeWorkflow(
+      serializeWorkflow({
+        nodes: [NODES[0], heat],
+        edges: EDGES,
+        nextId: 3,
+        groupLayouts: {},
+        groupMeta: {}
+      })
+    )
+    const g = back.nodes.find((n) => n.id === 'heatmap-2')!
+    expect(g.type === 'step' && g.data.kind).toBe('plotGroup')
+    expect(g.type === 'step' && g.data.name).toBe('my heat')
+    const kids = g.type === 'step' ? (g.data.config as PlotGroupConfig).children : []
+    expect(kids).toEqual([{ id: 'sub-3', kind: 'heatmap', config: { topN: 50 } }])
+    expect(back.nextId).toBe(4)
+    // the wiring is untouched
+    expect(back.edges).toEqual(EDGES)
+  })
+})
 
 describe('workflow v2 serialization', () => {
   it('round-trips group layouts and meta', () => {
@@ -41,7 +70,12 @@ describe('workflow v2 serialization', () => {
     const doc = JSON.parse(json)
     expect(doc.version).toBe(4)
     const back = deserializeWorkflow(json)
-    expect(back.groupLayouts).toEqual(LAYOUT)
+    expect(back.groupLayouts).toEqual({
+      'standardize-1': [
+        LAYOUT['standardize-1'][0],
+        { ...LAYOUT['standardize-1'][1], i: HEAT_PANEL }
+      ]
+    })
     expect(back.groupMeta).toEqual(meta)
     expect(back.nodes.map((n) => n.id)).toEqual(['standardize-1', 'heatmap-2'])
   })
@@ -58,7 +92,7 @@ describe('workflow v2 serialization', () => {
     // v2→v3 doubled both axes, v3→v4 doubled columns again: x,w ×4; y,h ×2.
     expect(back.groupLayouts['standardize-1']).toEqual([
       { i: 'standardize-1', x: 0, y: 0, w: 24, h: 16 },
-      { i: 'heatmap-2', x: 24, y: 0, w: 24, h: 16 }
+      { i: HEAT_PANEL, x: 24, y: 0, w: 24, h: 16 }
     ])
   })
 
@@ -79,7 +113,7 @@ describe('workflow v2 serialization', () => {
     // Columns ×2 (x, w); rows unchanged (y, h).
     expect(back.groupLayouts['standardize-1']).toEqual([
       { i: 'standardize-1', x: 0, y: 4, w: 24, h: 8 },
-      { i: 'heatmap-2', x: 24, y: 4, w: 24, h: 8 }
+      { i: HEAT_PANEL, x: 24, y: 4, w: 24, h: 8 }
     ])
   })
 

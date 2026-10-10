@@ -5,6 +5,7 @@
  */
 import {
   runCompare,
+  runCurveFit,
   runContrast,
   runContrastPair,
   runDirect,
@@ -12,12 +13,19 @@ import {
   runVehNorm,
   standardize,
   previewScale,
-  enrichmentTable
+  enrichmentTable,
+  enrichmentAll
 } from './index'
 import type { ContrastInput, ContrastPairInput } from './contrast'
 import type { DirectInput } from './direct'
 import type { TwoWayInput } from './twoWay'
-import type { CompareInput, CompareResultRow, StandardizeInput, VehNormInput } from './types'
+import type {
+  CompareInput,
+  CompareResultRow,
+  ConditionKey,
+  StandardizeInput,
+  VehNormInput
+} from './types'
 import type { EnrichOptions } from './plotData'
 
 export type EngineRequest =
@@ -27,12 +35,20 @@ export type EngineRequest =
   | { id: number; op: 'direct'; payload: DirectInput }
   | { id: number; op: 'compare'; payload: CompareInput }
   | { id: number; op: 'twoWayAnova'; payload: TwoWayInput }
+  | { id: number; op: 'curveFit'; payload: CompareInput & { curveAxis: ConditionKey } }
   | { id: number; op: 'contrast'; payload: ContrastInput }
   | { id: number; op: 'contrastPair'; payload: ContrastPairInput }
+  | { id: number; op: 'putDataset'; payload: { key: number; rows: unknown[] } }
+  | { id: number; op: 'dropDataset'; payload: { key: number } }
   | {
       id: number
       op: 'enrichmentTable'
       payload: { rows: CompareResultRow[]; opts: Omit<EnrichOptions, 'topTerms'>; facet?: string }
+    }
+  | {
+      id: number
+      op: 'enrichmentAll'
+      payload: { rows: CompareResultRow[]; opts: Parameters<typeof enrichmentAll>[1] }
     }
 
 export type EngineResponse =
@@ -46,8 +62,29 @@ interface WorkerCtx {
 }
 const ctx = self as unknown as WorkerCtx
 
+/** Input tables kept from earlier requests (see the client's withDataset), by key. */
+const datasets = new Map<number, unknown[]>()
+
 ctx.addEventListener('message', (e) => {
   const msg = e.data
+  if (msg.op === 'putDataset') {
+    datasets.set(msg.payload.key, msg.payload.rows)
+    return
+  }
+  if (msg.op === 'dropDataset') {
+    datasets.delete(msg.payload.key)
+    return
+  }
+  // A request naming a kept table gets it back in place of the key.
+  const ref = (msg.payload as { rows?: { $dataset?: number } } | null)?.rows?.$dataset
+  if (ref !== undefined) {
+    const rows = datasets.get(ref)
+    if (!rows) {
+      ctx.postMessage({ id: msg.id, ok: false, error: 'engine lost its input table — run again' })
+      return
+    }
+    ;(msg as { payload: unknown }).payload = { ...(msg.payload as object), rows }
+  }
   try {
     let result: unknown
     if (msg.op === 'standardize') result = standardize(msg.payload)
@@ -57,8 +94,10 @@ ctx.addEventListener('message', (e) => {
     else if (msg.op === 'direct') result = runDirect(msg.payload)
     else if (msg.op === 'compare') result = runCompare(msg.payload)
     else if (msg.op === 'twoWayAnova') result = runTwoWayAnova(msg.payload)
+    else if (msg.op === 'curveFit') result = runCurveFit(msg.payload)
     else if (msg.op === 'contrast') result = runContrast(msg.payload)
     else if (msg.op === 'contrastPair') result = runContrastPair(msg.payload)
+    else if (msg.op === 'enrichmentAll') result = enrichmentAll(msg.payload.rows, msg.payload.opts)
     else if (msg.op === 'enrichmentTable')
       result = enrichmentTable(msg.payload.rows, msg.payload.opts, msg.payload.facet)
     else throw new Error(`Unknown engine op: ${(msg as { op: string }).op}`)

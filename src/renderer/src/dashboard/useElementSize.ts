@@ -7,7 +7,11 @@ import { useLayoutEffect, useRef, useState, type RefObject } from 'react'
  * a backgrounded/occluded window may not paint for a long time — waiting for its
  * first callback would leave the grid stuck at width 0 (a blank dashboard).
  */
-export function useElementSize<T extends HTMLElement>(): { ref: RefObject<T | null>; width: number; height: number } {
+export function useElementSize<T extends HTMLElement>(): {
+  ref: RefObject<T | null>
+  width: number
+  height: number
+} {
   const ref = useRef<T>(null)
   const [size, setSize] = useState({ width: 0, height: 0 })
 

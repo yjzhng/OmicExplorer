@@ -64,6 +64,7 @@ export const DOCKED_CARD: CSSProperties = {
   top: 'auto',
   left: 'auto',
   transform: 'none',
+  margin: 0,
   width: '100%',
   minWidth: 0,
   height: '100%',

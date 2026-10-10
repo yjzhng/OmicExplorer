@@ -68,16 +68,7 @@ describe('collectTableExports', () => {
     const std = tables[0]
     expect(std.label).toBe('Clean data')
     // cell present → kept; standardized columns are fixed (time stays even when blank).
-    expect(std.columns).toEqual([
-      'uniqID',
-      'gene',
-      'cell',
-      'cmpd',
-      'dose',
-      'time',
-      'rep',
-      'value'
-    ])
+    expect(std.columns).toEqual(['uniqID', 'gene', 'cell', 'cmpd', 'dose', 'time', 'rep', 'value'])
     expect(std.rows[0]).toEqual(['g1', 'argF', 'WT', 'A', 5, null, 1, 3.14])
 
     const cmp = tables[1]

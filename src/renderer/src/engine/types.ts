@@ -133,8 +133,22 @@ export interface StandardizeInput {
   logTransform?: LogTransform
 }
 
+/** One sample as the samplesheet gave it: its conditions and replicate. */
+export interface SampleConds {
+  sample: string
+  cell: string
+  cmpd: string
+  dose: number | null
+  time: number | null
+  rep: number | null
+  extra?: Record<string, string>
+}
+
 export interface StandardizeResult {
   rows: StandardRow[]
+  /** every sample with its conditions — the small sample space behind the gene × sample rows (what
+   *  the data's shape is read from; see dataShape). Absent on results from before it was kept. */
+  samples?: SampleConds[]
   /** uniqID → display label (gene name / locus_tag / uniqID) */
   displayMap: Record<string, string>
   /** uniqID → { annotation column → value } carried from the ID-map DB (e.g. GO terms,
@@ -191,6 +205,9 @@ export interface CompareInput {
   method?: 'ttest'
   transform?: boolean
   threshold?: import('./stats').ThresholdConfig
+  /** curve fit only: the numeric condition the curve runs over (dose). It is the fit's x-axis, so
+   *  neither a facet nor matched — each numerator group pools every level of it into one curve. */
+  curveAxis?: ConditionKey
 }
 
 export interface VehNormInput {
@@ -204,6 +221,10 @@ export interface VehNormInput {
   transform?: boolean
   threshold?: import('./stats').ThresholdConfig
 }
+
+/** A curve's final model: the fitted 4-parameter logistic, or M0 — flat, the mean ratio — when
+ *  the 4PL's F-test doesn't reject that flat null. */
+export type CurveModel = '4PL' | 'M0'
 
 /** One row of a comparison result table (mirrors omicViz norm CSV schema). */
 export interface CompareResultRow {
@@ -228,6 +249,31 @@ export interface CompareResultRow {
   thrsh: string
   signf: boolean
   effect: 'up' | 'down' | 'none'
+  /** curve fit only: the final model — the 4PL when its F-test rejects the flat null at the
+   *  threshold's α, else M0 (flat, at the curve's `m0`). Set with the call (classifyCompareRow), so
+   *  it follows threshold edits; absent on results classified before it existed. */
+  model?: CurveModel
+  /** curve fit only: the fitted dose–response curve behind the row (log2FC is its curve fold
+   *  change, pP its recalibrated F-test). x is log₁₀ of the curve axis, in its own units. */
+  curve?: Omit<import('./curveFit').CurveFit, 'log2FC' | 'pVal'> & {
+    axis: ConditionKey
+    /** CurveCurator's target–decoy q-value (under its relevance threshold; see applyCurveFdr) */
+    q?: number
+    /** called by a target FDR: the α its comparison settled on (see applyCurveFdr) */
+    ccAlpha?: number
+    /** the measured points the curve was fitted to: log₁₀ dose and ratio to the control (the
+     *  control itself, ratio 1 at −∞, not listed) — absent on results run before they were kept */
+    x?: number[]
+    y?: number[]
+    /** each measured point's replicate (null = none given) — a sample is its dose and replicate */
+    rep?: Array<number | null>
+    /** the control samples' own ratios to the control mean, and their replicates */
+    cy?: number[]
+    crep?: Array<number | null>
+  }
+  /** SAM permutation FDR only: the moderated difference d and the pooled t's degrees of freedom
+   *  (pP is that t-test; pQ the permutation q-value) */
+  sam?: { d: number; df: number }
 }
 
 export interface VehNormResult {
@@ -237,4 +283,9 @@ export interface VehNormResult {
   /** the threshold the rows' calls were made with (see CompareTableResult; absent on results
    *  saved before it existed) */
   threshold?: import('./stats').ThresholdConfig
+  /** curve fit only: decoy curves per comparison group, and the calls' estimated FDR (see
+   *  CompareTableResult) */
+  decoys?: Record<string, import('./curveFit').DecoyCurve[]>
+  curveFdr?: number
+  ccAlpha?: Record<string, number>
 }

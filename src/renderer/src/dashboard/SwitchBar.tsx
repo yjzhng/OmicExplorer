@@ -11,7 +11,9 @@ export function SwitchBar({
   value,
   options,
   optionLabel,
-  onChange
+  onChange,
+  inline,
+  optionDisabled
 }: {
   label: string
   value: string
@@ -20,16 +22,30 @@ export function SwitchBar({
    *  so a custom condition reads `genotype`, not `@genotype`) */
   optionLabel?: (o: string) => string
   onChange: (v: string) => void
+  /** inside another row (e.g. the gene switcher's): no strip of its own — no padding, no rule */
+  inline?: boolean
+  /** an option that can't be picked (greyed): the reason, shown as its tooltip; else undefined */
+  optionDisabled?: (o: string) => string | undefined
 }): ReactNode {
   return (
-    <div style={styles.bars}>
+    <div
+      className={inline ? undefined : 'oe-switch-strip'}
+      style={inline ? styles.inline : styles.bars}
+    >
       <div style={styles.bar}>
         <span style={styles.barLabel}>{label}</span>
         <ToggleSwitch
           size="sm"
           label={label}
           value={value}
-          options={options.map((o) => ({ value: o, label: optionLabel ? optionLabel(o) : o }))}
+          options={options.map((o) => {
+            const why = optionDisabled?.(o)
+            return {
+              value: o,
+              label: optionLabel ? optionLabel(o) : o,
+              ...(why ? { disabled: true, title: why } : null)
+            }
+          })}
           onChange={onChange}
         />
       </div>
@@ -49,7 +65,7 @@ export function SwitchBarToggle({
   onChange: (on: boolean) => void
 }): ReactNode {
   return (
-    <div style={styles.bars}>
+    <div className="oe-switch-strip" style={styles.bars}>
       <div style={styles.bar}>
         <span style={styles.barLabel}>{label}</span>
         <OnOffSwitch on={on} onChange={onChange} label={label} />
@@ -66,9 +82,9 @@ const styles: Record<string, CSSProperties> = {
     rowGap: 4,
     columnGap: 14,
     padding: '3px 10px',
-    borderBottom: `1px solid ${UI.border}`,
     flex: '0 0 auto'
   },
+  inline: { display: 'flex', alignItems: 'center', flex: '0 0 auto' },
   bar: { display: 'inline-flex', alignItems: 'center', gap: 6, flex: '0 0 auto' },
   barLabel: {
     fontSize: 9,

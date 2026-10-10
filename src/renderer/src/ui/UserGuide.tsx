@@ -1,251 +1,105 @@
-/** Sectioned User Guide dialog: a left section list + a scrollable content pane. Content
- *  documents the real ingest contract (data folder layout, wide/long data shape, samplesheet,
- *  and the optional ID-mapping DB file), plus the workflow and export basics. */
-import { useState, type CSSProperties, type ReactNode } from 'react'
+/** Sectioned User Guide dialog: a left section list + one scrolling document. The content lives in
+ *  `user-guide.md` (edit that, not this file); this renders it, pictures included. */
+import { Fragment, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 
+import {
+  FolderTree,
+  GroupDiagram,
+  LayoutCards,
+  Levels,
+  MiniTable,
+  RunStates,
+  SelectorMock,
+  ShapePair,
+  StepCards,
+  TileMock
+} from './guideVisuals'
+import { parseGuide, parseInline, type FixedVisual, type GuideBlock } from './guideMarkdown'
 import { UI } from './theme'
+import guideMd from './user-guide.md?raw'
 
-interface Section {
-  id: string
-  title: string
-  body: ReactNode
+const SECTIONS = parseGuide(guideMd)
+
+const VISUALS: Record<FixedVisual, () => ReactNode> = {
+  layouts: LayoutCards,
+  'run-states': RunStates,
+  'protein-groups': GroupDiagram,
+  'log-shapes': ShapePair,
+  'gene-selector': SelectorMock,
+  tile: TileMock
 }
 
-const SECTIONS: Section[] = [
-  {
-    id: 'start',
-    title: 'Getting started',
-    body: (
-      <>
-        <P>
-          OmicExplorer builds an analysis as a pipeline of connected tiles on the <B>Workflow</B>{' '}
-          canvas, and shows the outputs on the <B>Results</B> dashboard. Switch between them with
-          the toggle in the top nav.
-        </P>
-        <P>A typical flow reads left to right:</P>
-        <Flow steps={['Load data', 'Clean data', 'Compare / Contrast', 'Plots', 'Run → Results']} />
-        <UL
-          items={[
-            <>
-              <B>Load</B> points at your data + samplesheet (+ optional ID-mapping DB).
-            </>,
-            <>
-              <B>Clean data</B> ingests them into one tidy per-sample table (with an optional
-              low-coverage gene filter).
-            </>,
-            <>
-              <B>Compare</B> runs a comparison (e.g. treated vs vehicle); <B>Contrast</B> compares
-              two comparisons.
-            </>,
-            <>
-              <B>Plots</B> (volcano, MA, heatmap, …) hang off a Clean data/Compare/Contrast step.
-            </>,
-            <>
-              <B>Run</B> / <B>Re-run</B> computes everything; open <B>Results</B> to see tables and
-              plots grouped by analysis.
-            </>
-          ]}
+function Block({ block }: { block: GuideBlock }): ReactNode {
+  switch (block.type) {
+    case 'p':
+      return <P>{inline(block.text)}</P>
+    case 'h':
+      return <H>{inline(block.text)}</H>
+    case 'ul':
+      return <UL items={block.items.map(inline)} />
+    case 'visual': {
+      const Visual = VISUALS[block.name]
+      return <Visual />
+    }
+    case 'steps':
+      return <StepCards steps={block.steps} />
+    case 'folder':
+      return <FolderTree entries={block.entries} />
+    case 'table':
+      return (
+        <MiniTable
+          head={block.head}
+          kinds={block.kinds}
+          rows={block.rows}
+          missingZero={block.missingZero}
         />
-        <P>
-          A project is saved as a single <Code>.omicexplorer</Code> file (workflow + results).
-        </P>
-      </>
-    )
-  },
-  {
-    id: 'folder',
-    title: 'Data folder structure',
-    body: (
-      <>
-        <P>
-          A project points at a <B>data folder</B> on disk. Put your input CSVs there. The folder is
-          scanned at its root and in the <Code>input/</Code> and <Code>data/</Code> subfolders — the
-          convention is to keep inputs in <Code>input/</Code>.
-        </P>
-        <CodeBlock>{`my_project/
-  input/
-    example_long.csv       # data matrix (stem ends _long or _wide)
-    example_samplesheet.csv # sample → conditions
-    organism_DB.csv        # optional: feature-ID → gene mapping
-  output/                  # plot/table exports land here
-  temp/                    # auto-saved processed tables`}</CodeBlock>
-        <UL
-          items={[
-            <>
-              <B>output/</B> is created when you export plots or tables.
-            </>,
-            <>
-              <B>temp/</B> holds a CSV of each computed step (a debug/scratch copy — nothing reads
-              it back).
-            </>,
-            <>The three input files are chosen per Load tile; only the data matrix is required.</>
-          ]}
-        />
-      </>
-    )
-  },
-  {
-    id: 'data',
-    title: 'Data file (shape)',
-    body: (
-      <>
-        <P>
-          The intensity / abundance matrix. Its filename <B>stem must end in</B> <Code>_wide</Code>{' '}
-          or <Code>_long</Code> — that is how the format is detected.
-        </P>
-        <H>Long — one row per feature × sample</H>
-        <P>
-          Columns: a <B>feature-ID</B> column, a <B>sample</B> column (named <Code>sample</Code>,{' '}
-          <Code>well</Code>, or <Code>position</Code>), and <Code>value</Code>.
-        </P>
-        <CodeBlock>{`UniProtID,well,value
-O05154,D1,305.15
-O05154,D2,260.60
-P99999,D1,1024.7`}</CodeBlock>
-        <H>Wide — one row per feature</H>
-        <P>
-          First column is the feature ID; every remaining column is one sample (its header is the
-          sample name); cells are the value.
-        </P>
-        <CodeBlock>{`UniProtID,A1,A2,B1,B2
-O05154,305.15,260.60,298.4,271.9
-P99999,1024.7,980.2,1102.5,1043.1`}</CodeBlock>
-        <P>
-          The feature-ID column name (e.g. <Code>UniProtID</Code>) should match a column in the DB
-          file so IDs can be mapped to genes.
-        </P>
-      </>
-    )
-  },
-  {
-    id: 'samplesheet',
-    title: 'Samplesheet',
-    body: (
-      <>
-        <P>
-          Describes each sample's experimental conditions. Headers are matched{' '}
-          <B>case-insensitively</B>.
-        </P>
-        <H>Sample key</H>
-        <P>
-          One of <Code>sample</Code>, <Code>well</Code>, <Code>position</Code>, or{' '}
-          <Code>plate</Code>+<Code>well</Code> (combined as <Code>plate_well</Code>). It must match
-          the sample identifiers used in the data file.
-        </P>
-        <H>Condition columns</H>
-        <UL
-          items={[
-            <>
-              <Code>cell</Code> (cell line / strain / genotype), <Code>cmpd</Code> (compound) — text
-            </>,
-            <>
-              <Code>dose</Code>, <Code>time</Code>, <Code>rep</Code> (replicate) — numeric
-            </>
-          ]}
-        />
-        <CodeBlock>{`well,cell,cmpd,dose,rep
-A1,WT,Amk,10,1
-A2,WT,Amk,10,2
-B1,clpP,Amk,5,1`}</CodeBlock>
-        <H>Your own conditions</H>
-        <P>
-          Any <B>further column</B> becomes a condition of its own — <Code>medium</Code>,{' '}
-          <Code>batch</Code>, <Code>timepoint_label</Code>, whatever the experiment varies. It can
-          group, facet, colour and be compared exactly like <Code>cell</Code> and <Code>cmpd</Code>.
-          Names are lowercase letters, digits and <Code>_</Code>.
-        </P>
-        <P>
-          Such a condition is always <B>categorical</B>: its values are labels with no order, so it
-          is never offered as a dose/time response axis, nor as a light→dark shade or low→high arrow
-          in the cluster plot. Use <Code>dose</Code> or <Code>time</Code> for anything measured on a
-          scale.
-        </P>
-        <P>
-          A column whose value is <B>different on every sample</B> (a note, an acquisition
-          timestamp) is not a factor, so it is left alone rather than turned into a condition with
-          one level per sample. In the interactive import you add these yourself with{' '}
-          <Code>+ condition</Code> on the Conditions step, which is exact rather than guessed.
-        </P>
-        <P>
-          Only samples listed here are kept — rows in the data file with no matching sample are
-          dropped.
-        </P>
-      </>
-    )
-  },
-  {
-    id: 'db',
-    title: 'ID mapping (DB file)',
-    body: (
-      <>
-        <P>
-          <B>Optional.</B> Maps raw feature IDs to a stable <Code>uniqID</Code> and a readable gene
-          label. Without it, feature IDs pass through unchanged.
-        </P>
-        <UL
-          items={[
-            <>
-              Required column: <Code>uniqID</Code>.
-            </>,
-            <>
-              Plus one or more <B>ID columns</B> (e.g. <Code>UniProtID</Code>,{' '}
-              <Code>locus_tag</Code>, <Code>GeneID</Code>) and <B>label columns</B> (
-              <Code>gene</Code>, <Code>product</Code>
-              ).
-            </>,
-            <>
-              The data file's feature-ID column is auto-matched to a DB column of the{' '}
-              <B>same name</B> (e.g. <Code>UniProtID</Code>), then mapped to <Code>uniqID</Code>.
-            </>,
-            <>
-              Display label = gene name(s), joined by <Code>/</Code>; else <Code>locus_tag</Code>;
-              else <Code>uniqID</Code>.
-            </>
-          ]}
-        />
-        <CodeBlock>{`uniqID,UniProtID,locus_tag,gene,product
-g0001,Q2G2H5,SAOUHSC_00001,dnaA,Chromosomal replication initiator
-g0002,Q2G2H4,SAOUHSC_00002,,Beta sliding clamp`}</CodeBlock>
-      </>
-    )
-  },
-  {
-    id: 'export',
-    title: 'Running & exporting',
-    body: (
-      <>
-        <P>
-          <B>Run</B> / <B>Re-run</B> (top nav) computes the pipeline. <B>Results</B> shows each
-          analysis as a tab of tables and plots.
-        </P>
-        <UL
-          items={[
-            <>
-              <B>Gene selection:</B> click genes in any plot or table, or pick them (and saved gene
-              sets) from the gene menu, to highlight them everywhere. Per-gene plots (TDR, bars)
-              draw the selected genes; dose-response, bubble and dumbbell tiles have an{' '}
-              <B>All / Selected</B> toggle to show all genes or only the selection.
-            </>,
-            <>
-              <B>Export</B> (nav) batch-writes plots (PNG/PDF at a chosen DPI) and tables (CSV/XLSX)
-              into the project's <Code>output/</Code> folder. Faceted plots export every facet;
-              while genes are selected, a selected-only variant of each subset-capable plot is
-              written under a <Code>selected/</Code> subfolder.
-            </>,
-            <>
-              Each Results panel has a <B>download</B> button (top-right) to save just that plot or
-              table.
-            </>
-          ]}
-        />
-      </>
-    )
+      )
+    case 'levels':
+      return <Levels source={block.source} levels={block.levels} />
+    case 'unknown':
+      return <pre style={styles.unknown}>{block.text}</pre>
   }
-]
+}
+
+function inline(text: string): ReactNode {
+  return parseInline(text).map((part, i) =>
+    part.kind === 'bold' ? (
+      <B key={i}>{part.text}</B>
+    ) : part.kind === 'code' ? (
+      <Code key={i}>{part.text}</Code>
+    ) : (
+      <Fragment key={i}>{part.text}</Fragment>
+    )
+  )
+}
 
 export function UserGuide({ onClose }: { onClose: () => void }): ReactNode {
   const [active, setActive] = useState(SECTIONS[0].id)
-  const section = SECTIONS.find((s) => s.id === active) ?? SECTIONS[0]
+  const contentRef = useRef<HTMLDivElement>(null)
+  const sectionRefs = useRef<Record<string, HTMLElement | null>>({})
+  // The nav follows the reader: the active entry is the last section whose top has scrolled
+  // past the top of the pane (or the last one, once the end is reached).
+  const onScroll = (): void => {
+    const el = contentRef.current
+    if (!el) return
+    const top = el.getBoundingClientRect().top + 24
+    let current = SECTIONS[0].id
+    for (const s of SECTIONS) {
+      const node = sectionRefs.current[s.id]
+      if (node && node.getBoundingClientRect().top <= top) current = s.id
+    }
+    if (el.scrollTop + el.clientHeight >= el.scrollHeight - 2) current = SECTIONS.at(-1)!.id
+    setActive(current)
+  }
+  const jumpTo = (id: string): void => {
+    const el = contentRef.current
+    const node = sectionRefs.current[id]
+    if (!el || !node) return
+    el.scrollTo({
+      top: node.getBoundingClientRect().top - el.getBoundingClientRect().top + el.scrollTop,
+      behavior: 'smooth'
+    })
+  }
   return (
     <>
       <div style={styles.scrim} onClick={onClose} />
@@ -261,9 +115,10 @@ export function UserGuide({ onClose }: { onClose: () => void }): ReactNode {
             {SECTIONS.map((s) => (
               <button
                 key={s.id}
-                onClick={() => setActive(s.id)}
+                onClick={() => jumpTo(s.id)}
                 style={{
                   ...styles.navItem,
+                  ...(s.sub ? styles.navSub : null),
                   background: s.id === active ? UI.accent : 'transparent',
                   color: s.id === active ? UI.accentText : UI.text
                 }}
@@ -272,9 +127,23 @@ export function UserGuide({ onClose }: { onClose: () => void }): ReactNode {
               </button>
             ))}
           </nav>
-          <div style={styles.content}>
-            <h2 style={styles.contentTitle}>{section.title}</h2>
-            {section.body}
+          <div ref={contentRef} style={styles.content} onScroll={onScroll}>
+            {SECTIONS.map((s, i) => (
+              <section
+                key={s.id}
+                ref={(node) => {
+                  sectionRefs.current[s.id] = node
+                }}
+                style={i === 0 ? undefined : styles.sectionGap}
+              >
+                <h2 style={styles.contentTitle}>{s.title}</h2>
+                {s.blocks.map((b, j) => (
+                  <Block key={j} block={b} />
+                ))}
+              </section>
+            ))}
+            {/* room to scroll the last section up to the top, so its nav entry can be reached */}
+            <div style={styles.tail} />
           </div>
         </div>
       </div>
@@ -295,9 +164,6 @@ function B({ children }: { children: ReactNode }): ReactNode {
 function Code({ children }: { children: ReactNode }): ReactNode {
   return <code style={styles.codeInline}>{children}</code>
 }
-function CodeBlock({ children }: { children: string }): ReactNode {
-  return <pre style={styles.codeBlock}>{children}</pre>
-}
 function UL({ items }: { items: ReactNode[] }): ReactNode {
   return (
     <ul style={styles.ul}>
@@ -309,18 +175,6 @@ function UL({ items }: { items: ReactNode[] }): ReactNode {
     </ul>
   )
 }
-function Flow({ steps }: { steps: string[] }): ReactNode {
-  return (
-    <div style={styles.flow}>
-      {steps.map((s, i) => (
-        <span key={s} style={styles.flowRow}>
-          <span style={styles.flowStep}>{s}</span>
-          {i < steps.length - 1 && <span style={styles.flowArrow}>→</span>}
-        </span>
-      ))}
-    </div>
-  )
-}
 
 const styles: Record<string, CSSProperties> = {
   scrim: { position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', zIndex: 60 },
@@ -329,9 +183,9 @@ const styles: Record<string, CSSProperties> = {
     top: '50%',
     left: '50%',
     transform: 'translate(-50%, -50%)',
-    width: 820,
+    width: 1080,
     maxWidth: '94vw',
-    height: 620,
+    height: 680,
     maxHeight: '88vh',
     display: 'flex',
     flexDirection: 'column',
@@ -381,12 +235,24 @@ const styles: Record<string, CSSProperties> = {
     fontWeight: 600,
     cursor: 'pointer'
   },
+  navSub: { marginLeft: 14 },
+  sectionGap: { marginTop: 28, paddingTop: 20, borderTop: `1px solid ${UI.border}` },
+  tail: { height: 400 },
   content: { flex: 1, minWidth: 0, overflow: 'auto', padding: '18px 22px', color: UI.text },
   contentTitle: { margin: '0 0 12px', fontSize: 17, fontWeight: 700, color: UI.text },
   p: { margin: '0 0 12px', fontSize: 13, lineHeight: 1.6, color: UI.textMuted },
   h: { margin: '18px 0 6px', fontSize: 13, fontWeight: 700, color: UI.text },
   ul: { margin: '0 0 12px', paddingLeft: 18 },
   li: { fontSize: 13, lineHeight: 1.6, color: UI.textMuted, marginBottom: 4 },
+  unknown: {
+    margin: '0 0 12px',
+    padding: 8,
+    fontSize: 12,
+    whiteSpace: 'pre-wrap',
+    color: UI.textMuted,
+    border: `1px dashed ${UI.border}`,
+    borderRadius: 6
+  },
   codeInline: {
     fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
     fontSize: 12,
@@ -396,37 +262,5 @@ const styles: Record<string, CSSProperties> = {
     padding: '1px 5px',
     color: UI.text,
     whiteSpace: 'nowrap'
-  },
-  codeBlock: {
-    fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
-    fontSize: 12,
-    lineHeight: 1.5,
-    background: UI.panelAlt,
-    border: `1px solid ${UI.border}`,
-    borderRadius: 6,
-    padding: '10px 12px',
-    margin: '0 0 12px',
-    color: UI.text,
-    overflowX: 'auto',
-    whiteSpace: 'pre'
-  },
-  flow: {
-    display: 'flex',
-    flexWrap: 'wrap',
-    alignItems: 'center',
-    gap: 6,
-    margin: '0 0 14px'
-  },
-  flowRow: { display: 'inline-flex', alignItems: 'center', gap: 6 },
-  flowStep: {
-    fontSize: 12,
-    fontWeight: 600,
-    color: UI.text,
-    background: UI.panelAlt,
-    border: `1px solid ${UI.border}`,
-    borderRadius: 14,
-    padding: '4px 11px',
-    whiteSpace: 'nowrap'
-  },
-  flowArrow: { color: UI.textMuted, fontSize: 12 }
+  }
 }

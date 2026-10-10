@@ -6,6 +6,7 @@
  *  inputs; each folder owns its own workflows. Opening a project restores the
  *  session exactly (embedded results and all). */
 import type { NodeResult } from './types'
+import { packResults, unpackResults } from './resultPack'
 import { emptyWorkflowDoc, type WorkflowDoc } from './workflowDoc'
 
 export interface ProjectWorkflow {
@@ -14,7 +15,32 @@ export interface ProjectWorkflow {
   doc: WorkflowDoc
   /** embedded computed results (keyed by node id) so the session resumes exactly */
   results: Record<string, NodeResult>
+  /** in a session only (never saved): the results are parked on disk under this key while the
+   *  workflow isn't the open one, and `results` is empty (see the store's parking) */
+  parked?: string
+  /** this workflow's folder name on disk (under the project data folder) — follows `name` at the
+   *  next save after a rename (see graph/diskNames.ts) */
+  dir?: string
+  /** processing step id → its output/ subfolder name on disk; set at the step's first download,
+   *  follows the step's name at the next save after a rename */
+  outDirs?: Record<string, string>
 }
+
+/** JSON text placed into a serialized project as is — a parked workflow's results, already
+ *  packed, go into the file without being parsed back into memory. */
+export class RawJson {
+  constructor(readonly text: string) {}
+}
+
+/** A parked workflow's results, named by their park key in place of their text: the save reads
+ *  the park file straight into the project file in the main process, so the (often tens of MB of)
+ *  text never travels to the renderer and back. */
+export class ParkedRef {
+  constructor(readonly key: string) {}
+}
+
+/** One piece of a project file being saved: text, or a parked workflow's results to copy in. */
+export type SavePiece = string | { park: string }
 
 export interface ProjectFolder {
   id: string
@@ -23,12 +49,19 @@ export interface ProjectFolder {
   path: string
   workflows: ProjectWorkflow[]
   activeWorkflowId: string
+  /** the project data folder's name on disk, inside `path` (`<project>_data`); unset until the
+   *  project has a file — follows the project's name at the next save (see graph/diskNames.ts) */
+  dataName?: string
 }
 
 export interface ProjectFile {
   format: 'omicexplorer-project'
-  /** 1 = flat {dataDir, workflows}; 2 = {folders[]} */
-  version: 2
+  /** 1 = flat {dataDir, workflows}; 2 = {folders[]}; 3 = packed results, gzipped (0.3.5).
+   *  Bump it when older app versions can't read what's saved. */
+  version: number
+  /** the app version that saved the file, so an older app can warn it may not read it right
+   *  (see savedByVersion). Optional (files before 0.3.5 don't carry it). */
+  appVersion?: string
   name: string
   folders: ProjectFolder[]
   activeFolderId: string
@@ -37,9 +70,26 @@ export interface ProjectFile {
   view?: 'canvas' | 'results'
   /** the Results tab (analysis-group id) that was active, restored alongside `view`. */
   resultsTab?: string | null
-  /** where a per-tile download was last saved in this project; the next save-as opens there
-   *  instead of the data folder's `output/`. */
-  saveDir?: string | null
+}
+
+/** The newest project format this build reads and writes. */
+export const PROJECT_VERSION = 3
+
+/** The app version a project file says saved it, read from the file's start (it's written right
+ *  after `version`) without parsing the whole file; null when it names none (before 0.3.5). */
+export function savedByVersion(text: string): string | null {
+  return /"appVersion"\s*:\s*"([^"]+)"/.exec(text.slice(0, 1000))?.[1] ?? null
+}
+
+/** Whether dotted version `a` is newer than `b` ("0.4.0" > "0.3.10"). */
+export function isNewerVersion(a: string, b: string): boolean {
+  const pa = a.split('.').map((n) => parseInt(n, 10) || 0)
+  const pb = b.split('.').map((n) => parseInt(n, 10) || 0)
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const d = (pa[i] || 0) - (pb[i] || 0)
+    if (d !== 0) return d > 0
+  }
+  return false
 }
 
 /** Counter-based ids (no Math.random — deterministic and test-stable). The counter is shared
@@ -87,8 +137,118 @@ export function newFolder(path = '', name?: string): ProjectFolder {
   }
 }
 
+/** Levels serialized piece by piece (root → folders → folder → workflows → workflow → packed
+ *  results → results → result); below that, each value (a workflow's doc, one result's table, an
+ *  annotation table) is a single JSON.stringify. */
+const CHUNK_DEPTH = 8
+/** Pieces are merged up to about this many characters, to keep the count small. */
+const CHUNK_CHARS = 32_000_000
+
+/** JSON for `value`, appended to `out` in pieces down to `depth` levels — exactly what
+ *  JSON.stringify gives (compact), just never as one string. */
+function stringifyInto(value: unknown, depth: number, out: SavePiece[]): void {
+  if (value instanceof RawJson) {
+    out.push(value.text)
+    return
+  }
+  if (value instanceof ParkedRef) {
+    out.push({ park: value.key })
+    return
+  }
+  if (depth === 0 || value === null || typeof value !== 'object') {
+    out.push(JSON.stringify(value) ?? 'null')
+    return
+  }
+  if (Array.isArray(value)) {
+    out.push('[')
+    value.forEach((v, i) => {
+      if (i) out.push(',')
+      stringifyInto(v === undefined || typeof v === 'function' ? null : v, depth - 1, out)
+    })
+    out.push(']')
+    return
+  }
+  out.push('{')
+  let first = true
+  for (const [k, v] of Object.entries(value)) {
+    if (v === undefined || typeof v === 'function') continue
+    out.push(`${first ? '' : ','}${JSON.stringify(k)}:`)
+    first = false
+    stringifyInto(v, depth - 1, out)
+  }
+  out.push('}')
+}
+
+/**
+ * The project file's text in pieces — concatenated, they're the file. A project holding large
+ * results runs to hundreds of MB, past the longest string JavaScript can build, so it's never one
+ * JSON.stringify: each workflow's document and each result is its own piece. Compact (no
+ * indentation), which also keeps the file a good deal smaller. A parked workflow's results stay a
+ * `{ park }` piece (see ParkedRef) for the main process to fill in.
+ */
+export function serializeProjectChunks(p: ProjectFile): SavePiece[] {
+  // Results go in packed (columnar tables, pooled annotations — see resultPack).
+  const packed = {
+    ...p,
+    folders: p.folders.map((f) => ({
+      ...f,
+      // `parked` is session state, not the file's; a parked workflow's results arrive as a
+      // ParkedRef (or RawJson text).
+      workflows: f.workflows.map((w) => {
+        const out: Omit<Partial<ProjectWorkflow>, 'results'> & { results: unknown } = {
+          ...w,
+          results:
+            (w.results as unknown) instanceof RawJson || (w.results as unknown) instanceof ParkedRef
+              ? w.results
+              : packResults(w.results)
+        }
+        delete out.parked
+        return out
+      })
+    }))
+  }
+  const parts: SavePiece[] = []
+  stringifyInto(packed, CHUNK_DEPTH, parts)
+  const out: SavePiece[] = []
+  let buf: string[] = []
+  let size = 0
+  for (const part of parts) {
+    // A parked reference stays its own piece, between the text around it.
+    if (typeof part !== 'string') {
+      if (buf.length) out.push(buf.join(''))
+      buf = []
+      size = 0
+      out.push(part)
+      continue
+    }
+    if (size + part.length > CHUNK_CHARS && buf.length) {
+      out.push(buf.join(''))
+      buf = []
+      size = 0
+    }
+    buf.push(part)
+    size += part.length
+  }
+  if (buf.length) out.push(buf.join(''))
+  return out
+}
+
+/** A workflow's results packed (see resultPack) as JSON text in pieces — how they're parked on
+ *  disk, and exactly what the project file holds for them. */
+export function packedResultsChunks(results: Record<string, NodeResult>): string[] {
+  const parts: string[] = []
+  stringifyInto(packResults(results), 3, parts)
+  return parts
+}
+
+/** A workflow's results from parked text (packedResultsChunks, joined). */
+export function unpackParked(text: string): Record<string, NodeResult> {
+  return unpackResults(JSON.parse(text))
+}
+
+/** The project file's text as one string (for small projects and tests; saving uses the chunks). */
 export function serializeProject(p: ProjectFile): string {
-  return JSON.stringify(p, null, 2)
+  return serializeProjectChunks(p).join('')
 }
 
 /** v1 (flat dataDir + workflows) shape, for migration. */
@@ -108,7 +268,9 @@ function coerceWorkflows(
           id: w.id ?? nextWorkflowId(),
           name: w.name ?? `Workflow ${i + 1}`,
           doc: w.doc ?? emptyWorkflowDoc(),
-          results: w.results ?? {}
+          results: unpackResults(w.results),
+          ...(typeof w.dir === 'string' && w.dir ? { dir: w.dir } : null),
+          ...(w.outDirs && typeof w.outDirs === 'object' ? { outDirs: { ...w.outDirs } } : null)
         }))
       : [emptyWorkflow()]
   const active = activeId && workflows.some((w) => w.id === activeId) ? activeId : workflows[0].id
@@ -182,7 +344,8 @@ export function deserializeProject(text: string): ProjectFile {
         name: f.name ?? (f.path ? (f.path.split(/[/\\]/).pop() ?? f.path) : `Folder ${i + 1}`),
         path: f.path ?? '',
         workflows,
-        activeWorkflowId
+        activeWorkflowId,
+        ...(typeof f.dataName === 'string' && f.dataName ? { dataName: f.dataName } : null)
       }
     })
   } else {
@@ -205,13 +368,12 @@ export function deserializeProject(text: string): ProjectFile {
       : folders[0].id
   return {
     format: 'omicexplorer-project',
-    version: 2,
+    version: PROJECT_VERSION,
     name: raw.name ?? 'Untitled project',
     folders,
     activeFolderId,
     view: raw.view === 'results' ? 'results' : 'canvas',
-    resultsTab: typeof raw.resultsTab === 'string' ? raw.resultsTab : null,
-    saveDir: typeof raw.saveDir === 'string' && raw.saveDir ? raw.saveDir : null
+    resultsTab: typeof raw.resultsTab === 'string' ? raw.resultsTab : null
   }
 }
 
@@ -220,7 +382,7 @@ export function newProjectFile(name = 'Untitled project'): ProjectFile {
   const folder = newFolder('', 'Folder 1')
   return {
     format: 'omicexplorer-project',
-    version: 2,
+    version: PROJECT_VERSION,
     name,
     folders: [folder],
     activeFolderId: folder.id

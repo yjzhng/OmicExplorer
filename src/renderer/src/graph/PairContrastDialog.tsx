@@ -6,7 +6,7 @@
  */
 import { useMemo, type CSSProperties, type ReactNode } from 'react'
 
-import { previewContrastPair, type ConditionKey, type PairFix } from '../engine'
+import { condLabel, previewContrastPair, type ConditionKey, type PairFix } from '../engine'
 import { OnOffSwitch } from '../ui/ToggleSwitch'
 import { StatusNote } from '../ui/StatusNote'
 import { UI } from '../ui/theme'
@@ -124,10 +124,10 @@ export function PairContrastBody({
               onClick={() => onFix(side, c, v)}
               title={
                 vals.length === 1
-                  ? `Only ${c} on this dataset`
+                  ? `Only ${condLabel(c)} on this dataset`
                   : on
-                    ? `${c} fixed to ${v} on this dataset`
-                    : `Fix ${c} to ${v} on this dataset`
+                    ? `${condLabel(c)} fixed to ${v} on this dataset`
+                    : `Fix ${condLabel(c)} to ${v} on this dataset`
               }
               style={{
                 ...S.valChip,
@@ -153,17 +153,17 @@ export function PairContrastBody({
           <OnOffSwitch
             on={on}
             onChange={() => onToggle(c)}
-            label={`Match on ${c}`}
+            label={`Match on ${condLabel(c)}`}
             disabled={!matchable}
             title={
               !matchable
-                ? `${c} is on one dataset only — fix it to one slice there`
+                ? `${condLabel(c)} is on one dataset only — fix it to one slice there`
                 : on
                   ? 'Matched like-for-like — switch off to fix one slice per dataset'
                   : 'Switch on to match like-for-like'
             }
           />
-          <span style={{ ...S.condName, ...(on ? S.condNameOn : null) }}>{c}</span>
+          <span style={{ ...S.condName, ...(on ? S.condNameOn : null) }}>{condLabel(c)}</span>
         </div>
         {on ? (
           // Matched: values on both datasets pair (green); one-sided values have no partner (grey).
@@ -172,7 +172,7 @@ export function PairContrastBody({
               <span
                 key={`b${x}`}
                 style={{ ...S.valChip, ...S.valChipIncluded, cursor: 'default' }}
-                title={`${c} = ${x} is on both datasets — paired`}
+                title={`${condLabel(c)} = ${x} is on both datasets — paired`}
               >
                 {x}
               </span>
@@ -184,7 +184,7 @@ export function PairContrastBody({
               <span
                 key={`o${who}${x}`}
                 style={{ ...S.valChip, ...S.valChipIdle, opacity: 0.6, cursor: 'default' }}
-                title={`${c} = ${x} is only on ${who} — no partner, skipped`}
+                title={`${condLabel(c)} = ${x} is only on ${who} — no partner, skipped`}
               >
                 {x}
               </span>
@@ -201,8 +201,8 @@ export function PairContrastBody({
             </div>
             <StatusNote kind="info" style={{ marginTop: 8 }}>
               {matchable
-                ? `not matched — pick one ${c} per dataset; nothing is pooled across ${c}`
-                : `${c} is on one dataset only — pick one ${c} there; nothing is pooled across it`}
+                ? `not matched — pick one ${condLabel(c)} per dataset; nothing is pooled across ${condLabel(c)}`
+                : `${condLabel(c)} is on one dataset only — pick one ${condLabel(c)} there; nothing is pooled across it`}
             </StatusNote>
           </div>
         )}
@@ -259,7 +259,7 @@ export function PairContrastBody({
             {preview.conditions.map(condRow)}
             <StatusNote kind="ok" style={S.matchedLine}>
               {preview.matched.length
-                ? `matched on ${preview.matched.join(', ')}`
+                ? `matched on ${preview.matched.map(condLabel).join(', ')}`
                 : 'matched on gene id only — one point per gene'}
             </StatusNote>
           </div>

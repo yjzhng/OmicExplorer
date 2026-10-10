@@ -18,7 +18,10 @@ import {
   resolveEnrichSource,
   type EnrichSource
 } from '../engine'
-import type { NodeResult } from '../graph/types'
+import { useShallow } from 'zustand/react/shallow'
+
+import { useGraph } from '../graph/store'
+import { isDataResult, type NodeResult } from '../graph/types'
 import type { GeneCategory, GeneGroupTab } from '../ui/GeneSelectMenu'
 
 /** Essentiality classes, in menu order. */
@@ -29,6 +32,37 @@ type EssClass = (typeof ESS_CLASSES)[number]
  *  many organisms — can only say "essential in at least one of them". (A DB's older names for them
  *  arrive renamed — COLUMN_ALIASES.) */
 const ESSENTIALITY_COLS = ['CEG_NEG', 'DEG']
+/** Natural-order name compare for every sort here. One collator, shared: `localeCompare` with
+ *  options builds a fresh one per call, which across thousands of GO terms and their genes cost
+ *  seconds per grouping. */
+const byName = new Intl.Collator(undefined, { numeric: true }).compare
+
+/** What the menu reads off the results, flattened for a shallow compare: per data result its gene
+ *  names, then (Clean data / Compare) its annotations and KEGG categories. Select it with
+ *  `useShallow(menuParts)` — `results` itself changes on every store of any result (each plot's run
+ *  stores a marker), and keying the groupings on it regrouped every gene under every term once per
+ *  plot, seconds each on the UI thread. These parts change only when a data result does. */
+export type MenuParts = unknown[]
+export function menuParts(s: { results: Record<string, NodeResult> }): MenuParts {
+  const out: MenuParts = []
+  for (const r of Object.values(s.results)) {
+    if (r.kind === 'standardize')
+      out.push(r.std.displayMap, r.std.annotationMap, r.std.keggCategories)
+    else if (r.kind === 'compare') out.push(r.displayMap, r.annotationMap, r.keggCategories)
+    else if (isDataResult(r)) out.push(r.displayMap, undefined, undefined)
+  }
+  return out
+}
+type DisplayMap = Record<string, string>
+type AnnMap = Record<string, Record<string, string>>
+/** The parts' (gene names, annotations, KEGG categories) triples. */
+const triples = (parts: MenuParts): Array<[DisplayMap?, AnnMap?, DisplayMap?]> => {
+  const out: Array<[DisplayMap?, AnnMap?, DisplayMap?]> = []
+  for (let i = 0; i < parts.length; i += 3)
+    out.push([parts[i] as DisplayMap, parts[i + 1] as AnnMap, parts[i + 2] as DisplayMap])
+  return out
+}
+
 /** A term set's name without its species note ("(human)") — the selector names sets short. */
 const shortLabel = (s: EnrichSource): string => ENRICH_SOURCE_LABEL[s].replace(/\s*\(human\)$/, '')
 /** What each essentiality column is, for the tab's dropdown. */
@@ -46,6 +80,24 @@ function pickDesc(rec: Record<string, string> | undefined): string | undefined {
   return key ? rec[key] : undefined
 }
 
+/** id → protein description, as the gene selector shows it right of a gene's name: from every
+ *  result's annotations (pickDesc). For a tile's gene picker, so it lists genes as the nav does. */
+export function useGeneDescriptions(): Record<string, string> {
+  const parts = useGraph(useShallow(menuParts))
+  return useMemo(() => {
+    const map: Record<string, string> = {}
+    for (const [, am] of triples(parts)) {
+      if (!am) continue
+      for (const id in am) {
+        if (id in map) continue
+        const d = pickDesc(am[id])
+        if (d) map[id] = d
+      }
+    }
+    return map
+  }, [parts])
+}
+
 /** Which term sets each tab offers, its default first: the engine's Function / Pathway groups,
  *  shared with the enrichment terms dropdown. */
 const tabSources = (label: 'Function' | 'Pathway'): EnrichSource[] =>
@@ -53,29 +105,21 @@ const tabSources = (label: 'Function' | 'Pathway'): EnrichSource[] =>
 const TAB_SOURCES = { function: tabSources('Function'), pathway: tabSources('Pathway') }
 
 /** The selector's tabs (Pathway, Essentiality) for these results. */
-export function useGeneMenuTabs(results: Record<string, NodeResult>): GeneGroupTab[] {
+export function useGeneMenuTabs(parts: MenuParts): GeneGroupTab[] {
+  const sources = useMemo(() => triples(parts), [parts])
   // uniqID → display name, merged across every result's displayMap, so the selected-genes chips
   // can show gene names for the pinned selection (which carries only ids).
   const geneLabels = useMemo(() => {
     const m: Record<string, string> = {}
-    for (const r of Object.values(results)) {
-      const dm = r.kind === 'standardize' ? r.std.displayMap : r.displayMap
-      if (dm) for (const k in dm) if (!(k in m)) m[k] = dm[k]
-    }
+    for (const [dm] of sources) if (dm) for (const k in dm) if (!(k in m)) m[k] = dm[k]
     return m
-  }, [results])
+  }, [sources])
   // Merged per-gene annotations across EVERY result that carries them — Standardize (std) as well as
   // Compare — so the description (proteinName) and pathway tags show even in a Standardize-only flow
   // (previously only Compare results were read, so a Standardize-driven menu had no proteinName).
   const annById = useMemo(() => {
     const m: Record<string, Record<string, string>> = {}
-    for (const r of Object.values(results)) {
-      const am =
-        r.kind === 'standardize'
-          ? r.std.annotationMap
-          : r.kind === 'compare'
-            ? r.annotationMap
-            : undefined
+    for (const [, am] of sources) {
       if (!am) continue
       for (const id in am) {
         const rec = m[id] ?? (m[id] = {})
@@ -83,21 +127,13 @@ export function useGeneMenuTabs(results: Record<string, NodeResult>): GeneGroupT
       }
     }
     return m
-  }, [results])
+  }, [sources])
   // Pathway → BRITE category, merged the same way (Standardize + Compare).
   const kcatAll = useMemo(() => {
     const m: Record<string, string> = {}
-    for (const r of Object.values(results)) {
-      const kc =
-        r.kind === 'standardize'
-          ? r.std.keggCategories
-          : r.kind === 'compare'
-            ? r.keggCategories
-            : undefined
-      if (kc) for (const k in kc) if (!(k in m)) m[k] = kc[k]
-    }
+    for (const [, , kc] of sources) if (kc) for (const k in kc) if (!(k in m)) m[k] = kc[k]
     return m
-  }, [results])
+  }, [sources])
   // Genes grouped PARENT → TERM → gene for the multi-select menu (KEGG: pathway category › group →
   // pathway; Reactome: top level › level 2 → level-3 pathway; GO: aspect → term; COG/KOG: area →
   // category). A gene appears under every term it's annotated with.
@@ -127,8 +163,6 @@ export function useGeneMenuTabs(results: Record<string, NodeResult>): GeneGroupT
       if (terms.length === 0) put(none, none, gene)
       else for (const t of terms) put(parentOf(t) ?? OTHER, t, gene)
     }
-    const byName = (a: string, b: string): number =>
-      a.localeCompare(b, undefined, { numeric: true })
     const rank = (name: string): number => (name === none ? 2 : name === OTHER ? 1 : 0)
     // A term that IS its group (a Reactome level-2 pathway with no level 3) sits directly in the
     // category rather than under a header of its own name.
@@ -223,8 +257,6 @@ export function useGeneMenuTabs(results: Record<string, NodeResult>): GeneGroupT
       const yes = s.includes('essential') || s === 'e' || s === 'yes' || s === 'true' || s === '1'
       return yes ? 'Essential' : 'NA'
     }
-    const byName = (a: string, b: string): number =>
-      a.localeCompare(b, undefined, { numeric: true })
     const buckets: Record<EssClass, { id: string; label: string; desc?: string }[]> = {
       Essential: [],
       'Non-essential': [],
@@ -264,8 +296,6 @@ export function useGeneMenuTabs(results: Record<string, NodeResult>): GeneGroupT
     if (source === 'go') return goCategories()
     if (source === 'cog') return ogCategories('COG')
     if (source === 'kog') return ogCategories('KOG')
-    const byName = (a: string, b: string): number =>
-      a.localeCompare(b, undefined, { numeric: true })
     const none = `No ${shortLabel(source)} term`
     const byTerm = new Map<string, { id: string; label: string; desc?: string }[]>()
     for (const id in geneLabels) {
@@ -334,8 +364,6 @@ export function useGeneMenuTabs(results: Record<string, NodeResult>): GeneGroupT
       })
     // No annotations of any kind: still list every gene, so the selector works on bare data.
     if (tabs.length === 0) {
-      const byName = (a: string, b: string): number =>
-        a.localeCompare(b, undefined, { numeric: true })
       const genes = Object.keys(geneLabels)
         .map((id) => ({ id, label: geneLabels[id] }))
         .sort((x, y) => byName(x.label, y.label))

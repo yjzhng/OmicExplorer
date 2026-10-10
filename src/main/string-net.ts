@@ -33,6 +33,12 @@ export interface StringResult {
   /** query genes plus (optionally) first-shell interactors, `isQuery` flagged */
   nodes: StringNode[]
   edges: { aId: string; bId: string; score: number }[]
+  /** the best link score (0–1000) between two query proteins, at any confidence (−1 = none) — the
+   *  highest level a query-only network has anything at */
+  maxQueryScore?: number
+  /** the best link score from a query protein to any protein (−1 = none) — the highest level a
+   *  network with first-shell interactors has anything at */
+  maxLinkScore?: number
   error?: string
 }
 export interface EnsureOrgResult {
@@ -74,7 +80,8 @@ async function cachedVersion(taxon: number): Promise<string> {
   const m = await readJson<{ version: string }>(manifestPath(taxon))
   if (!m?.version) return ''
   const ok =
-    (await fileExists(linksPath(taxon, m.version))) && (await fileExists(infoPath(taxon, m.version)))
+    (await fileExists(linksPath(taxon, m.version))) &&
+    (await fileExists(infoPath(taxon, m.version)))
   return ok ? m.version : ''
 }
 
@@ -87,7 +94,10 @@ async function loadCanonicalNames(taxon: number, ver: string): Promise<Map<strin
   if (hit) return hit
   if (!(await fileExists(namesPath(taxon, ver)))) return null
   const m = new Map<string, string>()
-  const rl = createInterface({ input: createReadStream(namesPath(taxon, ver)), crlfDelay: Infinity })
+  const rl = createInterface({
+    input: createReadStream(namesPath(taxon, ver)),
+    crlfDelay: Infinity
+  })
   for await (const line of rl) {
     if (!line) continue
     const tab = line.indexOf('\t')
@@ -102,7 +112,11 @@ async function loadCanonicalNames(taxon: number, ver: string): Promise<Map<strin
 
 /** id → display name for the requested ids: the canonical UniProt gene name (aliases-derived) when
  *  available, else STRING's `preferred_name` from the info file. */
-async function readNames(taxon: number, ver: string, need: Set<string>): Promise<Map<string, string>> {
+async function readNames(
+  taxon: number,
+  ver: string,
+  need: Set<string>
+): Promise<Map<string, string>> {
   const nameById = new Map<string, string>()
   if (need.size === 0) return nameById
   const rl = createInterface({ input: createReadStream(infoPath(taxon, ver)), crlfDelay: Infinity })
@@ -117,21 +131,35 @@ async function readNames(taxon: number, ver: string, need: Set<string>): Promise
   }
   // Prefer canonical UniProt gene names over STRING's preferred_name where we have them.
   const canon = await loadCanonicalNames(taxon, ver)
-  if (canon) for (const id of need) {
-    const g = canon.get(id)
-    if (g) nameById.set(id, g)
-  }
+  if (canon)
+    for (const id of need) {
+      const g = canon.get(id)
+      if (g) nameById.set(id, g)
+    }
   return nameById
 }
 
-/** Stream the links file, invoking `cb` for each interaction at/above `cut` (0–1000). */
+/** Stream the links file, invoking `cb` for each interaction at/above `cut` (0–1000). `below`, if
+ *  given, also sees the interactions under the cut — but only those scoring above its `floor()`,
+ *  so a caller tracking a best score pays for the ids (string slices) of almost none of them. */
 async function scanLinks(
   taxon: number,
   ver: string,
   cut: number,
-  cb: (a: string, b: string, score: number) => void
+  cb: (a: string, b: string, score: number) => void,
+  below?: {
+    floor: () => number
+    /** skip a line by its first protein alone, before the second is sliced */
+    wantA?: (a: string) => boolean
+    cb: (a: string, b: string, score: number) => void
+  }
 ): Promise<void> {
-  const rl = createInterface({ input: createReadStream(linksPath(taxon, ver)), crlfDelay: Infinity })
+  // The file is sorted by its first protein, so consecutive lines share it: reuse the last slice.
+  let lastA = ''
+  const rl = createInterface({
+    input: createReadStream(linksPath(taxon, ver)),
+    crlfDelay: Infinity
+  })
   let first = true
   for await (const line of rl) {
     if (first) {
@@ -143,7 +171,16 @@ async function scanLinks(
     const sp2 = line.indexOf(' ', sp + 1)
     if (sp < 0 || sp2 < 0) continue
     const score = parseInt(line.slice(sp2 + 1), 10)
-    if (!Number.isFinite(score) || score < cut) continue
+    if (!Number.isFinite(score)) continue
+    if (score < cut) {
+      if (below && score > below.floor()) {
+        const a =
+          sp === lastA.length && line.startsWith(lastA) ? lastA : (lastA = line.slice(0, sp))
+        if (below.wantA && !below.wantA(a)) continue
+        below.cb(a, line.slice(sp + 1, sp2), score)
+      }
+      continue
+    }
     cb(line.slice(0, sp), line.slice(sp + 1, sp2), score)
   }
 }
@@ -200,7 +237,7 @@ async function localNetwork(
   query: Set<string>,
   cut: number,
   maxInteractors: number
-): Promise<{ nodes: StringNode[]; edges: { aId: string; bId: string; score: number }[] }> {
+): Promise<StringResult> {
   let N: Set<string>
   if (maxInteractors > 0) {
     // Pass 1: count, for each non-query protein, how many query proteins it connects to ≥ threshold.
@@ -220,18 +257,160 @@ async function localNetwork(
   } else {
     N = query
   }
-  // Interactions among the node set (deduped to undirected pairs).
+  // Interactions among the node set (deduped to undirected pairs) — and, in the same pass, the best
+  // link score at ANY confidence that this kind of network draws from (query–query without
+  // interactors, query–anything with them), so the caller knows which levels would draw a network
+  // without reading again. Under the cut, a line is only looked at when it beats that best so far,
+  // and (query-only) when its first protein is a query one — so the extra cost is a few lines.
   const edges: { aId: string; bId: string; score: number }[] = []
-  await scanLinks(taxon, ver, cut, (a, b, score) => {
-    if (a < b && N.has(a) && N.has(b)) edges.push({ aId: a, bId: b, score: score / 1000 })
-  })
+  let maxQuery = -1
+  let maxLink = -1
+  const track = (a: string, b: string, score: number): void => {
+    const aq = query.has(a)
+    const bq = query.has(b)
+    if (aq && bq && score > maxQuery) maxQuery = score
+    if ((aq || bq) && score > maxLink) maxLink = score
+  }
+  await scanLinks(
+    taxon,
+    ver,
+    cut,
+    (a, b, score) => {
+      track(a, b, score)
+      if (a < b && N.has(a) && N.has(b)) edges.push({ aId: a, bId: b, score: score / 1000 })
+    },
+    maxInteractors > 0
+      ? { floor: () => maxLink, cb: track }
+      : { floor: () => maxQuery, wantA: (a) => query.has(a), cb: track }
+  )
   const nameById = await readNames(taxon, ver, N)
   const nodes: StringNode[] = [...N].map((id) => ({
     id,
     name: nameById.get(id) ?? id,
     isQuery: query.has(id)
   }))
-  return { nodes, edges }
+  return { nodes, edges, maxQueryScore: maxQuery, maxLinkScore: maxLink }
+}
+
+/** The STRING confidence levels the tile offers (0–1000): low, medium, high, highest. */
+const LEVELS = [150, 400, 700, 900]
+
+/** Everything every setting of a STRING tile can draw for one query, from two scans: per gene cap
+ *  (`caps[c]`: its query is the first `genes` genes, with up to `k` interactors) and per level, the
+ *  interactors it would pull in; and every link, at any level, among the widest query plus all of
+ *  those interactors. A setting's network is then a filter of it (see the renderer's
+ *  stringVariant) — switching settings never reads the file again. */
+export interface StringAllResult {
+  /** the widest query's proteins plus every candidate interactor, with display names */
+  nodes: { id: string; name: string }[]
+  /** every link among `nodes` at or above the lowest level, each pair once (score 0–1) */
+  edges: { aId: string; bId: string; score: number }[]
+  /** `interactors[cap][level]`: the interactors that setting pulls in, best first */
+  interactors: string[][][]
+  /** `maxLinkScore[cap]`: the best link (0–1000) from that cap's query to any protein, −1 = none */
+  maxLinkScore: number[]
+  error?: string
+}
+
+/** Stream the links file at/above `cut`, handing `cb` only lines whose first protein `wantA`
+ *  accepts — tested before the second id is sliced, and the first reused while it repeats (the file
+ *  is sorted by it), so skipping the rest of the file costs almost nothing per line. */
+async function scanFrom(
+  taxon: number,
+  ver: string,
+  cut: number,
+  wantA: (a: string) => boolean,
+  cb: (a: string, b: string, score: number) => void
+): Promise<void> {
+  let lastA = ''
+  let lastWant = false
+  const rl = createInterface({
+    input: createReadStream(linksPath(taxon, ver)),
+    crlfDelay: Infinity
+  })
+  let first = true
+  for await (const line of rl) {
+    if (first) {
+      first = false
+      if (/protein1/i.test(line)) continue // header
+    }
+    if (!line) continue
+    const sp = line.indexOf(' ')
+    if (sp < 0) continue
+    if (!(sp === lastA.length && line.startsWith(lastA))) {
+      lastA = line.slice(0, sp)
+      lastWant = wantA(lastA)
+    }
+    if (!lastWant) continue
+    const sp2 = line.indexOf(' ', sp + 1)
+    if (sp2 < 0) continue
+    const score = parseInt(line.slice(sp2 + 1), 10)
+    if (!Number.isFinite(score) || score < cut) continue
+    cb(lastA, line.slice(sp + 1, sp2), score)
+  }
+}
+
+async function localNetworkAll(
+  taxon: number,
+  ver: string,
+  genes: string[][],
+  caps: { genes: number; k: number }[]
+): Promise<StringAllResult> {
+  // Each protein's rank: the index of its gene in the (strongest-first) query; a cap's query is the
+  // genes ranked below its `genes`.
+  const rank = new Map<string, number>()
+  genes.forEach((ids, g) => ids.forEach((id) => rank.has(id) || rank.set(id, g)))
+  // Pass 1: the query's links (the file lists each link both ways, so every link touching the query
+  // shows up with a query protein first). Per cap and level, count how many of that cap's query
+  // proteins each OTHER protein links to — the interactor ranking — and the cap's best link.
+  const counts = caps.map(() => LEVELS.map(() => new Map<string, number>()))
+  const maxLink = caps.map(() => -1)
+  await scanFrom(
+    taxon,
+    ver,
+    LEVELS[0],
+    (a) => rank.has(a),
+    (a, b, score) => {
+      const ra = rank.get(a)!
+      const rb = rank.get(b)
+      caps.forEach((cap, c) => {
+        if (ra >= cap.genes) return
+        if (score > maxLink[c]) maxLink[c] = score
+        if (rb != null && rb < cap.genes) return // both in this cap's query: not an interactor link
+        LEVELS.forEach((lv, l) => {
+          if (score >= lv) counts[c][l].set(b, (counts[c][l].get(b) ?? 0) + 1)
+        })
+      })
+    }
+  )
+  // Each setting's interactors: the most-connected, up to the cap's k (ties keep file order).
+  const interactors = counts.map((byLevel, c) =>
+    byLevel.map((m) =>
+      [...m.entries()]
+        .sort((x, y) => y[1] - x[1])
+        .slice(0, caps[c].k)
+        .map(([id]) => id)
+    )
+  )
+  // Pass 2: every link among the widest query and all candidate interactors, at any level.
+  const S = new Set<string>([...rank.keys(), ...interactors.flat(2)])
+  const edges: { aId: string; bId: string; score: number }[] = []
+  await scanFrom(
+    taxon,
+    ver,
+    LEVELS[0],
+    (a) => S.has(a),
+    (a, b, score) => {
+      if (a < b && S.has(b)) edges.push({ aId: a, bId: b, score: score / 1000 })
+    }
+  )
+  const nameById = await readNames(taxon, ver, S)
+  return {
+    nodes: [...S].map((id) => ({ id, name: nameById.get(id) ?? id })),
+    edges,
+    interactors,
+    maxLinkScore: maxLink
+  }
 }
 
 /** Sentinel error the plot recognises to show "download it in the import" guidance. */
@@ -249,7 +428,11 @@ export function registerStringNet(): void {
       const have = await cachedVersion(taxon)
       const version = live || have
       if (!version)
-        return { cached: false, version: '', error: 'Could not determine the STRING version (offline?).' }
+        return {
+          cached: false,
+          version: '',
+          error: 'Could not determine the STRING version (offline?).'
+        }
       const send = (stage: string, loaded: number, total: number): void =>
         evt.sender.send('string:progress', { taxon, stage, loaded, total })
       const namesReady = await fileExists(namesPath(taxon, version))
@@ -277,7 +460,35 @@ export function registerStringNet(): void {
         }
         return { cached: false, version }
       } catch (e) {
-        return { cached: false, version, error: e instanceof Error ? e.message : 'STRING download failed' }
+        return {
+          cached: false,
+          version,
+          error: e instanceof Error ? e.message : 'STRING download failed'
+        }
+      }
+    }
+  )
+
+  // Every setting's network for one query at once (see StringAllResult): `genes` is the widest query,
+  // strongest first, each gene's STRING ids; `caps` the gene caps the tile offers.
+  ipcMain.handle(
+    'string:networkAll',
+    async (
+      _evt,
+      genes: string[][],
+      species: number,
+      caps: { genes: number; k: number }[]
+    ): Promise<StringAllResult> => {
+      const empty = { nodes: [], edges: [], interactors: [], maxLinkScore: [] }
+      const g = (genes ?? []).map((ids) => (ids ?? []).map((s) => s?.trim()).filter(Boolean))
+      if (!g.some((ids) => ids.length)) return empty
+      if (!species || species <= 0) return { ...empty, error: NO_LOCAL_DATA }
+      const ver = await cachedVersion(species)
+      if (!ver) return { ...empty, error: NO_LOCAL_DATA }
+      try {
+        return await localNetworkAll(species, ver, g, caps ?? [])
+      } catch (e) {
+        return { ...empty, error: e instanceof Error ? e.message : 'Local STRING read failed' }
       }
     }
   )
@@ -299,9 +510,19 @@ export function registerStringNet(): void {
       if (!ver) return { nodes: [], edges: [], error: NO_LOCAL_DATA }
       try {
         const score = Math.max(0, Math.min(1000, Math.round(requiredScore || 400)))
-        return await localNetwork(species, ver, new Set(ids), score, Math.max(0, Math.trunc(maxInteractors)))
+        return await localNetwork(
+          species,
+          ver,
+          new Set(ids),
+          score,
+          Math.max(0, Math.trunc(maxInteractors))
+        )
       } catch (e) {
-        return { nodes: [], edges: [], error: e instanceof Error ? e.message : 'Local STRING read failed' }
+        return {
+          nodes: [],
+          edges: [],
+          error: e instanceof Error ? e.message : 'Local STRING read failed'
+        }
       }
     }
   )

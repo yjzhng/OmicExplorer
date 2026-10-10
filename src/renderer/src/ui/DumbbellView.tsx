@@ -16,7 +16,8 @@ export function DumbbellView({
   focus,
   title,
   orient = 'portrait',
-  valueKind = 'fc'
+  valueKind = 'fc',
+  valueLabel
 }: {
   rows: ContrastResultRow[]
   topGenes: number
@@ -25,6 +26,8 @@ export function DumbbellView({
   title?: string
   /** what the two sides hold (ContrastResult.valueKind): the value axis title follows it */
   valueKind?: 'abundance' | 'fc'
+  /** the abundance axis title, with its log base (see abundanceLabel); default "log abundance" */
+  valueLabel?: string
   /** portrait = genes down the y axis (tall list); landscape = genes across x. */
   orient?: 'landscape' | 'portrait'
 }) {
@@ -88,7 +91,7 @@ export function DumbbellView({
     const heading = title ?? ''
     const fcAxis = {
       ...axisBase(p),
-      title: valueKind === 'abundance' ? 'log abundance' : 'log₂FC',
+      title: valueKind === 'abundance' ? (valueLabel ?? 'log abundance') : 'log₂FC',
       zeroline: false
     }
     const geneAxis = {
@@ -131,7 +134,19 @@ export function DumbbellView({
       layout: lay,
       boldTicks
     }
-  }, [rows, topGenes, displayMap, focus, orient, valueKind, hoverId, pinnedIds, title, mode])
+  }, [
+    rows,
+    topGenes,
+    displayMap,
+    focus,
+    orient,
+    valueKind,
+    valueLabel,
+    hoverId,
+    pinnedIds,
+    title,
+    mode
+  ])
 
   return <PlotlyChart data={data} layout={layout} boldTicks={boldTicks} />
 }

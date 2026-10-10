@@ -6,6 +6,7 @@ import { truncateLabel } from './plotAxes'
 import { axisBase, EFFECT_COLOR, PALETTES, plotBase } from './theme'
 import { useSelection } from './useSelection'
 import { useUiTheme } from './useUiTheme'
+import type { EffectColors } from '../graph/types'
 
 /** Bubble grid: genes (x) × dose/time (y). Dot fill = log2FC (diverging), size =
  *  |log₂FC|; no outline. Genes are pre-ordered by max log2FC. The base
@@ -14,22 +15,32 @@ import { useUiTheme } from './useUiTheme'
 export function BubbleView({
   rows,
   axis,
+  axisLabel,
   topGenes,
   displayMap,
   focus,
   title,
-  orient = 'landscape'
+  orient = 'landscape',
+  effectColors
 }: {
   rows: CompareResultRow[]
   axis: 'dose' | 'time'
+  /** the dose/time axis's title, with its unit (absent = the bare axis name) */
+  axisLabel?: string
   topGenes: number
   displayMap?: Record<string, string>
   focus?: string[]
   title?: string
   /** landscape = genes along x (wide); portrait = genes along y (tall). */
   orient?: 'landscape' | 'portrait'
+  /** the upstream Compare's effect colours (with any of the plot's own on top); unset = the
+   *  shared defaults */
+  effectColors?: EffectColors
 }) {
   const mode = useUiTheme((s) => s.mode)
+  const upColor = effectColors?.up ?? EFFECT_COLOR.up
+  const downColor = effectColors?.down ?? EFFECT_COLOR.down
+  const noneColor = effectColors?.none ?? EFFECT_COLOR.none
   // Only PINNED genes are appended to the axis (they need a permanent column). Deliberately NOT
   // subscribed to hoverId: re-rendering on hover would re-run Plotly.react and rebuild the axis
   // every hover — which reset the discrete (category) spacing to quantitative. The hovered point
@@ -69,9 +80,9 @@ export function BubbleView({
         color: bubble.points.map((pt) => pt.log2FC),
         // Same diverging sense as the volcano: −log2FC → blue (down), +log2FC → red (up).
         colorscale: [
-          [0, EFFECT_COLOR.down],
-          [0.5, EFFECT_COLOR.none],
-          [1, EFFECT_COLOR.up]
+          [0, downColor],
+          [0.5, noneColor],
+          [1, upColor]
         ],
         cmid: 0,
         opacity: 0.9,
@@ -132,7 +143,7 @@ export function BubbleView({
     }
     const levelAxis = {
       ...axisBase(p),
-      title: bubble.axis,
+      title: axisLabel ?? bubble.axis,
       // Linear axis with fixed, evenly-spaced ticks at each level's index (labelled with the
       // real value). Range mirrors the category convention ([-0.5, n-0.5]) so the dots keep
       // half-a-gap of padding at each end.
@@ -166,7 +177,21 @@ export function BubbleView({
       axis: (landscape ? 'x' : 'y') as 'x' | 'y'
     }
     return { data: [trace], layout: lay, boldTicks }
-  }, [rows, axis, topGenes, displayMap, focus, orient, pinnedIds, title, mode])
+  }, [
+    rows,
+    axis,
+    axisLabel,
+    topGenes,
+    displayMap,
+    focus,
+    orient,
+    pinnedIds,
+    title,
+    mode,
+    upColor,
+    downColor,
+    noneColor
+  ])
 
   return <PlotlyChart data={data} layout={layout} boldTicks={boldTicks} />
 }
