@@ -17,6 +17,8 @@
     "../src/preload/**/*",
     "../electron.vite.config.ts",
     "../config/citation.ts",
+    "../config/releaseBody.ts",
+    "../scripts/release-body.ts",
     "../package.json"
   ],
   "exclude": ["../src/**/*.test.ts"]
