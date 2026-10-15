@@ -3,14 +3,14 @@
  *  in pipeline order, tagged with the analysis it belongs to. */
 import type { Edge } from '@xyflow/react'
 
-import { deriveGroups, expandMembers, parsePanelId } from '../graph/groups'
+import { deriveTabs, expandMembers, parsePanelId, tabTitles } from '../graph/groups'
 import { plotLabel, stepTitle } from '../graph/registry'
 import { isStep, type GraphNode, type PlotGroupConfig, type StepNode } from '../graph/types'
 
 export interface ResultPage {
   /** panel id — a node id, or a plot-group child id (see graph/groups) */
   panelId: string
-  /** the analysis group, for the shared facet selection */
+  /** the results tab (its plot group — see deriveTabs), for its condition selection */
   groupId: string
   groupLabel: string
   title: string
@@ -19,12 +19,12 @@ export interface ResultPage {
 export function derivePages(nodes: GraphNode[], edges: Edge[]): ResultPage[] {
   const byId = new Map(nodes.filter(isStep).map((n) => [n.id, n as StepNode]))
   const out: ResultPage[] = []
-  for (const g of deriveGroups(nodes, edges)) {
-    const root = byId.get(g.rootId)
-    if (!root) continue
-    // The step's own name when it has one, matching the dashboard's tab labels — a renamed
-    // Compare should read the same whichever layout you're in.
-    const groupLabel = stepTitle(root)
+  const tabs = deriveTabs(nodes, edges)
+  const titles = tabTitles(tabs, nodes)
+  for (const g of tabs) {
+    if (!byId.get(g.rootId)) continue
+    // The tab's name, as the dashboard shows it — whichever layout you're in.
+    const groupLabel = titles.get(g.id) ?? g.label
     for (const panelId of expandMembers(g.memberIds, nodes)) {
       const { nodeId, childId } = parsePanelId(panelId)
       const n = byId.get(nodeId)

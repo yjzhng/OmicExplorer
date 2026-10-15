@@ -7,7 +7,7 @@
  */
 import type { Edge } from '@xyflow/react'
 
-import { categoryOf, NODE_SPECS, outputKindOf } from './registry'
+import { categoryOf, NODE_SPECS, outputKindOf, stepTitle } from './registry'
 import { isStep, type GraphNode, type NodeKind, type PlotGroupConfig } from './types'
 
 /** Separator between a group id and a subcard id in an expanded panel id. */
@@ -100,7 +100,7 @@ export interface AnalysisGroup {
   /** stable id — equal to the root node's id */
   id: string
   rootId: string
-  kind: 'compare' | 'contrast' | 'standardize'
+  kind: 'compare' | 'curveFit' | 'contrast' | 'standardize'
   /** default label; a user override may replace it at a higher layer */
   label: string
   /** root tile first, then its downstream view tiles */
@@ -109,8 +109,16 @@ export interface AnalysisGroup {
 
 /** The step kinds that root an analysis. A group stops at the next root, so a
  *  contrast never swallows its parent compares' plots — and a merge's plots form their own group
- *  rather than being absorbed into whichever input dataset happens to come first. */
-const ROOT_KINDS: readonly NodeKind[] = ['standardize', 'merge', 'compare', 'contrast']
+ *  rather than being absorbed into whichever input dataset happens to come first (a subset's
+ *  likewise — they show a different sample set than the full dataset's). */
+const ROOT_KINDS: readonly NodeKind[] = [
+  'standardize',
+  'merge',
+  'subset',
+  'compare',
+  'curveFit',
+  'contrast'
+]
 
 /**
  * Group the graph into analyses. For each root, members are the nodes reachable
@@ -150,11 +158,55 @@ export function deriveGroups(nodes: GraphNode[], edges: Edge[]): AnalysisGroup[]
     groups.push({
       id: root.id,
       rootId: root.id,
-      // A Merge emits a Clean-data result, so its group behaves as one.
+      // A Merge or Subset emits a Clean-data result, so its group behaves as one.
       kind: outputKindOf(root.data.kind) as AnalysisGroup['kind'],
       label: `${NODE_SPECS[root.data.kind].label} · ${root.id}`,
       memberIds: members
     })
   }
   return groups
+}
+
+/**
+ * The results tabs: one per plot group (a lone plot tile from an older workflow counts as one),
+ * in analysis order — each a one-member AnalysisGroup whose `rootId` is the processing step it
+ * reads from (its data, its run tables' folder), and whose `id` is the plot group's own: the tab's
+ * layout, order and condition selection are its own. A step with no plots has no tab.
+ */
+export function deriveTabs(nodes: GraphNode[], edges: Edge[]): AnalysisGroup[] {
+  const byId = new Map(nodes.filter(isStep).map((n) => [n.id, n]))
+  const tabs: AnalysisGroup[] = []
+  for (const g of deriveGroups(nodes, edges))
+    for (const id of g.memberIds) {
+      const n = byId.get(id)
+      if (!n || categoryOf(n.data.kind) !== 'plotting') continue
+      tabs.push({ ...g, id, label: g.label, memberIds: [id] })
+    }
+  return tabs
+}
+
+/**
+ * Each tab's name: its plot group's own name, else the step it reads from (what the tile was
+ * built off) — and where several tabs would read the same, `_1`, `_2`, … in tab order, so no two
+ * match (ignoring case, as folders on disk do). Also names the group's downloads subfolder.
+ */
+export function tabTitles(tabs: AnalysisGroup[], nodes: GraphNode[]): Map<string, string> {
+  const byId = new Map(nodes.filter(isStep).map((n) => [n.id, n]))
+  const base = tabs.map((t) => {
+    const own = byId.get(t.id)?.data.name?.trim()
+    const root = byId.get(t.rootId)
+    return own || (root ? stepTitle(root) : t.label)
+  })
+  const count = new Map<string, number>()
+  for (const b of base) count.set(b.toLowerCase(), (count.get(b.toLowerCase()) ?? 0) + 1)
+  const seen = new Map<string, number>()
+  const out = new Map<string, string>()
+  tabs.forEach((t, i) => {
+    const k = base[i].toLowerCase()
+    if ((count.get(k) ?? 0) < 2) return out.set(t.id, base[i])
+    const n = (seen.get(k) ?? 0) + 1
+    seen.set(k, n)
+    out.set(t.id, `${base[i]}_${n}`)
+  })
+  return out
 }

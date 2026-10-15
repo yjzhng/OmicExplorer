@@ -3,9 +3,11 @@ import { useMemo } from 'react'
 import type { DRData, DRSeries } from '../engine'
 import { drLook, type DRLook } from '../graph/types'
 import { AUTO } from './ColorPicker'
+import { tooltip } from './condTooltip'
 import { PlotlyChart } from './PlotlyChart'
 import { truncateLabel } from './plotAxes'
 import { divergeColor } from './colormap'
+import { ROLE_DEFAULTS, type PaletteRef } from './palettes'
 import { axisBase, CATEGORICAL, PALETTES, plotBase } from './theme'
 import { useSelection } from './useSelection'
 import { useUiTheme } from './useUiTheme'
@@ -32,7 +34,8 @@ export function DRView({
   dr,
   title,
   axisLabel,
-  look = DEFAULT_LOOK
+  look = DEFAULT_LOOK,
+  palette = ROLE_DEFAULTS.fcObject
 }: {
   dr: DRData
   title?: string
@@ -40,9 +43,13 @@ export function DRView({
   axisLabel?: string
   /** the coloured curves' line look (the tile's settings; points/error are the focused view's) */
   look?: DRLook
+  /** the fold-change palette an emphasised curve is coloured on, by its peak log₂FC */
+  palette?: PaletteRef
 }) {
   const mode = useUiTheme((s) => s.mode)
   const hoverId = useSelection((s) => s.hoverId)
+  // a hovered group's genes (a STRING cluster, an enrichment term) are in focus as a hovered gene
+  const hoverMembers = useSelection((s) => s.hoverMembers)
   const pinnedIds = useSelection((s) => s.pinnedIds)
 
   // The faint grey background (all genes, one null-separated trace) is BUILT ONCE per data/theme,
@@ -78,7 +85,15 @@ export function DRView({
       y: by,
       text: btext,
       customdata: bid,
-      hovertemplate: `%{text}<br>${dr.axis}=${xHover(dr)}<br>${fcLabel(dr)}=%{y:.3f}<extra></extra>`,
+      hovertemplate: tooltip(
+        {
+          title: '%{text}',
+          conds: [[dr.axis, xHover(dr)]],
+          values: [[fcLabel(dr), '%{y:.3f}']]
+        },
+        p.textMuted,
+        { template: true }
+      ),
       line: { color: p.textMuted, width: 1 },
       opacity: 0.22,
       showlegend: false
@@ -89,6 +104,7 @@ export function DRView({
     const p = PALETTES[mode]
     const active = new Set(pinnedIds)
     if (hoverId) active.add(hoverId)
+    for (const g of hoverMembers) active.add(g)
 
     // Discrete x: the axis (dose/time) levels are spaced evenly as categories, not by their
     // numeric value, so a dose series like 1.25…80 reads at equal intervals. Categories are the
@@ -106,7 +122,15 @@ export function DRView({
       x: s.points.map((pt) => xOf(dr, pt.x)),
       y: s.points.map((pt) => pt.y),
       customdata: s.points.map(() => s.uniqID),
-      hovertemplate: `${s.label}<br>${dr.axis}=${xHover(dr)}<br>${fcLabel(dr)}=%{y:.3f}<extra></extra>`,
+      hovertemplate: tooltip(
+        {
+          title: s.label,
+          conds: [[dr.axis, xHover(dr)]],
+          values: [[fcLabel(dr), '%{y:.3f}']]
+        },
+        p.textMuted,
+        { template: true }
+      ),
       line: { color, width },
       opacity: look.lineOpacity,
       showlegend
@@ -137,7 +161,7 @@ export function DRView({
     // once there are ~100k of them (fitted curves are sampled finely).
     let absMax = 1e-9
     for (const s of dr.series) for (const pt of s.points) absMax = Math.max(absMax, Math.abs(pt.y))
-    const dcolor = divergeColor(absMax)
+    const dcolor = divergeColor(absMax, palette)
     const peak = (s: DRSeries): number =>
       s.points.reduce((best, pt) => (Math.abs(pt.y) > Math.abs(best) ? pt.y : best), 0)
     for (const s of extra)
@@ -164,7 +188,7 @@ export function DRView({
       yaxis: { ...axisBase(p), title: fcLabel(dr), zeroline: true }
     }
     return { data: [background, ...colored], layout: lay }
-  }, [dr, title, axisLabel, mode, hoverId, pinnedIds, background, look])
+  }, [dr, title, axisLabel, mode, hoverId, hoverMembers, pinnedIds, background, look, palette])
 
   return <PlotlyChart data={data} layout={layout} />
 }

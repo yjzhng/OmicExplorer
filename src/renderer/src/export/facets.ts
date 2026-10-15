@@ -16,6 +16,7 @@ const FACETED_KINDS = new Set<NodeKind>([
   'dr',
   'potency',
   'curveMad',
+  'response',
   'bubble',
   'dumbbell',
   'scatter'

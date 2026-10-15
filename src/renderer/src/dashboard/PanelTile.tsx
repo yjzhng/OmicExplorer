@@ -18,7 +18,8 @@ import { copyGd, gdToExportItem } from '../export/plotExport'
 import { sanitize } from '../export/paths'
 import { exportPlotData, plotDataTarget } from '../export/plotData'
 import { collectTableExports } from '../export/tables'
-import { deriveGroups } from '../graph/groups'
+import { deriveTabs, tabTitles } from '../graph/groups'
+import { pathSeg } from '../graph/diskNames'
 import { accentOf, categoryOf, PLOT_CONFIG_KINDS, plotLabel } from '../graph/registry'
 import { IconGear } from '../ui/icons'
 import { PlotAxesContext, swapAxes, type AxisDefaults } from '../ui/plotAxes'
@@ -98,6 +99,18 @@ const fileSafe = (v: string): string => v.replace(/[^a-zA-Z0-9._-]+/g, '-').repl
  *  Keyboard users still reach them by Tab and get the focus-visible ring. */
 const noFocus = (e: MouseEvent<HTMLButtonElement>): void => e.preventDefault()
 
+/** A plot group's downloads folder: `output/<step>/<plot group>` — the step it reads from, then the
+ *  group's name as its results tab shows it (tabTitles). Null when there's no step folder. */
+function plotGroupDir(nodeId: string, edges: Edge[]): string | null {
+  const g = useGraph.getState()
+  const tabs = deriveTabs(g.nodes, edges)
+  const tab = tabs.find((t) => t.id === nodeId)
+  if (!tab) return null
+  const stepDir = g.outputDirFor(tab.rootId)
+  const name = tabTitles(tabs, g.nodes).get(nodeId)
+  return stepDir && name ? `${stepDir}/${pathSeg(name)}` : stepDir
+}
+
 /** Memoized: dragging a tile updates `groupLayouts`, which re-renders the dashboard.
  *  Without this every other tile would rebuild its plot data on each drop. */
 export const PanelTile = memo(function PanelTile({
@@ -143,14 +156,14 @@ export const PanelTile = memo(function PanelTile({
 
   // Header buttons, top-right: copy · download · config.
   //  - Plots (a live Plotly graph div) copy to the clipboard straight away in the app-wide default
-  //    format/DPI (Settings → Plots), and download via a window (SVG/PNG/PDF, DPI, destination).
+  //    format/DPI (Settings → Export), and download via a window (SVG/PNG/PDF, DPI, destination).
   //  - Analysis tables download as CSV/XLSX; load/empty panels have nothing to save.
   //  - The gear opens the config window: view toggles plus the canvas tile's own plot config.
   // A Data-table tile shows (and downloads) its UPSTREAM step's table; the analysis tiles their own.
   const tableRootId =
     kind === 'table'
       ? edges.find((e) => e.target === node.id)?.source
-      : kind === 'standardize' || kind === 'compare' || kind === 'contrast'
+      : kind === 'standardize' || kind === 'compare' || kind === 'curveFit' || kind === 'contrast'
         ? node.id
         : undefined
   const isTable = !!tableRootId
@@ -221,6 +234,13 @@ export const PanelTile = memo(function PanelTile({
     []
   )
   const downloadFormat = useAppSettings((s) => s.downloadFormat)
+  // The categorical palette is read from a shared array (theme.CATEGORICAL) deep in the plot
+  // builders; remounting the body on a change redraws every memoised plot in the new colours.
+  const categorical = useAppSettings((s) => s.categorical)
+  // …and the custom palettes: an edit to one redraws the plots drawing it.
+  const customKey = useAppSettings((s) =>
+    JSON.stringify([s.customSpectrum ?? null, s.customCategorical ?? null])
+  )
   const downloadDpi = useAppSettings((s) => s.downloadDpi)
   const tableFormat = useAppSettings((s) => s.tableFormat)
   const copyFormat = useAppSettings((s) => s.copyFormat)
@@ -311,15 +331,18 @@ export const PanelTile = memo(function PanelTile({
     const fmt = isPlot ? downloadFormat : tableFormat
     const dpi = downloadDpi
     // Native save-as: the OS window names the file and picks its folder. It opens in the workflow's
-    // output/ subfolder for this tile's processing step (graph/diskNames.ts).
+    // output/ subfolder for this tile's processing step (graph/diskNames.ts) — a plot's in its plot
+    // group's own folder there (plotGroupDir); a table's in the step's.
     const g = useGraph.getState()
-    const rootId =
-      tableRootId ?? deriveGroups(g.nodes, edges).find((x) => x.memberIds.includes(node.id))?.rootId
     // …unless the data folder was deleted meanwhile: then the window opens wherever the OS picks,
     // rather than quietly recreating the folder, and the chip is flagged.
     const dataThere = !!g.dataDir && (await window.api.pathExists(g.dataDir)).dir
     if (g.dataDir && !dataThere) void g.refreshDataFiles()
-    const dir = rootId && dataThere ? g.outputDirFor(rootId) : null
+    const dir = !dataThere
+      ? null
+      : tableRootId
+        ? g.outputDirFor(tableRootId)
+        : plotGroupDir(node.id, edges)
     const typeName = {
       svg: 'SVG image',
       png: 'PNG image',
@@ -414,7 +437,9 @@ export const PanelTile = memo(function PanelTile({
     // As Download: the step's output/ folder, unless the data folder was deleted meanwhile.
     const dataThere = !!g.dataDir && (await window.api.pathExists(g.dataDir)).dir
     if (g.dataDir && !dataThere) void g.refreshDataFiles()
-    const dir = dataThere ? g.outputDirFor(target.upstreamId) : null
+    const dir = dataThere
+      ? (plotGroupDir(node.id, edges) ?? g.outputDirFor(target.upstreamId))
+      : null
     const fmt = tableFormat
     let path: string | null
     try {
@@ -559,6 +584,7 @@ export const PanelTile = memo(function PanelTile({
             {/* The tile's axis overrides reach every PlotlyChart inside (faceted plots too). */}
             <PlotAxesContext.Provider value={axesCtx}>
               <PanelBody
+                key={`${categorical}|${customKey}`}
                 node={node}
                 edges={edges}
                 results={applied.results}

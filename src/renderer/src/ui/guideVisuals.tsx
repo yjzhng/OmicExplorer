@@ -28,7 +28,7 @@ export function StepCards({ steps }: { steps: { title: string; text: string }[] 
   )
 }
 
-/** The two layouts as small schematics: Flow (wired nodes + a dashboard) and Form (a step list +
+/** The two layouts as small schematics: Flowchart (wired nodes + a dashboard) and Form (a step list +
  *  the selected step beside it). */
 export function LayoutCards(): ReactNode {
   const node = (x: number, y: number, c: string): ReactNode => (
@@ -59,7 +59,7 @@ export function LayoutCards(): ReactNode {
           <rect x={134} y={49} width={17} height={12} rx={2} fill={CATEGORICAL[4]} opacity={0.6} />
         </svg>
         <figcaption style={s.cap}>
-          <b style={s.capTitle}>Flow</b> — tiles wired on a canvas; results on a dashboard.
+          <b style={s.capTitle}>Flowchart</b> — tiles wired on a canvas; results on a dashboard.
         </figcaption>
       </figure>
       <figure style={s.layoutCard}>

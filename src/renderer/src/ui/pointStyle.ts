@@ -111,6 +111,9 @@ const effectGroups = (
 /** Each plot's built-in group looks, in legend order. `names` renames the up/down classes (the
  *  Compare's effect labels) for display, and `colors` colours them (the Compare's effect colours
  *  — what a group's automatic colour follows); keys never change. */
+/** The residual plots' control samples: a neutral grey, not an effect colour. */
+const RESIDUAL_CONTROL = '#8a8f98'
+
 export function defaultGroups(
   kind: PointPlotKind,
   names?: { up: string; down: string; none?: string },
@@ -132,7 +135,8 @@ export function defaultGroups(
           name: 'control',
           size: 4,
           opacity: 0.35,
-          color: EFFECT_COLOR.none,
+          // not an effect group: a fixed neutral grey, whatever the fold-change palette
+          color: RESIDUAL_CONTROL,
           label: false,
           legend: true,
           outline: 0,
@@ -159,7 +163,7 @@ export function defaultGroups(
           name: 'none',
           size: 6,
           opacity: 0.85,
-          color: EFFECT_COLOR.none,
+          color: colors?.none ?? EFFECT_COLOR.none,
           label: false,
           legend: false,
           outline: 0,

@@ -1,16 +1,16 @@
 /** Per-tile config window, opened from the gear button in a panel header and shown beside the
- *  tile, so a change is visible on the plot as it's made. Carries the tile's
- *  view controls (the All/Selected gene toggle, the landscape/portrait switch) and the SAME
- *  plot config the canvas tile offers in its detail panel (label caps, cluster method, …),
- *  so a plot is configurable from either view. Everything applies live.
+ *  tile. Carries the tile's view controls (the All/Selected gene toggle, the landscape/portrait
+ *  switch) and the SAME plot config the canvas tile offers in its detail panel (label caps,
+ *  cluster method, …), so a plot is configurable from either view. Nothing reaches the plot until
+ *  Apply: the edits are held as a draft the window shows, and Close drops them.
  *  Portalled to <body> because a dashboard tile sits inside react-grid-layout's transformed
  *  item, where a position:fixed panel would otherwise be offset instead of viewport-centred. */
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { ReactFlowProvider } from '@xyflow/react'
 
 import { ApplyStageContext, type ApplyStage } from '../graph/applyStage'
-import { PlotConfig } from '../graph/NodeConfigPanel'
+import { Field, PlotConfig, Section } from '../graph/NodeConfigPanel'
 import { plotLabel } from '../graph/registry'
 import { useGraph } from '../graph/store'
 import {
@@ -22,8 +22,9 @@ import {
 } from '../graph/types'
 import type { AxisDefaults } from '../ui/plotAxes'
 import { cssVars, PALETTES } from '../ui/theme'
+import { ToggleSwitch } from '../ui/ToggleSwitch'
 import { useUiTheme } from '../ui/useUiTheme'
-import { Field, Segmented, TileDialog, type Anchor } from './TileDialog'
+import { TileDialog, type Anchor } from './TileDialog'
 import { styles } from './tileDialogStyles'
 
 /**
@@ -180,21 +181,67 @@ export function PanelSettingsDialog({
           return n + kids.filter((c) => c.kind === kind && c.id !== selfId).length
         }, 0)
   )
-  // Edits that need a re-run (an upstream Compare's statistic) wait here for Apply; Close drops
-  // them. Everything else lands as it's made.
+  // Every edit waits for Apply; Close drops them. The plot's own settings are held as a draft —
+  // the window shows them merged over the stored config — and the view controls beside it.
+  // Edits to another step (an upstream Compare's statistic, which re-runs it) are staged actions.
+  const draftRef = useRef<Record<string, unknown>>({})
+  const [draft, setDraft] = useState<Record<string, unknown>>({})
+  const [heldSelectedOnly, setHeldSelectedOnly] = useState<boolean | null>(null)
+  const [heldOrient, setHeldOrient] = useState<PlotOrient | null>(null)
+  // The settings on quick access (as their switches report them): those, and the quick-access
+  // switches themselves, land as they're made — the tile shows them as switch bars.
+  const quickFields = useRef(new Map<string, boolean>())
+  const liveUpdate = plotConfig?.update
+  const draftUpdate = useCallback(
+    (patch: Record<string, unknown>): void => {
+      const keys = Object.keys(patch)
+      if (liveUpdate && keys.some((k) => k === 'quick' || quickFields.current.get(k))) {
+        const rest = { ...draftRef.current }
+        for (const k of keys) delete rest[k]
+        draftRef.current = rest
+        setDraft(rest)
+        liveUpdate(patch)
+        return
+      }
+      draftRef.current = { ...draftRef.current, ...patch }
+      setDraft(draftRef.current)
+    },
+    [liveUpdate]
+  )
+  const shownConfig = useMemo(
+    () =>
+      plotConfig && Object.keys(draft).length
+        ? ({ ...plotConfig.config, ...draft } as NodeConfig)
+        : plotConfig?.config,
+    [plotConfig, draft]
+  )
   const staged = useRef(new Map<string, () => void>())
   const stage = useMemo<ApplyStage>(
     () => ({
       stage: (key, action) => {
         if (action) staged.current.set(key, action)
         else staged.current.delete(key)
+      },
+      quick: (field, on) => {
+        quickFields.current.set(field, on)
       }
     }),
     []
   )
-  const apply = (): void => {
+  // Writes the held edits: the staged actions first (one may add to the draft), then the draft.
+  const commit = (): void => {
     for (const action of staged.current.values()) action()
     staged.current.clear()
+    if (plotConfig && Object.keys(draftRef.current).length) plotConfig.update(draftRef.current)
+    draftRef.current = {}
+    setDraft({})
+    if (heldSelectedOnly != null) onSelectedOnly(heldSelectedOnly)
+    if (heldOrient != null) onOrient(heldOrient)
+    setHeldSelectedOnly(null)
+    setHeldOrient(null)
+  }
+  const apply = (): void => {
+    commit()
     onClose()
   }
   return (
@@ -214,21 +261,24 @@ export function PanelSettingsDialog({
               kind={plotConfig.kind}
               label={plotLabel(plotConfig.kind, plotConfig.config)}
               count={otherPlots}
-              onApply={() =>
+              // The settings as the window shows them: this plot takes its held edits too.
+              onApply={() => {
+                const settings = { ...plotConfig.config, ...draftRef.current }
+                commit()
                 useGraph
                   .getState()
                   .applyConfigToKind(
                     plotConfig.kind,
-                    plotConfig.config as unknown as Record<string, unknown>,
+                    settings as unknown as Record<string, unknown>,
                     plotConfig.selfId
                   )
-              }
+              }}
             />
           )}
           <button
             style={styles.btnPrimary}
             onClick={apply}
-            title="Apply — re-runs the Compare if its statistic changed; other changes are already live"
+            title="Apply the changes (re-runs the Compare or Contrast if its statistic changed)"
           >
             Apply
           </button>
@@ -238,48 +288,53 @@ export function PanelSettingsDialog({
         </>
       }
     >
-      {hasView && (
-        <div style={styles.section}>
-          <div style={styles.sectionTitle}>View</div>
-          {canToggle && (
-            <Field label="Genes">
-              <Segmented
-                value={selectedOnly ? 'selected' : 'all'}
-                onChange={(v) => onSelectedOnly(v === 'selected')}
-                options={[
-                  { v: 'all', label: 'All' },
-                  { v: 'selected', label: 'Selected' }
-                ]}
-              />
-            </Field>
-          )}
-          {canOrient && (
-            <Field label="Orientation">
-              <Segmented
-                value={orient}
-                onChange={(v) => onOrient(v as PlotOrient)}
-                options={[
-                  { v: 'landscape', label: 'Landscape' },
-                  { v: 'portrait', label: 'Portrait' }
-                ]}
-              />
-            </Field>
-          )}
-        </div>
-      )}
-      {plotConfig && (
-        // The canvas panel's sections, verbatim. Its Selects read React Flow's zoom to scale
-        // their dropdowns; a fresh provider here pins that to 1 (screen scale) outside the canvas.
+      {(hasView || plotConfig) && (
+        // The canvas panel's sections, verbatim — the tile's own View section in the same look
+        // (section head, field labels, switches) ahead of them. Its Selects read React Flow's zoom
+        // to scale their dropdowns; a fresh provider here pins that to 1 (screen scale) outside
+        // the canvas.
         <ReactFlowProvider>
           <ApplyStageContext.Provider value={stage}>
             <div style={styles.plotConfig}>
-              <PlotConfig
-                kind={plotConfig.kind}
-                config={plotConfig.config}
-                update={plotConfig.update}
-                edgeNodeId={plotConfig.edgeNodeId}
-                axisDefaults={axisDefaults}
-              />
+              {hasView && (
+                <Section title="View">
+                  {canToggle && (
+                    <Field label="genes">
+                      <ToggleSwitch
+                        label="Genes"
+                        value={(heldSelectedOnly ?? selectedOnly) ? 'selected' : 'all'}
+                        options={[
+                          { value: 'all', label: 'All' },
+                          { value: 'selected', label: 'Selected' }
+                        ]}
+                        onChange={(v) => setHeldSelectedOnly(v === 'selected')}
+                      />
+                    </Field>
+                  )}
+                  {canOrient && (
+                    <Field label="orientation">
+                      <ToggleSwitch
+                        label="Orientation"
+                        value={heldOrient ?? orient}
+                        options={[
+                          { value: 'landscape', label: 'Landscape' },
+                          { value: 'portrait', label: 'Portrait' }
+                        ]}
+                        onChange={(v) => setHeldOrient(v as PlotOrient)}
+                      />
+                    </Field>
+                  )}
+                </Section>
+              )}
+              {plotConfig && (
+                <PlotConfig
+                  kind={plotConfig.kind}
+                  config={shownConfig ?? plotConfig.config}
+                  update={draftUpdate}
+                  edgeNodeId={plotConfig.edgeNodeId}
+                  axisDefaults={axisDefaults}
+                />
+              )}
             </div>
           </ApplyStageContext.Provider>
         </ReactFlowProvider>

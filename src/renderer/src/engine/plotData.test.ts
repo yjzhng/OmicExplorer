@@ -10,13 +10,24 @@ import {
   buildResponseCluster,
   buildMA,
   buildDumbbell,
+  thinPoints,
   buildBubble,
   buildTdr,
   buildGeneBar,
   buildDR,
-  pickBalanced
+  buildHeatmap,
+  buildQc,
+  pickBalanced,
+  sortSamples,
+  type SampleMeta
 } from './plotData'
-import type { CompareResultRow, ContrastResultRow, StandardRow } from './types'
+import type {
+  CompareResultRow,
+  ContrastResultRow,
+  SampleConds,
+  StandardizeResult,
+  StandardRow
+} from './types'
 
 const cmp = (over: Partial<CompareResultRow>): CompareResultRow => ({
   uniqID: 'g1',
@@ -169,7 +180,7 @@ describe('bubble top genes', () => {
       // biggest fold change, but never significant → left out
       cmp({ uniqID: 'big', dose: 1, log2FC: 5 }),
       cmp({ uniqID: 'big', dose: 10, log2FC: 6 }),
-      // significant at the low dose only → in, ranked by its top-dose |log2FC|
+      // significant at the low dose only → in
       cmp({ uniqID: 'lowSig', dose: 1, log2FC: 2, signf: true }),
       cmp({ uniqID: 'lowSig', dose: 10, log2FC: 1 }),
       cmp({ uniqID: 'topSig', dose: 10, log2FC: -3, signf: true })
@@ -178,6 +189,40 @@ describe('bubble top genes', () => {
     expect(new Set(b.genes)).toEqual(new Set(['lowSig', 'topSig']))
     // focus genes still show as given, significant or not
     expect(buildBubble(rows, { axis: 'dose', topGenes: 0, focus: ['big'] }).genes).toEqual(['big'])
+  })
+
+  it('scores a gene at its peak level, or summed over its levels', () => {
+    const rows = [
+      // one strong level
+      cmp({ uniqID: 'spike', dose: 1, log2FC: 0.2, signf: true }),
+      cmp({ uniqID: 'spike', dose: 10, log2FC: 3 }),
+      // steady at every level: a smaller peak, a bigger total
+      cmp({ uniqID: 'steady', dose: 1, log2FC: 2, signf: true }),
+      cmp({ uniqID: 'steady', dose: 10, log2FC: 2 }),
+      // up then down: its total cancels
+      cmp({ uniqID: 'flip', dose: 1, log2FC: 2.5, signf: true }),
+      cmp({ uniqID: 'flip', dose: 10, log2FC: -2.4 })
+    ]
+    const opts = { axis: 'dose' as const, topGenes: 0 }
+    expect(buildBubble(rows, opts).genes).toEqual(['spike', 'flip', 'steady'])
+    expect(buildBubble(rows, { ...opts, over: 'total' }).genes).toEqual(['steady', 'spike', 'flip'])
+  })
+
+  it('ranks by the significance column when asked, signed by the fold change', () => {
+    const rows = [
+      // the biggest fold change, but only just significant
+      cmp({ uniqID: 'bigFc', dose: 10, log2FC: 4, pQ: 1.4, signf: true }),
+      // a smaller fold change, far more significant
+      cmp({ uniqID: 'sure', dose: 10, log2FC: 1.5, pQ: 6, signf: true }),
+      cmp({ uniqID: 'down', dose: 10, log2FC: -1, pQ: 3, signf: true })
+    ]
+    const opts = { axis: 'dose' as const, topGenes: 0 }
+    expect(buildBubble(rows, opts).genes).toEqual(['bigFc', 'sure', 'down'])
+    expect(buildBubble(rows, { ...opts, rank: 'pQ' }).genes).toEqual(['sure', 'bigFc', 'down'])
+    // capped at one up gene: the fold-change rank keeps bigFc, the significance rank keeps sure
+    const one = { ...opts, topGenes: 2 }
+    expect(buildBubble(rows, one).genes).toContain('bigFc')
+    expect(buildBubble(rows, { ...one, rank: 'pQ' }).genes).toContain('sure')
   })
 })
 
@@ -413,6 +458,25 @@ describe('buildMA / buildDumbbell', () => {
       'g2'
     ])
   })
+
+  it('dumbbell order re-sorts the top-N by a side, high → low; the pick stays by |FCdiff|', () => {
+    const mk = (id: string, fc1: number, fc2: number): ContrastResultRow => ({
+      ...mkDumbbell(id, fc1 - fc2, true),
+      FC1: fc1,
+      FC2: fc2
+    })
+    // |FCdiff|: g1 4, g2 3, g3 2, g4 0.5 → top-3 is g1, g2, g3 whatever the order.
+    const data = [mk('g1', -2, 2), mk('g2', 4, 1), mk('g3', 1, -1), mk('g4', 9, 8.5)]
+    const labels = (order: 'fc1' | 'fc2' | 'diff'): string[] =>
+      buildDumbbell(data, { topGenes: 3, order }).rows.map((r) => r.label)
+    expect(labels('diff')).toEqual(['g1', 'g2', 'g3'])
+    expect(labels('fc1')).toEqual(['g2', 'g3', 'g1'])
+    expect(labels('fc2')).toEqual(['g1', 'g2', 'g3'])
+    // linked-selection genes stay after the ordered base
+    expect(
+      buildDumbbell(data, { topGenes: 2, order: 'fc1', extra: ['g4'] }).rows.map((r) => r.label)
+    ).toEqual(['g2', 'g1', 'g4'])
+  })
 })
 
 describe('gene bar error bars', () => {
@@ -427,5 +491,157 @@ describe('gene bar error bars', () => {
     expect(err('sem')).toBeCloseTo(1 / Math.sqrt(3))
     // t(0.975, df 2) ≈ 4.303
     expect(err('ci95')).toBeCloseTo((4.303 * 1) / Math.sqrt(3), 2)
+  })
+})
+
+describe('thinPoints', () => {
+  const vals = Array.from({ length: 1000 }, (_, i) => ((i * 37) % 1000) - 500)
+  it('keeps everything under the cap', () => {
+    expect(thinPoints(vals, 2000, Math.abs)).toBe(vals)
+  })
+  it('caps, keeps the most extreme, and preserves order', () => {
+    const out = thinPoints(vals, 100, Math.abs)
+    expect(out).toHaveLength(100)
+    // the 20 largest |v| are all kept
+    const top = [...vals].sort((a, b) => Math.abs(b) - Math.abs(a)).slice(0, 20)
+    for (const v of top) expect(out).toContain(v)
+    // original order
+    const idx = out.map((v) => vals.indexOf(v))
+    expect(idx.every((x, i) => i === 0 || x > idx[i - 1])).toBe(true)
+  })
+})
+
+describe('buildCluster — complete-case fallback', () => {
+  // 12 samples × 24 genes, each gene missing in one sample: no gene is quantified everywhere.
+  const rows: StandardRow[] = []
+  for (let s = 0; s < 12; s++)
+    for (let g = 0; g < 24; g++)
+      rows.push({
+        uniqID: `g${g}`,
+        cell: '',
+        cmpd: s < 6 ? 'A' : 'B',
+        dose: null,
+        time: null,
+        rep: s,
+        value: g % 12 === s ? null : (s < 6 ? 10 : 14) + ((g * 7 + s * 3) % 5) * 0.1
+      })
+
+  it('imputes instead of embedding nothing when no gene is complete, and says so', () => {
+    const c = buildCluster(rows, { method: 'pca', colorBy: 'cmpd', missing: 'complete' })
+    expect(c.points).toHaveLength(12)
+    expect(c.diag?.completeFallback).toBe(0)
+    expect(c.diag?.features).toBe(24)
+  })
+
+  it('leaves impute mode alone', () => {
+    const c = buildCluster(rows, { method: 'pca', colorBy: 'cmpd', missing: 'impute' })
+    expect(c.points).toHaveLength(12)
+    expect(c.diag?.completeFallback).toBeUndefined()
+  })
+})
+
+describe('sample order', () => {
+  const meta = (cmpd: string, dose: number | null, rep: number | null): SampleMeta => ({
+    cell: '',
+    cmpd,
+    dose,
+    time: null,
+    rep
+  })
+  // Items listed in neither natural nor the data's order.
+  const items = [
+    { id: 'a', meta: meta('A', 10, 1) },
+    { id: 'b', meta: meta('A', 2, 2) },
+    { id: 'c', meta: meta('A', 2, 1) }
+  ]
+  const samples: SampleConds[] = [
+    { sample: 's1', ...meta('A', 2, 2) },
+    { sample: 's2', ...meta('A', 10, 1) },
+    { sample: 's3', ...meta('A', 2, 1) }
+  ]
+  const order = (by: 'natural' | 'original', perSample = true): string[] =>
+    sortSamples([...items], { by, samples }, (t) => t.meta, perSample).map((t) => t.id)
+
+  it('natural sorts by condition, dose numerically, then the replicate', () => {
+    expect(order('natural')).toEqual(['c', 'b', 'a'])
+  })
+  it('natural compares text naturally (numbers in it numerically)', () => {
+    const xs = ['cmp10', 'cmp2', 'Cmp1'].map((c) => ({ id: c, meta: meta(c, null, 1) }))
+    const out = sortSamples(xs, { by: 'natural' }, (t) => t.meta, true)
+    expect(out.map((t) => t.id)).toEqual(['Cmp1', 'cmp2', 'cmp10'])
+  })
+  it("original follows the data's sample order", () => {
+    expect(order('original')).toEqual(['b', 'a', 'c'])
+  })
+  it('original pools replicates for condition slots: first sample of the condition', () => {
+    // perSample false: b and c are both A·2, first seen at s1 → both before a (stable).
+    expect(order('original', false)).toEqual(['b', 'c', 'a'])
+  })
+  it('original without samples keeps first-seen order', () => {
+    const out = sortSamples([...items], { by: 'original' }, (t) => t.meta, true)
+    expect(out.map((t) => t.id)).toEqual(['a', 'b', 'c'])
+  })
+
+  const S = (cmpd: string, dose: number, rep: number, value: number): StandardRow => ({
+    uniqID: 'g',
+    cell: '',
+    cmpd,
+    dose,
+    time: null,
+    rep,
+    value
+  })
+  // data order B·10, A·10, A·2: the reverse of natural order
+  const rows = [S('B', 10, 1, 1), S('A', 10, 1, 2), S('A', 2, 1, 3)]
+  const stdSamples: SampleConds[] = rows.map((r, i) => ({
+    sample: `s${i}`,
+    cell: r.cell,
+    cmpd: r.cmpd,
+    dose: r.dose,
+    time: r.time,
+    rep: r.rep
+  }))
+
+  it('heatmap columns follow the chosen order', () => {
+    const cols = (by: 'natural' | 'original'): string[] =>
+      buildHeatmap(rows, { log10: false, cluster: false, order: { by, samples: stdSamples } }).x
+    expect(cols('natural')).toEqual(['A_2_r1', 'A_10_r1', 'B_10_r1'])
+    expect(cols('original')).toEqual(['B_10_r1', 'A_10_r1', 'A_2_r1'])
+  })
+  it('gene bar conditions follow the chosen order', () => {
+    const conds = buildGeneBar(rows, ['g'], undefined, false, 'sd', {
+      by: 'original',
+      samples: stdSamples
+    }).conds
+    expect(conds).toEqual(['B_10', 'A_10', 'A_2'])
+    expect(buildGeneBar(rows, ['g']).conds).toEqual(['A_2', 'A_10', 'B_10'])
+  })
+  it('QC groups follow the chosen order', () => {
+    const std = {
+      rows,
+      samples: stdSamples,
+      activeConditions: ['cmpd', 'dose']
+    } as unknown as StandardizeResult
+    const labels = (by: 'natural' | 'original'): string[] =>
+      buildQc(std, 'proteins', 'linear', { by, samples: stdSamples }).groups.map((g) => g.label)
+    expect(labels('original')).toEqual(['B · 10 · r1', 'A · 10 · r1', 'A · 2 · r1'])
+    expect(labels('natural')).toEqual(['A · 2 · r1', 'A · 10 · r1', 'B · 10 · r1'])
+  })
+})
+
+describe('curve-fit labels in plots', () => {
+  it('names the fold change by method and reads the comparison with its compound and baseline', async () => {
+    const { comparisonOf, fcName, fcMeasure } = await import('./plotData')
+    const curve = { comparison: 'dose curve | 0', cmp_cond: 'dose', cmpd: 'drugA', curve: { baseline: 'dose 0 · time 60' } }
+    expect(comparisonOf([curve])).toBe('drugA | baseline (dose 0 · time 60)')
+    expect(comparisonOf([{ ...curve, curve: {} }])).toBe('drugA | baseline')
+    expect(comparisonOf([curve, { ...curve, cmpd: 'drugB' }])).toBe('dose curve | baseline (dose 0 · time 60)')
+    expect(fcName([curve])).toBe('curve log₂FC')
+    expect(fcName([{ ...curve, curve: undefined, rs: {} }])).toBe('peak log₂FC')
+    expect(comparisonOf([{ comparison: 'drugA | dose 0', cmp_cond: 'cmpd', cmpd: 'drugA', rs: {} }])).toBe('drugA | baseline')
+    // not a curve fit: untouched
+    expect(comparisonOf([{ comparison: 'KO | WT', cmp_cond: 'cell' }])).toBe('KO | WT')
+    expect(fcMeasure('curve_fit', '4pl')).toBe('curve log₂FC')
+    expect(fcMeasure('curve_fit', '4pl', true)).toBe('peak log₂FC')
   })
 })

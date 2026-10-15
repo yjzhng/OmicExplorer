@@ -7,6 +7,9 @@
  *    (engine/enrichmentAll, in the worker).
  *  - STRING: every confidence level × gene cap × interactor mode, per facet (two scans of the
  *    organism's links file per facet — see readStringAll).
+ *  - Cluster: the sample embedding under its computation settings (engine/buildCluster, in the
+ *    worker) — a large dataset's PCA / UMAP / t-SNE would otherwise freeze the UI as it draws.
+ *    Colour by condition, plot, territory and look draw from it; the rest need a run (staleOn).
  *  - Every other plot draws straight from its upstream's result: its run checks it can (the
  *    upstream has run and meets the plot's requirement) and stores a marker.
  */
@@ -14,8 +17,10 @@ import {
   enrichSourcesPresent,
   facetCompareRows,
   facetDims,
+  plotScaleOf,
   resolveEnrichSource,
-  type EnrichSource
+  type EnrichSource,
+  type LogTransform
 } from '../engine'
 import { engine } from '../engine/client'
 import {
@@ -26,7 +31,9 @@ import {
 } from '../ui/stringModel'
 import { dominantTaxon, factsOf, unmetRequirement } from './requirements'
 import {
+  clusterRunOf,
   isDataResult,
+  type ClusterConfig,
   type EnrichConfig,
   type NodeConfig,
   type NodeKind,
@@ -34,6 +41,9 @@ import {
   type StringAll,
   type StringConfig
 } from './types'
+
+/** The most loadings the cluster's loadings plot draws (its setting's maximum). */
+export const CLUSTER_LOADINGS_MAX = 40
 
 /** What the STRING read reports when the organism's interactome isn't in the local cache. */
 const NO_LOCAL_DATA = 'NO_LOCAL_DATA'
@@ -45,9 +55,35 @@ export async function runPlot(
   kind: NodeKind,
   config: NodeConfig,
   upstream: NodeResult | undefined,
-  cancelled: () => boolean
+  cancelled: () => boolean,
+  /** the Clean data step's log transform — what the scale plots show its data on follows it */
+  cleanTransform?: LogTransform
 ): Promise<NodeResult> {
   if (!isDataResult(upstream)) throw new Error('Run the step this plot reads from first.')
+  if (kind === 'pca') {
+    if (upstream.kind !== 'standardize') throw new Error('Needs a Clean data upstream.')
+    const cfg = config as ClusterConfig
+    const ran = clusterRunOf(cfg)
+    const cluster = await engine.buildCluster(upstream.std.rows, {
+      method: cfg.method,
+      colorBy: cfg.colorBy,
+      clusterOn: cfg.clusterOn,
+      clusterCount: cfg.clusterCount,
+      clusterK: cfg.clusterK,
+      // PCA: the loadings plot's most it can show, so its count only redraws
+      loadings: cfg.method === 'pca' ? CLUSTER_LOADINGS_MAX : 0,
+      // the vectors labelled with the gene/protein NAME rather than the raw uniqID
+      displayMap: upstream.std.displayMap,
+      scale: cfg.scale,
+      missing: cfg.missing,
+      center: cfg.center,
+      topVar: cfg.topVar,
+      transform: cfg.transform,
+      autoScale: plotScaleOf(upstream.std, cleanTransform),
+      replicates: cfg.replicates
+    })
+    return { kind: 'cluster', cluster, ran }
+  }
   if (kind === 'enrich') {
     if (upstream.kind !== 'compare') throw new Error('Needs a Compare upstream.')
     const cfg = config as EnrichConfig
@@ -99,5 +135,7 @@ export async function runPlot(
     }
     return { kind: 'string', species, caps, facets }
   }
+  // Nothing of its own to compute: it draws live from the upstream. (Keep registry.plotComputes —
+  // which decides where a Re-run is offered — to the kinds handled above.)
   return { kind: 'plot' }
 }

@@ -7,6 +7,7 @@ import {
   isNumericCond,
   type ConditionKey,
   type QcMetric,
+  type SampleOrder,
   type StandardizeResult,
   type ValueScale
 } from '../engine'
@@ -19,8 +20,13 @@ export function QcTile({
   scale,
   color,
   colorConds = [],
-  fit
+  fit,
+  categorical,
+  condTitle,
+  sampleOrder = 'natural'
 }: {
+  /** a condition's legend heading, with its unit (see QcPlotView) */
+  condTitle?: (c: ConditionKey) => string
   std: StandardizeResult
   metric: QcMetric
   plot: 'violin' | 'box' | 'bar'
@@ -32,8 +38,15 @@ export function QcTile({
   colorConds?: ConditionKey[]
   /** fit the value axis to the bars rather than starting it at zero */
   fit?: boolean
+  /** the categorical palette its condition levels cycle (the plot's own, else the global one) */
+  categorical?: readonly string[]
+  /** the samples' / groups' order along the axis (default natural) */
+  sampleOrder?: SampleOrder
 }) {
-  const data = useMemo(() => buildQc(std, metric, scale), [std, metric, scale])
+  const data = useMemo(
+    () => buildQc(std, metric, scale, { by: sampleOrder, samples: std.samples }),
+    [std, metric, scale, sampleOrder]
+  )
   return (
     <QcPlotView
       data={data}
@@ -42,6 +55,8 @@ export function QcTile({
       colorCat={colorConds.find((c) => !isNumericCond(c))}
       colorNum={colorConds.find((c) => isNumericCond(c))}
       fit={fit}
+      categorical={categorical}
+      condTitle={condTitle}
     />
   )
 }

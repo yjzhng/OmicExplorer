@@ -5,16 +5,19 @@
  *  and errors of those values — rather than guessing a log axis of their own. The look comes from
  *  the tile's BarConfig: the error type, the colouring, the replicate dots. */
 import { useMemo, type ReactNode } from 'react'
+import { CATEGORICAL_SCHEMES, toCategoricalId, type PaletteRef } from '../ui/palettes'
+import { useAppSettings, useRolePalette } from '../ui/useAppSettings'
 
 import {
   abundanceLabel,
   buildGeneBar,
   isNumericCond,
   type ConditionKey,
+  type SampleOrder,
   type StandardizeResult,
   type ValueScale
 } from '../engine'
-import { barColorConds, type BarConfig } from '../graph/types'
+import { barColorConds, primaryColorLevels, sampleOrderOf, type BarConfig } from '../graph/types'
 import { valueRange, type ValueRange } from '../ui/colormap'
 import { GeneBarView, type ReplicateLook } from '../ui/GeneBarView'
 import { GeneSwitch } from './GeneSwitch'
@@ -31,8 +34,14 @@ function GeneBarBody({
   colorNum,
   errorWidth,
   errorColor,
-  valueRangeFixed
+  valueRangeFixed,
+  categorical,
+  valuePalette,
+  condTitle,
+  sampleOrder
 }: {
+  condTitle?: (c: ConditionKey) => string
+  sampleOrder: SampleOrder
   std: StandardizeResult
   gene: string
   orient?: 'landscape' | 'portrait'
@@ -45,10 +54,16 @@ function GeneBarBody({
   errorWidth?: number
   errorColor?: string
   valueRangeFixed?: [number, number]
+  categorical: readonly string[]
+  valuePalette: PaletteRef
 }) {
   const bar = useMemo(
-    () => buildGeneBar(std.rows, [gene], std.displayMap, range.log, error),
-    [std, gene, range.log, error]
+    () =>
+      buildGeneBar(std.rows, [gene], std.displayMap, range.log, error, {
+        by: sampleOrder,
+        samples: std.samples
+      }),
+    [std, gene, range.log, error, sampleOrder]
   )
   return (
     <GeneBarView
@@ -63,6 +78,9 @@ function GeneBarBody({
       errorWidth={errorWidth}
       errorColor={errorColor}
       valueRangeFixed={valueRangeFixed}
+      categorical={categorical}
+      valuePalette={valuePalette}
+      condTitle={condTitle}
     />
   )
 }
@@ -72,17 +90,25 @@ export function GeneBarTile({
   genes,
   scale,
   config,
-  aside
+  controls,
+  condTitle
 }: {
+  /** a condition's legend heading, with its unit (see GeneBarView) */
+  condTitle?: (c: ConditionKey) => string
   /** on its presented scale (see presentStd) */
   std: StandardizeResult
   genes: string[]
   /** that scale — for the axis title */
   scale: ValueScale
   config: BarConfig
-  /** a control on the gene switcher's row, at its right end */
-  aside?: ReactNode
+  /** the tile's quick switches, on the gene switcher's row, before the gene */
+  controls?: ReactNode
 }) {
+  // Its categorical palette: the plot's own, else the global one; colour by value on the
+  // data-values role.
+  const globalCat = useAppSettings((s) => s.categorical)
+  const categorical = CATEGORICAL_SCHEMES[toCategoricalId(config.categorical) ?? globalCat]
+  const valuePalette = useRolePalette('data')
   const present = useMemo(() => new Set(std.rows.map((r) => r.uniqID)), [std])
   // Every gene by default; the selected ones (those in this data) once any are selected.
   const pager = useMemo(
@@ -103,7 +129,7 @@ export function GeneBarTile({
     return [lo < 0 ? lo - pad : 0, hi + pad]
   }, [range])
   // Colour by condition: the categorical one sets the colour, the numeric one (dose, time) the shade.
-  const conds = barColorConds(config)
+  const conds = barColorConds(config, std.activeConditions, primaryColorLevels(std))
   const colorCat = conds.find((c) => !isNumericCond(c))
   const colorNum = conds.find((c) => isNumericCond(c))
   const { replicates, repSize, repOpacity, repColor, repJitter } = config
@@ -118,7 +144,7 @@ export function GeneBarTile({
     [replicates, repSize, repOpacity, repColor, repJitter]
   )
   return (
-    <GeneSwitch genes={pager} present={present} displayMap={std.displayMap} aside={aside}>
+    <GeneSwitch genes={pager} present={present} displayMap={std.displayMap} controls={controls}>
       {(gene) => (
         <GeneBarBody
           std={std}
@@ -133,6 +159,10 @@ export function GeneBarTile({
           errorWidth={config.errorWidth}
           errorColor={config.errorColor}
           valueRangeFixed={config.yScale === 'global' ? globalRange : undefined}
+          categorical={categorical}
+          valuePalette={valuePalette}
+          condTitle={condTitle}
+          sampleOrder={sampleOrderOf(config)}
         />
       )}
     </GeneSwitch>

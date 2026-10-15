@@ -7,12 +7,12 @@
 import { useMemo, type CSSProperties, type ReactNode } from 'react'
 
 import { condLabel, previewContrastPair, type ConditionKey, type PairFix } from '../engine'
-import { OnOffSwitch } from '../ui/ToggleSwitch'
 import { StatusNote } from '../ui/StatusNote'
 import { UI } from '../ui/theme'
 import { isPairable, toContrastSide } from './contrastPair'
 import { Select } from './NodeConfigPanel'
 import { PreviewTable, selectorStyles as S } from './selectorParts'
+import { SideRows, type SideKey, type SideRow } from './SideRows'
 import type { NodeResult } from './types'
 
 /** One wired input, as the tile sees it. */
@@ -75,9 +75,9 @@ export function PairContrastBody({
   b,
   onPick,
   match,
-  onToggle,
-  fix,
-  onFix
+  onMatch,
+  picks,
+  onPickValue
 }: {
   inputs: PairInput[]
   /** chosen dataset ids (may be undefined while fewer than two inputs are wired) */
@@ -85,15 +85,16 @@ export function PairContrastBody({
   b?: string
   onPick: (side: 'a' | 'b', id: string) => void
   match: ConditionKey[]
-  onToggle: (c: ConditionKey) => void
-  /** the slice each unmatched condition is fixed to, per dataset */
-  fix: PairFix
-  onFix: (side: 'a' | 'b', c: ConditionKey, value: string) => void
+  onMatch: (c: ConditionKey, on: boolean) => void
+  /** per dataset, the values each condition is narrowed to (absent = all of that dataset's) */
+  picks: Record<SideKey, Partial<Record<ConditionKey, string[]>>>
+  onPickValue: (side: SideKey, c: ConditionKey, next: string[]) => void
 }): ReactNode {
   const A = inputs.find((i) => i.id === a)
   const B = inputs.find((i) => i.id === b)
   const ready =
     !!A && !!B && isPairable(A.result) && isPairable(B.result) && A.result!.kind === B.result!.kind
+  const fix: PairFix = useMemo(() => ({ a: { ...picks.a }, b: { ...picks.b } }), [picks])
   const preview = useMemo(
     () =>
       ready
@@ -108,107 +109,56 @@ export function PairContrastBody({
     [ready, A, B, match, fix]
   )
 
-  // One dataset's chips for an UNMATCHED condition: pick exactly one slice (a single value is
-  // the slice by itself). Accent fill = picked, like a compared value in the intra layout.
-  const sliceChips = (side: 'a' | 'b', c: ConditionKey, vals: string[]): ReactNode => {
-    const picked = vals.length === 1 ? vals[0] : fix[side][c]
-    return (
-      <div style={S.chips}>
-        {vals.length === 0 && <span style={S.anyTag}>—</span>}
-        {vals.map((v) => {
-          const on = picked === v
-          return (
-            <button
-              key={v}
-              className="oe-chip"
-              onClick={() => onFix(side, c, v)}
-              title={
-                vals.length === 1
-                  ? `Only ${condLabel(c)} on this dataset`
-                  : on
-                    ? `${condLabel(c)} fixed to ${v} on this dataset`
-                    : `Fix ${condLabel(c)} to ${v} on this dataset`
+  // The same rows as within one dataset: each dataset's values picked on its side. A matched
+  // condition pairs its picked values across the two (green: on both; grey: no partner); an
+  // unmatched one is a slice, one value per dataset — values are never pooled across datasets.
+  const rowSpecs = (): SideRow[] =>
+    preview!.conditions.map((c): SideRow => {
+      const v = preview!.values[c]!
+      const matchable = preview!.candidates.includes(c)
+      const on = matchable && match.includes(c)
+      const pickOf = (s: SideKey): string[] => {
+        const p = picks[s][c]
+        return p ? v[s].filter((x) => p.includes(x)) : v[s]
+      }
+      const picked = { a: pickOf('a'), b: pickOf('b') }
+      const note: Partial<Record<SideKey, string>> = {}
+      for (const s of ['a', 'b'] as const) {
+        if (v[s].length === 0) continue
+        if (picked[s].length === 0) note[s] = 'pick at least one'
+        else if (!on && picked[s].length > 1) note[s] = `pick one — not matched, so not pooled`
+      }
+      return {
+        cond: c,
+        role: on ? 'matched' : 'fixed',
+        values: { a: v.a, b: v.b },
+        picked,
+        match: {
+          on,
+          disabled: !matchable,
+          title: !matchable
+            ? `${condLabel(c)} is on one dataset only — pick one ${condLabel(c)} there`
+            : on
+              ? 'Matched like-for-like — switch off to take one slice per dataset'
+              : 'One slice per dataset — switch on to match like-for-like'
+        },
+        chip: (s, x, isOn) => {
+          if (!isOn) return { title: `Add ${condLabel(c)} ${x}` }
+          if (!on) return { title: `${condLabel(c)} ${x} on this dataset — click to leave out` }
+          const other = s === 'a' ? picked.b : picked.a
+          return other.includes(x)
+            ? {
+                look: S.valChipIncluded,
+                title: `${condLabel(c)} = ${x} is on both datasets — paired`
               }
-              style={{
-                ...S.valChip,
-                ...(on ? S.valChipOn : null),
-                ...(vals.length === 1 ? { cursor: 'default' } : null)
-              }}
-            >
-              {v}
-            </button>
-          )
-        })}
-      </div>
-    )
-  }
-
-  const condRow = (c: ConditionKey): ReactNode => {
-    const v = preview!.values[c]!
-    const matchable = preview!.candidates.includes(c)
-    const on = matchable && match.includes(c)
-    return (
-      <div key={c} style={S.condRow}>
-        <div style={S.condHead}>
-          <OnOffSwitch
-            on={on}
-            onChange={() => onToggle(c)}
-            label={`Match on ${condLabel(c)}`}
-            disabled={!matchable}
-            title={
-              !matchable
-                ? `${condLabel(c)} is on one dataset only — fix it to one slice there`
-                : on
-                  ? 'Matched like-for-like — switch off to fix one slice per dataset'
-                  : 'Switch on to match like-for-like'
-            }
-          />
-          <span style={{ ...S.condName, ...(on ? S.condNameOn : null) }}>{condLabel(c)}</span>
-        </div>
-        {on ? (
-          // Matched: values on both datasets pair (green); one-sided values have no partner (grey).
-          <div style={S.chips}>
-            {v.both.map((x) => (
-              <span
-                key={`b${x}`}
-                style={{ ...S.valChip, ...S.valChipIncluded, cursor: 'default' }}
-                title={`${condLabel(c)} = ${x} is on both datasets — paired`}
-              >
-                {x}
-              </span>
-            ))}
-            {[
-              ...v.onlyA.map((x) => [x, A!.name] as const),
-              ...v.onlyB.map((x) => [x, B!.name] as const)
-            ].map(([x, who]) => (
-              <span
-                key={`o${who}${x}`}
-                style={{ ...S.valChip, ...S.valChipIdle, opacity: 0.6, cursor: 'default' }}
-                title={`${condLabel(c)} = ${x} is only on ${who} — no partner, skipped`}
-              >
-                {x}
-              </span>
-            ))}
-          </div>
-        ) : (
-          // Not matched: one slice per dataset, left/right like group A | group B, with the
-          // why-a-pick-is-needed tip under this row only.
-          <div style={styles.fixBlock}>
-            <div style={styles.sidePair}>
-              <div style={styles.sideCol}>{sliceChips('a', c, v.a)}</div>
-              <span style={styles.vsRule} />
-              <div style={styles.sideCol}>{sliceChips('b', c, v.b)}</div>
-            </div>
-            <StatusNote kind="info" style={{ marginTop: 8 }}>
-              {matchable
-                ? `not matched — pick one ${condLabel(c)} per dataset; nothing is pooled across ${condLabel(c)}`
-                : `${condLabel(c)} is on one dataset only — pick one ${condLabel(c)} there; nothing is pooled across it`}
-            </StatusNote>
-          </div>
-        )}
-      </div>
-    )
-  }
+            : {
+                look: { ...S.valChipIdle, opacity: 0.6 },
+                title: `${condLabel(c)} = ${x} has no partner on the other dataset — skipped`
+              }
+        },
+        note
+      }
+    })
 
   return (
     <>
@@ -248,15 +198,16 @@ export function PairContrastBody({
       {ready && preview && (
         <>
           <div style={S.conds}>
-            <div style={S.condsHead}>
-              <span style={S.condsHeadSwitch}>match on</span>
-              {preview.conditions.length === 0 && (
-                <StatusNote kind="info" inline>
-                  no conditions — joins on gene id alone
-                </StatusNote>
-              )}
-            </div>
-            {preview.conditions.map(condRow)}
+            {preview.conditions.length === 0 ? (
+              <StatusNote kind="info">no conditions — joins on gene id alone</StatusNote>
+            ) : (
+              <SideRows
+                labels={{ a: `dataset A · ${A!.name}`, b: `dataset B · ${B!.name}` }}
+                rows={rowSpecs()}
+                onPick={onPickValue}
+                onMatch={onMatch}
+              />
+            )}
             <StatusNote kind="ok" style={S.matchedLine}>
               {preview.matched.length
                 ? `matched on ${preview.matched.map(condLabel).join(', ')}`

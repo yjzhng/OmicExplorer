@@ -51,7 +51,8 @@ const UNIPROT_COLS = [
   'xref_string',
   'xref_kegg',
   'organism_id',
-  'xref_eggnog'
+  'xref_eggnog',
+  'gene_oln'
 ]
 const UNIPROT_ROWS: Record<string, string[]> = {
   P0A7B8: [
@@ -60,7 +61,8 @@ const UNIPROT_ROWS: Record<string, string[]> = {
     '83333.b3932',
     'eco:b3932;',
     '83333',
-    'COG5405;'
+    'COG5405;',
+    'b3932'
   ],
   P04637: [
     'Cellular tumor antigen p53',
@@ -166,36 +168,31 @@ beforeEach(() => {
 const run = (fields: string[]): Promise<AnnotOut> =>
   handlers['annot:uniprot']({ sender: { send: () => {} } }, Object.keys(UNIPROT_ROWS), fields)
 
-describe('annot:uniprot — essentiality', () => {
-  // Both sources are local accession joins, so they must report even for an accession UniProt has
-  // nothing for — and must stay in their own columns rather than being merged into one verdict.
-  const ESS = 'P06493' // CDK1, in CEGv2
-  const NON = 'Q9H221' // ABCG8, in NEGv1
-
-  it('reports CEG/NEG as essential, non-essential or absent, in its own column', async () => {
-    const res = await handlers['annot:uniprot'](
-      { sender: { send: () => {} } },
-      [ESS, NON, 'P0A7B8'],
-      ['ceg']
-    )
-    expect(res.fields).toEqual(['CEG_NEG'])
-    expect(res.byId[ESS]?.CEG_NEG).toBe('essential')
-    expect(res.byId[NON]?.CEG_NEG).toBe('non-essential')
-    // A bacterial accession is in neither set: absent, which is NOT the same as non-essential.
-    expect(res.byId['P0A7B8']?.CEG_NEG).toBeUndefined()
+describe('annot:uniprot — locus', () => {
+  it('fills locus from the ordered locus name, absent where UniProt has none', async () => {
+    const res = await run(['locus'])
+    expect(res.fields).toEqual(['locus'])
+    expect(res.byId['P0A7B8']?.locus).toBe('b3932')
+    expect(res.byId['P04637']?.locus).toBeUndefined()
   })
+})
 
-  it('keeps DEG and CEG/NEG as separate columns when both are asked for', async () => {
+describe('annot:uniprot — essentiality', () => {
+  // DEG is a local accession join, so it must report even for an accession UniProt has nothing for.
+  const ESS = 'P06493' // CDK1, in DEG
+
+  it('reports DEG as essential, in its own column', async () => {
     const res = await handlers['annot:uniprot'](
       { sender: { send: () => {} } },
       [ESS],
-      ['essentiality', 'ceg']
+      ['essentiality']
     )
-    expect(res.fields).toEqual(['DEG', 'CEG_NEG'])
+    expect(res.fields).toEqual(['DEG'])
+    expect(res.byId[ESS]?.DEG).toBe('essential')
   })
 
-  it('needs no network — the sets are vendored', async () => {
-    await handlers['annot:uniprot']({ sender: { send: () => {} } }, [ESS], ['ceg'])
+  it('needs no network — the set is vendored', async () => {
+    await handlers['annot:uniprot']({ sender: { send: () => {} } }, [ESS], ['essentiality'])
     expect(asked).toEqual([])
   })
 })

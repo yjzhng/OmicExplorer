@@ -4,7 +4,8 @@
 import { type CSSProperties, type ReactNode } from 'react'
 
 import { UI } from '../ui/theme'
-import { OnOffSwitch, ToggleSwitch } from '../ui/ToggleSwitch'
+import { ChoiceSwitch } from '../ui/ChoiceSwitch'
+import { OnOffSwitch } from '../ui/ToggleSwitch'
 
 export function SwitchBar({
   label,
@@ -34,7 +35,8 @@ export function SwitchBar({
     >
       <div style={styles.bar}>
         <span style={styles.barLabel}>{label}</span>
-        <ToggleSwitch
+        {/* Pills, or a searchable dropdown past PILL_CAP options (e.g. many condition levels). */}
+        <ChoiceSwitch
           size="sm"
           label={label}
           value={value}
@@ -49,6 +51,16 @@ export function SwitchBar({
           onChange={onChange}
         />
       </div>
+    </div>
+  )
+}
+
+/** Several inline SwitchBars in one strip: side by side while the tile is wide enough, wrapping
+ *  onto the next line (not cropped) when it isn't — as the facet bars do. */
+export function SwitchStrip({ children }: { children: ReactNode }): ReactNode {
+  return (
+    <div className="oe-switch-strip" style={styles.bars}>
+      {children}
     </div>
   )
 }

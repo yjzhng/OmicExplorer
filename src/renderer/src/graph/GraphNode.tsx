@@ -9,6 +9,7 @@ import {
   type CSSProperties
 } from 'react'
 
+import { PILL_CAP } from '../ui/ChoiceSwitch'
 import { StatusNote } from '../ui/StatusNote'
 import { FrameNode } from './FrameNode'
 import { nameChip, nameInput, tileNameText } from './tileNameStyles'
@@ -18,6 +19,8 @@ import { AddPlotMenu, NodeConfigPanel, PANEL_WIDTH, TILE_STRIP } from './NodeCon
 import {
   accentOf,
   categoryOf,
+  nothingToRerun,
+  plotComputes,
   CATEGORIES,
   hasSourceHandle,
   NODE_SPECS,
@@ -25,19 +28,28 @@ import {
   safeTileName
 } from './registry'
 import { unmetRequirement } from './requirements'
+import { usePlotGroupTitle } from './usePlotGroupTitle'
 import { useUpstreamFacts } from './useUpstreamFacts'
 import { useGraph } from './store'
-import { plotStatusInfo, RunControl, StatusDot, usePlotGate, useStepStatus } from './StatusDot'
+import {
+  plotStatusInfo,
+  RunControl,
+  StatusDot,
+  usePlotGate,
+  useStepStatus,
+  useUpstreamRunning
+} from './StatusDot'
 import { TilePicker } from './TilePicker'
 import { isCompareConfigured, isStep, normalizeCompareConfig, resolveLoadMode } from './types'
-import { VALID_CONDITIONS } from '../engine'
+import { condLabel, VALID_CONDITIONS, type ConditionKey } from '../engine'
 import type {
   CompareConfig,
   LoadConfig,
   NodeData,
   NodeKind,
   PlaceholderData,
-  PlotGroupConfig
+  PlotGroupConfig,
+  SubsetConfig
 } from './types'
 
 /** Tile names may only hold letters, digits, space, `.`, `_` and `-`: they lead the file name of
@@ -78,6 +90,7 @@ function GroupBody({
   // What the upstream data carries (stale-aware): gates the menu and flags unsupported subcards.
   const upId = useGraph((s) => s.edges.find((e) => e.target === id)?.source)
   const facts = useUpstreamFacts(upId)
+  const upRunning = useUpstreamRunning(upId)
   // id of the subcard being dragged, and the gap it's over (target card + which side).
   const [dragId, setDragId] = useState<string | null>(null)
   // The plot card under the pointer — its own Run chip shows on hover (and while selected / running).
@@ -154,9 +167,13 @@ function GroupBody({
             const lineBefore = gap?.id === c.id && gap.place === 'before'
             const lineAfter = gap?.id === c.id && gap.place === 'after'
             // Why this plot can't run yet (its requirement, or the step it reads hasn't run).
-            const runGate = unmet ?? (facts.result ? null : 'Run the step it reads from first')
+            // (A step still running doesn't block: the plot's run waits for it.)
+            const runGate =
+              unmet ?? (facts.result || upRunning ? null : 'Run the step it reads from first')
+            // A done plot that computes nothing of its own has nothing to re-run (plotComputes).
             const showRun =
-              hoverChild === c.id || active || c.status === 'running' || c.status === 'error'
+              (hoverChild === c.id || active || c.status === 'running' || c.status === 'error') &&
+              !(c.status === 'done' && !plotComputes(c.kind))
             return (
               <Fragment key={c.id}>
                 {lineBefore && <div style={dropLine} />}
@@ -264,7 +281,9 @@ export function GraphNode({ id, data, selected: rfSelected }: NodeProps<Node<Nod
     plotGate ??
     (data.kind === 'compare' && !isCompareConfigured(data.config as CompareConfig)
       ? 'Configure comparison first'
-      : null)
+      : data.kind === 'curveFit' && !isCompareConfigured(data.config as CompareConfig)
+        ? 'Configure curve fit first'
+        : null)
   // Config float opens for the single store selection; the accent border also lights up
   // for React Flow's own selection so every marquee-selected tile reads as selected — except a
   // tile in a wholly selected group, which reads as part of that group (the frame lights up).
@@ -288,6 +307,8 @@ export function GraphNode({ id, data, selected: rfSelected }: NodeProps<Node<Nod
   const sideColor = selected ? accent : UI.border
 
   const statusInfo = useStepStatus(id, data)
+  // A done plot tile whose plots compute nothing offers no Re-run (registry.nothingToRerun).
+  const noRerun = nothingToRerun(data)
   const incomplete = !statusInfo.ok
   // The "+" (and its drag arrow) only while hovering a tile that isn't open — an open tile's
   // settings are showing, and the prompt would compete with them.
@@ -333,6 +354,9 @@ export function GraphNode({ id, data, selected: rfSelected }: NodeProps<Node<Nod
     data.kind === 'plotGroup'
       ? `${spec.label} · ${(data.config as PlotGroupConfig).children.length}`
       : plotLabel(data.kind, data.config) // dr → axis-specific (Dose-/Time-response)
+  // A plot group unnamed: named as its results tab is — after the step it reads from.
+  const groupTitle = usePlotGroupTitle(id, data.kind === 'plotGroup')
+  const shownName = data.name ?? groupTitle
   const startRename = (): void => {
     setDraft(data.name ?? '')
     setEditing(true)
@@ -348,6 +372,13 @@ export function GraphNode({ id, data, selected: rfSelected }: NodeProps<Node<Nod
   // panel would run past the canvas's right edge and there's room on the left. Decided ONCE when
   // the panel opens — it stays put while the user pans/zooms, so it never jumps mid-edit.
   const [panelSide, setPanelSide] = useState<'right' | 'left'>('right')
+  // The canvas zoom, which the open panel undoes to stay full size. Read only while it's shown, so
+  // zooming doesn't re-render every tile.
+  const zoom = useStore((s) => (configMounted ? s.transform[2] : 1))
+  // Where the panel's middle sits, from the tile's outer top edge in flow units: the canvas's
+  // vertical middle at the moment it opens. Fixed from then on, so the panel pans with the canvas
+  // like the tile does.
+  const [panelMid, setPanelMid] = useState(0)
   useLayoutEffect(() => {
     if (!configOpen) return
     const el = cardRef.current
@@ -356,12 +387,43 @@ export function GraphNode({ id, data, selected: rfSelected }: NodeProps<Node<Nod
     const canvas = el.closest('.react-flow')?.getBoundingClientRect()
     const right = canvas?.right ?? window.innerWidth
     const left = canvas?.left ?? 0
-    // Read the zoom at open time (not subscribed — a later pan/zoom must not re-place the panel).
-    const need = (PANEL_WIDTH + PANEL_GAP) * rf.getViewport().zoom
+    // The panel is drawn at full size whatever the zoom (see the float below), so its screen width
+    // is fixed.
+    const need = PANEL_WIDTH + PANEL_GAP
     const fitsRight = card.right + need <= right
     const fitsLeft = card.left - need >= left
     setPanelSide(!fitsRight && fitsLeft ? 'left' : 'right')
+    // Centred on the view as it opens (lifted a little, PANEL_LIFT): the canvas's middle, measured from the tile's outer top edge
+    // (the card's own top — its strip is its top border) and turned into flow units.
+    const z = rf.getViewport().zoom
+    const midY = (canvas ? (canvas.top + canvas.bottom) / 2 : window.innerHeight / 2) - PANEL_LIFT
+    setPanelMid((midY - card.top) / z)
   }, [configOpen, rf])
+  // The panel's height (screen px — it isn't zoomed) and the tile's (flow units), kept current as
+  // either changes (a setting that adds a section, a tile that grows), for clamping its place.
+  const panelRef = useRef<HTMLDivElement>(null)
+  const [panelH, setPanelH] = useState(0)
+  const [tileH, setTileH] = useState(0)
+  useLayoutEffect(() => {
+    if (!configMounted) return
+    const panel = panelRef.current
+    const el = cardRef.current
+    if (!panel || !el) return
+    const measure = (): void => {
+      setPanelH(panel.offsetHeight)
+      setTileH(el.offsetHeight)
+    }
+    measure()
+    const ro = new ResizeObserver(measure)
+    ro.observe(panel)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [configMounted])
+  // The panel's middle, kept so it spans the tile's whole height: its top never below the tile's
+  // top, its bottom never above the tile's bottom. A panel shorter than the tile can't do both, so
+  // it top-aligns. In flow units from the tile's outer top edge.
+  const half = panelH / 2 / zoom
+  const mid = panelH ? Math.min(half, Math.max(Math.min(half, tileH - half), panelMid)) : panelMid
   // Scrolling over a tile pans (React Flow's pan-on-scroll, same as empty canvas) and zoom is
   // pinch / ctrl+scroll — except inside the detail window (`.nowheel`), which React Flow ignores
   // entirely so its content can scroll natively. A pinch there (a trackpad pinch arrives as a
@@ -427,7 +489,7 @@ export function GraphNode({ id, data, selected: rfSelected }: NodeProps<Node<Nod
               className="nodrag"
               autoFocus
               value={draft}
-              placeholder={typeText}
+              placeholder={groupTitle ?? typeText}
               // File-name-safe only: the name leads downloaded plots/tables (see PanelTile).
               onChange={(e) => setDraft(safeTileName(e.target.value))}
               onBlur={commitRename}
@@ -457,15 +519,19 @@ export function GraphNode({ id, data, selected: rfSelected }: NodeProps<Node<Nod
               }}
               title="Click to rename"
             >
-              {data.name ?? typeText}
+              {shownName ?? typeText}
             </span>
           )}
           {/* Type label as a subtitle whenever there's a name. Not added while naming an unnamed
               tile: the field's placeholder already shows the type. */}
-          {data.name && <span style={typeSub}>{plotLabel(data.kind, data.config)}</span>}
+          {shownName && !editing && (
+            <span style={typeSub}>
+              {data.kind === 'plotGroup' ? typeText : plotLabel(data.kind, data.config)}
+            </span>
+          )}
         </span>
         <div style={headerRight}>
-          {spec.hasRun && (hovered || selected) && (
+          {spec.hasRun && (hovered || selected) && !noRerun && (
             <RunControl
               status={data.status}
               accent={accent}
@@ -563,24 +629,41 @@ export function GraphNode({ id, data, selected: rfSelected }: NodeProps<Node<Nod
         // calls selectNode → clears selectedSub — that reset the active subcard to the
         // first on every interaction with a group's config.
         // It slides in from (and out toward) the tile's side, fading.
+        // Beside the tile, centred on the canvas's vertical middle as it opened (then panning with
+        // the tile), in three layers: the outer one sits on that line and undoes the canvas zoom (scale 1/zoom
+        // about its corner on the tile's side), so the panel is always drawn at full size — crisp
+        // and readable however far out the canvas is zoomed; the middle one lifts the panel by half
+        // its height to centre it (by layout — a −50% translate could land on a half pixel and
+        // blur the text again); the inner one animates (its own transform, so none fight) and
+        // holds the gap, in screen px.
         <div
-          className={`nodrag nowheel ${configLeaving ? 'oe-config-out' : 'oe-config-in'}`}
           style={{
             ...configFloat,
-            ...(panelSide === 'left'
-              ? { right: '100%', marginRight: PANEL_GAP }
-              : { left: '100%', marginLeft: PANEL_GAP }),
-            ['--oe-config-from' as string]: panelSide === 'left' ? '10px' : '-10px',
-            // Scaled about its top corner on the tile's side, so the top stays aligned throughout.
-            transformOrigin: panelSide === 'left' ? 'top right' : 'top left',
-            ...(configLeaving ? { pointerEvents: 'none' } : null)
-          }}
-          onClick={(e) => e.stopPropagation()}
-          onAnimationEnd={(e) => {
-            if (e.target === e.currentTarget && configLeaving) setConfigMounted(false)
+            top: mid - TILE_STRIP,
+            ...(panelSide === 'left' ? { right: '100%' } : { left: '100%' }),
+            transform: `scale(${1 / zoom})`,
+            transformOrigin: panelSide === 'left' ? 'top right' : 'top left'
           }}
         >
-          <NodeConfigPanel id={id} />
+          <div style={centreOnLine}>
+            <div
+              ref={panelRef}
+              className={`nodrag nowheel ${configLeaving ? 'oe-config-out' : 'oe-config-in'}`}
+              style={{
+                ...(panelSide === 'left' ? { marginRight: PANEL_GAP } : { marginLeft: PANEL_GAP }),
+                ['--oe-config-from' as string]: panelSide === 'left' ? '10px' : '-10px',
+                // Scaled about its middle on the tile's side, so it stays centred throughout.
+                transformOrigin: panelSide === 'left' ? 'center right' : 'center left',
+                ...(configLeaving ? { pointerEvents: 'none' } : null)
+              }}
+              onClick={(e) => e.stopPropagation()}
+              onAnimationEnd={(e) => {
+                if (e.target === e.currentTarget && configLeaving) setConfigMounted(false)
+              }}
+            >
+              <NodeConfigPanel id={id} />
+            </div>
+          </div>
         </div>
       )}
     </div>
@@ -672,7 +755,9 @@ function NodeSummary({
   // re-render of the tile (e.g. a hover toggle) — that stalled on large comparison tables.
   const signfCount = useMemo(() => {
     if (result?.kind === 'compare') return result.cmp.rows.filter((r) => r.signf).length
-    if (result?.kind === 'contrast') return result.ctr.rows.filter((r) => r.signf).length
+    // the sides' own value only — the other features are further views of the same genes
+    if (result?.kind === 'contrast')
+      return result.ctr.rows.filter((r) => r.signf && (r.featureId ?? 'value') === 'value').length
     return 0
   }, [result])
   if (kind === 'load') {
@@ -708,22 +793,53 @@ function NodeSummary({
       <div style={muted}>Pool two or more Clean data tiles into one dataset.</div>
     )
   }
-  if (kind === 'compare') {
+  if (kind === 'subset') {
+    const std = result?.kind === 'standardize' ? result.std : null
+    // What is kept, per filtered condition — past PILL_CAP values just their count ("12 cmpd").
+    const kept = Object.entries((config as SubsetConfig).keep ?? {})
+      .filter(([, vs]) => (vs?.length ?? 0) > 0)
+      .map(([c, vs]) => {
+        const label = condLabel(c as ConditionKey)
+        return vs!.length > PILL_CAP
+          ? `${vs!.length} ${label}`
+          : `${label}: ${vs!.map((v) => v || '—').join(', ')}`
+      })
+    return (
+      <>
+        <div style={kept.length ? stat : muted}>
+          {kept.length ? kept.join(' · ') : 'Keeps every sample — pick values to subset.'}
+        </div>
+        {std && (
+          <div style={muted}>
+            {std.rows.length.toLocaleString()} rows
+            {std.samples ? ` · ${std.samples.length} samples` : ''}
+          </div>
+        )}
+      </>
+    )
+  }
+  if (kind === 'compare' || kind === 'curveFit') {
     const cfg = normalizeCompareConfig(config as CompareConfig)
     const cmp = result?.kind === 'compare' ? result.cmp : null
+    // A side's values per condition — past PILL_CAP of them, just their count ("24 cmpd").
     const sideShort = (sel: CompareConfig['num']): string =>
       VALID_CONDITIONS.filter((k) => (sel[k]?.length ?? 0) > 0)
-        .map((k) => (sel[k] as string[]).join('/'))
+        .map((k) => {
+          const vs = sel[k] as string[]
+          return vs.length > PILL_CAP ? `${vs.length} ${condLabel(k)}` : vs.join('/')
+        })
         .join(',') || '—'
     // Once run, show just the comparison COUNT (the detailed strings can be long when a
     // comparison spans many values); before running, a concise config preview.
     const n = cmp?.comparisons.length ?? 0
-    const curve = cfg.analysis === 'curve_fit'
+    const curve = kind === 'curveFit'
     const label = cmp
       ? `${n} ${curve ? 'curve set' : 'comparison'}${n === 1 ? '' : 's'}`
       : cfg.analysis === 'two_way_anova'
         ? `two-way · ${cfg.condition}×${cfg.condition2}`
-        : `${curve ? 'curve fit · ' : ''}${sideShort(cfg.num)} vs ${sideShort(cfg.den)}`
+        : curve
+          ? `${sideShort(cfg.num)} · control ${sideShort(cfg.den)}`
+          : `${sideShort(cfg.num)} vs ${sideShort(cfg.den)}`
     return (
       <div style={muted}>
         {label}
@@ -740,11 +856,14 @@ function NodeSummary({
     return (
       <div style={muted}>
         {ctr
-          ? ctr.comparisons.join(', ') || 'contrast'
+          ? ctr.comparisons.length > PILL_CAP
+            ? `${ctr.comparisons.length} contrasts`
+            : ctr.comparisons.join(', ') || 'contrast'
           : 'Connect a Compare tile, then pick two levels.'}
         {ctr && (
           <div style={stat}>
-            {ctr.rows.length.toLocaleString()} rows · {signfCount} signif
+            {ctr.rows.filter((r) => (r.featureId ?? 'value') === 'value').length.toLocaleString()}{' '}
+            rows · {signfCount} signif
           </div>
         )}
       </div>
@@ -755,14 +874,15 @@ function NodeSummary({
   if (kind === 'ma') return <div style={muted}>Abundance vs log₂FC. Select to view.</div>
   if (kind === 'dr') return <div style={muted}>Response curves. Select to view.</div>
   if (kind === 'curveMad')
-    return <div style={muted}>Residuals from the curve fits, per dose. Select to view.</div>
+    return <div style={muted}>Curve-fit QC: residuals and fit metrics. Select to view.</div>
   if (kind === 'potency')
     return <div style={muted}>Curve potency (pEC50) vs fold change. Select to view.</div>
+  if (kind === 'response')
+    return <div style={muted}>Dose × time response surface per gene. Select to view.</div>
   if (kind === 'bubble') return <div style={muted}>Gene × dose bubble grid. Select to view.</div>
   if (kind === 'dumbbell')
     return <div style={muted}>Group A ↔ group B per gene. Select to view.</div>
-  if (kind === 'tdr')
-    return <div style={muted}>Dose×time response per selected gene. Select to view.</div>
+  if (kind === 'tdr') return <div style={muted}>Dose × time response per gene. Select to view.</div>
   if (kind === 'geneBar')
     return <div style={muted}>Selected gene value across conditions. Select to view.</div>
   if (kind === 'pca')
@@ -978,14 +1098,19 @@ const stat: CSSProperties = {
   fontVariantNumeric: 'tabular-nums',
   marginTop: 2
 }
-/** Gap between a tile and its detail panel (flow units). */
+/** How far above the canvas's middle the detail panel centres as it opens (screen px): a touch
+ *  high reads as centred, the eye's middle sitting above the geometric one. */
+const PANEL_LIFT = 40
+/** Gap between a tile and its detail panel (screen px — the panel isn't zoomed). */
 const PANEL_GAP = 14
-/** Detail panel float: top-aligned beside the tile; the side is chosen at render (see panelSide).
- *  Placed inside the card, whose `top: 0` is below its category strip — so it's lifted by the
- *  strip, to line its top up with the tile's outer edge. */
+/** Centres its one child on this element's top edge: a zero-height flex row, the child overflowing
+ *  equally above and below. */
+const centreOnLine: CSSProperties = { display: 'flex', alignItems: 'center', height: 0 }
+/** Detail panel float: beside the tile, the side chosen at render (see panelSide), its `top` set
+ *  there to the canvas's vertical middle as the panel opened. Placed inside the card, whose `top: 0` is below its
+ *  category strip — so offsets from the tile's outer edge are lifted by the strip. */
 const configFloat: CSSProperties = {
   position: 'absolute',
-  top: -TILE_STRIP,
   zIndex: 1000,
   cursor: 'default'
 }

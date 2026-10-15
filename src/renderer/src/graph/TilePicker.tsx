@@ -266,8 +266,8 @@ export function TilePicker({
 const card: CSSProperties = {
   width: 230,
   background: UI.panelRaised,
-  border: `1px solid ${UI.border}`,
-  borderTop: `5px dashed ${UI.accent}`,
+  // a grey dashed outline all round: a step with no type (so no category colour) yet
+  border: `2px dashed ${UI.border}`,
   borderRadius: 8,
   color: UI.text,
   fontSize: 12,
@@ -426,12 +426,16 @@ const addBtn: CSSProperties = {
   cursor: 'pointer'
 }
 const opLabel: CSSProperties = { fontWeight: 600 }
-// Optional gloss to the right of the label.
+// Optional gloss to the right of the label: one line, cut with an ellipsis rather than spilling
+// out of the fixed-width card.
 const opSubtitle: CSSProperties = {
   fontSize: 11,
   fontWeight: 400,
   color: UI.textMuted,
-  whiteSpace: 'nowrap'
+  whiteSpace: 'nowrap',
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+  minWidth: 0
 }
 const catName: CSSProperties = {
   marginLeft: 'auto',

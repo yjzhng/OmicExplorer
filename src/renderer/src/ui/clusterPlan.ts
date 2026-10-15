@@ -14,7 +14,7 @@ import {
 /** Hierarchy order of the conditions these metas carry: cell → cmpd → dose → time, then any
  *  custom conditions. Custom conditions are ALWAYS categorical, so they can only ever join the
  *  qualitative side of the plan below — never the ordered shade or arrow channels. */
-export const condsOf = (metas: ClusterMeta[]): ConditionKey[] =>
+export const condsOf = (metas: ReadonlyArray<Pick<ClusterMeta, 'extra'>>): ConditionKey[] =>
   orderConds(['cell', 'cmpd', 'dose', 'time', ...customCondsIn(metas)])
 
 /**

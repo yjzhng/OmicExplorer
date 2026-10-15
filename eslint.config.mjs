@@ -9,7 +9,16 @@ import { defineConfig, globalIgnores } from 'eslint/config'
 // Matches the fleet's ESLint stack (autumnLab), extended for OneProduction's
 // main (Node) + preload (Node) + renderer (browser/React) split.
 export default defineConfig([
-  globalIgnores(['dist', 'out', 'node_modules', '**/*.app', 'build-resources']),
+  // bench/ (local benchmarks) and .worktrees/ (git worktrees) are gitignored, never shipped
+  globalIgnores([
+    'dist',
+    'out',
+    'node_modules',
+    '**/*.app',
+    'build-resources',
+    'bench',
+    '.worktrees'
+  ]),
 
   // All TypeScript.
   {

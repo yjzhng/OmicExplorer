@@ -1,36 +1,26 @@
-/** Cluster (embedding) panel body: embeds samples from a Standardize upstream. UMAP/t-SNE are
- *  iterative, so the embedding is memoized on the data + method + coloring; it recomputes only
- *  when those change. */
+/** Cluster (embedding) panel body: draws a sample embedding its plot's run computed (in the
+ *  worker — see graph/plotRun.ts), so a large dataset's PCA / UMAP / t-SNE never runs on the UI
+ *  thread. Colouring by a condition regroups the stored points here; colouring by cluster uses the
+ *  groups the run computed (a different clustering is another run — the tile's staleOn). */
 import { useMemo } from 'react'
 
 import type { ClusterStyle } from '../graph/types'
 import type { PlanOverrides } from '../ui/clusterPlan'
 
 import {
-  buildCluster,
-  type ClusterMethod,
-  type StandardizeResult,
-  type ValueScale
+  CLUSTER_COLOR,
+  metaValue,
+  type ClusterColorBy,
+  type ClusterData,
+  type ConditionKey
 } from '../engine'
 import { ClusterView } from '../ui/ClusterView'
 import { LoadingView } from '../ui/LoadingView'
 import { ScreeView } from '../ui/ScreeView'
-import type { ClusterColorBy } from '../engine'
 
 export function ClusterTile({
-  std,
-  autoScale,
-  method,
+  cluster,
   colorBy,
-  clusterOn,
-  clusterCount,
-  clusterK,
-  scale,
-  missing,
-  center,
-  topVar,
-  transform,
-  replicates,
   display,
   territory,
   plot,
@@ -39,28 +29,21 @@ export function ClusterTile({
   look,
   schemeColor,
   schemeShade,
-  schemeArrow
+  schemeArrow,
+  categorical,
+  condTitle
 }: {
-  std: StandardizeResult
-  /** what the 'auto' transform follows: the scale the plots show Clean data on (plotScaleOf) */
-  autoScale?: ValueScale
-  method: ClusterMethod
+  /** a condition's legend heading, with its unit (see ClusterView) */
+  condTitle?: (c: ConditionKey) => string
+  /** the run's embedding */
+  cluster: ClusterData
   colorBy: ClusterColorBy
-  clusterOn?: 'coords' | 'features'
-  clusterCount?: 'fixed' | 'conditions' | 'auto'
-  clusterK?: number
-  scale?: 'unit' | 'none'
-  missing?: 'impute' | 'complete'
-  center?: 'median' | 'zscore' | 'quantile' | 'none'
-  topVar?: number
-  transform?: 'auto' | 'log2' | 'log10' | 'none'
-  replicates?: 'individual' | 'mean'
   display: 'replicate' | 'centroid'
   territory?: 'hull' | 'gaussian' | 'none'
   /** which plot to draw: the embedding scatter, the feature loadings, or variance explained
    *  per component (the last two are PCA-only) */
   plot?: 'pc' | 'scree' | 'loadings'
-  /** loadings plot only: how many features to show */
+  /** loadings plot only: how many features to show (the run keeps the most there can be) */
   loadings?: number
   legend?: 'simple' | 'complex'
   /** markers' and arrow trails' look (see ClusterStyle) */
@@ -69,60 +52,48 @@ export function ClusterTile({
   schemeColor?: PlanOverrides['color']
   schemeShade?: PlanOverrides['shade']
   schemeArrow?: PlanOverrides['arrow']
+  /** the categorical palette its groups cycle (the plot's own, else the global one) */
+  categorical?: readonly string[]
 }) {
   // One object per actual change, so the view's memo keyed on it doesn't rebuild every render.
   const scheme = useMemo(
     (): PlanOverrides => ({ color: schemeColor, shade: schemeShade, arrow: schemeArrow }),
     [schemeColor, schemeShade, schemeArrow]
   )
-  const cluster = useMemo(
-    () =>
-      buildCluster(std.rows, {
-        method,
-        colorBy,
-        clusterOn,
-        clusterCount,
-        clusterK,
-        // Only the loadings plot needs them, and computing them costs a pass over every feature.
-        loadings: plot === 'loadings' ? (loadings ?? 10) : 0,
-        // So the vectors are labelled with the gene/protein NAME rather than the raw uniqID.
-        displayMap: std.displayMap,
-        scale,
-        missing,
-        center,
-        topVar,
-        transform,
-        autoScale,
-        replicates
-      }),
-    [
-      std,
-      method,
+  // The stored embedding, grouped by the colouring on show: a condition's values read off each
+  // point (as the run would have), or the run's own clusters.
+  const shown = useMemo((): ClusterData => {
+    if (colorBy === CLUSTER_COLOR) return cluster
+    // (no clusterK: the colours aren't clusters)
+    return {
+      ...cluster,
+      clusterK: undefined,
       colorBy,
-      clusterOn,
-      clusterCount,
-      clusterK,
-      plot,
-      loadings,
-      scale,
-      missing,
-      center,
-      topVar,
-      transform,
-      autoScale,
-      replicates
-    ]
+      points: cluster.points.map((pt) => ({
+        ...pt,
+        group: String(metaValue(pt.meta, colorBy) ?? '')
+      }))
+    }
+  }, [cluster, colorBy])
+  const withLoadings = useMemo(
+    (): ClusterData =>
+      cluster.loadings
+        ? { ...cluster, loadings: cluster.loadings.slice(0, loadings ?? 10) }
+        : cluster,
+    [cluster, loadings]
   )
   if (plot === 'scree') return <ScreeView cluster={cluster} />
-  if (plot === 'loadings') return <LoadingView cluster={cluster} />
+  if (plot === 'loadings') return <LoadingView cluster={withLoadings} />
   return (
     <ClusterView
-      cluster={cluster}
+      cluster={shown}
       display={display}
       territory={territory}
       legend={legend}
       look={look}
       scheme={scheme}
+      categorical={categorical}
+      condTitle={condTitle}
     />
   )
 }

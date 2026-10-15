@@ -14,7 +14,8 @@
  * condition-level variation differs between genes the weight drops and the residual leads.
  * Single-replicate curves are moderated toward an abundance-trend prior instead (limma-style).
  * The moderated F has an exact null distribution, so p comes from it directly; q is Benjamini–
- * Hochberg over every curve of the run. The effect size is the PEAK |log₂ ratio| of the fitted
+ * Hochberg over every curve of the run, scaled by Storey's π₀ (the estimated share of curves with no
+ * response) when the curves have replicates. The effect size is the PEAK |log₂ ratio| of the fitted
  * curve over the treated levels — not lowest → highest — so transient and saturated responses keep
  * their size.
  *
@@ -24,9 +25,18 @@
  * shared by every compound, a response is specific to one.
  */
 import { condValue } from './compare'
-import { fSurvival } from './curveFit'
-import { compareSlices } from './direct'
+import {
+  fSurvival,
+  fitLogistic,
+  interpolatedPoints,
+  interpolationGrid,
+  logistic,
+  Y_LIMITS_LOG2,
+  type LogisticParams
+} from './curveFit'
+import { baselineText, compareSlices } from './direct'
 import { benjaminiHochberg } from './stats'
+import { fitJointSurface, type JointParams } from './surfaceJoint'
 import type { CompareInput, ConditionKey, StandardRow } from './types'
 
 // ── natural cubic spline basis ───────────────────────────────────────────────────────────────
@@ -42,9 +52,11 @@ export function splineDf(treatedLevels: number): number | null {
 }
 
 /** Natural cubic spline design matrix (with intercept): one row per x, df + 1 columns. Knots at
- *  the boundary of the levels and at their quantiles (Hastie–Tibshirani truncated-power form). */
-export function nsBasis(xs: number[], df: number): number[][] {
-  const levels = [...new Set(xs)].sort((a, b) => a - b)
+ *  the boundary of the levels and at their quantiles (Hastie–Tibshirani truncated-power form).
+ *  `levels` places the knots (default: the distinct xs) — pass the fit's own levels to evaluate a
+ *  fitted spline elsewhere. */
+export function nsBasis(xs: number[], df: number, levelsOf: number[] = xs): number[][] {
+  const levels = [...new Set(levelsOf)].sort((a, b) => a - b)
   const lo = levels[0]
   const hi = levels[levels.length - 1]
   const span = hi - lo || 1
@@ -118,6 +130,18 @@ export interface SplineCurve {
   repSS: number
   repDf: number
   nPerLevel: number
+  /** the fitted spline over the treated levels, sampled finely (one-axis curves; for drawing) */
+  line?: { x: number[]; y: number[] }
+  /** how x maps back to the axis (one-axis curves): dose x = log₁₀ dose with the baseline at a
+   *  pseudo-dose one step below the lowest; time x = log₁₀(t + offset) with t₀ as the baseline */
+  scale?: { axis: 'dose' } | { axis: 'time'; offset: number }
+  /** dose × time surfaces: the layout behind y / fitted — the vehicle level per vehicle time
+   *  first, then each treated cell (its vehicle group by index) — and the time axis offset */
+  surface?: {
+    vehicle: Array<{ time: number; mean: number }>
+    treated: Array<{ dose: number; time: number; group: number }>
+    timeOffset: number
+  }
 }
 
 /** Fit one curve: level positions x (baseline at index 0) and level means y (baseline = 0).
@@ -144,10 +168,16 @@ export function fitSplineCurve(
   let peak = 0
   for (let i = 1; i < fitted.length; i++)
     if (Math.abs(fitted[i] - fitted[0]) > Math.abs(peak)) peak = fitted[i] - fitted[0]
+  // The spline between the treated levels, for drawing (the baseline is its own point).
+  const lo = x[1]
+  const hi = x[x.length - 1]
+  const gx = Array.from({ length: 41 }, (_, i) => lo + ((hi - lo) * i) / 40)
+  const gy = nsBasis(gx, df, x.slice(1)).map((r) => r.reduce((a, v, j) => a + v * b[j + 1], 0))
   return {
     x,
     y,
     fitted,
+    line: { x: gx, y: gy },
     df: p - 1,
     rss,
     dfRes: x.length - p,
@@ -261,6 +291,10 @@ export function fitPrior(curves: Array<{ s2: number; d: number; abundance: numbe
 export interface SplineRow {
   uniqID: string
   cmpd: string
+  /** the comparison it belongs to (compareSlices' label, e.g. "dose curve | DMSO") */
+  comparison?: string
+  /** its baseline in words (baselineText) */
+  baseline?: string
   /** the slice's context values (the other conditions), e.g. { time: 480 } for a dose curve */
   context: Record<string, string | number | null>
   peak: number
@@ -347,6 +381,19 @@ export interface SplineRun {
   kappa: number
   /** prior df of the replicate prediction (small = condition-level variation differs between genes) */
   priorDfReplicates: number
+  /** estimated share of curves with no response (Storey's π₀), applied to the q-values */
+  pi0: number
+  /** one-axis runs: the comparisons present and the compared condition (as compareSlices) */
+  comparisons?: string[]
+  cmpCond?: string
+}
+
+/** Storey's π₀ at λ = 0.5: null p-values are uniform, so twice the share above 0.5 estimates the
+ *  null share; capped at 1. */
+export function storeyPi0(p: number[], lambda = 0.5): number {
+  const ok = p.filter((v) => Number.isFinite(v))
+  if (ok.length < 20) return 1
+  return Math.min(1, ok.filter((v) => v > lambda).length / ((1 - lambda) * ok.length))
 }
 
 /**
@@ -355,13 +402,13 @@ export interface SplineRun {
  */
 export function runSplineFit(input: CompareInput & { curveAxis: ConditionKey }): SplineRun {
   const axis = input.curveAxis
-  const { slices, contextDims } = compareSlices(input)
+  const { slices, contextDims, comparisons, cmpCond } = compareSlices(input)
   const fits: Array<Omit<SplineRow, 'F' | 'df1' | 'df2' | 'p' | 'q'>> = []
   const driftAt = driftEstimator(
     input.rows,
     new Set(slices.flatMap((sl) => sl.grp.map((r) => r.cmpd)))
   )
-  for (const { grp, denSlice, rep } of slices) {
+  for (const { grp, denSlice, rep, label } of slices) {
     const context = Object.fromEntries(contextDims.map((c) => [c, condValue(rep, c) ?? null]))
     const byGene = new Map<string, StandardRow[]>()
     for (const r of grp) {
@@ -383,6 +430,7 @@ export function runSplineFit(input: CompareInput & { curveAxis: ConditionKey }):
       const levels = [...lv.keys()].sort((a, b) => a - b)
       let x: number[]
       let y: number[]
+      let scale: SplineCurve['scale'] = { axis: 'dose' }
       if (axis === 'time') {
         // Baseline per time: the vehicle at that time; between vehicle times interpolated (log
         // time), beyond them the nearest; t₀ (time 0 / null) is the curve's baseline level.
@@ -416,6 +464,7 @@ export function runSplineFit(input: CompareInput & { curveAxis: ConditionKey }):
           return vt[vt.length - 1][1]
         }
         x = [tx(0), ...levels.map(tx)]
+        scale = { axis: 'time', offset: off }
         y = [0, ...levels.map((t) => lv.get(t)!.mean - base(t))]
         const v0 = vByTime.get(0)
         if (v0) ctlStats = stats(v0)
@@ -447,10 +496,19 @@ export function runSplineFit(input: CompareInput & { curveAxis: ConditionKey }):
         nPerLevel: mean([...lv.values()].map((l) => l.n))
       }
       const curve = fitSplineCurve(x, y, mean(all), repInfo)
-      if (curve) fits.push({ uniqID, cmpd: rep.cmpd, context, peak: curve.peak, curve })
+      if (curve)
+        fits.push({
+          uniqID,
+          cmpd: rep.cmpd,
+          comparison: label,
+          baseline: baselineText(denSlice, grp),
+          context,
+          peak: curve.peak,
+          curve: { ...curve, scale }
+        })
     }
   }
-  return score(fits)
+  return { ...score(fits), comparisons, cmpCond }
 }
 
 /** Per-gene noise, moderated F, p and BH q for fitted curves (or surfaces). */
@@ -506,8 +564,254 @@ function score(fits: Array<Omit<SplineRow, 'F' | 'df1' | 'df2' | 'p' | 'q'>>): S
     const p = Number.isFinite(F) ? fSurvival(F, c.df, df2) : 1
     return { ...f, F, df1: c.df, df2, p }
   })
-  const q = benjaminiHochberg(scored.map((s) => s.p))
-  return { rows: scored.map((s, i) => ({ ...s, q: q[i] })), prior, kappa, priorDfReplicates: d0r }
+  // q: Benjamini–Hochberg scaled by Storey's π₀ (the share of curves with no response). BH alone
+  // assumes every curve could be null, which is conservative when many respond. π₀ needs null
+  // p-values that are uniform, which holds when the noise comes from replicates; with single
+  // replicates (residual + trend prior only) π₀ came out too low on real data, so plain BH there.
+  const pv = scored.map((s) => s.p)
+  const pi0 = withRep.length >= 0.5 * fits.length ? storeyPi0(pv) : 1
+  const q = benjaminiHochberg(pv).map((v) => Math.min(1, pi0 * v))
+  return {
+    rows: scored.map((s, i) => ({ ...s, q: q[i] })),
+    prior,
+    kappa,
+    priorDfReplicates: d0r,
+    pi0
+  }
+}
+
+// ── description (Layer 5): the monotonic shape model on detected curves ──────────────────────
+
+export interface CurveDescription extends LogisticParams {
+  /** the 4PL's midpoint — half the effect on log₂ — in axis units: dose (as the data's dose unit)
+   *  or time; front / back are the plateaus as log₂ ratios to the baseline (0 = no change) */
+  mid: number
+  /** R² of the 4PL and of the spline over the same level means (log₂ scale, around their mean) */
+  r2: number
+  r2Spline: number
+  /** r2 / r2Spline: how much of what the spline follows the monotonic shape explains */
+  shapeRatio: number
+  /** shapeRatio below the cut-off: responds, but not this shape */
+  lowShape: boolean
+}
+
+/**
+ * Describe one fitted one-axis curve by the 4-parameter log-logistic (CurveCurator's OLS fit) on
+ * the log₂ ratios to the baseline — the spline's scale, so the two are compared on the residuals
+ * each minimises (on ratios, large rises misfit near the baseline and were flagged wrongly; the
+ * midpoint is half the effect on log₂, the same for rises and falls). Dose: the baseline is the
+ * control at −∞, as in CurveCurator. Time: t₀ is a real point on the log(t + offset) axis, so the
+ * 4PL runs over time from t₀: it starts at the baseline (front fixed at 0) and its midpoint may
+ * not lie before t₀ (a response already full at the first time point puts it between t₀ and that
+ * time). Fitted to the level means — the same points the spline detector
+ * sees — and judged against it: a curve the 4PL explains much less of than the spline does is
+ * flagged (`lowShape`). Description never affects calls or q. Null for surfaces (no scale) and for
+ * curves with too few levels for 4 parameters.
+ */
+export function describeCurve(
+  c: SplineCurve,
+  minShapeRatio = 0.8,
+  interpolation = false
+): CurveDescription | null {
+  const sc = c.scale
+  if (!sc || c.x.length < 5) return null
+  const { p, pred, mid } = fit4pl(c.x, c.y, sc, interpolation)
+  const ym = mean(c.y)
+  const sst = c.y.reduce((s, v) => s + (v - ym) ** 2, 0)
+  const rss = pred.reduce((s, f, i) => s + (c.y[i] - f) ** 2, 0)
+  return { ...p, mid, ...shape(rss, c.rss, sst, minShapeRatio) }
+}
+
+/** The description's 4PL on one curve's log₂ level means (baseline first, value 0), with its
+ *  predictions at every level and its midpoint in axis units. Dose: the baseline is the control at
+ *  −∞. Time: nothing responds before t₀ — the curve starts at the baseline (front fixed at 0, else
+ *  it invents a plateau before t₀ to fit an early jump) and its midpoint stays at or after t₀. */
+function fit4pl(
+  x: number[],
+  y: number[],
+  sc: NonNullable<SplineCurve['scale']>,
+  interpolation = false
+): { p: LogisticParams; pred: number[]; mid: number } {
+  const time = sc.axis === 'time'
+  const xs = time ? x : [-Infinity, ...x.slice(1)]
+  // CurveCurator's interpolation: grid points between the treated levels, in the fit only
+  const extra = interpolation
+    ? interpolatedPoints(x.slice(1), y.slice(1), interpolationGrid(x.slice(1)))
+    : { x: [], y: [] }
+  const p = fitLogistic([...xs, ...extra.x], [...y, ...extra.y], x.slice(1), {
+    yLimits: Y_LIMITS_LOG2,
+    pec50Max: time ? -x[0] : undefined,
+    front: time ? 0 : undefined
+  })
+  const x50 = -p.pec50
+  return {
+    p,
+    pred: xs.map((v) => logistic(v, p)),
+    mid: sc.axis === 'time' ? Math.max(0, 10 ** x50 - sc.offset) : 10 ** x50
+  }
+}
+
+/** R² of the 4PL and of the spline from their residual sums of squares, and the low-shape flag. */
+function shape(
+  rss: number,
+  rssSpline: number,
+  sst: number,
+  minShapeRatio: number
+): Pick<CurveDescription, 'r2' | 'r2Spline' | 'shapeRatio' | 'lowShape'> {
+  const r2 = sst > 0 ? Math.max(0, 1 - rss / sst) : 0
+  const r2Spline = sst > 0 ? Math.max(0, 1 - rssSpline / sst) : 0
+  const shapeRatio = r2Spline > 0 ? r2 / r2Spline : 0
+  return { r2, r2Spline, shapeRatio, lowShape: shapeRatio < minShapeRatio }
+}
+
+/** One slice of a surface described by the 4PL: a dose curve at one time (`at` = the time) or a
+ *  time curve at one dose (`at` = the dose). Plateaus and midpoint as in CurveDescription. */
+export interface SliceDescription extends LogisticParams {
+  at: number
+  mid: number
+}
+
+/** How a surface is described: slice by slice (each time's dose curve and each dose's time curve
+ *  fitted on its own — 'slices' drawn by time, 'doseSlices' by dose; the fits are the same), or
+ *  one joint model over every cell (surfaceJoint.ts). */
+export type SurfaceMethod = 'slices' | 'doseSlices' | 'joint'
+
+export interface SurfaceDescription {
+  method: SurfaceMethod
+  /** the dose curve at each time: pEC50, slope and top as they change with time (slices: times
+   *  with 4+ doses; joint: every time, read off the joint model) */
+  byTime: SliceDescription[]
+  /** the time curve at each dose (4+ times): when the response arrives, dose by dose — slices
+   *  only (the joint model's time course is `joint.tau` / `joint.k`, shared by every dose) */
+  byDose: SliceDescription[]
+  /** the joint model's parameters, and the ū its midpoint is centred on (joint only) — together,
+   *  jointPredict draws the model at any dose and time */
+  joint?: JointParams
+  jointUbar?: number
+  /** R² of the description (slices: the worse direction) and of the spline surface, over the
+   *  treated cells' effects; shapeRatio and lowShape as for one curve */
+  r2: number
+  r2Spline: number
+  shapeRatio: number
+  lowShape: boolean
+}
+
+/**
+ * Describe a fitted dose × time surface by the 4PL, slice by slice: the dose curve at each time
+ * (relative to that time's vehicle) and the time curve at each dose (from t₀, no response before
+ * it), each fitted to the data as describeCurve fits one curve. pEC50 and top at each time come
+ * straight from the data, with no assumed law for how they change. The flag compares each
+ * direction's 4PLs with the spline surface on the treated cells and takes the worse, so a surface
+ * that is not monotonic in dose or in time is flagged. A direction whose slices have fewer than 4
+ * levels is not described; null when neither direction is. `method: 'joint'` fits one model over
+ * every cell instead (surfaceJoint.ts): steadier pEC50 on dense grids, at an assumed smooth change
+ * with time and ~10× the compute.
+ */
+export function describeSurface(
+  c: SplineCurve,
+  minShapeRatio = 0.8,
+  method: SurfaceMethod = 'slices',
+  interpolation = false
+): SurfaceDescription | null {
+  const s = c.surface
+  if (!s) return null
+  const nG = s.vehicle.length
+  const eff = s.treated.map((r, i) => c.y[nG + i] - s.vehicle[r.group].mean)
+  const rssSpline = s.treated.reduce((a, _, i) => a + (c.y[nG + i] - c.fitted[nG + i]) ** 2, 0)
+  const em = mean(eff)
+  const sst = eff.reduce((a, v) => a + (v - em) ** 2, 0)
+  if (method === 'joint') {
+    const j = fitJointSurface(c, interpolation)
+    if (!j) return null
+    return {
+      method,
+      byTime: j.byTime.map((t) => ({
+        at: t.time,
+        pec50: -t.x50,
+        slope: j.params.h,
+        front: 0,
+        back: t.top,
+        mid: 10 ** t.x50
+      })),
+      byDose: [],
+      joint: j.params,
+      jointUbar: j.ubar,
+      ...shape(j.rss, rssSpline, sst, minShapeRatio)
+    }
+  }
+  const direction = (
+    key: 'time' | 'dose',
+    sc: NonNullable<SplineCurve['scale']>
+  ): { slices: SliceDescription[]; rss: number } | null => {
+    const by = new Map<number, number[]>()
+    s.treated.forEach((r, i) => {
+      const a = by.get(r[key])
+      if (a) a.push(i)
+      else by.set(r[key], [i])
+    })
+    const slices: SliceDescription[] = []
+    let rss = 0
+    for (const at of [...by.keys()].sort((a, b) => a - b)) {
+      const idx = by.get(at)!
+      if (idx.length < 4) return null
+      // along the other axis: dose curves by log dose (baseline at −∞), time curves from t₀
+      const lv = (i: number): number =>
+        key === 'time'
+          ? Math.log10(s.treated[i].dose)
+          : Math.log10(s.treated[i].time + s.timeOffset)
+      idx.sort((a, b) => lv(a) - lv(b))
+      const x0 = key === 'time' ? lv(idx[0]) - 1 : Math.log10(s.timeOffset)
+      const { p, pred, mid } = fit4pl(
+        [x0, ...idx.map(lv)],
+        [0, ...idx.map((i) => eff[i])],
+        sc,
+        interpolation
+      )
+      idx.forEach((i, k) => (rss += (eff[i] - pred[k + 1]) ** 2))
+      slices.push({ ...p, at, mid })
+    }
+    return { slices, rss }
+  }
+  const byTime = direction('time', { axis: 'dose' })
+  const byDose = direction('dose', { axis: 'time', offset: s.timeOffset })
+  if (!byTime && !byDose) return null
+  const worst = [byTime, byDose]
+    .filter((d): d is NonNullable<typeof d> => d != null)
+    .map((d) => shape(d.rss, rssSpline, sst, minShapeRatio))
+    .reduce((a, b) => (b.shapeRatio < a.shapeRatio ? b : a))
+  return { method, byTime: byTime?.slices ?? [], byDose: byDose?.slices ?? [], ...worst }
+}
+
+/** Describe the curves of a run called at q ≤ `qMax` (keyed by row index); the rest stay
+ *  undescribed — description is for responders only. */
+export function describeRun(
+  run: SplineRun,
+  qMax = 0.05,
+  minShapeRatio = 0.8
+): Map<number, CurveDescription> {
+  const out = new Map<number, CurveDescription>()
+  run.rows.forEach((r, i) => {
+    if (!(r.q <= qMax)) return
+    const d = describeCurve(r.curve, minShapeRatio)
+    if (d) out.set(i, d)
+  })
+  return out
+}
+
+/** describeRun for a dose × time run (runSurfaceFit): the surfaces called at q ≤ `qMax`. */
+export function describeSurfaceRun(
+  run: SplineRun,
+  qMax = 0.05,
+  minShapeRatio = 0.8,
+  method: SurfaceMethod = 'slices'
+): Map<number, SurfaceDescription> {
+  const out = new Map<number, SurfaceDescription>()
+  run.rows.forEach((r, i) => {
+    if (!(r.q <= qMax)) return
+    const d = describeSurface(r.curve, minShapeRatio, method)
+    if (d) out.set(i, d)
+  })
+  return out
 }
 
 // ── dose × time surface ──────────────────────────────────────────────────────────────────────
@@ -588,7 +892,12 @@ export function fitSurface(
     abundance,
     repSS: rep.ss,
     repDf: rep.df,
-    nPerLevel: rep.nPerLevel
+    nPerLevel: rep.nPerLevel,
+    surface: {
+      vehicle,
+      treated: treated.map((r) => ({ dose: r.dose, time: r.time, group: r.group })),
+      timeOffset: off
+    }
   }
 }
 

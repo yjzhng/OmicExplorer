@@ -20,9 +20,237 @@ interface Dendrogram {
   n: number
 }
 
+/** How clusters' distances are joined: `average` (UPGMA, the default); `ward` (Ward's minimum
+ *  variance — scipy's `method='ward'`: each merge is the one that least raises the within-cluster
+ *  sum of squares, so clusters come out compact and even-sized rather than one sprawling cluster
+ *  with outliers chained on); or `complete` (the farthest pair — pheatmap's default: tight
+ *  clusters, every member near every other). */
+export type Linkage = 'average' | 'ward' | 'complete'
+
+/** How the tree's leaves are laid out — at each merge either branch can go first:
+ *  - `mean`: in increasing order of the branches' mean weight (`weights`) — R's `heatmap()`
+ *    (`reorder.dendrogram` by row means), so neighbouring clusters run low → high;
+ *  - `optimal`: whichever flips make the summed distance between neighbouring rows smallest —
+ *    optimal leaf ordering (Bar-Joseph et al. 2001; scipy's `optimal_leaf_ordering`), the
+ *    smoothest layout the tree allows. With `weights`, the whole order then runs low → high. */
+export type LeafOrder = 'mean' | 'optimal'
+
+export interface ClusterOrderOptions {
+  /** one per row, for the `mean` leaf order (and the direction of the `optimal` one); without
+   *  them, `mean` keeps the order the merges happened in */
+  weights?: number[]
+  linkage?: Linkage
+  /** default `mean` */
+  leafOrder?: LeafOrder
+}
+
 /** Return a row ordering that places similar rows adjacent (dendrogram leaf order). */
-export function clusterRowOrder(rows: number[][]): number[] {
-  return buildDendrogram(rows).order
+export function clusterRowOrder(rows: number[][], opts: ClusterOrderOptions = {}): number[] {
+  return arrangeLeaves(rows, buildDendrogram(rows, opts), opts)
+}
+
+/** One merge of a dendrogram, for drawing: its two children's positions along the leaf axis (a
+ *  leaf's position is its index in the leaf order; a subtree's, the midpoint of its children's)
+ *  and heights (0 for a leaf), and the height the merge happened at. A child's branch runs from
+ *  its own height up to `h`, and a bar at `h` joins the two. */
+export interface DendroLink {
+  a: number
+  b: number
+  ha: number
+  hb: number
+  h: number
+  /** the leaf positions each child spans, first to last (a leaf: itself) — a subtree's leaves are
+   *  a contiguous block, so a collapsed child can be drawn as a bracket over its rows */
+  sa: [number, number]
+  sb: [number, number]
+}
+
+/** `clusterRowOrder`, also returning the tree it ordered by — its merges in leaf-position space
+ *  (see DendroLink), for drawing a dendrogram along the ordered rows. Every leaf order this module
+ *  makes only flips branches, so each subtree stays a contiguous block and its links don't cross. */
+export function clusterRowTree(
+  rows: number[][],
+  opts: ClusterOrderOptions = {}
+): { order: number[]; links: DendroLink[] } {
+  const d = buildDendrogram(rows, opts)
+  const order = arrangeLeaves(rows, d, opts)
+  const pos = new Float64Array(2 * d.n)
+  const ht = new Float64Array(2 * d.n)
+  const lo = new Float64Array(2 * d.n)
+  const hi = new Float64Array(2 * d.n)
+  order.forEach((leaf, i) => (pos[leaf] = lo[leaf] = hi[leaf] = i))
+  const links: DendroLink[] = []
+  // A merge's children always have lower ids, so their positions are known first.
+  for (let i = 0; i < d.childA.length; i++) {
+    const a = d.childA[i]
+    const b = d.childB[i]
+    const k = d.n + i
+    pos[k] = (pos[a] + pos[b]) / 2
+    ht[k] = d.height[i]
+    lo[k] = Math.min(lo[a], lo[b])
+    hi[k] = Math.max(hi[a], hi[b])
+    links.push({
+      a: pos[a],
+      b: pos[b],
+      ha: ht[a],
+      hb: ht[b],
+      h: d.height[i],
+      sa: [lo[a], hi[a]],
+      sb: [lo[b], hi[b]]
+    })
+  }
+  return { order, links }
+}
+
+/** The tree's leaf order under `opts.leafOrder` (see LeafOrder). */
+function arrangeLeaves(rows: number[][], d: Dendrogram, opts: ClusterOrderOptions): number[] {
+  if (opts.leafOrder !== 'optimal' || d.childA.length === 0) return d.order
+  const order = optimalLeafOrder(rows, d)
+  // the whole order runs low → high mean weight (the optimal order is the same either way round)
+  const w = opts.weights
+  if (w) {
+    const half = Math.floor(order.length / 2)
+    let lo = 0
+    let hi = 0
+    for (let k = 0; k < half; k++) {
+      lo += w[order[k]]
+      hi += w[order[order.length - 1 - k]]
+    }
+    if (lo > hi) order.reverse()
+  }
+  return order
+}
+
+/**
+ * Optimal leaf ordering of a dendrogram (Bar-Joseph, Gifford & Jaakkola 2001): of the 2ⁿ⁻¹ layouts
+ * the tree allows (either branch first at every merge), the one whose neighbouring rows have the
+ * smallest summed euclidean distance. M[i][j] is the best cost of laying out the subtree where
+ * leaves i and j meet (their lowest common ancestor) from i to j; a node joining subtrees w and x
+ * takes, for i in w and j in x, the best i → h (h in the other branch of w from i), the step
+ * h → l, and l → j (l in the other branch of x from j). Cost O(n³) time, O(n²) memory.
+ */
+function optimalLeafOrder(rows: number[][], d: Dendrogram): number[] {
+  const { n, childA, childB } = d
+  const m = rows[0]?.length ?? 0
+  const S = new Float64Array(n * n)
+  for (let i = 0; i < n; i++)
+    for (let j = i + 1; j < n; j++) {
+      let s = 0
+      for (let k = 0; k < m; k++) {
+        const v = rows[i][k] - rows[j][k]
+        s += v * v
+      }
+      S[i * n + j] = S[j * n + i] = Math.sqrt(s)
+    }
+  // each node's leaves (a merge's children always have lower ids, so are listed first)
+  const leaves: number[][] = []
+  for (let i = 0; i < n; i++) leaves.push([i])
+  for (let k = 0; k < childA.length; k++) leaves.push([...leaves[childA[k]], ...leaves[childB[k]]])
+  const M = new Float64Array(n * n)
+  // scratch: a leaf's position in the current x branch; a branch's positions and costs
+  const pos = new Int32Array(n)
+  const at = new Int32Array(n)
+  const mj = new Float64Array(n)
+  // which branch of a node each of its leaves is in (0 = A, 1 = B), written per node as needed
+  const side = new Uint8Array(n)
+  const mark = (id: number): void => {
+    if (id < n) return
+    for (const i of leaves[childA[id - n]]) side[i] = 0
+    for (const i of leaves[childB[id - n]]) side[i] = 1
+  }
+  /** the leaves of `id` on the other branch from leaf `i` (marked for `id`); a leaf: itself */
+  const other = (id: number, i: number): number[] =>
+    id < n ? leaves[id] : leaves[side[i] === 0 ? childB[id - n] : childA[id - n]]
+
+  for (let k = 0; k < childA.length; k++) {
+    const w = childA[k]
+    const x = childB[k]
+    const Lw = leaves[w]
+    const Lx = leaves[x]
+    // T[i][l] = min over h of M[i][h] + S[h][l] — i in w, l in x
+    const T = new Float64Array(Lw.length * Lx.length)
+    mark(w)
+    Lw.forEach((i, a) => {
+      const H = other(w, i)
+      const K = H.length
+      for (let t = 0; t < K; t++) mj[t] = M[i * n + H[t]]
+      for (let b = 0; b < Lx.length; b++) {
+        const row = Lx[b] * n
+        let best = Infinity
+        for (let t = 0; t < K; t++) {
+          const c = mj[t] + S[row + H[t]]
+          if (c < best) best = c
+        }
+        T[a * Lx.length + b] = best
+      }
+    })
+    // M[i][j] = min over l of T[i][l] + M[l][j]
+    mark(x)
+    Lx.forEach((l, b) => (pos[l] = b))
+    for (const j of Lx) {
+      const Lo = other(x, j)
+      const K = Lo.length
+      for (let t = 0; t < K; t++) {
+        at[t] = pos[Lo[t]]
+        mj[t] = M[Lo[t] * n + j]
+      }
+      for (let a = 0; a < Lw.length; a++) {
+        const base = a * Lx.length
+        let best = Infinity
+        for (let t = 0; t < K; t++) {
+          const c = T[base + at[t]] + mj[t]
+          if (c < best) best = c
+        }
+        const i = Lw[a]
+        M[i * n + j] = M[j * n + i] = best
+      }
+    }
+  }
+
+  // The best ends at the root, then down the tree: each node's i → h, l → j.
+  const root = n + childA.length - 1
+  let bi = -1
+  let bj = -1
+  let bc = Infinity
+  for (const i of leaves[childA[root - n]])
+    for (const j of leaves[childB[root - n]])
+      if (M[i * n + j] < bc) {
+        bc = M[i * n + j]
+        bi = i
+        bj = j
+      }
+  const order: number[] = []
+  const stack: Array<[number, number, number]> = [[root, bi, bj]]
+  while (stack.length) {
+    const [id, i, j] = stack.pop()!
+    if (id < n) {
+      order.push(i)
+      continue
+    }
+    // w holds i, x holds j
+    mark(id)
+    const [w, x] =
+      side[i] === 0 ? [childA[id - n], childB[id - n]] : [childB[id - n], childA[id - n]]
+    mark(w)
+    const H = other(w, i)
+    mark(x)
+    const Lo = other(x, j)
+    let bh = -1
+    let bl = -1
+    let best = Infinity
+    for (const h of H)
+      for (const l of Lo) {
+        const c = M[i * n + h] + S[h * n + l] + M[l * n + j]
+        if (c < best) {
+          best = c
+          bh = h
+          bl = l
+        }
+      }
+    // x's part after w's: pushed first, popped last
+    stack.push([x, bl, j], [w, i, bh])
+  }
+  return order
 }
 
 /**
@@ -83,12 +311,17 @@ export function clusterRowGroups(rows: number[][], k: number): number[][] {
   return [...byRoot.values()]
 }
 
-function buildDendrogram(rows: number[][]): Dendrogram {
+function buildDendrogram(
+  rows: number[][],
+  { weights, linkage = 'average' }: ClusterOrderOptions = {}
+): Dendrogram {
+  const ward = linkage === 'ward'
+  const complete = linkage === 'complete'
   const n = rows.length
   if (n <= 2) return { order: rows.map((_, i) => i), childA: [], childB: [], height: [], n }
   const m = rows[0]?.length ?? 0
 
-  // Full symmetric euclidean distance matrix.
+  // Full symmetric euclidean distance matrix (squared for Ward, whose update works on squares).
   const D: Float64Array[] = Array.from({ length: n }, () => new Float64Array(n))
   for (let i = 0; i < n; i++) {
     const a = rows[i]
@@ -99,7 +332,7 @@ function buildDendrogram(rows: number[][]): Dendrogram {
         const d = a[k] - b[k]
         s += d * d
       }
-      const dist = Math.sqrt(s)
+      const dist = ward ? s : Math.sqrt(s)
       D[i][j] = dist
       D[j][i] = dist
     }
@@ -148,7 +381,7 @@ function buildDendrogram(rows: number[][]): Dendrogram {
       const hi = a < b ? b : a
       childA.push(node[lo])
       childB.push(node[hi])
-      height.push(bd)
+      height.push(ward ? Math.sqrt(bd) : bd)
       node[lo] = nextId++
       const nl = size[lo]
       const nh = size[hi]
@@ -157,7 +390,13 @@ function buildDendrogram(rows: number[][]): Dendrogram {
       const denom = nl + nh
       for (let k = 0; k < n; k++) {
         if (!active[k] || k === lo || k === hi) continue
-        const merged = (nl * Dlo[k] + nh * Dhi[k]) / denom // Lance-Williams (UPGMA)
+        // Lance-Williams: UPGMA, Ward on squared distances, or complete (the farther)
+        const nk = size[k]
+        const merged = ward
+          ? ((nl + nk) * Dlo[k] + (nh + nk) * Dhi[k] - nk * bd) / (denom + nk)
+          : complete
+            ? Math.max(Dlo[k], Dhi[k])
+            : (nl * Dlo[k] + nh * Dhi[k]) / denom
         Dlo[k] = merged
         D[k][lo] = merged
       }
@@ -169,7 +408,22 @@ function buildDendrogram(rows: number[][]): Dendrogram {
     }
   }
 
-  // In-order DFS of the merge tree → leaf order (children in recorded order).
+  // Each node's mean weight (a merge's children always have lower ids, so are known first).
+  let mean: Float64Array | null = null
+  if (weights) {
+    const sum = new Float64Array(nextId)
+    const cnt = new Float64Array(nextId)
+    for (let i = 0; i < n; i++) {
+      sum[i] = weights[i]
+      cnt[i] = 1
+    }
+    for (let i = 0; i < childA.length; i++) {
+      sum[n + i] = sum[childA[i]] + sum[childB[i]]
+      cnt[n + i] = cnt[childA[i]] + cnt[childB[i]]
+    }
+    mean = sum.map((v, i) => v / cnt[i])
+  }
+  // In-order DFS of the merge tree → leaf order (children in recorded order, or by mean weight).
   const order: number[] = []
   const stack: number[] = [nextId - 1] // root
   while (stack.length) {
@@ -179,8 +433,11 @@ function buildDendrogram(rows: number[][]): Dendrogram {
       continue
     }
     const idx = id - n
-    stack.push(childB[idx]) // push B then A so A is visited first
-    stack.push(childA[idx])
+    let a = childA[idx]
+    let b = childB[idx]
+    if (mean && mean[b] < mean[a]) [a, b] = [b, a]
+    stack.push(b) // push B then A so A is visited first
+    stack.push(a)
   }
   return { order, childA, childB, height, n }
 }

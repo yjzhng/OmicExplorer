@@ -66,10 +66,12 @@ describe('form layout views render', () => {
 
   it('is one view: no Workflow/Results split to switch between', async () => {
     const html = await render('./FormWorkflow', 'FormWorkflow')
-    // The workflow column and the selected step's panel, and a single divider between them.
+    // The workflow column, then the selected step's settings and its details column: always three
+    // columns, so two dividers, whether or not the step has a configuration window.
     expect(html).toContain('Analysis workflow')
-    expect((html.match(/role="separator"/g) ?? []).length).toBe(1)
+    expect((html.match(/role="separator"/g) ?? []).length).toBe(2)
     expect(html).toContain('aria-label="Resize the workflow column"')
+    expect(html).toContain('aria-label="Resize the settings column"')
   })
 
   it("uses the app's own pickers, never a native one", async () => {
@@ -108,9 +110,10 @@ describe('form layout views render', () => {
 
     // A plot's status stays `idle` for the life of the project, so reading it as a run state made
     // the form say "not run" for a step the canvas shows as ready. Only runnable steps get one.
-    // The status is a dot; what it means is its aria-label.
+    // The status is a dot; what it means is its aria-label. A section's (i) tip is an img too,
+    // labelled "About …", so it is left out of the count.
     expect((html.match(/aria-label="Not run"/g) ?? []).length).toBeLessThanOrEqual(runnable.length)
-    expect((html.match(/role="img" aria-label="/g) ?? []).length).toBe(steps.length)
+    expect((html.match(/role="img" aria-label="(?!About )/g) ?? []).length).toBe(steps.length)
   })
 
   it("reads a Load tile's readiness from its own files, not from an upstream", async () => {

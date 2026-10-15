@@ -14,7 +14,6 @@
  */
 import { ipcMain } from 'electron'
 import { cacheRoot, readJson, writeJson } from './cache'
-import { cegClass } from './cegEssential'
 import { isEssentialAccession } from './degEssential'
 import { join } from 'path'
 
@@ -22,6 +21,9 @@ import { join } from 'path'
 const UNIPROT_FIELD: Record<string, { uni: string; col: string }> = {
   protein_name: { uni: 'protein_name', col: 'proteinName' },
   gene_names: { uni: 'gene_names', col: 'geneName' },
+  // UniProt's ordered locus name — the systematic gene name (Rv0001, b0014, YAL001C); none for
+  // most human proteins. Filled into the DB's `locus`, the label where a protein has no gene name.
+  locus: { uni: 'gene_oln', col: 'locus' },
   // GO by aspect: biological process / molecular function / cellular component.
   go_bp: { uni: 'go_p', col: 'GO_BP' },
   go_mf: { uni: 'go_f', col: 'GO_MF' },
@@ -58,11 +60,6 @@ const REACTOME_CAT_COL = 'Reactome_cat'
 /** DB column stamped 'essential' for genes whose UniProt accession is in DEG (Database of Essential
  *  Genes). Locally derived — never fetched. The results menu's Essentiality tab reads it. */
 const ESSENTIAL_COL = 'DEG'
-/** DB column stamped 'essential' / 'non-essential' from the Hart gold-standard human sets. Also a
- *  purely local join. Separate from DEG rather than merged: the two disagree (DEG is a union of
- *  screens, so it calls context-specific hits essential), and folding them together would bury
- *  that behind a single verdict. */
-const CEG_COL = 'CEG_NEG'
 /** Internal (never returned) column holding the accession's NCBI taxon, cached for STRING. */
 const TAXON_COL = '_taxon'
 /** Internal column holding the accession's KEGG organism code (e.g. 'hsa'), for STRING pathway mode. */
@@ -115,6 +112,45 @@ interface UniStore {
   byAcc: Record<string, UniEntry>
 }
 const storePath = (): string => join(cacheRoot(), 'uniprot', 'store.json')
+/** The UniProt cache file and its entry shape, for Settings › Database (ref-cache.ts). */
+export { storePath as uniprotStorePath, type UniStore }
+
+/** The cache's columns by source, for Settings › Database: `field` is the id an import asks
+ *  for it by; an accession is covered for a source once `col` is in its `got`, and by the current
+ *  resolver once `token` is too. */
+export const CACHE_SOURCES: { label: string; field: string; col: string; token?: string }[] = [
+  { label: 'Protein names', field: 'protein_name', col: UNIPROT_FIELD.protein_name.col },
+  { label: 'Gene names', field: 'gene_names', col: UNIPROT_FIELD.gene_names.col },
+  { label: 'GO biological process', field: 'go_bp', col: UNIPROT_FIELD.go_bp.col },
+  { label: 'GO molecular function', field: 'go_mf', col: UNIPROT_FIELD.go_mf.col },
+  { label: 'GO cellular component', field: 'go_cc', col: UNIPROT_FIELD.go_cc.col },
+  { label: 'STRING ids', field: 'string', col: UNIPROT_FIELD.string.col },
+  { label: 'KEGG pathways', field: 'kegg', col: KEGG_COL, token: RESOLVER_TOKEN.kegg },
+  { label: 'COG groups', field: 'cog', col: OG_COLS.COG.group, token: RESOLVER_TOKEN.cog },
+  { label: 'KOG groups', field: 'kog', col: OG_COLS.KOG.group, token: RESOLVER_TOKEN.cog },
+  { label: 'MSigDB hallmarks', field: 'msigdb', col: MSIG_COL, token: RESOLVER_TOKEN.msigdb },
+  {
+    label: 'Reactome pathways',
+    field: 'reactome',
+    col: REACTOME_COL,
+    token: RESOLVER_TOKEN.reactome
+  }
+]
+/** The cache column holding an accession's NCBI taxon. */
+export const CACHE_TAXON_COL = TAXON_COL
+
+/** The current UniProt release (e.g. "2026_04"), from the header UniProt stamps on every search
+ *  response; '' when it can't be reached. */
+export async function uniprotRelease(): Promise<string> {
+  try {
+    const res = await fetchT(
+      'https://rest.uniprot.org/uniprotkb/search?query=accession:P04637&fields=accession&format=tsv&size=1'
+    )
+    return res.ok ? (res.headers.get('x-uniprot-release') ?? '') : ''
+  } catch {
+    return ''
+  }
+}
 
 /** Trim UniProt's verbose formatting to a clean cell value. */
 function cleanValue(col: string, raw: string): string {
@@ -122,6 +158,8 @@ function cleanValue(col: string, raw: string): string {
   if (!v) return v
   if (col === 'proteinName') return v.replace(/\s*[([].*$/, '').trim()
   if (col === 'geneName') return v.split(/\s+/)[0].trim()
+  // Several ordered locus names (b0014 JW0013; …): the first, as for the gene name.
+  if (col === 'locus') return v.split(/[\s;]+/)[0].trim()
   if (col.startsWith('GO')) return v.replace(/\s*\[GO:\d+\]/g, '').trim()
   if (col === 'stringId') return v.split(';')[0].trim()
   return v
@@ -456,7 +494,11 @@ async function addCogGroups(
     const all = idsOf(acc)
     if (all.length === 0) continue
     const rec = (byId[acc] ??= {})
-    for (const kind of kinds) {
+    // Both kinds asked for (the import's single COG/KOG pick): a protein with a KOG — a eukaryote,
+    // human included — takes its KOG only; the rest their COG.
+    const use =
+      kinds.length > 1 && all.some((i) => i.startsWith('KOG')) ? (['KOG'] as const) : kinds
+    for (const kind of use) {
       const ids = all.filter((i) => i.startsWith(kind))
       if (ids.length === 0) continue
       const cols = OG_COLS[kind]
@@ -692,207 +734,210 @@ export function registerAnnotate(): void {
       accessions: string[],
       fields: string[],
       opts?: { refresh?: boolean }
-    ): Promise<AnnotResult> => {
-      const onProg = (done: number, total: number, stage?: string): void =>
+    ): Promise<AnnotResult> =>
+      annotateAccessions(accessions, fields, opts, (done, total, stage) =>
         evt.sender.send('annot:progress', { done, total, stage })
-      const uniq = [...new Set((accessions ?? []).map((a) => a?.trim()).filter(Boolean))]
-      const want = new Set(fields ?? [])
-      const uni = Object.keys(UNIPROT_FIELD)
-        .filter((id) => want.has(id))
-        .map((id) => UNIPROT_FIELD[id])
-      const withKegg = want.has('kegg')
-      const withCog = want.has('cog')
-      const withKog = want.has('kog')
-      const ogKinds = [...(withCog ? ['COG' as const] : []), ...(withKog ? ['KOG' as const] : [])]
-      const withMsig = want.has('msigdb')
-      const withReactome = want.has('reactome')
-      // Species is fetched alongside STRING ids, and for MSigDB to pick the hallmark collection.
-      const withTaxon = want.has('string') || withMsig
-      // Essentiality is a purely LOCAL join against the vendored DEG accession set — no network, no
-      // UniProt cache. Kept out of outFields/requiredCols so it never forces a refetch; stamped into
-      // the result below and appended to the returned column list.
-      const withEssential = want.has('essentiality')
-      const withCeg = want.has('ceg')
-      const outCols = uni.map((u) => u.col)
-      // MSigDB keys on gene symbols; ask for them only when the user's own picks don't already
-      // include the gene-names field (fetchUniprotChunk reuses that cell when they do).
-      const needSymbol = withMsig && !uni.some((u) => u.uni === EXTRA_UNI.symbol)
-      const extras: ExtraKey[] = [
-        ...(withKegg ? (['kegg'] as const) : []),
-        ...(withTaxon ? (['organism'] as const) : []),
-        ...(ogKinds.length ? (['eggnog'] as const) : []),
-        ...(needSymbol ? (['symbol'] as const) : [])
-      ]
-      const outFields = [
-        ...outCols,
-        ...(withKegg ? [KEGG_COL, KEGG_CAT_COL, KEGG_GRP_COL] : []),
-        ...ogKinds.flatMap((k) => [OG_COLS[k].group, OG_COLS[k].cat, OG_COLS[k].area]),
-        ...(withMsig ? [MSIG_COL] : []),
-        ...(withReactome ? [REACTOME_COL, REACTOME_GRP_COL, REACTOME_CAT_COL] : [])
-      ]
-      const resultFields = [
-        ...outFields,
-        ...(withEssential ? [ESSENTIAL_COL] : []),
-        ...(withCeg ? [CEG_COL] : [])
-      ]
-      // What a full fetch must have covered, for the cache test: the output columns, the internal
-      // taxon / KEGG-org, and a version marker per source whose resolution has changed since.
-      const requiredCols = [
-        ...outFields,
-        ...(withTaxon ? [TAXON_COL] : []),
-        ...(withKegg ? [KEGGORG_COL, RESOLVER_TOKEN.kegg] : []),
-        ...(ogKinds.length ? [RESOLVER_TOKEN.cog] : []),
-        ...(withMsig ? [RESOLVER_TOKEN.msigdb] : []),
-        ...(withReactome ? [RESOLVER_TOKEN.reactome] : [])
-      ]
-      if (uniq.length === 0) return { byId: {}, fields: resultFields, found: 0, taxon: 0 }
+      )
+  )
+}
 
-      // A refresh re-queries every source for every accession, cache or no cache. It's the way out
-      // when a cached value is wrong rather than merely old — the version markers above only retire
-      // entries for a source whose resolver we KNEW had changed.
-      const refresh = opts?.refresh === true
-      if (refresh) resetReferenceMemos()
-      const store = (await readJson<UniStore>(storePath())) ?? { byAcc: {} }
-      const covers = (acc: string): boolean => {
-        if (refresh) return false
-        const e = store.byAcc[acc]
-        return !!e && requiredCols.every((c) => e.got.includes(c))
-      }
+/** Annotate accessions with the requested fields, from the app-wide cache where it covers them
+ *  and from UniProt (and the sources it feeds) where it doesn't, folding what's fetched into the
+ *  cache. `refresh` re-fetches every accession. Behind `annot:uniprot` (an import) and Settings ›
+ *  Database's per-source Update. */
+export async function annotateAccessions(
+  accessions: string[],
+  fields: string[],
+  opts: { refresh?: boolean } | undefined,
+  onProg: (done: number, total: number, stage?: string) => void
+): Promise<AnnotResult> {
+  const uniq = [...new Set((accessions ?? []).map((a) => a?.trim()).filter(Boolean))]
+  const want = new Set(fields ?? [])
+  const uni = Object.keys(UNIPROT_FIELD)
+    .filter((id) => want.has(id))
+    .map((id) => UNIPROT_FIELD[id])
+  const withKegg = want.has('kegg')
+  const withCog = want.has('cog')
+  const withKog = want.has('kog')
+  const ogKinds = [...(withCog ? ['COG' as const] : []), ...(withKog ? ['KOG' as const] : [])]
+  const withMsig = want.has('msigdb')
+  const withReactome = want.has('reactome')
+  // Species is fetched alongside STRING ids, and for MSigDB to pick the hallmark collection.
+  const withTaxon = want.has('string') || withMsig
+  // Essentiality is a purely LOCAL join against the vendored DEG accession set — no network, no
+  // UniProt cache. Kept out of outFields/requiredCols so it never forces a refetch; stamped into
+  // the result below and appended to the returned column list.
+  const withEssential = want.has('essentiality')
+  const outCols = uni.map((u) => u.col)
+  // MSigDB keys on gene symbols; ask for them only when the user's own picks don't already
+  // include the gene-names field (fetchUniprotChunk reuses that cell when they do).
+  const needSymbol = withMsig && !uni.some((u) => u.uni === EXTRA_UNI.symbol)
+  const extras: ExtraKey[] = [
+    ...(withKegg ? (['kegg'] as const) : []),
+    ...(withTaxon ? (['organism'] as const) : []),
+    ...(ogKinds.length ? (['eggnog'] as const) : []),
+    ...(needSymbol ? (['symbol'] as const) : [])
+  ]
+  const outFields = [
+    ...outCols,
+    ...(withKegg ? [KEGG_COL, KEGG_CAT_COL, KEGG_GRP_COL] : []),
+    ...ogKinds.flatMap((k) => [OG_COLS[k].group, OG_COLS[k].cat, OG_COLS[k].area]),
+    ...(withMsig ? [MSIG_COL] : []),
+    ...(withReactome ? [REACTOME_COL, REACTOME_GRP_COL, REACTOME_CAT_COL] : [])
+  ]
+  const resultFields = [...outFields, ...(withEssential ? [ESSENTIAL_COL] : [])]
+  // What a full fetch must have covered, for the cache test: the output columns, the internal
+  // taxon / KEGG-org, and a version marker per source whose resolution has changed since.
+  const requiredCols = [
+    ...outFields,
+    ...(withTaxon ? [TAXON_COL] : []),
+    ...(withKegg ? [KEGGORG_COL, RESOLVER_TOKEN.kegg] : []),
+    ...(ogKinds.length ? [RESOLVER_TOKEN.cog] : []),
+    ...(withMsig ? [RESOLVER_TOKEN.msigdb] : []),
+    ...(withReactome ? [RESOLVER_TOKEN.reactome] : [])
+  ]
+  if (uniq.length === 0) return { byId: {}, fields: resultFields, found: 0, taxon: 0 }
 
-      let error: string | undefined
-      // Fetch a set of accessions from UniProt and fold them into the store.
-      const fetchInto = async (accs: string[]): Promise<string> => {
-        const byId: Record<string, Record<string, string>> = {}
-        const extra = emptyExtras()
-        const meta = { release: '' }
-        onProg(0, accs.length)
-        for (let i = 0; i < accs.length; i += CHUNK) {
-          await fetchUniprotChunk(
-            accs.slice(i, i + CHUNK),
-            uni.map((u) => u.uni),
-            outCols,
-            extras,
-            byId,
-            extra,
-            meta
-          )
-          onProg(Math.min(i + CHUNK, accs.length), accs.length)
-        }
-        // The taxon is the one extra that's also persisted — STRING reads it back from the cache.
-        for (const [acc, t] of Object.entries(extra.organism)) (byId[acc] ??= {})[TAXON_COL] = t
-        if (withKegg) {
-          onProg(0, 0, 'Resolving KEGG pathways…')
-          await addKeggPathways(extra.kegg, byId, (d, t) =>
-            onProg(0, 0, `Resolving KEGG pathways… ${d}/${t}`)
-          )
-          // Stash each accession's KEGG organism code (the 'hsa' of 'hsa:7157') for STRING pathway mode.
-          for (const [acc, kg] of Object.entries(extra.kegg)) {
-            const org = kg.split(':')[0].trim()
-            if (org) (byId[acc] ??= {})[KEGGORG_COL] = org
-          }
-        }
-        if (ogKinds.length) {
-          onProg(0, 0, `Resolving ${ogKinds.join(' / ')} groups…`)
-          await addCogGroups(extra.eggnog, byId, ogKinds)
-        }
-        if (withMsig) {
-          onProg(0, 0, 'Loading MSigDB hallmark sets…')
-          await addMsigdbSets(
-            accs,
-            (acc) => extra.symbol[acc] ?? '',
-            (acc) => extra.organism[acc] ?? '',
-            byId
-          )
-        }
-        if (withReactome) {
-          onProg(0, 0, 'Downloading the Reactome pathway map…')
-          await addReactomePathways(accs, byId)
-        }
-        for (const acc of accs) {
-          const e = (store.byAcc[acc] ??= { got: [], fields: {}, release: meta.release })
-          for (const c of requiredCols) if (!e.got.includes(c)) e.got.push(c)
-          // This fetch REPLACES what it re-resolved: a value it no longer produces (a stale group
-          // from an older resolver, a pathway since dropped) must not outlive it in the cache.
-          for (const c of outFields) delete e.fields[c]
-          const rec = byId[acc]
-          if (rec) for (const [c, v] of Object.entries(rec)) if (v) e.fields[c] = v
-          if (meta.release) e.release = meta.release
-        }
-        return meta.release
-      }
+  // A refresh re-queries every source for every accession, cache or no cache. It's the way out
+  // when a cached value is wrong rather than merely old — the version markers above only retire
+  // entries for a source whose resolver we KNEW had changed.
+  const refresh = opts?.refresh === true
+  if (refresh) resetReferenceMemos()
+  const store = (await readJson<UniStore>(storePath())) ?? { byAcc: {} }
+  const covers = (acc: string): boolean => {
+    if (refresh) return false
+    const e = store.byAcc[acc]
+    return !!e && requiredCols.every((c) => e.got.includes(c))
+  }
 
-      try {
-        // Nothing to look up remotely — every selected field is a local accession join (DEG,
-        // CEG/NEG). Skip the round-trip instead of asking UniProt for a column of bare accessions.
-        const uncovered = outFields.length > 0 ? uniq.filter((a) => !covers(a)) : []
-        let release = ''
-        if (uncovered.length > 0) release = await fetchInto(uncovered)
-        // Version check: once we know the live release, refresh any covered accession stamped with
-        // an older one. (Skipped entirely when everything was already cached — stays offline.)
-        if (release) {
-          const stale = uniq.filter((a) => covers(a) && store.byAcc[a]?.release !== release)
-          if (stale.length > 0) await fetchInto(stale)
-        }
-        if (uncovered.length > 0) await writeJson(storePath(), store)
-      } catch (e) {
-        error = e instanceof Error ? e.message : 'Annotation fetch failed'
-      }
-
-      // Build the result (requested columns only) and the dominant taxon / KEGG org from the store.
-      const byId: Record<string, Record<string, string>> = {}
-      const taxonTally = new Map<number, number>()
-      const keggOrgTally = new Map<string, number>()
-      let found = 0
-      for (const acc of uniq) {
-        const e = store.byAcc[acc]
-        const rec: Record<string, string> = {}
-        if (e) for (const c of outFields) if (e.fields[c]) rec[c] = e.fields[c]
-        // Local lookups — independent of whether UniProt had the accession.
-        if (withEssential && isEssentialAccession(acc)) rec[ESSENTIAL_COL] = 'essential'
-        if (withCeg) {
-          const cls = cegClass(acc)
-          if (cls) rec[CEG_COL] = cls
-        }
-        if (Object.keys(rec).length > 0) {
-          byId[acc] = rec
-          found++
-        }
-        if (e && withTaxon) {
-          const t = parseInt(e.fields[TAXON_COL] ?? '', 10)
-          if (Number.isFinite(t) && t > 0) taxonTally.set(t, (taxonTally.get(t) ?? 0) + 1)
-        }
-        if (e && withKegg) {
-          const org = (e.fields[KEGGORG_COL] ?? '').trim()
-          if (org) keggOrgTally.set(org, (keggOrgTally.get(org) ?? 0) + 1)
-        }
-      }
-      let taxon = 0
-      let bestN = 0
-      for (const [t, n] of taxonTally) if (n > bestN) [taxon, bestN] = [t, n]
-      let keggOrg = ''
-      let bestK = 0
-      for (const [org, n] of keggOrgTally) if (n > bestK) [keggOrg, bestK] = [org, n]
-
-      // KEGG categories, built at the organism level so they populate even when every accession was
-      // already cached (the per-gene KEGG fetch above only runs on uncovered accessions).
-      let keggCategories: Record<string, string> = {}
-      if (withKegg) {
-        try {
-          keggCategories = await buildKeggCategories([...keggOrgTally.keys()])
-        } catch {
-          /* best-effort — no categories just means uncoloured labels */
-        }
-      }
-
-      return {
+  let error: string | undefined
+  // Fetch a set of accessions from UniProt and fold them into the store.
+  const fetchInto = async (accs: string[]): Promise<string> => {
+    const byId: Record<string, Record<string, string>> = {}
+    const extra = emptyExtras()
+    const meta = { release: '' }
+    onProg(0, accs.length)
+    for (let i = 0; i < accs.length; i += CHUNK) {
+      await fetchUniprotChunk(
+        accs.slice(i, i + CHUNK),
+        uni.map((u) => u.uni),
+        outCols,
+        extras,
         byId,
-        fields: resultFields,
-        found,
-        taxon,
-        keggOrg,
-        ...(Object.keys(keggCategories).length ? { keggCategories } : {}),
-        error
+        extra,
+        meta
+      )
+      onProg(Math.min(i + CHUNK, accs.length), accs.length)
+    }
+    // The taxon is the one extra that's also persisted — STRING reads it back from the cache.
+    for (const [acc, t] of Object.entries(extra.organism)) (byId[acc] ??= {})[TAXON_COL] = t
+    if (withKegg) {
+      onProg(0, 0, 'Resolving KEGG pathways…')
+      await addKeggPathways(extra.kegg, byId, (d, t) =>
+        onProg(0, 0, `Resolving KEGG pathways… ${d}/${t}`)
+      )
+      // Stash each accession's KEGG organism code (the 'hsa' of 'hsa:7157') for STRING pathway mode.
+      for (const [acc, kg] of Object.entries(extra.kegg)) {
+        const org = kg.split(':')[0].trim()
+        if (org) (byId[acc] ??= {})[KEGGORG_COL] = org
       }
     }
-  )
+    if (ogKinds.length) {
+      onProg(0, 0, `Resolving ${ogKinds.join(' / ')} groups…`)
+      await addCogGroups(extra.eggnog, byId, ogKinds)
+    }
+    if (withMsig) {
+      onProg(0, 0, 'Loading MSigDB hallmark sets…')
+      await addMsigdbSets(
+        accs,
+        (acc) => extra.symbol[acc] ?? '',
+        (acc) => extra.organism[acc] ?? '',
+        byId
+      )
+    }
+    if (withReactome) {
+      onProg(0, 0, 'Downloading the Reactome pathway map…')
+      await addReactomePathways(accs, byId)
+    }
+    for (const acc of accs) {
+      const e = (store.byAcc[acc] ??= { got: [], fields: {}, release: meta.release })
+      for (const c of requiredCols) if (!e.got.includes(c)) e.got.push(c)
+      // This fetch REPLACES what it re-resolved: a value it no longer produces (a stale group
+      // from an older resolver, a pathway since dropped) must not outlive it in the cache.
+      for (const c of outFields) delete e.fields[c]
+      const rec = byId[acc]
+      if (rec) for (const [c, v] of Object.entries(rec)) if (v) e.fields[c] = v
+      if (meta.release) e.release = meta.release
+    }
+    return meta.release
+  }
+
+  try {
+    // Nothing to look up remotely — every selected field is a local accession join (DEG).
+    // Skip the round-trip instead of asking UniProt for a column of bare accessions.
+    const uncovered = outFields.length > 0 ? uniq.filter((a) => !covers(a)) : []
+    let release = ''
+    if (uncovered.length > 0) release = await fetchInto(uncovered)
+    // Version check: once we know the live release, refresh any covered accession stamped with
+    // an older one. (Skipped entirely when everything was already cached — stays offline.)
+    if (release) {
+      const stale = uniq.filter((a) => covers(a) && store.byAcc[a]?.release !== release)
+      if (stale.length > 0) await fetchInto(stale)
+    }
+    if (uncovered.length > 0) await writeJson(storePath(), store)
+  } catch (e) {
+    error = e instanceof Error ? e.message : 'Annotation fetch failed'
+  }
+
+  // Build the result (requested columns only) and the dominant taxon / KEGG org from the store.
+  const byId: Record<string, Record<string, string>> = {}
+  const taxonTally = new Map<number, number>()
+  const keggOrgTally = new Map<string, number>()
+  let found = 0
+  for (const acc of uniq) {
+    const e = store.byAcc[acc]
+    const rec: Record<string, string> = {}
+    if (e) for (const c of outFields) if (e.fields[c]) rec[c] = e.fields[c]
+    // Local lookups — independent of whether UniProt had the accession.
+    if (withEssential && isEssentialAccession(acc)) rec[ESSENTIAL_COL] = 'essential'
+    if (Object.keys(rec).length > 0) {
+      byId[acc] = rec
+      found++
+    }
+    if (e && withTaxon) {
+      const t = parseInt(e.fields[TAXON_COL] ?? '', 10)
+      if (Number.isFinite(t) && t > 0) taxonTally.set(t, (taxonTally.get(t) ?? 0) + 1)
+    }
+    if (e && withKegg) {
+      const org = (e.fields[KEGGORG_COL] ?? '').trim()
+      if (org) keggOrgTally.set(org, (keggOrgTally.get(org) ?? 0) + 1)
+    }
+  }
+  let taxon = 0
+  let bestN = 0
+  for (const [t, n] of taxonTally) if (n > bestN) [taxon, bestN] = [t, n]
+  let keggOrg = ''
+  let bestK = 0
+  for (const [org, n] of keggOrgTally) if (n > bestK) [keggOrg, bestK] = [org, n]
+
+  // KEGG categories, built at the organism level so they populate even when every accession was
+  // already cached (the per-gene KEGG fetch above only runs on uncovered accessions).
+  let keggCategories: Record<string, string> = {}
+  if (withKegg) {
+    try {
+      keggCategories = await buildKeggCategories([...keggOrgTally.keys()])
+    } catch {
+      /* best-effort — no categories just means uncoloured labels */
+    }
+  }
+
+  return {
+    byId,
+    fields: resultFields,
+    found,
+    taxon,
+    keggOrg,
+    ...(Object.keys(keggCategories).length ? { keggCategories } : {}),
+    error
+  }
 }

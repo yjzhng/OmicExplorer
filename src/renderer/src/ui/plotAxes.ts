@@ -233,7 +233,8 @@ export function applyPlotAxes(
   // Any stand-in zero lines are APPENDED to the view's shapes: draggable guides address shapes by
   // index (see GuideDrag.shapeIndex), so existing entries must keep their positions.
   const extra: Record<string, unknown>[] = []
-  if (axes.x) {
+  // An axis the view hides (a 3-D plot's unused 2-D axes) takes no style and no stand-in lines.
+  if (axes.x && (layout.xaxis as { visible?: boolean } | undefined)?.visible !== false) {
     const base = (layout.xaxis as Record<string, unknown>) ?? {}
     out.xaxis = applyAxis(base, axes.x, () => dataExtent(data, 'x'))
     const z = zeroLineShape(base, axes.x, 'x')
@@ -243,7 +244,8 @@ export function applyPlotAxes(
     const al = axisLineShape(base, axes.x, 'x')
     if (al) extra.push(al)
   }
-  if (axes.y) {
+  // An axis the view hides (a 3-D plot's unused 2-D axes) takes no style and no stand-in lines.
+  if (axes.y && (layout.yaxis as { visible?: boolean } | undefined)?.visible !== false) {
     const base = (layout.yaxis as Record<string, unknown>) ?? {}
     out.yaxis = applyAxis(base, axes.y, () => dataExtent(data, 'y'))
     const z = zeroLineShape(base, axes.y, 'y')

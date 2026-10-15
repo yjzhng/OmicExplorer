@@ -71,6 +71,38 @@ export interface ExportResult {
   errors: string[]
 }
 
+/** What the app-wide reference cache holds (Settings › Database; main/ref-cache.ts). */
+export interface RefCacheSummary {
+  root: string
+  uniprot: {
+    bytes: number
+    updated: number
+    accessions: number
+    releases: { release: string; count: number }[]
+    sources: { label: string; field: string; count: number; outdated: number }[]
+    species: {
+      taxon: number
+      count: number
+      releases: string[]
+      sources: { label: string; field: string; count: number; outdated: number }[]
+      bytes: number
+    }[]
+  } | null
+  string: {
+    taxon: number
+    version: string
+    bytes: number
+    oldBytes: number
+    names: boolean
+    updated: number
+  }[]
+}
+export type RefCacheTarget =
+  | { kind: 'uniprot' }
+  | { kind: 'uniprot-taxon'; taxon: number }
+  | { kind: 'string'; taxon: number }
+  | { kind: 'string-old' }
+
 /** One table handed to the main process to write as CSV/XLSX (see tables:export). */
 export interface TableItem {
   relPath: string
@@ -112,6 +144,10 @@ const api = {
   /** Open a project via native picker; returns its path + JSON text (null if cancelled). */
   openProject: (): Promise<{ path: string; content: string } | null> =>
     ipcRenderer.invoke('proj:open'),
+  /** Open a template (.omicexplorer-template) via native picker; its path + text (null if
+   *  cancelled). */
+  openTemplate: (): Promise<{ path: string; content: string } | null> =>
+    ipcRenderer.invoke('tpl:open'),
   /** Read a project file's text by path. */
   readProject: (path: string): Promise<string> => ipcRenderer.invoke('proj:read', path),
   /** Park an inactive workflow's packed results on disk (its JSON text, in pieces). */
@@ -168,6 +204,10 @@ const api = {
     ipcRenderer.invoke('layout:applyDirOps', ops),
   /** One level of a folder for the project-folder viewer: folders first, dotfiles hidden. */
   listDir: (dir: string): Promise<DirEntry[]> => ipcRenderer.invoke('fs:listDir', dir),
+  /** Delete these files / folders (recursively), each only if inside `root` (a project folder
+   *  clean-up); returns what couldn't be removed. */
+  removeInside: (root: string, paths: string[]): Promise<string[]> =>
+    ipcRenderer.invoke('layout:removeInside', root, paths),
   /** Select a file or folder in the OS file manager. */
   revealPath: (p: string): Promise<void> => ipcRenderer.invoke('fs:reveal', p),
   /** Open a file in its default app; resolves to an error message, or '' on success. */
@@ -182,6 +222,14 @@ const api = {
   /** Read a file from the data folder — or, when `name` is an absolute path, that file directly
    *  (null if missing). With `scope`, the workflow's folder is tried first, then the older
    *  per-workflow subfolder and the shared data-folder root. */
+  /** Copy the named input files from data folder `from` to the same places under `to` (a data
+   *  folder changing location); never overwrites. */
+  copyInputFiles: (
+    from: string,
+    to: string,
+    files: Array<{ name: string; legacy?: string }>
+  ): Promise<{ copied: string[]; errors: string[] }> =>
+    ipcRenderer.invoke('data:copyInputs', from, to, files),
   readDataFile: (dir: string, name: string, scope?: WorkflowScope): Promise<string | null> =>
     ipcRenderer.invoke('data:read', dir, name, scope),
   /** Pick a data matrix from anywhere on disk via the native picker; returns its absolute path
@@ -271,6 +319,28 @@ const api = {
    *  (idempotent). */
   ensureStringOrg: (taxon: number): Promise<{ cached: boolean; version: string; error?: string }> =>
     ipcRenderer.invoke('string:ensureOrg', taxon),
+
+  /** What the UniProt / STRING reference cache holds, with versions and sizes. */
+  refCacheSummary: (): Promise<RefCacheSummary> => ipcRenderer.invoke('refcache:summary'),
+  /** The live UniProt release and STRING version ('' where unreachable) — goes to the network. */
+  refCacheLatest: (): Promise<{ uniprot: string; string: string }> =>
+    ipcRenderer.invoke('refcache:latest'),
+  /** Re-fetch one annotation source (an import field id, e.g. 'kegg') for every cached protein
+   *  that has it — goes to the network. */
+  updateRefCacheSource: (field: string): Promise<{ proteins: number; error?: string }> =>
+    ipcRenderer.invoke('refcache:updateSource', field),
+  /** Subscribe to updateRefCacheSource's progress; returns an unsubscribe fn. */
+  onRefCacheProgress: (
+    cb: (p: { done: number; total: number; stage?: string }) => void
+  ): (() => void) => {
+    const listener = (_e: unknown, p: { done: number; total: number; stage?: string }): void =>
+      cb(p)
+    ipcRenderer.on('refcache:progress', listener)
+    return () => ipcRenderer.removeListener('refcache:progress', listener)
+  },
+  /** Delete part of the reference cache (the caller confirms first); true when deleted. */
+  clearRefCache: (target: RefCacheTarget): Promise<boolean> =>
+    ipcRenderer.invoke('refcache:clear', target),
 
   /** Subscribe to STRING download progress events; returns an unsubscribe fn. */
   onStringProgress: (

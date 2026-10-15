@@ -3,7 +3,7 @@
  *  here means the same value maps to the same colour everywhere. */
 import { type CSSProperties } from 'react'
 
-import { EFFECT_COLOR } from './theme'
+import { paletteAt, type PaletteRef } from './palettes'
 
 // Viridis colour stops (matplotlib), evenly spaced 0→1 — matches the Heatmap tile's 'Viridis'.
 const VIRIDIS: [number, number, number][] = [
@@ -165,77 +165,59 @@ function pos({ min, max, log }: ValueRange, v: unknown): number | null {
 }
 
 /** Viridis fill colour for a value over the range (missing → undefined). */
-export function valueColor(range: ValueRange): (v: unknown) => string | undefined {
+export function valueColor(
+  range: ValueRange,
+  palette?: PaletteRef
+): (v: unknown) => string | undefined {
   return (v) => {
     const t = pos(range, v)
-    return t == null ? undefined : rgb(viridis(t))
+    return t == null ? undefined : palette ? paletteAt(palette, t) : rgb(viridis(t))
   }
 }
 
-/** Table-cell style: viridis background + luminance-chosen text colour (missing → no style). */
-export function heatStyle(range: ValueRange): (v: unknown) => CSSProperties | undefined {
+/** Table-cell style: a palette background (default viridis) + luminance-chosen text colour
+ *  (missing → no style). */
+export function heatStyle(
+  range: ValueRange,
+  palette?: PaletteRef
+): (v: unknown) => CSSProperties | undefined {
   return (v) => {
     const t = pos(range, v)
     if (t == null) return undefined
-    const [r, g, b] = viridis(t)
+    const [r, g, b] = palette
+      ? [1, 3, 5].map((i) => parseInt(paletteAt(palette, t).slice(i, i + 2), 16))
+      : viridis(t)
     const lum = 0.2126 * r + 0.7152 * g + 0.0722 * b
     return { background: `rgb(${r | 0},${g | 0},${b | 0})`, color: lum > 140 ? '#111' : '#fff' }
   }
 }
 
-// ── diverging effect palette (signed log2FC) ──────────────────────────────────────
-// Shares the bubble plot's fold-change hues — down (blue) → up (red) — so the log₂FC
-// heatmap, the comparison matrix table and the bubble plot read as one palette. The
-// CENTRE differs by medium, though: a filled heatmap/table needs a light neutral at 0
-// (grey fills the whole grid muddy and kills contrast), whereas the bubble keeps grey so
-// a near-zero MARKER stays visible on the panel. `DIVERGE_SCALE` is the Plotly colorscale.
-const DIVERGE_MID = '#eef0f3' // light neutral centre for filled surfaces (0 → recedes)
-const DIVERGE_STOPS = [EFFECT_COLOR.down, DIVERGE_MID, EFFECT_COLOR.up].map(hexRgb)
+// ── diverging effect scale (signed log2FC) ───────────────────────────────────────────────────
+// A signed fold change on the fold-change palette (palettes.ts): its low end down, its middle 0,
+// its high end up — the same palette the log₂FC heatmap, bubble and every effect colour sample, so
+// a value reads the same everywhere. Symmetric about 0, ±absMax at the ends (beyond clamps).
 
-/** Plotly diverging colorscale (down → light → up) for a signed, 0-centred value (use with
- *  `cmid: 0` / `zmid: 0`). Kept here so heatmap and table draw from one definition. */
-export const DIVERGE_SCALE: [number, string][] = [
-  [0, EFFECT_COLOR.down],
-  [0.5, DIVERGE_MID],
-  [1, EFFECT_COLOR.up]
-]
-
-function hexRgb(h: string): [number, number, number] {
-  const s = h.replace('#', '')
-  return [parseInt(s.slice(0, 2), 16), parseInt(s.slice(2, 4), 16), parseInt(s.slice(4, 6), 16)]
-}
-
-/** Interpolate the down→none→up scale at t∈[0,1] (0.5 = none). */
-function diverge(t: number): [number, number, number] {
-  const x = Math.max(0, Math.min(1, t))
-  const [a, b, f] =
-    x < 0.5
-      ? [DIVERGE_STOPS[0], DIVERGE_STOPS[1], x / 0.5]
-      : [DIVERGE_STOPS[1], DIVERGE_STOPS[2], (x - 0.5) / 0.5]
-  return [a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f, a[2] + (b[2] - a[2]) * f]
-}
-
-/** A signed value → `rgb()` string on the diverging effect scale (down→none→up), symmetric about
- *  0 with ±absMax at the extremes. Same palette as the bubble/heatmap, for e.g. colouring a line. */
-export function divergeColor(absMax: number): (v: number) => string {
+/** A signed value → colour on the fold-change palette, symmetric about 0 with ±absMax at its ends.
+ *  For e.g. colouring a line by its effect. */
+export function divergeColor(absMax: number, palette: PaletteRef): (v: number) => string {
   const m = absMax > 0 ? absMax : 1
-  return (v) => {
-    const [r, g, b] = diverge(0.5 + (0.5 * v) / m)
-    return `rgb(${r | 0},${g | 0},${b | 0})`
-  }
+  return (v) => paletteAt(palette, 0.5 + (0.5 * v) / m)
 }
 
-/** Table-cell style for a signed value on the diverging effect scale, symmetric about 0.
- *  `absMax` sets both extremes (±absMax → full blue / full red); beyond clamps. Missing → none. */
-export function divergeStyle(absMax: number): (v: unknown) => CSSProperties | undefined {
+/** Table-cell style for a signed value on the fold-change palette, symmetric about 0; the text
+ *  dark or light for contrast with the cell. Missing → none. */
+export function divergeStyle(
+  absMax: number,
+  palette: PaletteRef
+): (v: unknown) => CSSProperties | undefined {
   const m = absMax > 0 ? absMax : 1
   return (v) => {
     if (v == null || v === '') return undefined
     const n = typeof v === 'number' ? v : Number(v)
     if (!Number.isFinite(n)) return undefined
-    const t = 0.5 + (0.5 * n) / m // 0 → mid (none), +m → 1 (up/red), −m → 0 (down/blue)
-    const [r, g, b] = diverge(t)
+    const bg = paletteAt(palette, 0.5 + (0.5 * n) / m)
+    const [r, g, b] = [1, 3, 5].map((i) => parseInt(bg.slice(i, i + 2), 16))
     const lum = 0.2126 * r + 0.7152 * g + 0.0722 * b
-    return { background: `rgb(${r | 0},${g | 0},${b | 0})`, color: lum > 140 ? '#111' : '#fff' }
+    return { background: bg, color: lum > 140 ? '#111' : '#fff' }
   }
 }

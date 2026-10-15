@@ -6,31 +6,86 @@ import type { ContrastInput, ContrastPairInput, ContrastResult } from './contras
 import type { CompareTableResult, DirectInput } from './direct'
 import type { TwoWayInput } from './twoWay'
 import type { ScalePreview } from './ingest'
-import type { EnrichData, EnrichOptions, enrichmentAll } from './plotData'
+import type {
+  ClusterData,
+  ClusterOptions,
+  EnrichData,
+  EnrichOptions,
+  enrichmentAll
+} from './plotData'
 import type { EngineRequest, EngineResponse } from './worker'
+import type { ResponseInput } from './responseSurface'
 import type {
   CompareInput,
   CompareResultRow,
   ConditionKey,
   StandardizeInput,
   StandardizeResult,
+  StandardRow,
   VehNormInput,
   VehNormResult
 } from './types'
+import { decodeValue, encodeValue } from './wire'
 
 let worker: Worker | null = null
 let seq = 0
 const pending = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void }>()
 
+/** `localStorage['oe.enginePool']` overrides the engine pool's size (a number; 0 = no pool) — for
+ *  diagnosing a machine. Unset, the worker sizes it from the core count (poolSize.ts). */
+function poolOverride(): number | null {
+  try {
+    const o = localStorage.getItem('oe.enginePool')
+    return o != null && o.trim() !== '' && Number.isFinite(Number(o)) ? Number(o) : null
+  } catch {
+    return null
+  }
+}
+
+// UI back-off: while the UI thread is stalling (a tile rebuild, a big result arriving), the
+// engine's pool keeps one worker fewer busy so it doesn't compete for the cores the UI needs to
+// catch up. A stalled thread can't report itself, so a stall is seen as the gap after it; heavy UI
+// work comes as a string of stalls, so the pool stays held back until the thread has been free
+// for UI_CALM_MS.
+const UI_STALL_MS = 250
+const UI_CALM_MS = 1500
+let uiBusy = false
+let uiWatch: number | undefined
+function watchUi(): void {
+  if (uiWatch !== undefined || typeof window === 'undefined') return
+  let last = performance.now()
+  let calmSince = last
+  const tell = (busy: boolean): void => {
+    uiBusy = busy
+    worker?.postMessage({ id: 0, op: 'uiBusy', payload: { busy } } as EngineRequest)
+  }
+  uiWatch = window.setInterval(() => {
+    const now = performance.now()
+    const gap = now - last
+    last = now
+    if (document.hidden) return // a hidden window's timers are throttled — not a stall
+    if (gap > UI_STALL_MS) {
+      calmSince = now
+      if (!uiBusy) tell(true)
+    } else if (uiBusy && now - calmSince > UI_CALM_MS) tell(false)
+  }, 100)
+}
+
 function getWorker(): Worker {
   if (!worker) {
     worker = new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' })
+    const size = poolOverride()
+    if (size != null)
+      worker.postMessage({ id: 0, op: 'configurePool', payload: { size } } as EngineRequest)
+    if (uiBusy)
+      worker.postMessage({ id: 0, op: 'uiBusy', payload: { busy: true } } as EngineRequest)
+    watchUi()
     worker.onmessage = (e: MessageEvent<EngineResponse>) => {
       const msg = e.data
       const p = pending.get(msg.id)
       if (!p) return
       pending.delete(msg.id)
-      if (msg.ok) p.resolve(msg.result)
+      if (msg.ok) p.resolve(decodeValue(msg.result))
       else p.reject(new Error(msg.error))
     }
     worker.onerror = (e) => {
@@ -61,7 +116,13 @@ function withDataset(payload: unknown): unknown {
   } else {
     entry = { ref: new WeakRef(rows), key: ++datasetSeq }
     const w = getWorker()
-    w.postMessage({ id: 0, op: 'putDataset', payload: { key: entry.key, rows } } as EngineRequest)
+    // Sent columnar (see wire.ts): the worker gets the same rows, the UI thread skips cloning them.
+    const transfer: Transferable[] = []
+    const packed = encodeValue(rows, transfer)
+    w.postMessage(
+      { id: 0, op: 'putDataset', payload: { key: entry.key, rows: packed } } as EngineRequest,
+      transfer
+    )
     datasets.push(entry)
     while (datasets.length > DATASETS_KEPT) {
       const old = datasets.shift()!
@@ -96,6 +157,9 @@ export const engine = {
   /** Dose–response curve fit (CurveCurator's recalibrated F-test). */
   curveFit: (input: CompareInput & { curveAxis: ConditionKey }): Promise<CompareTableResult> =>
     call<CompareTableResult>('curveFit', input),
+  /** Curve fit by the response surface method (spline detection; see responseSurface.ts). */
+  responseSurface: (input: ResponseInput): Promise<CompareTableResult> =>
+    call<CompareTableResult>('responseSurface', input),
   contrast: (input: ContrastInput): Promise<ContrastResult> =>
     call<ContrastResult>('contrast', input),
   contrastPair: (input: ContrastPairInput): Promise<ContrastResult> =>
@@ -106,6 +170,9 @@ export const engine = {
     opts: Parameters<typeof enrichmentAll>[1]
   ): Promise<Record<string, Record<string, EnrichData>>> =>
     call<Record<string, Record<string, EnrichData>>>('enrichmentAll', { rows, opts }),
+  /** A cluster plot's run: the sample embedding (PCA / UMAP / t-SNE) of a Clean data table. */
+  buildCluster: (rows: StandardRow[], opts: ClusterOptions): Promise<ClusterData> =>
+    call<ClusterData>('buildCluster', { rows, opts }),
   /** Terminate the worker and reject any in-flight calls (backs the Stop button). */
   cancel: (): void => {
     if (worker) {
@@ -118,35 +185,59 @@ export const engine = {
   }
 }
 
-// A second worker for BACKGROUND work (the plot-table exports to output/): it runs alongside the one
-// above, so a long GSEA export never queues a run behind it, and Stop (cancel) leaves it alone.
-let bgWorker: Worker | null = null
-let bgSeq = 0
-const bgPending = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void }>()
-function bgCall<T>(op: EngineRequest['op'], payload: unknown): Promise<T> {
-  if (!bgWorker) {
-    const w = new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' })
-    w.onmessage = (e: MessageEvent<EngineResponse>) => {
-      const msg = e.data
-      const p = bgPending.get(msg.id)
-      if (!p) return
-      bgPending.delete(msg.id)
-      if (msg.ok) p.resolve(msg.result)
-      else p.reject(new Error(msg.error))
-    }
-    w.onerror = (e) => {
-      for (const [, p] of bgPending) p.reject(new Error(e.message || 'engine worker error'))
-      bgPending.clear()
-      bgWorker = null
-    }
-    bgWorker = w
+// Further workers, each its own lane: BACKGROUND work (the plot-table exports to output/) runs
+// alongside the one above, so a long GSEA export never queues a run behind it, and Stop (cancel)
+// leaves it alone; the UI lane builds dashboard pieces too heavy for the UI thread (a full
+// proteome's heatmap clustering), so a tile never waits behind an export either.
+function lane(
+  idleMs?: number
+): <T>(op: EngineRequest['op'], payload: unknown, transfer?: Transferable[]) => Promise<T> {
+  let w: Worker | null = null
+  let n = 0
+  const waiting = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void }>()
+  // With `idleMs`, the worker is let go once idle that long (its heap freed at once); the next
+  // call starts a fresh one.
+  let idle: ReturnType<typeof setTimeout> | undefined
+  const settle = (): void => {
+    clearTimeout(idle)
+    if (idleMs != null && waiting.size === 0)
+      idle = setTimeout(() => {
+        if (waiting.size === 0 && w) {
+          w.terminate()
+          w = null
+        }
+      }, idleMs)
   }
-  const id = ++bgSeq
-  return new Promise<T>((resolve, reject) => {
-    bgPending.set(id, { resolve: resolve as (v: unknown) => void, reject })
-    bgWorker!.postMessage({ id, op, payload } as EngineRequest)
-  })
+  return <T>(op: EngineRequest['op'], payload: unknown, transfer: Transferable[] = []) => {
+    clearTimeout(idle)
+    if (!w) {
+      const nw = new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' })
+      nw.onmessage = (e: MessageEvent<EngineResponse>) => {
+        const msg = e.data
+        const p = waiting.get(msg.id)
+        if (!p) return
+        waiting.delete(msg.id)
+        if (msg.ok) p.resolve(decodeValue(msg.result))
+        else p.reject(new Error(msg.error))
+        settle()
+      }
+      nw.onerror = (e) => {
+        for (const [, p] of waiting) p.reject(new Error(e.message || 'engine worker error'))
+        waiting.clear()
+        w = null
+      }
+      w = nw
+    }
+    const id = ++n
+    return new Promise<T>((resolve, reject) => {
+      waiting.set(id, { resolve: resolve as (v: unknown) => void, reject })
+      w!.postMessage({ id, op, payload } as EngineRequest, transfer)
+    })
+  }
 }
+const bgCall = lane()
+// the clustering's distance matrix is a few hundred MB for a full proteome — freed with the worker
+const uiCall = lane(5000)
 
 export const engineBg = {
   /** One facet's enrichment as table rows (every tested term), labelled with `facet`. */
@@ -156,4 +247,14 @@ export const engineBg = {
     facet: string
   ): Promise<Record<string, string | number | null>[]> =>
     bgCall<Record<string, string | number | null>[]>('enrichmentTable', { rows, opts, facet })
+}
+
+export const engineUi = {
+  /** clusterRowGroups off the UI thread: the rows go over as one flat transferred buffer. */
+  clusterRowGroups: (matrix: number[][], k: number): Promise<number[][]> => {
+    const m = matrix[0]?.length ?? 0
+    const flat = new Float64Array(matrix.length * m)
+    for (let i = 0; i < matrix.length; i++) flat.set(matrix[i], i * m)
+    return uiCall<number[][]>('clusterRowGroups', { flat, m, k }, [flat.buffer])
+  }
 }

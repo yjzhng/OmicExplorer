@@ -5,21 +5,44 @@
  */
 import { pairsOf } from './accession'
 import { condValue } from './compare'
-import { clusterRowGroups, clusterRowOrder, suggestClusterCount } from './cluster'
+import {
+  clusterRowGroups,
+  clusterRowOrder,
+  clusterRowTree,
+  suggestClusterCount,
+  type DendroLink,
+  type LeafOrder,
+  type Linkage
+} from './cluster'
 import type { ContrastResultRow } from './contrast'
-import { logistic } from './curveFit'
+import { curveSampleX, logistic } from './curveFit'
 import { embed2D, type ClusterMethod } from './embed'
 import { abundanceLabel, fromLinear, type ValueScale } from './scale'
-import { benjaminiHochberg, madNormal, median, normalSf, studentTppf, type Effect } from './stats'
+import {
+  benjaminiHochberg,
+  madNormal,
+  median,
+  normalSf,
+  studentTppf,
+  studentTTwoSided,
+  type Effect
+} from './stats'
 import {
   condLabel,
   condsIn,
+  customCond,
   customSlug,
   isCustomCond,
   isNumericCond,
   VALID_CONDITIONS
 } from './types'
-import type { CompareResultRow, ConditionKey, StandardizeResult, StandardRow } from './types'
+import type {
+  CompareResultRow,
+  ConditionKey,
+  SampleConds,
+  StandardizeResult,
+  StandardRow
+} from './types'
 
 // ── volcano ────────────────────────────────────────────────────────────────────
 
@@ -39,6 +62,8 @@ export interface VolcanoData {
   statType: 'pP' | 'pQ'
   /** the rows' single comparison label ("A | B"), for the fold-change axis title */
   comparison?: string
+  /** what the fold change is (fcName: range / peak log₂FC for curve fits) */
+  measure?: string
 }
 
 export interface VolcanoOptions {
@@ -49,19 +74,52 @@ export interface VolcanoOptions {
   displayMap?: Record<string, string>
 }
 
-/** The one `comparison` label ("A | B") these rows share, for axis titles — undefined when the
- *  rows are unlabelled or span several comparisons (then the title stays generic). */
-/** What a Compare's `log2FC` measures, by analysis: a t-test's fold change, a curve fit's change
- *  across the tested doses, or a two-way ANOVA's interaction (a log₂ ratio of fold changes). */
-export function fcMeasure(analysis?: 'compare' | 'two_way_anova' | 'curve_fit'): string {
+/** What a Compare's `log2FC` measures, by analysis: a t-test's fold change, a curve fit's — a 4PL
+ *  curve's change across the tested levels, a Hybrid curve's or a surface's peak — or a two-way ANOVA's
+ *  interaction (a log₂ ratio of fold changes). */
+export function fcMeasure(
+  analysis?: 'compare' | 'two_way_anova' | 'curve_fit',
+  /** a curve fit's detection model: the response surface method ('spline') measures the peak */
+  detection?: '4pl' | 'spline',
+  /** a dose × time surface (either model) measures the peak */
+  surface?: boolean
+): string {
   return analysis === 'curve_fit'
-    ? 'curve log₂FC'
+    ? detection === 'spline' || surface
+      ? 'peak log₂FC'
+      : 'curve log₂FC'
     : analysis === 'two_way_anova'
       ? 'interaction log₂FC'
       : 'log₂FC'
 }
 
-export function comparisonOf(rows: Array<{ comparison?: string }>): string | undefined {
+/** The fold change curve-fit rows carry: a 4PL curve's change across the tested levels, or a Hybrid
+ *  curve's / a surface's peak (rows with a response fit, `rs`); plain 'log₂FC' otherwise. */
+export function fcName(rows: Array<{ curve?: unknown; rs?: unknown }>): string {
+  return rows.some((r) => r.rs) ? 'peak log₂FC' : rows.some((r) => r.curve) ? 'curve log₂FC' : 'log₂FC'
+}
+
+type LabelRow = { comparison?: string; cmpd?: string | null; curve?: { baseline?: string }; rs?: { baseline?: string } }
+
+/** A curve fit's comparison as it reads in a plot: "dose curve | 0" (the stored key) as
+ *  "drugA | baseline" — the compound when the rows are one, against the baseline the fit was given
+ *  (dose 0, a time, a top dose…). Display only: the stored label stays the key it is. */
+function curveComparisonText(label: string, rows: LabelRow[]): string {
+  if (!rows.some((r) => r.curve || r.rs)) return label
+  const [left, right] = label.split(' | ')
+  if (right == null) return label
+  const cmpds = [...new Set(rows.map((r) => r.cmpd).filter((c): c is string => !!c))]
+  const what = / curve$/.test(left) && cmpds.length === 1 ? cmpds[0] : left
+  // the baseline in words, when the rows share one ("baseline (dose 0 · time 60)")
+  const bs = new Set(rows.map((r) => r.curve?.baseline ?? r.rs?.baseline ?? ''))
+  const b = bs.size === 1 ? [...bs][0] : ''
+  return `${what} | baseline${b ? ` (${b})` : ''}`
+}
+
+/** The one `comparison` label ("A | B") these rows share, for axis titles — undefined when the
+ *  rows are unlabelled or span several comparisons (then the title stays generic). A curve fit's
+ *  reads as its compound against its baseline (curveComparisonText). */
+export function comparisonOf(rows: LabelRow[]): string | undefined {
   let found: string | undefined
   for (const r of rows) {
     const c = r.comparison?.trim()
@@ -69,7 +127,7 @@ export function comparisonOf(rows: Array<{ comparison?: string }>): string | und
     if (found === undefined) found = c
     else if (c !== found) return undefined
   }
-  return found
+  return found === undefined ? undefined : curveComparisonText(found, rows)
 }
 
 /** Build volcano points (log2FC vs significance) from comparison rows. */
@@ -92,7 +150,8 @@ export function buildVolcano(rows: CompareResultRow[], opts: VolcanoOptions): Vo
     fcHigh: opts.fcHigh,
     statMin: opts.statMin,
     statType: opts.statType,
-    comparison: comparisonOf(rows)
+    comparison: comparisonOf(rows),
+    measure: fcName(rows)
   }
 }
 
@@ -109,6 +168,8 @@ export function buildVolcano(rows: CompareResultRow[], opts: VolcanoOptions): Vo
 /** Minimal shape the faceting helpers need — satisfied by both compare and contrast
  *  result rows (they carry `cmp_cond` plus the condition columns). */
 export interface ContextRow {
+  /** Contrast rows only: the feature contrasted (its switcher label), when it offers several */
+  feature?: string
   cmp_cond?: string
   comparison?: string
   cell?: string | null
@@ -143,19 +204,22 @@ export function facetSides(rows: ContextRow[]): string[] {
   return [...sides]
 }
 
-/** A tab-bar facet dimension: a condition, or the `comparison` label itself (used to split a
- *  multi-pair Compare tile into one plot per comparison instead of merging them). */
-export type FacetKey = ConditionKey | 'comparison'
+/** A tab-bar facet dimension: a condition, the `comparison` label itself (used to split a
+ *  multi-pair Compare tile into one plot per comparison instead of merging them), or a Contrast's
+ *  `feature` (what its two sides compare — log₂FC, significance, pEC50, …). */
+export type FacetKey = ConditionKey | 'comparison' | 'feature'
 
 /** What to call a facet dimension on screen: a condition's display label (so a custom condition
  *  reads `genotype`, not the `@genotype` key), or the literal `comparison`. */
-export const facetKeyLabel = (d: FacetKey): string => (d === 'comparison' ? d : condLabel(d))
+export const facetKeyLabel = (d: FacetKey): string =>
+  d === 'comparison' || d === 'feature' ? d : condLabel(d)
 
 /** A context row's value for one condition — the `extra` bag for a custom condition, the column
  *  itself for a preset. `facetCompareRows` and the facet-dim scans all read through this, so a
  *  custom key is never used to index the row object directly. */
-export function ctxValue(r: ContextRow, c: ConditionKey | 'comparison'): string | number | null {
-  if (c !== 'comparison' && isCustomCond(c)) return r.extra?.[customSlug(c)] ?? ''
+export function ctxValue(r: ContextRow, c: FacetKey): string | number | null {
+  if (c !== 'comparison' && c !== 'feature' && isCustomCond(c))
+    return r.extra?.[customSlug(c)] ?? ''
   return (r as unknown as Record<string, string | number | null>)[c] ?? null
 }
 
@@ -214,12 +278,36 @@ export function responseColorDims(rows: ContextRow[]): ConditionKey[] {
   })
 }
 
-/** Tab-bar facet dimensions: the `comparison` label first (only when several coexist, so a
- *  multi-pair Compare splits per comparison) then the context conditions. */
+/** Whether a Compare's several comparison labels are only the levels of a plot's own axis: every
+ *  row compared on excluded conditions alone (a Compare on dose — "5 | 0", "10 | 0" — drawn along
+ *  dose), all against one denominator. Those labels ARE the axis, so they aren't a facet: split
+ *  on, each tab would hold a single dose and a dose-response curve needs two. Comparisons with
+ *  different denominators still split. */
+function labelsAreAxis(rows: ContextRow[], labels: Set<string>, exclude?: ConditionKey[]): boolean {
+  if (!exclude?.length) return false
+  const ex = new Set<string>(exclude)
+  const onAxis = rows.every((r) => {
+    const parts = (r.cmp_cond ?? '').split(':').filter(Boolean)
+    return parts.length > 0 && parts.every((p) => ex.has(p))
+  })
+  if (!onAxis) return false
+  const dens = new Set([...labels].map((l) => l.split(' | ')[1]?.trim() ?? l))
+  return dens.size === 1
+}
+
+/** Tab-bar facet dimensions: a Contrast's `feature` first (only when it offers several — it
+ *  decides what every other level holds), the `comparison` label (only when several coexist, so a
+ *  multi-pair Compare splits per comparison), then the context conditions. */
 export function facetDims(rows: ContextRow[], exclude?: ConditionKey[]): FacetKey[] {
   const ctx = facetContextDims(rows, exclude)
-  const multiCmp = new Set(rows.map((r) => r.comparison).filter((c) => c != null)).size > 1
-  return multiCmp ? ['comparison', ...ctx] : ctx
+  const labels = new Set(rows.map((r) => r.comparison).filter((c) => c != null))
+  const multiCmp = labels.size > 1 && !labelsAreAxis(rows, labels, exclude)
+  const multiFeature = new Set(rows.map((r) => r.feature).filter((f) => f != null)).size > 1
+  return [
+    ...(multiFeature ? (['feature'] as const) : []),
+    ...(multiCmp ? (['comparison'] as const) : []),
+    ...ctx
+  ]
 }
 
 export interface FacetGroup<T = ContextRow> {
@@ -236,6 +324,11 @@ export function facetCompareRows<T extends ContextRow>(
   dims: FacetKey[]
 ): FacetGroup<T>[] {
   if (dims.length === 0) return [{ key: '', values: [], rows }]
+  // Features keep the order the Contrast gives them (the sides' own value first), not A–Z.
+  const featureAt = new Map<string, number>()
+  if (dims.includes('feature'))
+    for (const r of rows)
+      if (r.feature != null && !featureAt.has(r.feature)) featureAt.set(r.feature, featureAt.size)
   const groups = new Map<string, FacetGroup<T>>()
   for (const r of rows) {
     const values = dims.map((d) => ({ dim: d, value: ctxValue(r, d) as string | number }))
@@ -261,13 +354,15 @@ export function facetCompareRows<T extends ContextRow>(
       const sa = String(av)
       const sb = String(bv)
       const cmp =
-        d !== 'comparison' && isNumericCond(d) && Number.isFinite(an) && Number.isFinite(bn)
-          ? an - bn
-          : sa < sb
-            ? -1
-            : sa > sb
-              ? 1
-              : 0
+        d === 'feature'
+          ? (featureAt.get(sa) ?? 0) - (featureAt.get(sb) ?? 0)
+          : d !== 'comparison' && isNumericCond(d) && Number.isFinite(an) && Number.isFinite(bn)
+            ? an - bn
+            : sa < sb
+              ? -1
+              : sa > sb
+                ? 1
+                : 0
       if (cmp !== 0) return cmp
     }
     return 0
@@ -290,10 +385,9 @@ export interface ScatterPoint {
  * The significance boundary drawn behind the points, matching how the contrast called
  * `signf` (mirrors omicViz `scatter.py::_draw_thresholds`, which likewise recomputes it
  * from the plotted rows):
- *  - `ols` (correlated) → the line of identity plus a 99% prediction-band envelope around
- *    it; dissonant genes are the ones lying outside the band. (`signf` itself still comes
- *    from omicViz's OLS-fit band — see contrast.ts — so points sitting within a whisker of
- *    the envelope can disagree when the fit is tilted away from identity.)
+ *  - `ols` (correlated) → the model's line — the OLS fit, or y = x for the identity model —
+ *    plus its prediction-band envelope (99% by default), centred where contrast.ts measures
+ *    each gene's residual from, so the genes outside the band are exactly the called ones.
  *  - `marginal` (independent) → a robust per-axis box at the effective BH boundary: two
  *    thresholds on each axis, carving the plane into 9 zones. No line of identity.
  */
@@ -308,6 +402,85 @@ export interface ScatterGuide {
   xHi?: number
   yLo?: number
   yHi?: number
+  /** ols: what the band is drawn from — so a dragged edge maps back to a confidence (bandConfAt)
+   *  and redraws at one (bandEdgePath). Centred on the fitted line; lever at x:
+   *  sErr·√(1 + 1/n + (x − xMean)²/Sxx). */
+  band?: {
+    n: number
+    xMean: number
+    Sxx: number
+    sErr: number
+    lo: number
+    hi: number
+    /** the line y = beta0 + beta1·x the band is centred on: the fit, or y = x (identity) */
+    beta0: number
+    beta1: number
+    /** the critical t's degrees of freedom (n − 2 for a fit, n for identity) */
+    df: number
+    /** identity: nothing fitted, so the half-width is a constant t·sErr (no leverage term) */
+    fixed?: boolean
+  }
+  /** marginal: each axis's values, robust centre and spread — so a dragged line maps back to the
+   *  q cutoff that puts its boundary there (marginalQAt) */
+  axes?: Record<'x' | 'y', { vals: number[]; mu: number; s: number }>
+  /** the cutoffs it's drawn at (from the rows' `thrsh`): a drag's starting value */
+  cutoffs?: {
+    confUp: number
+    confDown: number
+    q: { aUp: number; aDown: number; bUp: number; bDown: number }
+  }
+}
+
+/** The band's half-width at x for critical t. */
+const bandLever = (b: NonNullable<ScatterGuide['band']>, x: number): number =>
+  b.fixed ? b.sErr : b.sErr * Math.sqrt(1 + 1 / b.n + ((x - b.xMean) * (x - b.xMean)) / b.Sxx)
+
+/** One edge of the prediction band (centred on the fitted line, as drawn) at confidence `conf`,
+ *  as an SVG path in data coordinates — a draggable guide's shape. */
+export function bandEdgePath(
+  b: NonNullable<ScatterGuide['band']>,
+  conf: number,
+  side: 1 | -1
+): string {
+  const t = studentTppf(1 - conf, b.df)
+  const N = 120
+  const pts: string[] = []
+  for (let i = 0; i < N; i++) {
+    const x = b.lo + ((b.hi - b.lo) * i) / (N - 1)
+    pts.push(`${i ? 'L' : 'M'}${x},${b.beta0 + b.beta1 * x + side * t * bandLever(b, x)}`)
+  }
+  return pts.join('')
+}
+
+/** The band confidence whose edge passes through (x, y): the edge sits t·lever off the fitted
+ *  line, so t = |y − ŷ(x)| / lever and the confidence is 1 − its two-sided p. */
+export function bandConfAt(b: NonNullable<ScatterGuide['band']>, x: number, y: number): number {
+  const t = Math.abs(y - (b.beta0 + b.beta1 * x)) / bandLever(b, x)
+  return 1 - studentTTwoSided(t, b.df)
+}
+
+/** The q cutoff that calls exactly the genes beyond `pos` on `axis` (on the `pos` side of its
+ *  centre): just above the q of the least extreme gene beyond it; with none beyond, a cutoff
+ *  nothing on that side passes. (Redrawn, the boundary then sits midway between that gene and
+ *  the next one in — bhZBound.) */
+export function marginalQAt(g: ScatterGuide, axis: 'x' | 'y', pos: number): number {
+  const a = g.axes?.[axis]
+  if (!a) return 0.01
+  const up = pos >= a.mu
+  const zb = Math.abs(pos - a.mu) / a.s
+  const z = a.vals.map((v) => (v - a.mu) / a.s)
+  const q = benjaminiHochberg(z.map((v) => 2 * normalSf(Math.abs(v))))
+  let qOut = -Infinity // largest q among the genes beyond the line (they must pass)
+  let qIn = Infinity // smallest q among the genes inside it (they must not)
+  z.forEach((zi, i) => {
+    if (up ? zi < 0 : zi > 0) return
+    if (Math.abs(zi) >= zb) qOut = Math.max(qOut, q[i])
+    else qIn = Math.min(qIn, q[i])
+  })
+  // none beyond: a cutoff nothing on that side passes (the line's own nominal q when it's empty)
+  if (!Number.isFinite(qOut)) return Number.isFinite(qIn) ? qIn : 2 * normalSf(zb)
+  // just above the passing genes' q (a gene passes at q < cutoff)
+  return qOut + 1e-12
 }
 
 export interface ScatterData {
@@ -316,9 +489,10 @@ export interface ScatterData {
   xLabel: string
   yLabel: string
   guide?: ScatterGuide
-  /** what the axes hold: fold changes (0 = no change, so the view keeps the origin in range) or
-   *  log abundances (the view fits the data — 0 means nothing there). Unset → fold changes. */
-  valueKind?: 'abundance' | 'fc'
+  /** what the axes hold: fold changes (0 = no change, so the view keeps the origin in range),
+   *  log abundances, or another Contrast feature (both fitted to the data — 0 is no reference
+   *  there). Unset → fold changes. */
+  valueKind?: 'abundance' | 'fc' | 'other'
 }
 
 export interface ScatterOptions {
@@ -329,6 +503,9 @@ export interface ScatterOptions {
   /** the scale abundances are on (see plotScaleOf): the intensity scatter's values, and the
    *  abundance axis titles. Default log₁₀. */
   scale?: ValueScale
+  /** a Contrast feature other than the sides' own value (contrastFeatureLabel): the axes hold
+   *  it, titled by it */
+  valueLabel?: string | null
 }
 
 /** The statistic's cutoffs, read back off the rows' `thrsh` label (written by contrast.ts) so the
@@ -357,14 +534,31 @@ const stdev = (a: number[]): number => {
   return Math.sqrt(a.reduce((s, v) => s + (v - m) * (v - m), 0) / Math.max(1, a.length - 1))
 }
 
-/** Effective BH threshold |z| — the least-extreme gene that still passes, so the drawn
- *  boundary lands exactly where the significance calls flip (omicViz `_bh_z_thresh`). */
-function bhZThresh(vals: number[], mu: number, s: number, qCut: number): number {
+/** Where one side's boundary is drawn, as |z| off the centre: midway between the least extreme
+ *  gene called on that side and the most extreme one not — so every called gene sits clearly
+ *  beyond the line and every other one inside it (a line THROUGH the least extreme called gene
+ *  read as a called gene within the threshold). Judged as the run judges it: q (BH over the whole
+ *  axis) against that side's cutoff, for the genes on that side of the centre. With none called,
+ *  beyond the side's most extreme gene (at least the nominal |z| for the cutoff). */
+function bhZBound(vals: number[], mu: number, s: number, qCut: number, side: 1 | -1): number {
   const z = vals.map((v) => (v - mu) / s)
   const q = benjaminiHochberg(z.map((v) => 2 * normalSf(Math.abs(v))))
-  const sig = z.map((v) => Math.abs(v)).filter((_, i) => q[i] < qCut)
-  // studentTppf takes a TWO-SIDED p: the nominal |z| for qCut when nothing passes.
-  return sig.length ? Math.min(...sig) : studentTppf(qCut, 1e6)
+  let minIn = Infinity // least extreme called gene on this side
+  let maxOut = 0 // most extreme gene on this side not called
+  z.forEach((zi, i) => {
+    if (side > 0 ? zi < 0 : zi > 0) return
+    const a = Math.abs(zi)
+    if (q[i] < qCut) minIn = Math.min(minIn, a)
+    else maxOut = Math.max(maxOut, a)
+  })
+  // studentTppf takes a TWO-SIDED p: the nominal |z| for qCut.
+  if (!Number.isFinite(minIn)) return Math.max(studentTppf(qCut, 1e6), maxOut * 1.02 + 1e-9)
+  // q falls as |z| rises, so the uncalled sit below the called; midway between the two
+  const below = z.reduce((m, zi, i) => {
+    const a = Math.abs(zi)
+    return (side > 0 ? zi >= 0 : zi <= 0) && q[i] >= qCut && a < minIn ? Math.max(m, a) : m
+  }, 0)
+  return (minIn + below) / 2
 }
 
 /** Build the guide for the contrast's relationship, read off the rows' `thrsh` label. */
@@ -374,24 +568,27 @@ function scatterGuide(pts: ScatterPoint[], thrsh: string): ScatterGuide | undefi
   const y = pts.map((p) => p.y) // FC1
   const stat = statFromLabel(thrsh)
 
-  if (thrsh.startsWith('ols')) {
+  const identity = thrsh.startsWith('identity')
+  if (thrsh.startsWith('ols') || identity) {
     const n = x.length
     const xMean = avg(x)
     const Sxx = x.reduce((s, xi) => s + (xi - xMean) * (xi - xMean), 0)
-    if (Sxx === 0) return undefined
+    if (Sxx === 0 && !identity) return undefined
     const yMean = avg(y)
-    const beta1 = x.reduce((s, xi, i) => s + (xi - xMean) * (y[i] - yMean), 0) / Sxx
-    const beta0 = yMean - beta1 * xMean
+    // The band's centre line, as contrast.ts calls against it: the OLS fit, or y = x itself.
+    const beta1 = identity ? 1 : x.reduce((s, xi, i) => s + (xi - xMean) * (y[i] - yMean), 0) / Sxx
+    const beta0 = identity ? 0 : yMean - beta1 * xMean
     const sse = y.reduce((s, yi, i) => {
       const d = yi - (beta0 + beta1 * x[i])
       return s + d * d
     }, 0)
-    const sErr = Math.sqrt(sse / (n - 2))
+    const df = identity ? n : n - 2
+    const sErr = Math.sqrt(sse / df)
     if (!(sErr > 0)) return undefined
     // studentTppf takes a TWO-SIDED p, so the band's critical t is ppf(1 − conf), matching
     // contrast.ts (a one-sided 0.995 here drew a near-zero-width band).
-    const tUp = studentTppf(1 - stat.confUp, n - 2)
-    const tDown = studentTppf(1 - stat.confDown, n - 2)
+    const tUp = studentTppf(1 - stat.confUp, df)
+    const tDown = studentTppf(1 - stat.confDown, df)
     // Span the guide over the SHARED square the view plots (both axes, and always
     // including the origin) so the line of identity runs corner-to-corner through (0,0)
     // instead of starting wherever the x data happens to begin.
@@ -408,12 +605,14 @@ function scatterGuide(pts: ScatterPoint[], thrsh: string): ScatterGuide | undefi
     const dn: number[] = []
     for (let i = 0; i < N; i++) {
       const xi = lo + ((hi - lo) * i) / (N - 1)
-      // Centre the band on the LINE OF IDENTITY: for a correlated contrast the null
-      // expectation is "the same response on both sides", so y = x is the meaningful
-      // reference rather than the fitted line. The half-width is still the OLS 99%
-      // prediction band, so the envelope's width reflects the observed scatter.
-      const yi = xi
-      const lever = sErr * Math.sqrt(1 + 1 / n + ((xi - xMean) * (xi - xMean)) / Sxx)
+      // Centred on the FITTED line — what the calls measure each gene's residual from
+      // (contrast.ts) — so the drawn band is exactly where they flip. (Centred on y = x, it
+      // disagreed with them wherever the fit ran off the diagonal: genes inside it called,
+      // genes outside it not.) The view draws y = x as a reference beside it.
+      const yi = beta0 + beta1 * xi
+      const lever = identity
+        ? sErr
+        : sErr * Math.sqrt(1 + 1 / n + ((xi - xMean) * (xi - xMean)) / Sxx)
       xs.push(xi)
       fit.push(yi)
       up.push(yi + tUp * lever)
@@ -423,7 +622,20 @@ function scatterGuide(pts: ScatterPoint[], thrsh: string): ScatterGuide | undefi
       kind: 'ols',
       fit: { x: xs, y: fit },
       upper: { x: xs, y: up },
-      lower: { x: xs, y: dn }
+      lower: { x: xs, y: dn },
+      band: {
+        n,
+        xMean,
+        Sxx,
+        sErr,
+        lo,
+        hi,
+        beta0,
+        beta1,
+        df,
+        ...(identity ? { fixed: true } : null)
+      },
+      cutoffs: stat
     }
   }
 
@@ -435,10 +647,12 @@ function scatterGuide(pts: ScatterPoint[], thrsh: string): ScatterGuide | undefi
   // Each tail has its own boundary when the cutoffs differ (x = B, y = A).
   return {
     kind: 'marginal',
-    xLo: muX - bhZThresh(x, muX, sX, stat.q.bDown) * sX,
-    xHi: muX + bhZThresh(x, muX, sX, stat.q.bUp) * sX,
-    yLo: muY - bhZThresh(y, muY, sY, stat.q.aDown) * sY,
-    yHi: muY + bhZThresh(y, muY, sY, stat.q.aUp) * sY
+    xLo: muX - bhZBound(x, muX, sX, stat.q.bDown, -1) * sX,
+    xHi: muX + bhZBound(x, muX, sX, stat.q.bUp, 1) * sX,
+    yLo: muY - bhZBound(y, muY, sY, stat.q.aDown, -1) * sY,
+    yHi: muY + bhZBound(y, muY, sY, stat.q.aUp, 1) * sY,
+    axes: { x: { vals: x, mu: muX, s: sX }, y: { vals: y, mu: muY, s: sY } },
+    cutoffs: stat
   }
 }
 
@@ -460,13 +674,15 @@ export function buildScatter(rows: ContrastResultRow[], opts: ScatterOptions = {
   }
   const thrsh = rows.find((r) => r.thrsh)?.thrsh ?? ''
   // Group A (FC1) on y, group B (FC2) on x.
-  const unit = opts.valueKind === 'abundance' ? abundanceLabel(opts.scale ?? 'log10') : 'log₂FC'
+  const unit =
+    opts.valueLabel ??
+    (opts.valueKind === 'abundance' ? abundanceLabel(opts.scale ?? 'log10') : 'log₂FC')
   return {
     points,
     xLabel: `${unit} · ${rows[0]?.cmp2 ?? 'group B'}`,
     yLabel: `${unit} · ${rows[0]?.cmp1 ?? 'group A'}`,
     guide: scatterGuide(points, thrsh),
-    valueKind: opts.valueKind ?? 'fc'
+    valueKind: opts.valueLabel ? 'other' : (opts.valueKind ?? 'fc')
   }
 }
 
@@ -592,10 +808,15 @@ export interface DRData {
 }
 export interface DROptions {
   axis: 'dose' | 'time'
+  /** response surface method curves: the description 4PL ('curve', default) or the spline */
+  model?: 'spline' | 'curve'
   topGenes: number
   displayMap?: Record<string, string>
   /** focus genes (uniqIDs): when non-empty, colour exactly these curves instead of top-N */
   focus?: string[]
+  /** a narrower pool (uniqIDs) for the top-N: when non-empty, it's picked from these genes —
+   *  significant or not, as they were chosen — instead of from every significant gene */
+  within?: string[]
 }
 
 /**
@@ -640,6 +861,46 @@ const MIN_SIDE_SHARE = 1 / 4
 const byMag = (a: { signed: number }, b: { signed: number }): number =>
   Math.abs(b.signed) - Math.abs(a.signed)
 
+/**
+ * A response surface method curve (a row's `rs`, one axis) as drawn, on the axis's own scale —
+ * dose, or time from t₀: its line — the description 4PL ('curve') where the curve was described,
+ * else (or for 'spline') the spline its detection fitted — the level means it was fitted to
+ * (the baseline, at 0 by definition, left out), and the 4PL's midpoint when it falls within the
+ * tested levels. Null for a surface.
+ */
+export function responseCurve(
+  r: CompareResultRow,
+  model: 'spline' | 'curve'
+): {
+  x: number[]
+  y: number[]
+  points: { x: number; y: number }[]
+  mid?: number
+  drawn: 'spline' | 'curve'
+} | null {
+  const rs = r.rs
+  if (!rs || rs.axis === 'surface' || !rs.x || !rs.y || rs.x.length < 2) return null
+  const off = rs.timeOffset
+  const toAxis = (lx: number): number => (off != null ? 10 ** lx - off : 10 ** lx)
+  const lo = rs.x[1]
+  const hi = rs.x[rs.x.length - 1]
+  const points = rs.x.slice(1).map((lx, i) => ({ x: toAxis(lx), y: rs.y![i + 1] }))
+  const d = rs.desc
+  if (model === 'curve' && d) {
+    const lx = Array.from({ length: 61 }, (_, i) => lo + ((hi - lo) * i) / 60)
+    const mid = d.mid >= toAxis(lo) && d.mid <= toAxis(hi) ? d.mid : undefined
+    return {
+      x: lx.map(toAxis),
+      y: lx.map((v) => logistic(v, d)),
+      points,
+      ...(mid != null ? { mid } : null),
+      drawn: 'curve'
+    }
+  }
+  const line = rs.line ?? { x: rs.x.slice(1), y: (rs.fitted ?? rs.y).slice(1) }
+  return { x: line.x.map(toAxis), y: line.y, points, drawn: 'spline' }
+}
+
 /** Response curves: log2FC vs dose (or time), one line per gene, top-N by |log2FC| at the top dose. */
 export function buildDR(rows: CompareResultRow[], opts: DROptions): DRData {
   const byGene = new Map<string, { x: number; y: number }[]>()
@@ -654,12 +915,25 @@ export function buildDR(rows: CompareResultRow[], opts: DROptions): DRData {
       continuous = true
       if (r.signf) anySig.add(r.uniqID)
       const { xMin, xMax } = r.curve
-      const pts: { x: number; y: number }[] = []
-      for (let i = 0; i < CURVE_SAMPLES; i++) {
-        const lx = xMin + ((xMax - xMin) * i) / (CURVE_SAMPLES - 1)
-        pts.push({ x: 10 ** lx, y: Math.log2(logistic(lx, r.curve)) })
-      }
+      // Evenly spaced, plus extra points only where the curve turns (curveSampleX).
+      const pts = curveSampleX({ ...r.curve, xMin, xMax }, CURVE_SAMPLES).map((lx) => ({
+        x: 10 ** lx,
+        y: Math.log2(logistic(lx, r.curve!))
+      }))
       byGene.set(r.uniqID, pts)
+      continue
+    }
+    // A response surface method curve: its description 4PL or its spline (responseCurve).
+    if (r.rs) {
+      if (r.rs.axis !== opts.axis) continue
+      const c = responseCurve(r, opts.model ?? 'curve')
+      if (!c) continue
+      continuous = true
+      if (r.signf) anySig.add(r.uniqID)
+      byGene.set(
+        r.uniqID,
+        c.x.map((x, i) => ({ x, y: c.y[i] })).filter((pt) => pt.x > 0)
+      )
       continue
     }
     const x = opts.axis === 'dose' ? r.dose : r.time
@@ -700,8 +974,9 @@ export function buildDR(rows: CompareResultRow[], opts: DROptions): DRData {
   // significant genes, split between up and down in proportion (pickBalanced), and moved to the
   // front. topGenes ≤ 0 (Cap genes off) colours every significant gene — DRView safety-caps the
   // coloured foreground. All genes stay in one merged view trace.
+  const pool = opts.within?.length ? new Set(opts.within) : null
   const sigSeries = series
-    .filter((sr) => anySig.has(sr.uniqID))
+    .filter((sr) => (pool ? pool.has(sr.uniqID) : anySig.has(sr.uniqID)))
     .map((sr) => ({ id: sr.uniqID, signed: sr.points[sr.points.length - 1].y }))
   const chosen = pickBalanced(sigSeries, opts.topGenes > 0 ? opts.topGenes : sigSeries.length)
   const rank = new Map(chosen.map((id, i) => [id, i]))
@@ -719,7 +994,7 @@ export function buildDR(rows: CompareResultRow[], opts: DROptions): DRData {
   }
 }
 
-/** Points along each fitted curve in the DR view. */
+/** Evenly spaced points along each fitted curve in the DR view (more are added at its turns). */
 const CURVE_SAMPLES = 25
 
 // ── bubble (compare) ─────────────────────────────────────────────────────────────
@@ -729,7 +1004,7 @@ export interface BubblePoint {
   gene: string
   uniqID: string
   log2FC: number // → dot fill color (diverging)
-  sig: number // −log10 p significance → dot size
+  sig: number // −log10 P or Q (BubbleOptions.stat) — the significance the view may size/colour by
   effect: Effect
   signf: boolean
 }
@@ -744,6 +1019,14 @@ export interface BubbleData {
 export interface BubbleOptions {
   axis: 'dose' | 'time'
   topGenes: number
+  /** what ranks the genes: their log₂FC (default), or the significance column that drives the
+   *  Compare's calls (−log₁₀ P or Q), signed by the fold change's direction */
+  rank?: 'fc' | 'pP' | 'pQ'
+  /** over the dose/time levels, the rank score's peak (the level scoring furthest from 0, its sign
+   *  kept — default) or its total (summed, so opposite levels cancel to the net direction) */
+  over?: 'peak' | 'total'
+  /** the significance column the points carry (`sig`): the one the Compare calls by (default P) */
+  stat?: 'pP' | 'pQ'
   displayMap?: Record<string, string>
   /** focus genes (uniqIDs): when non-empty, show exactly these genes instead of top-N */
   focus?: string[]
@@ -753,12 +1036,16 @@ export interface BubbleOptions {
 }
 
 /** Bubble grid: genes × dose(or time), dot color = log2FC, size = |log2FC| (view). Top-N genes
- *  are those significant at one level or more, picked (and ordered) by their log2FC at the TOP
- *  dose/time level — the same "most
- *  differential at the max dose" ranking DR/TR use — not by their peak across all levels. */
+ *  are those significant at one level or more, picked (and ordered) by a signed score over their
+ *  dose/time levels: per level their log2FC (`rank` 'fc') or significance (−log₁₀ P or Q, signed by
+ *  the fold change there, so up and down still split), taken at its peak or summed (`over`). */
 export function buildBubble(rows: CompareResultRow[], opts: BubbleOptions): BubbleData {
-  const topX = new Map<string, number>() // the highest dose/time level seen per gene
-  const topSigned = new Map<string, number>() // signed log2FC at the top level: picks + axis order
+  const topSigned = new Map<string, number>() // signed rank score over the levels: picks + order
+  const rank = opts.rank ?? 'fc'
+  const total = opts.over === 'total'
+  // the score: log₂FC, or the significance (−log₁₀) in the fold change's direction
+  const scoreOf = (r: CompareResultRow): number =>
+    rank === 'fc' ? r.log2FC! : Math.sign(r.log2FC!) * (r[rank] ?? 0)
   const byGene = new Map<string, CompareResultRow[]>()
   // Genes with at least one significant point (any dose / time level): only these can be top-N.
   const anySig = new Set<string>()
@@ -767,11 +1054,11 @@ export function buildBubble(rows: CompareResultRow[], opts: BubbleOptions): Bubb
     if (r.signf) anySig.add(r.uniqID)
     const x = opts.axis === 'dose' ? r.dose : r.time
     if (x != null && Number.isFinite(x)) {
-      const cur = topX.get(r.uniqID)
-      if (cur == null || x > cur) {
-        topX.set(r.uniqID, x)
-        topSigned.set(r.uniqID, r.log2FC)
-      }
+      const sc = scoreOf(r)
+      const cur = topSigned.get(r.uniqID)
+      if (cur == null) topSigned.set(r.uniqID, sc)
+      else if (total) topSigned.set(r.uniqID, cur + sc)
+      else if (Math.abs(sc) > Math.abs(cur)) topSigned.set(r.uniqID, sc)
     }
     let arr = byGene.get(r.uniqID)
     if (!arr) {
@@ -792,7 +1079,7 @@ export function buildBubble(rows: CompareResultRow[], opts: BubbleOptions): Bubb
       ? focus.filter((id) => byGene.has(id))
       : // up / down in proportion to the significant genes on each side; unset ⇒ all (safety-capped)
         pickBalanced(sigGenes, geneLimit(opts.topGenes, sigGenes.length))
-  // Order the chosen genes by their top-level log2FC (descending) for the gene axis.
+  // Order the chosen genes by their score (descending) for the gene axis.
   base.sort((a, b) => (topSigned.get(b) ?? 0) - (topSigned.get(a) ?? 0))
   // Append linked-selection genes not already shown (kept in their own FC order), so a
   // hovered/pinned gene lands at the end of the axis instead of reshuffling the rest.
@@ -812,7 +1099,7 @@ export function buildBubble(rows: CompareResultRow[], opts: BubbleOptions): Bubb
         gene: label,
         uniqID: g,
         log2FC: r.log2FC,
-        sig: r.pP ?? 0,
+        sig: r[opts.stat ?? 'pP'] ?? 0,
         effect: r.effect,
         signf: r.signf
       })
@@ -825,6 +1112,30 @@ export function buildBubble(rows: CompareResultRow[], opts: BubbleOptions): Bubb
     axis: opts.axis,
     total: sigGenes.length
   }
+}
+
+// ── point thinning ───────────────────────────────────────────────────────────────
+
+/** The residual plot's point cap: its default, and the most its Max points box takes. One residual
+ *  per gene per sample runs to 100k+, far past what the point plots' shared SVG path stays
+ *  responsive with — so they're thinned (thinPoints: every extreme kept, the bulk evenly sampled)
+ *  to about a volcano's count. The quartiles, medians, trend and axis fit still come from every
+ *  residual. */
+export const RESIDUAL_DOT_CAP = 10000
+
+/** Thin `pts` to at most `cap` for drawing, keeping what a reader looks for: the most extreme
+ *  (largest `mag`) — a fifth of the budget — then an evenly spaced sample of the rest, in their
+ *  original order. Deterministic, so a redraw keeps the same points. Under the cap: all of them. */
+export function thinPoints<T>(pts: T[], cap: number, mag: (t: T) => number): T[] {
+  if (pts.length <= cap) return pts
+  if (cap <= 0) return []
+  const nTop = Math.min(pts.length, Math.ceil(cap / 5))
+  const order = pts.map((_, i) => i).sort((a, b) => mag(pts[b]) - mag(pts[a]))
+  const keep = new Set(order.slice(0, nTop))
+  const rest = order.slice(nTop).sort((a, b) => a - b)
+  const nRest = cap - keep.size
+  for (let k = 0; k < nRest; k++) keep.add(rest[Math.floor((k * rest.length) / nRest)])
+  return [...keep].sort((a, b) => a - b).map((i) => pts[i])
 }
 
 // ── dumbbell (contrast) ──────────────────────────────────────────────────────────
@@ -851,6 +1162,21 @@ export interface DumbbellOptions {
   focus?: string[]
   /** linked-selection genes (uniqIDs) appended after the chosen set (hover/pin highlight) */
   extra?: string[]
+  /** display order of the chosen genes: by the first side's value (fc1), the second's (fc2), both
+   *  high → low, or by |FCdiff| (diff, the default). The top-N pick is always by |FCdiff|. */
+  order?: DumbbellOrder
+}
+export type DumbbellOrder = 'fc1' | 'fc2' | 'diff'
+/** The dumbbell's gene orders, for its switch bar and gear setting. */
+export const DUMBBELL_ORDERS: readonly DumbbellOrder[] = ['fc1', 'fc2', 'diff']
+/** An order's display name: a side's own name (the contrast's cmp1/cmp2), or "change". */
+export function dumbbellOrderLabel(
+  o: string,
+  rows: readonly ContrastResultRow[] | undefined
+): string {
+  if (o === 'fc1') return rows?.[0]?.cmp1 ?? 'side 1'
+  if (o === 'fc2') return rows?.[0]?.cmp2 ?? 'side 2'
+  return 'change'
 }
 
 /** Dumbbell: FC1 vs FC2 per gene as connected dots. Only SIGNIFICANT genes are shown (top-N by
@@ -869,7 +1195,12 @@ export function buildDumbbell(rows: ContrastResultRow[], opts: DumbbellOptions):
   // |FCdiff| order, so a selected gene appears at the end of the list instead of replacing.
   const baseIds = new Set(base.map((r) => r.uniqID))
   const extraIds = new Set((opts.extra ?? []).filter((id) => !baseIds.has(id)))
-  const top = [...base, ...valid.filter((r) => extraIds.has(r.uniqID))]
+  // Order each part by the chosen side, high → low (stable, so ties keep the |FCdiff| order);
+  // linked-selection genes stay at the end either way.
+  const key = opts.order === 'fc1' ? 'FC1' : opts.order === 'fc2' ? 'FC2' : undefined
+  const ordered = (list: ContrastResultRow[]): ContrastResultRow[] =>
+    key ? [...list].sort((a, b) => (b[key] as number) - (a[key] as number)) : list
+  const top = [...ordered(base), ...ordered(valid.filter((r) => extraIds.has(r.uniqID)))]
   return {
     rows: top.map((r) => ({
       label: opts.displayMap?.[r.uniqID] ?? r.uniqID,
@@ -965,7 +1296,9 @@ export function buildGeneBar(
   log = false,
   /** what the error bars show: standard deviation, standard error of the mean, or the 95%
    *  confidence interval of the mean (t-based) */
-  error: 'sd' | 'sem' | 'ci95' = 'sd'
+  error: 'sd' | 'sem' | 'ci95' = 'sd',
+  /** the conditions' order along the axis (default natural) */
+  order: SampleOrdering = { by: 'natural' }
 ): GeneBarData {
   const want = new Set(uniqIDs)
   const byKey = new Map<string, number[]>() // `${uniqID} ${cond}` → values
@@ -1000,7 +1333,7 @@ export function buildGeneBar(
     }
     arr.push(r.value)
   }
-  condOrder.sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))
+  sortSamples(condOrder, order, (c) => condMeta[c], false)
   const genes = uniqIDs
     .filter((id) => present.has(id))
     .map((id) => ({ uniqID: id, label: displayMap?.[id] ?? id }))
@@ -1085,6 +1418,8 @@ export interface ClusterMeta {
   time: number | null
   /** custom condition slug → value (categorical, so always a string) */
   extra?: Record<string, string>
+  /** the replicate, for a per-sample point (absent on a condition mean or a responsome point) */
+  rep?: number
 }
 export interface ClusterPoint {
   x: number
@@ -1122,8 +1457,14 @@ export interface ClusterData {
     scree?: number[]
     transform?: string
     range?: [number, number]
+    /** set when 'complete' left too few genes to embed and every gene was used, gaps imputed: how
+     *  many genes were quantified in every item */
+    completeFallback?: number
   }
 }
+
+/** The fewest fully quantified genes the 'complete' missing-value mode embeds; fewer → impute. */
+export const MIN_COMPLETE_FEATURES = 10
 export interface ClusterOptions {
   method: ClusterMethod
   colorBy: ClusterColorBy
@@ -1186,7 +1527,8 @@ function clusterMetaOf(row: Record<string, unknown> | object): ClusterMeta {
     cmpd: r.cmpd != null ? String(r.cmpd) : '',
     dose: num(r.dose),
     time: num(r.time),
-    ...(extra ? { extra: { ...extra } } : null)
+    ...(extra ? { extra: { ...extra } } : null),
+    ...(num(r.rep) != null ? { rep: num(r.rep) as number } : null)
   }
 }
 
@@ -1233,10 +1575,17 @@ function embedMatrix(
   // the gene mean below).
   // Both filters below select INDICES rather than rows, so `geneLabels` can be narrowed the same
   // way and a loading stays attached to the gene it came from.
-  let keep =
-    (opts.missing ?? 'complete') === 'complete'
-      ? M.map((_, i) => i).filter((i) => M[i].every((v) => Number.isFinite(v)))
-      : M.map((_, i) => i)
+  // With many samples, few genes (often none) are quantified in every one of them — 'complete'
+  // would leave nothing to embed. Below MIN_COMPLETE_FEATURES complete genes it falls back to
+  // 'impute', and says so (diag.completeFallback = how many genes 'complete' would have kept).
+  const all = M.map((_, i) => i)
+  let keep = all
+  let completeFallback: number | undefined
+  if ((opts.missing ?? 'complete') === 'complete') {
+    const complete = all.filter((i) => M[i].every((v) => Number.isFinite(v)))
+    if (complete.length >= MIN_COMPLETE_FEATURES || complete.length === M.length) keep = complete
+    else completeFallback = complete.length
+  }
   // Feature selection: keep only the `topVar` most-variable genes (by log2 variance across items).
   // With p ≫ n, the many low-signal genes make the sample covariance nearly isotropic, so every PC
   // gets ~1/(n−1) of the variance and a real group axis is buried; restricting to the most variable
@@ -1272,7 +1621,7 @@ function embedMatrix(
       method: opts.method,
       varExplained: [0, 0],
       colorBy: opts.colorBy,
-      diag: { items: nItems, features: nG, missingPct }
+      diag: { items: nItems, features: nG, missingPct, completeFallback }
     }
   }
   // Center each gene across items (subtract the gene mean), and — in 'unit' mode — divide by its
@@ -1319,7 +1668,7 @@ function embedMatrix(
     colorBy: opts.colorBy,
     ...(cl ? { clusterK: cl.k } : null),
     ...(topLo ? { loadings: topLo } : null),
-    diag: { items: nItems, features: nG, missingPct, scree }
+    diag: { items: nItems, features: nG, missingPct, scree, completeFallback }
   }
 }
 
@@ -1666,13 +2015,87 @@ export interface HeatmapData {
   x: string[]
   /** gene row labels */
   y: string[]
+  /** gene uniqIDs, aligned to `y` (for linked selection) */
+  geneIds: string[]
   /** per-sample condition values, aligned with `x` (one entry per sample column) */
   samples: SampleMeta[]
   /** conditions present in the data (with values), shown as annotation tracks in this order */
   conds: ConditionKey[]
 }
 
+/** How a sample axis (heatmap columns, gene-bar conditions, QC groups) is ordered: 'natural' =
+ *  by condition — cell, cmpd, dose, time, the custom conditions, then the replicate — with text in
+ *  natural order (numbers in it numerically) and dose and time as numbers; 'original' = the data's
+ *  own sample order. */
+export type SampleOrder = 'natural' | 'original'
+
+/** What orders a sample axis: the order, and — for 'original' — the data's samples in their
+ *  order (StandardizeResult.samples). Without them 'original' keeps the rows' first-seen order. */
+export interface SampleOrdering {
+  by: SampleOrder
+  samples?: readonly SampleConds[]
+}
+
+/** Sort a sample axis in place. `metaOf` reads a slot's condition values. `perSample` = slots are
+ *  samples (the replicate tells them apart); otherwise they're conditions, replicates pooled, so
+ *  the replicate plays no part. The sort is stable, so a slot 'original' can't place keeps its
+ *  first-seen position after the placed ones. */
+export function sortSamples<T>(
+  items: T[],
+  ordering: SampleOrdering,
+  metaOf: (t: T) => SampleMeta,
+  perSample: boolean
+): T[] {
+  if (ordering.by === 'original') {
+    if (!ordering.samples?.length) return items
+    const keyOf = (m: SampleMeta | SampleConds): string =>
+      [
+        m.cell,
+        m.cmpd,
+        m.dose ?? '',
+        m.time ?? '',
+        ...Object.keys(m.extra ?? {})
+          .sort()
+          .map((k) => `${k}=${m.extra![k]}`),
+        perSample ? (m.rep ?? '') : ''
+      ].join('\u0001')
+    const rank = new Map<string, number>()
+    ordering.samples.forEach((s, i) => {
+      const k = keyOf(s)
+      if (!rank.has(k)) rank.set(k, i)
+    })
+    const at = (t: T): number => rank.get(keyOf(metaOf(t))) ?? Infinity
+    return items.sort((a, b) => {
+      const ra = at(a)
+      const rb = at(b)
+      return ra === rb ? 0 : ra < rb ? -1 : 1
+    })
+  }
+  const strCmp = (a: string, b: string): number =>
+    a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' })
+  const numCmp = (a: number | null, b: number | null): number =>
+    a == null && b == null ? 0 : a == null ? 1 : b == null ? -1 : a - b
+  // Custom conditions sort after the presets, in slug order, so the hierarchy stays
+  // cell → cmpd → dose → time → (customs) → rep.
+  const customSlugs = [...new Set(items.flatMap((t) => Object.keys(metaOf(t).extra ?? {})))].sort()
+  return items.sort((a, b) => {
+    const ma = metaOf(a)
+    const mb = metaOf(b)
+    let c = strCmp(ma.cell, mb.cell) || strCmp(ma.cmpd, mb.cmpd)
+    if (c !== 0) return c
+    c = numCmp(ma.dose, mb.dose) || numCmp(ma.time, mb.time)
+    if (c !== 0) return c
+    for (const k of customSlugs) {
+      c = strCmp(ma.extra?.[k] ?? '', mb.extra?.[k] ?? '')
+      if (c !== 0) return c
+    }
+    return perSample ? numCmp(ma.rep, mb.rep) : 0
+  })
+}
+
 export interface HeatmapOptions {
+  /** the sample columns' order (default natural) */
+  order?: SampleOrdering
   displayMap?: Record<string, string>
   /** log10-transform intensities for display (default true) */
   log10?: boolean
@@ -1720,6 +2143,26 @@ function sampleCond(r: StandardRow): string {
 
 /** Pivot the standardized long table into a genes × samples matrix for a heatmap. */
 export function buildHeatmap(rows: StandardRow[], opts: HeatmapOptions = {}): HeatmapData {
+  const gen = buildHeatmapSteps(rows, opts)
+  let r = gen.next()
+  while (!r.done) r = gen.next(clusterRowGroups(r.value.matrix, r.value.k))
+  return r.value
+}
+
+/** What buildHeatmapSteps hands out: the gene rows to cluster (missing cells imputed) and how
+ *  many groups to cut the tree into — answered with clusterRowGroups' groups. */
+export interface HeatmapClusterJob {
+  matrix: number[][]
+  k: number
+}
+
+/** buildHeatmap as steps: the pivot and layout here, the row clustering (O(n²) in time and
+ *  memory — the slow part for a full proteome) handed out, so the dashboard can run it off the UI
+ *  thread. Same result either way. */
+export function* buildHeatmapSteps(
+  rows: StandardRow[],
+  opts: HeatmapOptions = {}
+): Generator<HeatmapClusterJob, HeatmapData, number[][]> {
   const log10 = opts.log10 ?? true
   const sampleOrder: string[] = []
   const sampleSeen = new Set<string>()
@@ -1752,31 +2195,14 @@ export function buildHeatmap(rows: StandardRow[], opts: HeatmapOptions = {}): He
     cells.set(`${r.uniqID} ${s}`, v)
   }
 
-  // Order the sample columns by condition — cell, then cmpd, then dose, then time (then
-  // replicate) — so samples sharing a cell/compound/dose block together, rather than appearing
-  // in the raw data order.
-  const strCmp = (a: string, b: string): number =>
-    a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' })
-  const numCmp = (a: number | null, b: number | null): number =>
-    a == null && b == null ? 0 : a == null ? 1 : b == null ? -1 : a - b
-  // Custom conditions sort after the presets, in slug order, so the hierarchy stays
-  // cell → cmpd → dose → time → (customs) → rep.
-  const customSlugs = [
-    ...new Set(sampleOrder.flatMap((s) => Object.keys(sampleMeta.get(s)?.extra ?? {})))
-  ].sort()
-  sampleOrder.sort((a, b) => {
-    const ma = sampleMeta.get(a) as SampleMeta
-    const mb = sampleMeta.get(b) as SampleMeta
-    let c = strCmp(ma.cell, mb.cell) || strCmp(ma.cmpd, mb.cmpd)
-    if (c !== 0) return c
-    c = numCmp(ma.dose, mb.dose) || numCmp(ma.time, mb.time)
-    if (c !== 0) return c
-    for (const k of customSlugs) {
-      c = strCmp(ma.extra?.[k] ?? '', mb.extra?.[k] ?? '')
-      if (c !== 0) return c
-    }
-    return numCmp(ma.rep, mb.rep)
-  })
+  // Order the sample columns — by default naturally by condition (cell, cmpd, dose, time, then
+  // replicate), so samples sharing a cell/compound/dose block together.
+  sortSamples(
+    sampleOrder,
+    opts.order ?? { by: 'natural' },
+    (s) => sampleMeta.get(s) as SampleMeta,
+    true
+  )
 
   // The intensity heatmap shows the full proteome — no top-N cap (that's the FC heatmap's
   // job). Focus genes (when set) narrow it to exactly those rows.
@@ -1819,7 +2245,7 @@ export function buildHeatmap(rows: StandardRow[], opts: HeatmapOptions = {}): He
         }
       return cnt > 0 ? sum / cnt : -Infinity // all-missing genes sink to the bottom
     }
-    const groups = clusterRowGroups(imputed, opts.clusterGroups ?? 8)
+    const groups: number[][] = yield { matrix: imputed, k: opts.clusterGroups ?? 8 }
     groups.sort((ga, gb) => {
       const va = ga.reduce((s, i) => s + geneVal(z[i]), 0) / ga.length
       const vb = gb.reduce((s, i) => s + geneVal(z[i]), 0) / gb.length
@@ -1841,7 +2267,7 @@ export function buildHeatmap(rows: StandardRow[], opts: HeatmapOptions = {}): He
       ? samples.some((m) => metaValue(m, c) != null)
       : samples.some((m) => metaValue(m, c) !== '' && metaValue(m, c) != null)
   )
-  return { z, x: sampleOrder, y, samples, conds }
+  return { z, x: sampleOrder, y, geneIds: genes, samples, conds }
 }
 
 // ── log2FC heatmap (compare): genes × comparison-columns, signed fold change ──────
@@ -1855,9 +2281,20 @@ export interface FcHeatmapData {
   columns: string[]
   /** z[geneRow][col] = log2FC (null = missing) */
   z: Array<Array<number | null>>
-  /** symmetric colour limit: max |log2FC| across the matrix (≥ tiny) */
+  /** max |log2FC| across the matrix (≥ tiny) */
   absMax: number
+  /** the symmetric colour limit: the 99th percentile of |log2FC| (≤ absMax), so a few extreme
+   *  cells don't wash every other one out to near-white; colours saturate beyond it */
+  colorMax: number
+  /** the gene rows' clustering tree, in row-position space (absent when the rows weren't
+   *  clustered — too few, or clustering off) */
+  rowTree?: DendroLink[]
+  /** the comparison columns' clustering tree, in column-position space (absent likewise) */
+  colTree?: DendroLink[]
 }
+
+/** The share of |log2FC| cells the fold-change heatmap's colour range spans. */
+const FC_COLOR_QUANTILE = 0.99
 
 export interface FcHeatmapOptions {
   displayMap?: Record<string, string>
@@ -1871,6 +2308,10 @@ export interface FcHeatmapOptions {
    *  with no significant cell (removes near-zero baseline stripes). Genes are ignored when
    *  `focus` is set (an explicit gene pick always shows); column pruning still applies. */
   differentialOnly?: boolean
+  /** how clusters join (default `ward`) — see Linkage */
+  linkage?: Extract<Linkage, 'ward' | 'complete'>
+  /** how the tree's leaves are laid out (default `mean`) — see LeafOrder */
+  leafOrder?: LeafOrder
 }
 
 /** Pivot a comparison result into a genes × (comparison × context) matrix of log2FC. Each column
@@ -1945,18 +2386,35 @@ export function buildFcHeatmap(
   }
 
   let z = genes.map((g) => activeCols.map((c) => cellVal(g, c)))
+  // The colour range: the 99th percentile of |log2FC|, not its max — one extreme cell (a curve
+  // fit's runaway fold change) would otherwise stretch the scale until everything else reads as
+  // near-white.
+  const abs: number[] = []
+  for (const row of z)
+    for (const v of row) if (v != null && Number.isFinite(v)) abs.push(Math.abs(v))
+  abs.sort((x, y) => x - y)
+  const absMax = abs.length ? abs[abs.length - 1] : 0
+  const colorMax = abs.length ? abs[Math.floor(FC_COLOR_QUANTILE * (abs.length - 1))] : 0
   // Bicluster — order BOTH gene rows and comparison columns by fold-change PROFILE so
   // co-regulated genes and co-varying conditions form visible blocks (pattern discovery).
-  // Impute missing cells with the column mean, then z-score each vector before clustering:
-  // raw euclidean is dominated by amplitude and sorts into a magnitude ramp that reads as
-  // unclustered, whereas standardizing clusters by shape (up/down pattern). Columns are
-  // reordered first, then rows. The displayed z keeps its real values/nulls; standardization
-  // only drives the ordering. (Ordinal dose/time order is intentionally traded for pattern.)
-  const zscore = (vec: number[]): number[] => {
-    const mean = vec.reduce((a, b) => a + b, 0) / vec.length
-    const sd = Math.sqrt(vec.reduce((a, b) => a + (b - mean) * (b - mean), 0) / vec.length)
-    return sd > 1e-9 ? vec.map((v) => (v - mean) / sd) : vec.map(() => 0)
-  }
+  // Impute missing cells with the column mean, then cluster on the fold changes themselves, as
+  // coloured (capped at the colour limit, where the colour stops changing): Ward linkage on
+  // euclidean distance, so genes with the same changes, the same size, sit together in compact
+  // blocks — strong reds with strong reds, the near-zero genes in one block. (Average linkage
+  // chains: one sprawling cluster with the stragglers hung off it.) Neither scaled nor centred: a
+  // unit-length profile weighs a near-zero gene's faint wobble as fully as a strong change and
+  // scatters those genes through the blocks, and taking a gene's mean off makes "up under A only"
+  // ([+, +, 0, 0]) and "down under B only" ([0, 0, −, −]) the same profile. Each merge then lays
+  // its two branches out by mean fold change, low → high (R's heatmap(): reorder.dendrogram by
+  // row / column means), so neighbouring clusters grade into one another rather than landing in
+  // the arbitrary order the merges happened in. Columns are reordered first, then rows. The
+  // displayed z keeps its real values/nulls; the imputing and capping only drive the ordering.
+  // (Ordinal dose/time order is intentionally traded for pattern.)
+  const mean = (vec: number[]): number => vec.reduce((a, v) => a + v, 0) / (vec.length || 1)
+  const cap = colorMax || 1
+  const how = { linkage: opts.linkage ?? 'ward', leafOrder: opts.leafOrder ?? 'mean' } as const
+  let rowTree: DendroLink[] | undefined
+  let colTree: DendroLink[] | undefined
   if (opts.cluster ?? true) {
     const colMean = activeCols.map((_, ci) => {
       let sum = 0
@@ -1971,27 +2429,30 @@ export function buildFcHeatmap(
       return cnt > 0 ? sum / cnt : 0
     })
     let imputed = z.map((row) =>
-      row.map((v, ci) => (v != null && Number.isFinite(v) ? v : colMean[ci]))
+      row.map((v, ci) =>
+        Math.max(-cap, Math.min(cap, v != null && Number.isFinite(v) ? v : colMean[ci]))
+      )
     )
-    // Columns first: cluster on each column's gene-response profile (z-scored across genes).
+    // Columns first: cluster on each column's gene-response profile.
     if (activeCols.length > 2 && genes.length > 1) {
-      const colVecs = activeCols.map((_, ci) => zscore(imputed.map((row) => row[ci])))
-      const corder = clusterRowOrder(colVecs)
+      const colVecs = activeCols.map((_, ci) => imputed.map((row) => row[ci]))
+      const ct = clusterRowTree(colVecs, { ...how, weights: colVecs.map(mean) })
+      const corder = ct.order
+      colTree = ct.links
       activeCols = corder.map((i) => activeCols[i])
       z = z.map((row) => corder.map((i) => row[i]))
       imputed = imputed.map((row) => corder.map((i) => row[i]))
     }
-    // Rows: cluster on each gene's (now column-reordered) profile.
-    if (genes.length > 2 && activeCols.length > 1) {
-      const order = clusterRowOrder(imputed.map((row) => zscore(row)))
+    // Rows: cluster on each gene's (now column-reordered) profile — with one column, that orders
+    // the genes by it.
+    if (genes.length > 2 && activeCols.length > 0) {
+      const rt = clusterRowTree(imputed, { ...how, weights: imputed.map(mean) })
+      const order = rt.order
+      rowTree = rt.links
       genes = order.map((i) => genes[i])
       z = order.map((i) => z[i])
     }
   }
-
-  let absMax = 0
-  for (const row of z)
-    for (const v of row) if (v != null && Number.isFinite(v)) absMax = Math.max(absMax, Math.abs(v))
 
   const dm = opts.displayMap ?? {}
   return {
@@ -1999,7 +2460,10 @@ export function buildFcHeatmap(
     geneIds: genes,
     columns: activeCols,
     z,
-    absMax: absMax || 1
+    absMax: absMax || 1,
+    colorMax: colorMax || absMax || 1,
+    ...(rowTree?.length ? { rowTree } : null),
+    ...(colTree?.length ? { colTree } : null)
   }
 }
 
@@ -2029,11 +2493,6 @@ export interface QcData {
   summary: 'median' | 'count'
 }
 
-/** Numeric-aware label sort so dose/time samples read in order (e.g. `dose=2` before `dose=10`). */
-function qcLabelCmp(a: string, b: string): number {
-  return a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' })
-}
-
 /**
  * Per-sample QC distributions for a standardized result, for the QC plot (violin/box/bar):
  *  - `intensity`: every protein's intensity in each sample (log10 when values look like raw
@@ -2049,7 +2508,9 @@ export function buildQc(
   metric: QcMetric,
   /** the scale abundance is shown on (see plotScaleOf); unset → the old guess (log₁₀ when the
    *  values look like raw intensity) */
-  scale?: ValueScale
+  scale?: ValueScale,
+  /** the samples' / groups' order along the axis (default natural) */
+  order: SampleOrdering = { by: 'natural' }
 ): QcData {
   const conds = std.activeConditions
   const parts = (r: StandardRow): string[] =>
@@ -2075,6 +2536,9 @@ export function buildQc(
   }
   const metaOf = (label: string): SampleMeta =>
     metas.get(label) ?? { cell: '', cmpd: '', dose: null, time: null, rep: null }
+  // Per-sample groups (intensity, # proteins) tell replicates apart; CV groups pool them.
+  const sortGroups = (groups: QcGroup[], perSample: boolean): QcGroup[] =>
+    sortSamples(groups, order, (g) => g.meta, perSample)
   const push = (m: Map<string, number[]>, k: string, v: number): void => {
     const a = m.get(k)
     if (a) a.push(v)
@@ -2095,14 +2559,13 @@ export function buildQc(
         if (r.imputed) c.imputed++
         else c.measured++
       }
-    const groups = [...count]
-      .map(([label, c]) => ({
-        label,
-        values: [c.measured],
-        ...(c.imputed ? { imputed: c.imputed } : null),
-        meta: metaOf(label)
-      }))
-      .sort((a, b) => qcLabelCmp(a.label, b.label))
+    const groups = [...count].map(([label, c]) => ({
+      label,
+      values: [c.measured],
+      ...(c.imputed ? { imputed: c.imputed } : null),
+      meta: metaOf(label)
+    }))
+    sortGroups(groups, true)
     return { groups, yLabel: '# proteins', metric, summary: 'count' }
   }
 
@@ -2120,16 +2583,15 @@ export function buildQc(
     // On the scale every abundance plot shows Clean data on — or, unset, log₁₀ when the values
     // look like raw intensity (all positive, ≥2 decades).
     const sc: ValueScale = scale ?? (min > 0 && max / min >= 100 ? 'log10' : 'linear')
-    const groups = [...map]
-      .map(([label, vals]) => ({
-        label,
-        values: vals.flatMap((v) => {
-          const x = fromLinear(v, sc)
-          return x == null ? [] : [x]
-        }),
-        meta: metaOf(label)
-      }))
-      .sort((a, b) => qcLabelCmp(a.label, b.label))
+    const groups = [...map].map(([label, vals]) => ({
+      label,
+      values: vals.flatMap((v) => {
+        const x = fromLinear(v, sc)
+        return x == null ? [] : [x]
+      }),
+      meta: metaOf(label)
+    }))
+    sortGroups(groups, true)
     return { groups, yLabel: abundanceLabel(sc), metric, summary: 'median' }
   }
 
@@ -2146,21 +2608,20 @@ export function buildQc(
       }
       push(gm, r.uniqID, r.value)
     }
-  const groups = [...byGroup]
-    .map(([label, geneMap]) => {
-      const cvs: number[] = []
-      for (const vals of geneMap.values()) {
-        if (vals.length < 2) continue // CV needs ≥2 replicates
-        const mean = vals.reduce((a, b) => a + b, 0) / vals.length
-        if (mean <= 0) continue
-        const sd = Math.sqrt(
-          vals.reduce((a, b) => a + (b - mean) * (b - mean), 0) / (vals.length - 1)
-        )
-        cvs.push((100 * sd) / mean)
-      }
-      return { label, values: cvs, meta: metaOf(label) }
-    })
-    .sort((a, b) => qcLabelCmp(a.label, b.label))
+  const groups = [...byGroup].map(([label, geneMap]) => {
+    const cvs: number[] = []
+    for (const vals of geneMap.values()) {
+      if (vals.length < 2) continue // CV needs ≥2 replicates
+      const mean = vals.reduce((a, b) => a + b, 0) / vals.length
+      if (mean <= 0) continue
+      const sd = Math.sqrt(
+        vals.reduce((a, b) => a + (b - mean) * (b - mean), 0) / (vals.length - 1)
+      )
+      cvs.push((100 * sd) / mean)
+    }
+    return { label, values: cvs, meta: metaOf(label) }
+  })
+  sortGroups(groups, false)
   return { groups, yLabel: 'CV %', metric, summary: 'median' }
 }
 
@@ -2169,6 +2630,9 @@ export function buildQc(
 export interface CorrData {
   /** sample labels, in (optionally clustered) row/column order */
   labels: string[]
+  /** each sample's condition values (its replicate included), aligned with `labels` — for the
+   *  tooltip */
+  metas: SampleMeta[]
   /** symmetric correlation matrix z[i][j] = r(sample_i, sample_j); diagonal = 1 */
   z: number[][]
   /** smallest off-diagonal correlation (colour-scale floor) */
@@ -2200,6 +2664,7 @@ export function buildSampleCorr(
   const sampleIdx = new Map<string, number>()
   const geneIdx = new Map<string, number>()
   let labels: string[] = []
+  let metas: SampleMeta[] = []
   let min = Infinity
   let max = -Infinity
   for (const r of std.rows) {
@@ -2207,6 +2672,19 @@ export function buildSampleCorr(
     if (!sampleIdx.has(sampleLabel(r))) {
       sampleIdx.set(sampleLabel(r), labels.length)
       labels.push(sampleLabel(r))
+      // only the active conditions: the ones the label (and so the sample) is made of
+      const act = new Set(conds)
+      const extra = Object.fromEntries(
+        Object.entries(r.extra ?? {}).filter(([k]) => act.has(customCond(k)))
+      )
+      metas.push({
+        cell: act.has('cell') ? r.cell : '',
+        cmpd: act.has('cmpd') ? r.cmpd : '',
+        dose: act.has('dose') ? r.dose : null,
+        time: act.has('time') ? r.time : null,
+        rep: r.rep,
+        ...(Object.keys(extra).length ? { extra } : null)
+      })
     }
     if (!geneIdx.has(r.uniqID)) geneIdx.set(r.uniqID, geneIdx.size)
     if (r.value < min) min = r.value
@@ -2265,10 +2743,11 @@ export function buildSampleCorr(
   if ((opts.cluster ?? true) && S > 2) {
     const order = clusterRowOrder(z)
     labels = order.map((i) => labels[i])
+    metas = order.map((i) => metas[i])
     z = order.map((i) => order.map((j) => z[i][j]))
   }
 
-  return { labels, z, min: Number.isFinite(lo) ? lo : 0 }
+  return { labels, metas, z, min: Number.isFinite(lo) ? lo : 0 }
 }
 
 // ── enrichment (over-representation analysis) ────────────────────────────────────
@@ -2487,44 +2966,112 @@ export const ENRICH_DIST_KEPT = 100
  *  top N, the export writes them all). `combo` keys are `${method}|${source}`. */
 export function enrichmentAll(
   rows: CompareResultRow[],
-  opts: {
-    annotationMap: Record<string, Record<string, string>>
-    displayMap?: Record<string, string>
-    keggCategories?: Record<string, string>
-    sources: EnrichSource[]
-    methods: EnrichMethod[]
-  }
+  opts: EnrichAllOptions
 ): Record<string, Record<string, EnrichData>> {
-  const out: Record<string, Record<string, EnrichData>> = {}
-  const groups = facetCompareRows(rows, facetDims(rows))
-  // Per source, the term grouping — the same for every facet and method.
-  const termGroups = new Map(
-    opts.sources.map((src) => [
-      src,
-      enrichTermGroups(src, opts.annotationMap, opts.keggCategories ?? {})
-    ])
-  )
+  const gen = enrichmentAllSteps(rows, opts)
+  let r = gen.next()
+  while (!r.done) r = gen.next(r.value.map((j) => enrichJob(j)))
+  return r.value
+}
+
+export type EnrichAllOptions = {
+  annotationMap: Record<string, Record<string, string>>
+  displayMap?: Record<string, string>
+  keggCategories?: Record<string, string>
+  sources: EnrichSource[]
+  methods: EnrichMethod[]
+}
+
+/** One facet × method × source of an enrichment run — independent of the others, so they can be
+ *  shared out over the worker pool. `annotationMap` carries only the source's own columns
+ *  (ENRICH_COLS), all the term lookup reads, so each job is small to send. */
+export interface EnrichJob {
+  rows: CompareResultRow[]
+  opts: EnrichOptions
+}
+/** Run one job: the enrichment, its terms past ENRICH_DIST_KEPT stripped of their distributions. */
+export function enrichJob(j: EnrichJob): EnrichData {
+  const e = buildEnrichment(j.rows, j.opts)
   const trim = (terms: EnrichTerm[]): EnrichTerm[] =>
     terms.map((t, i) =>
       i < ENRICH_DIST_KEPT ? t : { ...t, dist: undefined, leadingDist: undefined }
     )
+  return { ...e, up: trim(e.up), down: trim(e.down) }
+}
+
+/** The annotation map cut down to `source`'s columns — every gene the term lookup could read. */
+function annotationFor(
+  ann: Record<string, Record<string, string>>,
+  source: EnrichSource
+): Record<string, Record<string, string>> {
+  const cols = ENRICH_COLS[source]
+  const out: Record<string, Record<string, string>> = {}
+  for (const uid in ann) {
+    const rec = ann[uid]
+    let slim: Record<string, string> | undefined
+    for (const c of cols)
+      if (rec[c] !== undefined) {
+        slim ??= {}
+        slim[c] = rec[c]
+      }
+    if (slim) out[uid] = slim
+  }
+  return out
+}
+
+/** enrichmentAll as steps: one batch of every facet × method × source job (EnrichJob), answered in
+ *  the same order, then assembled. */
+export function* enrichmentAllSteps(
+  rows: CompareResultRow[],
+  opts: EnrichAllOptions
+): Generator<EnrichJob[], Record<string, Record<string, EnrichData>>, EnrichData[]> {
+  const groups = facetCompareRows(rows, facetDims(rows))
+  // Per source, the term grouping and the annotation columns — the same for every facet and method.
+  const perSource = new Map(
+    opts.sources.map((src) => [
+      src,
+      {
+        termGroups: enrichTermGroups(src, opts.annotationMap, opts.keggCategories ?? {}),
+        ann: annotationFor(opts.annotationMap, src)
+      }
+    ])
+  )
+  const jobs: EnrichJob[] = []
+  const keys: Array<[string, string]> = []
   for (const g of groups) {
-    const byCombo: Record<string, EnrichData> = {}
+    // Only the fields ORA (uniqID, signf, effect) and GSEA (uniqID, log2FC) read — one slim copy
+    // per facet, shared by its jobs, so each is small to send.
+    const slim = g.rows.map(
+      (r) =>
+        ({
+          uniqID: r.uniqID,
+          log2FC: r.log2FC,
+          signf: r.signf,
+          effect: r.effect
+        }) as CompareResultRow
+    )
     for (const method of opts.methods)
       for (const source of opts.sources) {
-        const e = buildEnrichment(g.rows, {
-          method,
-          source,
-          topTerms: Number.MAX_SAFE_INTEGER,
-          annotationMap: opts.annotationMap,
-          displayMap: opts.displayMap,
-          keggCategories: source.startsWith('kegg') ? opts.keggCategories : undefined,
-          termGroups: termGroups.get(source)
+        const ps = perSource.get(source)!
+        jobs.push({
+          rows: slim,
+          opts: {
+            method,
+            source,
+            topTerms: Number.MAX_SAFE_INTEGER,
+            annotationMap: ps.ann,
+            displayMap: opts.displayMap,
+            keggCategories: source.startsWith('kegg') ? opts.keggCategories : undefined,
+            termGroups: ps.termGroups
+          }
         })
-        byCombo[`${method}|${source}`] = { ...e, up: trim(e.up), down: trim(e.down) }
+        keys.push([g.key, `${method}|${source}`])
       }
-    out[g.key] = byCombo
   }
+  const done: EnrichData[] = yield jobs
+  const out: Record<string, Record<string, EnrichData>> = {}
+  for (const g of groups) out[g.key] = {}
+  keys.forEach(([fk, combo], i) => (out[fk][combo] = done[i]))
   return out
 }
 
@@ -2584,7 +3131,8 @@ export interface EnrichTerm {
   pAdjust: number
   /** display names of the driving genes (ORA: query hits; GSEA: leading-edge genes) */
   genes: string[]
-  /** uniqIDs of the driving genes, aligned to `genes` (for cross-view hover linking); GSEA only */
+  /** uniqIDs of the driving genes, aligned to `genes` (for cross-view linking: hover, and a click
+   *  selecting the term's genes). Absent on results from before ORA kept them. */
   geneIds?: string[]
   /** GSEA normalized enrichment score (sign = direction); undefined for ORA */
   nes?: number
@@ -2743,18 +3291,25 @@ function runOra(rows: CompareResultRow[], opts: EnrichOptions): EnrichData {
     }
     const pvals = staged.map((e) => hyperTail(e.k, e.K, n, N))
     const padj = benjaminiHochberg(pvals)
-    const terms: EnrichTerm[] = staged.map((e, i) => ({
-      term: e.term,
-      count: e.k,
-      setSize: e.K,
-      geneRatio: n > 0 ? e.k / n : 0,
-      bgRatio: N > 0 ? e.K / N : 0,
-      fold: n > 0 && N > 0 && e.K > 0 ? e.k / n / (e.K / N) : 0,
-      pValue: pvals[i],
-      pAdjust: padj[i],
-      genes: e.genes.map((uid) => dm[uid] ?? uid).sort(),
-      category: opts.termGroups?.[e.term]
-    }))
+    const terms: EnrichTerm[] = staged.map((e, i) => {
+      // the hits by name, their uniqIDs kept aligned (for selecting the term's genes)
+      const hits = e.genes
+        .map((uid) => ({ uid, name: dm[uid] ?? uid }))
+        .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
+      return {
+        term: e.term,
+        count: e.k,
+        setSize: e.K,
+        geneRatio: n > 0 ? e.k / n : 0,
+        bgRatio: N > 0 ? e.K / N : 0,
+        fold: n > 0 && N > 0 && e.K > 0 ? e.k / n / (e.K / N) : 0,
+        pValue: pvals[i],
+        pAdjust: padj[i],
+        genes: hits.map((h) => h.name),
+        geneIds: hits.map((h) => h.uid),
+        category: opts.termGroups?.[e.term]
+      }
+    })
     terms.sort((a, b) => a.pAdjust - b.pAdjust || b.count - a.count)
     return { terms: terms.slice(0, limit), total: terms.length }
   }

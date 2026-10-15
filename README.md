@@ -38,39 +38,42 @@ Features:
 ### Load your data
 
 A project is a folder with an `input/` directory holding three CSVs: a
-**data** table (wide or long), a **samplesheet** describing each sample's
-conditions (e.g. cell line/strain, compound, dose, time), and an optional **gene
-database** (DB) for labels and annotation. Open a `.omicexplorer` project file, or
-point the app at a new data folder to start one. An included demo and example
-project show the expected layout.
+**datamatrix** (wide or long), a **samplesheet** describing each sample's
+conditions (e.g. cell line/strain, compound, dose, time), and an optional
+**metadata** file for labels and annotation. Name them e.g. `mydata_datamatrix.csv`,
+`mydata_samplesheet.csv` and `mydata_metadata.csv`. Open a `.omicexplorer` project
+file, or point the app at a new data folder to start one. [`templates/`](templates/)
+has a blank template and a filled example of each file.
 
 The Load tile has two modes. **Manual** reads the three files as described below.
 **Interactive** takes one raw export (DIA-NN, Spectronaut, MaxQuant or any
-matrix) and writes the three files for you.
+matrix), cleans its IDs, fetches annotations, and writes the three files for you.
 
-#### Data file
+#### Datamatrix
 
-The filename stem must end in `_wide` (one row per feature, one column per sample)
-or `_long` (one row per feature × sample), e.g. `run1_wide.csv`.
+Wide (one row per feature, one column per sample) or long (one row per feature ×
+sample, with `sample` and `value` columns); the app tells them apart from the
+columns.
 
 | Column | Format | Needed | What it holds |
 | --- | --- | --- | --- |
-| first column (any name) | wide | required | Feature ID, e.g. `UniProtID` |
+| first column, e.g. `UniProtIDs` | wide | required | Feature ID as the search engine wrote it |
 | one column per sample | wide | required | That sample's values; the header is the sample name |
-| ID column (any name) | long | required | Feature ID; the first column that isn't `sample` or `value` |
-| `sample` (or `position`, `well`) | long | required | Sample name, matching the samplesheet |
+| ID column, e.g. `UniProtIDs` | long | required | Feature ID; the first column that isn't `sample` or `value` |
+| `sample` | long | required | Sample name, matching the samplesheet |
 | `value` | long | required | The measured value |
 | `peptides` | long | optional | Peptide count; read but not used in analysis yet |
 
-- In a long file, `sample`, `position`, `well`, `value` and `peptides` are
-  lowercase and case-sensitive.
-- Give the ID column the same name as the DB's ID column to pick up labels and
-  annotations.
+- In a long file, `sample`, `value` and `peptides` are lowercase and case-sensitive.
+- The ID column is matched to the metadata file's `uniqID`. IDs can stay as the search
+  engine wrote them: a `;`-joined protein group (`Q13547;Q92769-2`, one feature), an
+  isoform (`P06733-2`) or a FASTA header (`sp|O14733|MP2K7_HUMAN`).
+- Decoy IDs (`REV__`, `rev_`, `DECOY_`, `reverse_`) are kept and analysed, but never
+  matched to metadata or fetched, so they can't borrow a real protein's label.
 - In a wide file every column after the first is a sample. One the samplesheet
   doesn't list is dropped.
 - A blank cell, `NA`, `NaN` and `0` all mean "not measured". Raw or logged values
   both work.
-- A protein group is one ID with its proteins `;`-joined (`Q13547;Q92769-2`).
 
 #### Samplesheet
 
@@ -78,10 +81,7 @@ One row per sample. Headers are matched case-insensitively.
 
 | Column | Needed | What it holds |
 | --- | --- | --- |
-| `sample` | one sample key | Sample name, matching the data file |
-| `position` | one sample key | Used as the sample name when there's no `sample` |
-| `plate` + `well` | one sample key | Sample name becomes `plate_well` (e.g. `P1_A1`) |
-| `well` | one sample key | Used as the sample name when there's no `sample`, `position` or `plate` |
+| `sample` | required | Sample name, matching the datamatrix |
 | `cell` | optional | Cell line or strain, text (`strain` is also accepted) |
 | `cmpd` | optional | Compound, text |
 | `dose` | optional | Dose, a number (`0` is the vehicle) |
@@ -89,24 +89,25 @@ One row per sample. Headers are matched case-insensitively.
 | `rep` | optional | Replicate number; numbered automatically when absent |
 | your own (e.g. `medium`) | optional | A custom condition, always categorical |
 
-- Sample keys are checked in the order above. Only samples listed here are kept.
+- Only samples listed here are kept.
+- A condition in use must be filled for every sample.
 - Units for `dose` and `time` are set on the Load tile.
 - Custom condition names start with a lowercase letter, then lowercase letters,
   digits and `_`. Reserved names (`sample`, `value`, `uniqid`, `gene`, `taxon`, …)
   can't be used. A column that differs on every sample (notes, timestamps) is
   ignored.
 
-#### DB file (optional)
+#### Metadata file (optional)
 
 One row per protein. Column names are case-sensitive. Cells with several values
 separate them with `;`.
 
 | Column | Needed | What it holds |
 | --- | --- | --- |
-| `uniqID` | required | Stable feature ID; a row without one is skipped |
-| ID column (same name as the data's) | required | Accession matched to the data's feature IDs (`Q9ULV3-5` finds `Q9ULV3`) |
+| `uniqID` | required | One protein's accession, one per row; the datamatrix's IDs are matched to it (`Q9ULV3-5` finds `Q9ULV3`) |
 | `gene` | optional | Gene name, shown as the feature's label |
-| `locus_tag` | optional | The label when `gene` is empty |
+| `locus` | optional | Systematic gene name (e.g. `Rv0001`; UniProt's ordered locus name, fetched as **Gene locus**); the label when `gene` is empty |
+| `proteinName` | optional | Protein description, shown beside the name in the gene selector |
 | `taxon` | optional | NCBI taxon id; the most common one sets the STRING species |
 | `GO_BP`, `GO_MF`, `GO_CC` | optional | GO terms: biological process, molecular function, cellular component |
 | `KEGG` | optional | KEGG pathway(s) |
@@ -119,13 +120,13 @@ separate them with `;`.
 | `MSigDB` | optional | MSigDB hallmark gene set(s) |
 | `stringId` | optional | The protein's STRING id, for the STRING network |
 | `DEG` | optional | Essentiality from the Database of Essential Genes |
-| `CEG_NEG` | optional | Essentiality from the curated human CEG/NEG sets |
-| anything else (e.g. `product`) | optional | Carried along as an annotation |
+| anything else | optional | Carried along as an annotation |
 
 Older column names are still read: `GO` (with the GO aspects), `keggPathway` and
 `KG_PW` (→ `KEGG`), `cogCategory` (→ `COG_cat`), `cogArea` (→ `COG_area`),
 `reactomePathway` (→ `Reactome`), `msigdbSet` (→ `MSigDB`), `essentiality`
-(→ `DEG`), `essentialityCEG` (→ `CEG_NEG`).
+(→ `DEG`), `locus_tag` (→ `locus`). Older files named `_wide` / `_long` / `_DB`
+still load.
 
 ## Run from source (developers)
 

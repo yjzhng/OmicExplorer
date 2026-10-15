@@ -16,7 +16,7 @@ import { facetDims, facetKeyLabel, type ContextRow } from '../engine'
 import type { AnalysisGroup } from '../graph/groups'
 import type { NodeResult } from '../graph/types'
 import { UI } from '../ui/theme'
-import { ToggleSwitch } from '../ui/ToggleSwitch'
+import { ChoiceSwitch, PILL_CAP } from '../ui/ChoiceSwitch'
 import { EMPTY_SEL, resolveFacets, useFacet } from './facet'
 
 export function FacetContextBar({
@@ -42,8 +42,12 @@ export function FacetContextBar({
       {bars.map(({ dim, value, options }) => (
         <div key={dim} style={styles.facetGroup}>
           <span style={styles.facetLabel}>{facetKeyLabel(dim)}</span>
-          <ToggleSwitch
-            label={`${facetKeyLabel(dim)} level`}
+          {/* Pills, or a searchable dropdown past PILL_CAP levels — categorical conditions only;
+              dose and time stay pills (ordered levels, stepped through). */}
+          <ChoiceSwitch
+            cap={dim === 'dose' || dim === 'time' ? Infinity : PILL_CAP}
+            counter
+            label={facetKeyLabel(dim)}
             value={String(value)}
             // One-sided contrast level (outer-join rows with nothing to pair): greyed, not
             // selectable — the tooltip says which side has the data.

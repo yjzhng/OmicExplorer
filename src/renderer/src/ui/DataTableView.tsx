@@ -9,6 +9,9 @@ import {
 } from 'react'
 import { createPortal } from 'react-dom'
 
+import { IconSearch } from './GeneSelectMenu'
+import { truncateLabel } from './plotAxes'
+import { GENE_LIST_STYLES } from './geneListStyles'
 import { cssVars, PALETTES, UI } from './theme'
 import { useSelection } from './useSelection'
 import { useUiTheme } from './useUiTheme'
@@ -42,6 +45,9 @@ interface DataTableProps {
   caption?: string
   /** row field holding the linked-selection feature id; '' opts the table out */
   idKey?: string
+  /** a column's display cap, by column key: a longer value is cut to this many characters with
+   *  "…" (its full text on hover). Display only — search, filters, sort and copy see it whole. */
+  maxChars?: Record<string, number>
 }
 
 type ColType = 'numeric' | 'categorical'
@@ -81,7 +87,13 @@ function inferType(key: string, rows: Array<Record<string, unknown>>): ColType {
 }
 
 /** Scrollable table with global search, per-column sort + filter, and a reset. */
-export function DataTableView({ columns, rows, maxRows = 500, idKey = 'uniqID' }: DataTableProps) {
+export function DataTableView({
+  columns,
+  rows,
+  maxRows = 500,
+  idKey = 'uniqID',
+  maxChars
+}: DataTableProps) {
   const [query, setQuery] = useState('')
   const [sort, setSort] = useState<SortState | null>(null)
   const [filters, setFilters] = useState<Record<string, Filter>>({})
@@ -105,11 +117,12 @@ export function DataTableView({ columns, rows, maxRows = 500, idKey = 'uniqID' }
   // rows don't shift under the cursor we're hovering with.
   const localHover = useRef(false)
 
+  // A column's type is read only by a sort and by its menu — so it's inferred on first ask and
+  // kept, not for every column up front (a whole scan of a long table per column).
   const colType = useMemo(() => {
     const t: Record<string, ColType> = {}
-    for (const c of columns) t[c.key] = inferType(c.key, rows)
-    return t
-  }, [columns, rows])
+    return (key: string): ColType => (t[key] ??= inferType(key, rows))
+  }, [rows])
 
   const fmt = (c: Column, v: unknown): string => (c.format ? c.format(v) : strKey(v))
 
@@ -147,11 +160,13 @@ export function DataTableView({ columns, rows, maxRows = 500, idKey = 'uniqID' }
     }
   }, [columns, filters, query, selectedOnly, pinnedIds, idKey])
 
+  const narrowed = query.trim() !== '' || Object.keys(filters).length > 0 || selectedOnly
   const processed = useMemo(() => {
-    let out = rows.filter((r) => passes(r))
+    // Nothing to narrow by: every row passes, so skip the per-row check (a long table's whole scan).
+    let out = narrowed ? rows.filter((r) => passes(r)) : rows
     if (sort) {
       const { key, dir } = sort
-      const numeric = colType[key] === 'numeric'
+      const numeric = colType(key) === 'numeric'
       out = [...out].sort((a, b) => {
         let cmp: number
         if (numeric) {
@@ -169,7 +184,7 @@ export function DataTableView({ columns, rows, maxRows = 500, idKey = 'uniqID' }
       })
     }
     return out
-  }, [rows, passes, sort, colType])
+  }, [rows, passes, sort, colType, narrowed])
 
   // The rows a column's menu draws its value list from: everything that passes the search and the
   // OTHER columns' filters (not this column's own, or unticked values would disappear from the
@@ -186,7 +201,13 @@ export function DataTableView({ columns, rows, maxRows = 500, idKey = 'uniqID' }
   // A row's React key must be unique, but a long table has MANY rows per gene (one per sample /
   // context), so the id alone collided and rows mis-rendered under search/filter/sort. Key by
   // id + the row's position in the ORIGINAL array (stable across filtering, unlike the shown index).
-  const rowIndex = useMemo(() => new Map(rows.map((r, i) => [r, i])), [rows])
+  // Only needed once the rows are narrowed or reordered (otherwise a row's position is its index)
+  // — and then built once per table, not per render.
+  const reordered = processed !== rows
+  const rowIndex = useMemo(
+    () => (reordered ? new Map(rows.map((r, i) => [r, i])) : null),
+    [rows, reordered]
+  )
 
   // Row elements by gene id — a Map per id because a gene can span several rows (long views),
   // and every one of them must light up. `alt` = zebra stripe.
@@ -211,9 +232,11 @@ export function DataTableView({ columns, rows, maxRows = 500, idKey = 'uniqID' }
   useEffect(() => {
     let lastHover: string | null = null
     const paint = (): void => {
-      const { hoverId, pinnedIds } = useSelection.getState()
+      const { hoverId, hoverMembers, pinnedIds } = useSelection.getState()
+      // a hovered group (a STRING cluster, an enrichment term): its member genes' rows too
+      const members = hoverMembers.length ? new Set(hoverMembers) : null
       for (const [id, els] of rowEls.current) {
-        const hovered = id === hoverId
+        const hovered = id === hoverId || !!members?.has(id)
         const pinned = pinnedIds.has(id)
         const bar = pinned ? PIN_BAR : ''
         for (const [el, alt] of els) {
@@ -299,12 +322,18 @@ export function DataTableView({ columns, rows, maxRows = 500, idKey = 'uniqID' }
   return (
     <div style={styles.wrap}>
       <div style={styles.toolbar}>
-        <input
-          style={styles.search}
-          placeholder="Search all columns…"
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-        />
+        {/* The magnifier inside the field, at its left — as the gene selector's search. */}
+        <div style={{ ...GENE_LIST_STYLES.searchWrap, flex: 1, minWidth: 0 }}>
+          <span style={{ ...GENE_LIST_STYLES.searchIcon, color: UI.textMuted }}>
+            <IconSearch />
+          </span>
+          <input
+            style={styles.search}
+            placeholder="Search all columns…"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+          />
+        </div>
         {pinnedIds.size > 0 && (
           <>
             <button
@@ -404,7 +433,7 @@ export function DataTableView({ columns, rows, maxRows = 500, idKey = 'uniqID' }
                 const alt = i % 2 === 1
                 return (
                   <tr
-                    key={`${id}\u0000${rowIndex.get(r) ?? i}`}
+                    key={`${id}\u0000${rowIndex ? (rowIndex.get(r) ?? i) : i}`}
                     ref={(el) => {
                       // React 19 ref callbacks may return a cleanup; this one tracks the element
                       // explicitly so the map never holds a stale row.
@@ -421,18 +450,25 @@ export function DataTableView({ columns, rows, maxRows = 500, idKey = 'uniqID' }
                     // draws the zebra stripe), so React must not set it here and fight it.
                     style={{ cursor: id ? 'pointer' : undefined }}
                   >
-                    {columns.map((c) => (
-                      <td
-                        key={c.key}
-                        style={{
-                          ...styles.td,
-                          textAlign: c.align ?? 'left',
-                          ...c.cellStyle?.(r[c.key])
-                        }}
-                      >
-                        {fmt(c, r[c.key])}
-                      </td>
-                    ))}
+                    {columns.map((c) => {
+                      // Cut to the column's display cap (maxChars) — the full text on hover.
+                      const text = fmt(c, r[c.key])
+                      const cap = maxChars?.[c.key]
+                      const shown = cap && text.length > cap ? truncateLabel(text, cap) : text
+                      return (
+                        <td
+                          key={c.key}
+                          style={{
+                            ...styles.td,
+                            textAlign: c.align ?? 'left',
+                            ...c.cellStyle?.(r[c.key])
+                          }}
+                          title={shown !== text ? text : undefined}
+                        >
+                          {shown}
+                        </td>
+                      )
+                    })}
                   </tr>
                 )
               })}
@@ -465,7 +501,7 @@ export function DataTableView({ columns, rows, maxRows = 500, idKey = 'uniqID' }
           <ColumnMenu
             rows={menuRows}
             column={menuCol}
-            type={colType[menu.key]}
+            type={colType(menu.key)}
             rect={menu.rect}
             tableScroller={scrollRef}
             filter={filters[menu.key]}
@@ -706,13 +742,14 @@ const styles: Record<string, CSSProperties> = {
     flex: '0 0 auto'
   },
   search: {
-    flex: 1,
-    minWidth: 0,
+    width: '100%',
+    boxSizing: 'border-box',
     background: UI.panelAlt,
     color: UI.text,
     border: `1px solid ${UI.border}`,
     borderRadius: 5,
-    padding: '4px 9px',
+    // room on the left for the magnifier
+    padding: '4px 9px 4px 26px',
     fontSize: 12
   },
   reset: {

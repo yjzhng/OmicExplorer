@@ -1,72 +1,18 @@
-import { useMemo, useState } from 'react'
+import { useCallback, useMemo, useState } from 'react'
 
 import { useElementSize } from '../dashboard/useElementSize'
 
 import type { EnrichData, EnrichTerm } from '../engine'
+import { fitText, flowChips, measureText } from './legendChips'
+import { tooltip } from './condTooltip'
 import { PlotlyChart, type PlotLabel } from './PlotlyChart'
+import { effectHalves } from './palettes'
 import { axisBase, CATEGORICAL, EFFECT_COLOR, plotBase, PALETTES } from './theme'
 import { useUiTheme } from './useUiTheme'
 import type { EffectColors } from '../graph/types'
 
-/** Pixel width of `text` at `font` (e.g. 'bold 10px sans-serif'), via a memoised offscreen canvas —
- *  so legend slot widths match the rendered text instead of a char-count estimate. */
-let measureCtx: CanvasRenderingContext2D | null = null
-function measureText(text: string, font: string): number {
-  if (!measureCtx) measureCtx = document.createElement('canvas').getContext('2d')
-  if (!measureCtx) return text.length * 6 // fallback if 2D context is unavailable
-  measureCtx.font = font
-  return measureCtx.measureText(text).width
-}
-
 /** Prefix of a clickable legend chip's annotation name (the rest is its group). */
 const CHIP = 'oe-cat:'
-
-/** Flow legend chips left to right into lines that fit `budget` px, first line on top. Each chip's
- *  slot is `width` px — sized by the caller for its widest (bold) text. (The plot hides Plotly's
- *  control bar, which would otherwise sit over the top line's right end.) */
-function flowChips(
-  chips: { c: string; width: number }[],
-  budget: number
-): { at: { c: string; x: number; line: number }[]; lines: number } {
-  const at: { c: string; x: number; line: number }[] = []
-  let x = 0
-  let line = 0
-  for (const { c, width } of chips) {
-    if (x > 0 && x + width > budget) {
-      x = 0
-      line++
-    }
-    at.push({ c, x, line })
-    x += width
-  }
-  return { at, lines: at.length ? line + 1 : 0 }
-}
-
-/** `text` cut to fit `maxPx` at `font`, ending in "…" when cut (binary search on the length). */
-function fitText(text: string, maxPx: number, font: string): string {
-  if (measureText(text, font) <= maxPx) return text
-  let lo = 0
-  let hi = text.length
-  while (lo < hi) {
-    const mid = (lo + hi + 1) >> 1
-    if (measureText(`${text.slice(0, mid).trimEnd()}…`, font) <= maxPx) lo = mid
-    else hi = mid - 1
-  }
-  return `${text.slice(0, lo).trimEnd()}…`
-}
-
-/** Sequential colour ramps per direction (light→dark, no white end so faint dots stay visible):
- *  up = Reds, down = Blues. Colour encodes −log₁₀ FDR magnitude. */
-const UP_SCALE: [number, string][] = [
-  [0, '#fcbba1'],
-  [0.5, '#ef6548'],
-  [1, '#99000d']
-]
-const DOWN_SCALE: [number, string][] = [
-  [0, '#c6dbef'],
-  [0.5, '#6baed6'],
-  [1, '#08519c']
-]
 
 /** Diverging over-representation plot: enriched terms share one y axis, DOWN-regulated hits
  *  extend LEFT and UP-regulated hits extend RIGHT of centre. Bar style plots ±(−log₁₀ FDR),
@@ -119,7 +65,10 @@ export function EnrichView({
     setOnlyCats((cur) => (cur.includes(c) ? cur.filter((x) => x !== c) : [...cur, c]))
   }
 
-  const { data, layout, labels, labelColor, boldTicks } = useMemo(() => {
+  const { data, layout, labels, labelColor, boldTicks, genesById } = useMemo(() => {
+    // The dots' significance ramps (faint → strong): each side's own colour, from a pale tint of it
+    // to the colour its stems, bars and axis note draw in.
+    const halves = effectHalves({ up: upColor, down: downColor })
     const p = PALETTES[mode]
     const gsea = enrich.method === 'gsea'
 
@@ -138,7 +87,8 @@ export function EnrichView({
           },
           labels: [] as PlotLabel[],
           labelColor: p.text,
-          boldTicks: undefined as undefined
+          boldTicks: undefined as undefined,
+          genesById: null as Map<string, string[]> | null
         }
       // Ascending NES → index 0 (bottom) is the most down-regulated set, top the most up.
       terms.sort((a, b) => (a.nes ?? 0) - (b.nes ?? 0))
@@ -158,6 +108,9 @@ export function EnrichView({
         dist: number[]
         hue: string
         ref: boolean
+        /** the term's own id (`term:` + its name — apart from any gene's): hovering its ridge or
+         *  label focuses it, a click selects its genes. Null for the reference row. */
+        id: string | null
         hover: string
         /** leading-edge genes to mark along the baseline (empty for the reference row); `ids` are
          *  the uniqIDs (for cross-view hover linking), aligned to names/x. */
@@ -171,10 +124,19 @@ export function EnrichView({
         dist: t.dist as number[],
         hue: (t.nes ?? 0) >= 0 ? upColor : downColor,
         ref: false,
-        hover:
-          `<b>${t.term}</b><br>NES ${(t.nes ?? 0).toFixed(2)} • ` +
-          `p.adj ${t.pAdjust.toExponential(2)}<br>set ${t.setSize} • ` +
-          `median ${measure} ${med(t.dist as number[]).toFixed(2)}`,
+        id: `term:${t.term}`,
+        hover: tooltip(
+          {
+            title: t.term,
+            values: [
+              ['NES', (t.nes ?? 0).toFixed(2)],
+              ['p.adj', t.pAdjust.toExponential(2)],
+              ['set', t.setSize],
+              [`median ${measure}`, med(t.dist as number[]).toFixed(2)]
+            ]
+          },
+          p.textMuted
+        ),
         lead: { x: t.leadingDist ?? [], names: t.genes, ids: t.geneIds ?? t.genes },
         category: t.category
       }))
@@ -186,9 +148,18 @@ export function EnrichView({
           dist: globalDist,
           hue: noneColor,
           ref: true,
-          hover:
-            `<b>all genes</b> (reference)<br>${globalDist.length} genes • ` +
-            `median ${measure} ${med(globalDist).toFixed(2)}`,
+          id: null,
+          hover: tooltip(
+            {
+              title: 'all genes',
+              conds: [['set', 'reference']],
+              values: [
+                ['genes', globalDist.length],
+                [`median ${measure}`, med(globalDist).toFixed(2)]
+              ]
+            },
+            p.textMuted
+          ),
           lead: { x: [], names: [], ids: [] }
         })
       }
@@ -225,9 +196,18 @@ export function EnrichView({
           fill: 'toself',
           fillcolor: hexA(row.hue, 0.32),
           line: { width: 0 },
-          hoveron: 'fills',
-          text: row.hover,
-          hovertemplate: '%{text}<extra></extra>'
+          // Hovered as a whole, with no tooltip of its own (a fill's floats off its shape): it
+          // focuses its term — the other ridges fade, its label bolds, its genes light — and a
+          // click selects those genes. Its id on every point, for the focus layer (__oeOwnIds).
+          ...(row.id
+            ? {
+                hoveron: 'fills',
+                hoverinfo: 'none',
+                __oeOwnIds: true,
+                __oeId: row.id,
+                customdata: grid.map(() => row.id).concat(grid.map(() => row.id))
+              }
+            : { hoverinfo: 'skip' })
         }
       })
       // Overlay the leading-edge genes as dots along each ridge's baseline (drawn after all fills
@@ -246,7 +226,11 @@ export function EnrichView({
           // customdata = uniqID drives the shared hover link (volcano/MA/etc.); the name is in `text`.
           customdata: row.lead.ids,
           text: row.lead.names,
-          hovertemplate: '%{text}<br>log₂FC %{x:.2f}<extra></extra>',
+          hovertemplate: tooltip(
+            { title: '%{text}', values: [['log₂FC', '%{x:.2f}']] },
+            p.textMuted,
+            { template: true }
+          ),
           marker: { size: 5, color: row.hue, line: { width: 0.5, color: p.bg }, opacity: 0.95 }
         })
         // Leading-edge genes are shown as dots only (names appear on hover); no baseline labels.
@@ -391,12 +375,18 @@ export function EnrichView({
       // Bold a pathway's label (and its category legend entry) when a hovered/pinned gene is one of
       // its leading-edge genes.
       const boldTicks = {
-        genesByTick: rows.map((r) => r.lead.ids),
+        // bold while one of its genes is active, or the term itself (its ridge or label hovered)
+        genesByTick: rows.map((r) => (r.id ? [r.id, ...r.lead.ids] : r.lead.ids)),
         tickLabel,
         categoryByTick: rows.map((r) => r.category),
-        legendItemText: cats.length ? legendItemText : undefined
+        legendItemText: cats.length ? legendItemText : undefined,
+        // a label hovers / selects its term, as its ridge does
+        idByTick: rows.map((r) => r.id)
       }
-      return { data, layout: lay, labels, labelColor: p.text, boldTicks }
+      // A ridge's (or label's) term id → its genes, which a click selects; a gene dot pins itself.
+      const genesById = new Map<string, string[]>()
+      for (const r of rows) if (r.id) genesById.set(r.id, r.lead.ids)
+      return { data, layout: lay, labels, labelColor: p.text, boldTicks, genesById }
     }
 
     const negLog = (v: number): number => -Math.log10(Math.max(v, 1e-300))
@@ -406,15 +396,28 @@ export function EnrichView({
     const geneList = (g: string[]): string =>
       g.length <= 10 ? g.join(', ') : `${g.slice(0, 10).join(', ')} +${g.length - 10} more`
     const hover = (terms: EnrichTerm[], n: number, dir: string): string[] =>
-      terms.map((t) =>
-        gsea
-          ? `<b>${t.term}</b> (${dir})<br>` +
-            `NES ${(t.nes ?? 0).toFixed(2)} • p.adj ${t.pAdjust.toExponential(2)}<br>` +
-            `leading edge: ${t.count}/${t.setSize}<br>${geneList(t.genes)}`
-          : `<b>${t.term}</b> (${dir})<br>` +
-            `genes: ${t.count}/${n} (ratio ${t.geneRatio.toFixed(3)})<br>` +
-            `in set: ${t.setSize} • fold ${t.fold.toFixed(2)}<br>` +
-            `p.adj ${t.pAdjust.toExponential(2)}<br>${geneList(t.genes)}`
+      terms.map(
+        (t) =>
+          tooltip(
+            {
+              title: t.term,
+              conds: [['direction', dir]],
+              values: gsea
+                ? [
+                    ['NES', (t.nes ?? 0).toFixed(2)],
+                    ['p.adj', t.pAdjust.toExponential(2)],
+                    ['leading edge', `${t.count}/${t.setSize}`]
+                  ]
+                : [
+                    ['genes', `${t.count}/${n}`],
+                    ['gene ratio', t.geneRatio.toFixed(3)],
+                    ['in set', t.setSize],
+                    ['fold', t.fold.toFixed(2)],
+                    ['p.adj', t.pAdjust.toExponential(2)]
+                  ]
+            },
+            p.textMuted
+          ) + `<br>${geneList(t.genes)}`
       )
 
     // Shared y order: union of both directions' terms, most significant at TOP. A category axis
@@ -447,6 +450,8 @@ export function EnrichView({
     const order = yOrder(both)
     // Each term's highlight ids: its bar's / dot's hover text (what it sets as the hover).
     const idsByTerm = new Map<string, string[]>()
+    // A dot's / bar's id (its hover text) → its term's genes, which a click on it selects.
+    const genesById = new Map<string, string[]>()
     for (const [terms, n, dir] of [
       [up, enrich.querySize.up, 'up'],
       [down, enrich.querySize.down, 'down']
@@ -454,6 +459,7 @@ export function EnrichView({
       hover(terms, n, dir).forEach((id, k) => {
         const term = terms[k].term
         idsByTerm.set(term, [...(idsByTerm.get(term) ?? []), id])
+        genesById.set(id, terms[k].geneIds ?? [])
       })
     const groupColor = new Map(groups.map((c, i) => [c, CATEGORICAL[i % CATEGORICAL.length]]))
     // A term's tick in its hover state (as the ridge's): active → bold; something else active →
@@ -514,7 +520,9 @@ export function EnrichView({
     const SIZE_MIN = 5
     /** The diameter Plotly draws a count at — its area rule (see renderedSize in PlotlyChart). */
     const dotPx = (v: number): number => 2 * Math.max(Math.sqrt(v / 2 / SIZE_REF), SIZE_MIN)
-    const maxNegLog = Math.max(1e-6, ...all.map((t) => negLog(t.pAdjust)))
+    // At least to the 0.05 significance level: with nothing significant, a scale fitted to the
+    // terms alone would stretch a negligible difference (p.adj 0.97 vs 1) over the whole ramp.
+    const maxNegLog = Math.max(-Math.log10(0.05), ...all.map((t) => negLog(t.pAdjust)))
 
     // Lollipop stems: a thin line from centre (x=0) to each dot, so a dot tracks back to its term.
     const stems = (terms: EnrichTerm[], sign: 1 | -1, hue: string): Record<string, unknown> => {
@@ -586,24 +594,31 @@ export function EnrichView({
       marker: { color: hue }
     })
 
-    // The right margin (dot style), top to bottom: the dot-size key, then two short colourbars, up
-    // (Reds) over down (Blues) — stacked in pixels right under the key when the tile's height is
-    // known and they fit, else up from the middle and down at the bottom. A thin outline in the
+    // The right margin (dot style), top to bottom, as fractions of the plot's height: the dot-size
+    // key (0.2), a 0.04 gap, the up colourbar (Reds, 0.3), a 0.1 gap, the down colourbar (Blues,
+    // 0.3), the rest free below — so the bars scale with the tile and the three never overlap.
+    // The key's band is mostly empty under its circles, so its gap is the smaller one. A thin outline in the
     // muted text grey at half strength: visible on either theme, lighter than Plotly's dark frame.
-    const cbar = (
-      label: string,
-      y: number,
-      anchor: 'top' | 'bottom',
-      /** the bar's box (title included) in px; unset = 24% of the plot's height */
-      lenPx?: number
-    ): Record<string, unknown> => ({
-      title: { text: label, side: 'top' },
+    const KEY_BAND = 0.2
+    const BAR_LEN = 0.3
+    const BAND_GAP = 0.1
+    const KEY_GAP_BAND = 0.04
+    // The legend's text matches the x axis: its headings (genes, up, down) the axis title's size,
+    // its numbers (key counts, colourbar ticks) the axis tick labels'.
+    const AXIS_TITLE_FS = 11 // the axis title line (titleNote)
+    const AXIS_TICK_FS = 12 // the x tick labels: the layout font (plotBase)
+    const cbar = (label: string, top: number): Record<string, unknown> => ({
+      title: { text: label, side: 'top', font: { size: AXIS_TITLE_FS } },
+      tickfont: { size: AXIS_TICK_FS },
       thickness: 9,
-      ...(lenPx ? { lenmode: 'pixels', len: lenPx } : { len: 0.24 }),
+      // the bar's box (title included) exactly its band: no padding at either end
+      lenmode: 'fraction',
+      len: BAR_LEN,
+      ypad: 0,
       x: 1.01,
       xanchor: 'left',
-      y,
-      yanchor: anchor,
+      y: top,
+      yanchor: 'top',
       outlinewidth: 0.6,
       outlinecolor: hexA(p.textMuted, 0.5)
     })
@@ -626,24 +641,37 @@ export function EnrichView({
         (st) =>
           st > 0 && (st === 1 || (upTo(q3, st) !== downTo(q1, st) && upTo(q3, st) <= maxCount))
       ) ?? 1
-    const keyCounts = [...new Set([upTo(q3, keyStep), downTo(q1, keyStep)])]
     const KEY_X = 14 // px right of the plot edge to the circles' centre line
     const KEY_GAP = 5
+    const KEY_HEAD = 13 // the heading's line
+    // A key row: its circle, or its count label's line when the circle is smaller than the text.
+    const keyRow = (v: number): number => Math.max(dotPx(v), AXIS_TICK_FS + 2)
+    // The plot's height in px (0 before the tile is measured), for fitting the key to its band.
+    const plotH = heightBudget - (LEGEND_GAP + 30 + legendH) - (44 + 14)
+    // The key's two levels — or only the lower one when both circles (at their true dot size)
+    // wouldn't fit the key's band.
+    const twoCounts = [...new Set([upTo(q3, keyStep), downTo(q1, keyStep)])]
+    const keyH = (cs: number[]): number =>
+      KEY_HEAD + cs.reduce((h, v) => h + KEY_GAP + keyRow(v), 0)
+    const keyCounts =
+      twoCounts.length > 1 && plotH > 0 && keyH(twoCounts) > KEY_BAND * plotH
+        ? twoCounts.slice(1)
+        : twoCounts
     // First in the right margin: from the plot's top edge, the heading, then the circles.
     const sizeKey = (() => {
       const shapes: Record<string, unknown>[] = []
       const notes: Record<string, unknown>[] = [
         {
-          ...note(gsea ? 'lead genes' : 'genes', 1, 1, p.textMuted, 9, 'left'),
+          ...note(gsea ? 'lead genes' : 'genes', 1, 1, p.textMuted, AXIS_TITLE_FS, 'left'),
           xshift: KEY_X - 10,
           yanchor: 'top'
         }
       ]
       // Top of the next circle, in px from the plot's top edge (screen-up positive, so negative).
-      let top = -12 - KEY_GAP
+      let top = -KEY_HEAD - KEY_GAP
       for (const v of keyCounts) {
         const d = dotPx(v)
-        const cy = top - d / 2
+        const cy = top - keyRow(v) / 2
         shapes.push({
           type: 'circle',
           xref: 'paper',
@@ -660,28 +688,18 @@ export function EnrichView({
           fillcolor: 'rgba(0,0,0,0)'
         })
         notes.push({
-          ...note(String(v), 1, 1, p.textMuted, 9, 'left'),
+          ...note(String(v), 1, 1, p.textMuted, AXIS_TICK_FS, 'left'),
           xshift: KEY_X + 12 + 4,
           yanchor: 'middle',
           yshift: cy
         })
-        top -= d + KEY_GAP
+        top -= keyRow(v) + KEY_GAP
       }
-      // `bottom`: how far below the plot's top edge the key ends (px).
-      return { shapes, notes, bottom: -top }
+      return { shapes, notes }
     })()
-    // The colourbars' places: right under the key in pixels when they fit the plot's height.
-    const plotH = heightBudget - (LEGEND_GAP + 30 + legendH) - (44 + 14)
-    const BAR_BOX = 90
-    const BAR_GAP = 6
-    const upTop = sizeKey.bottom + 8
-    const stackFits = heightBudget > 0 && upTop + 2 * BAR_BOX + BAR_GAP <= plotH
-    const upBar = stackFits
-      ? cbar('up', 1 - upTop / plotH, 'top', BAR_BOX)
-      : cbar('up', 0.52, 'top')
-    const downBar = stackFits
-      ? cbar('down', 1 - (upTop + BAR_BOX + BAR_GAP) / plotH, 'top', BAR_BOX)
-      : cbar('down', 0, 'bottom')
+    // The colourbars' bands, under the key's.
+    const upBar = cbar('up', 1 - KEY_BAND - KEY_GAP_BAND)
+    const downBar = cbar('down', 1 - KEY_BAND - KEY_GAP_BAND - BAR_LEN - BAND_GAP)
 
     let data: Record<string, unknown>[]
     if (style === 'bar') {
@@ -693,8 +711,8 @@ export function EnrichView({
       data = [
         stems(down, -1, downColor),
         stems(up, 1, upColor),
-        dots(down, enrich.querySize.down, -1, 'down', DOWN_SCALE, down.length ? downBar : null),
-        dots(up, enrich.querySize.up, 1, 'up', UP_SCALE, up.length ? upBar : null)
+        dots(down, enrich.querySize.down, -1, 'down', halves.down, down.length ? downBar : null),
+        dots(up, enrich.querySize.up, 1, 'up', halves.up, up.length ? upBar : null)
       ]
     }
 
@@ -722,7 +740,7 @@ export function EnrichView({
       align: 'left' | 'right' | 'center',
       row: 0 | 1
     ): Record<string, unknown> => ({
-      ...note(text, x, 0, color, 11, align),
+      ...note(text, x, 0, color, AXIS_TITLE_FS, align),
       yanchor: 'top',
       yshift: AXIS_TITLE_SHIFT - row * ROW
     })
@@ -821,8 +839,12 @@ export function EnrichView({
               ...both.filter((t) => t.term === term).flatMap((t) => t.geneIds ?? [])
             ]),
             tickLabel: (i: number, active: boolean, anyActive: boolean) =>
-              termTick(order[i], active, anyActive)
-          }
+              termTick(order[i], active, anyActive),
+            // a label hovers / selects its term, as its dot or bar does (a term on both sides
+            // answers as its first)
+            idByTick: order.map((term) => idsByTerm.get(term)?.[0] ?? null)
+          },
+      genesById
     }
   }, [
     enrich,
@@ -840,6 +862,8 @@ export function EnrichView({
     noneColor
   ])
 
+  const pinIdsOf = useCallback((id: string) => genesById?.get(id) ?? null, [genesById])
+
   return (
     // Measured (for the legend's wrap width) and otherwise invisible — the chart fills it as before.
     <div ref={boxRef} style={{ width: '100%', height: '100%' }}>
@@ -851,6 +875,8 @@ export function EnrichView({
         labelsAbove
         boldTicks={boldTicks}
         onAnnotationClick={onAnnotationClick}
+        // a click on a term's dot or bar selects its genes, in every plot
+        pinIdsOf={pinIdsOf}
         // Its control bar would sit over the category chips (top right); drag-zoom and
         // double-click reset still work without it.
         modeBar={false}

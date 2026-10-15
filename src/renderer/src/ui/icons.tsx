@@ -47,3 +47,40 @@ export function IconCopy(): ReactNode {
     </svg>
   )
 }
+
+/** Jump to (an arrow out of a corner) — opens where something lives, e.g. a folder in the
+ *  project-folder viewer. */
+export function IconJump({ size = 11 }: { size?: number } = {}): ReactNode {
+  return (
+    <svg {...base} width={size} height={size} strokeWidth={2}>
+      <path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5" />
+    </svg>
+  )
+}
+
+/** Edit (a pencil). */
+export function IconEdit(): ReactNode {
+  return (
+    <svg {...base}>
+      <path d="M4 20h4L19 9l-4-4L4 16v4zM13.5 6.5l4 4" />
+    </svg>
+  )
+}
+
+/** Confirm / apply (a check mark). */
+export function IconCheck(): ReactNode {
+  return (
+    <svg {...base}>
+      <path d="M5 12.5l4.5 4.5L19 7.5" />
+    </svg>
+  )
+}
+
+/** Cancel / close (a cross). */
+export function IconClose(): ReactNode {
+  return (
+    <svg {...base}>
+      <path d="M6 6l12 12M18 6L6 18" />
+    </svg>
+  )
+}

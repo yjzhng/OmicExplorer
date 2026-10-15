@@ -34,6 +34,16 @@ describe('groupMembers', () => {
     expect(groupMembers('')).toEqual([])
   })
 
+  it('names no protein for a decoy, so it is never fetched or matched', () => {
+    expect(groupMembers('REV__sp|Q15147-5|PLCB4_HUMAN')).toEqual([])
+    expect(groupMembers('REV__Q15147-5')).toEqual([])
+    expect(groupMembers('rev_sp|P12345|ABC_HUMAN')).toEqual([])
+    expect(groupMembers('DECOY_P12345')).toEqual([])
+    // a group keeps its real members and drops only the decoy one
+    expect(groupMembers('P55198;REV__sp|Q15147|PLCB4_HUMAN')).toEqual(['P55198'])
+    expect(matchKey('REV__sp|Q15147|PLCB4_HUMAN')).toBe('')
+  })
+
   it('keys a group alike however it was written', () => {
     expect(matchKey('sp|Q6P1R3-3|MSD2_HUMAN;sp|Q6P1R3|MSD2_HUMAN')).toBe(matchKey('Q6P1R3'))
   })
@@ -48,12 +58,8 @@ describe('union', () => {
 
   it('keeps both values when members disagree, and skips the empty', () => {
     expect(
-      unionRecords([
-        { CEG_NEG: 'essential', KEGG: 'A' },
-        { CEG_NEG: 'non-essential', KEGG: '' },
-        undefined
-      ])
-    ).toEqual({ CEG_NEG: 'essential;non-essential', KEGG: 'A' })
+      unionRecords([{ DEG: 'essential', KEGG: 'A' }, { DEG: 'non-essential', KEGG: '' }, undefined])
+    ).toEqual({ DEG: 'essential;non-essential', KEGG: 'A' })
     expect(unionRecords([undefined, {}])).toBeUndefined()
   })
 
@@ -101,14 +107,14 @@ describe('Clean data on protein groups', () => {
     const group = 'Q13547;Q92769-2'
     const r = run(
       ['uniqID,s1,s2', `"${group}",10,20`],
-      ['uniqID,gene,KEGG,CEG_NEG', 'Q13547,HDAC1,A;B,essential', 'Q92769,HDAC2,B;C,non-essential']
+      ['uniqID,gene,KEGG,DEG', 'Q13547,HDAC1,A;B,essential', 'Q92769,HDAC2,B;C,non-essential']
     )
     expect(new Set(r.rows.map((x) => x.uniqID))).toEqual(new Set([group]))
     expect(r.rows).toHaveLength(2) // one per sample, not one per member
     expect(r.displayMap[group]).toBe('HDAC1/HDAC2')
     expect(r.annotationMap[group]).toEqual({
       KEGG: 'A;B;C',
-      CEG_NEG: 'essential;non-essential'
+      DEG: 'essential;non-essential'
     })
   })
 
@@ -127,6 +133,52 @@ describe('Clean data on protein groups', () => {
     // proteins keeps its own ID and gathers both members' rows.
     expect(r.displayMap.g1).toBe('CIZ1')
     expect(r.displayMap.g2).toBe('MSANTD2')
+    expect(r.displayMap['Q13547;Q92769-2']).toBe('HDAC1/HDAC2')
+  })
+
+  it('takes a DB without uniqID: the ID column stands in for it', () => {
+    const r = run(
+      ['UniProtID,s1,s2', 'P9WNW3,1,2', 'Q13547;Q92769-2,3,4'],
+      ['UniProtID,gene,KEGG', 'P9WNW3,dnaA,A', 'Q13547,HDAC1,B', 'Q92769,HDAC2,C']
+    )
+    expect(new Set(r.rows.map((x) => x.uniqID))).toEqual(new Set(['P9WNW3', 'Q13547;Q92769-2']))
+    expect(r.displayMap.P9WNW3).toBe('dnaA')
+    expect(r.displayMap['Q13547;Q92769-2']).toBe('HDAC1/HDAC2')
+    expect(r.annotationMap.P9WNW3).toEqual({ KEGG: 'A' })
+  })
+
+  it('labels a gene-less protein by its locus, the older locus_tag still read', () => {
+    const data = ['UniProtID,s1,s2', 'P9WFL1,1,2']
+    expect(run(data, ['UniProtID,gene,locus', 'P9WFL1,,Rv0004']).displayMap.P9WFL1).toBe('Rv0004')
+    expect(run(data, ['UniProtID,gene,locus_tag', 'P9WFL1,,Rv0004']).displayMap.P9WFL1).toBe(
+      'Rv0004'
+    )
+  })
+
+  it('keeps a decoy in the data, unlabelled — not borrowing its real twin', () => {
+    const decoy = 'REV__sp|P9WNW3|DNAA_MYCTU'
+    const r = run(
+      ['UniProtID,s1,s2', 'P9WNW3,1,2', `${decoy},3,4`],
+      ['UniProtID,gene,KEGG', 'P9WNW3,dnaA,A']
+    )
+    expect(new Set(r.rows.map((x) => x.uniqID))).toEqual(new Set(['P9WNW3', decoy]))
+    expect(r.displayMap.P9WNW3).toBe('dnaA')
+    expect(r.displayMap[decoy]).toBe(decoy)
+    expect(r.annotationMap[decoy]).toBeUndefined()
+  })
+
+  it('matches a data ID column of another name against the DB’s uniqID', () => {
+    const r = run(
+      [
+        'UniProtIDs,s1,s2',
+        'P06733-2,1,2',
+        'sp|O14733|MP2K7_HUMAN,3,4',
+        'Q13547;Q92769-2,5,6'
+      ],
+      ['uniqID,gene', 'P06733,ENO1', 'O14733,MAP2K7', 'Q13547,HDAC1', 'Q92769,HDAC2']
+    )
+    expect(r.displayMap.P06733).toBe('ENO1')
+    expect(r.displayMap.O14733).toBe('MAP2K7')
     expect(r.displayMap['Q13547;Q92769-2']).toBe('HDAC1/HDAC2')
   })
 

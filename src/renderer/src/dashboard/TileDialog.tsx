@@ -4,7 +4,6 @@ import { useEffect, type CSSProperties, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 
 import { cssVars, PALETTES } from '../ui/theme'
-import { ToggleSwitch } from '../ui/ToggleSwitch'
 import { useUiTheme } from '../ui/useUiTheme'
 import { styles } from './tileDialogStyles'
 
@@ -84,33 +83,5 @@ export function TileDialog({
       </div>
     </div>,
     document.body
-  )
-}
-
-export function Field({ label, children }: { label: string; children: ReactNode }): ReactNode {
-  return (
-    <div style={styles.field}>
-      <div style={styles.fieldLabel}>{label}</div>
-      {children}
-    </div>
-  )
-}
-
-export function Segmented({
-  value,
-  onChange,
-  options
-}: {
-  value: string
-  onChange: (v: string) => void
-  options: Array<{ v: string; label: string }>
-}): ReactNode {
-  return (
-    <ToggleSwitch
-      label="Option"
-      value={value}
-      options={options.map((o) => ({ value: o.v, label: o.label }))}
-      onChange={onChange}
-    />
   )
 }

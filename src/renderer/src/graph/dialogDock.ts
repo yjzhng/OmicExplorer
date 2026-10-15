@@ -39,11 +39,11 @@ export function useConfigWindowOpen(id: string): [boolean, (on: boolean) => void
 }
 
 /** Whether a step has a configuration window, and so a details column in the form workflow: an
- *  interactive import, a Compare, a Contrast. */
+ *  interactive import, a Compare, a Curve fit, a Contrast. */
 export function hasDetailsWindow(node: StepNode): boolean {
   const kind = node.data.kind
   if (kind === 'load') return resolveLoadMode(node.data.config as LoadConfig) === 'interactive'
-  return kind === 'compare' || kind === 'contrast'
+  return kind === 'compare' || kind === 'curveFit' || kind === 'contrast'
 }
 
 /** The window's outer box (the theme wrapper), docked: fills the pane's flex row. `minWidth: 0`

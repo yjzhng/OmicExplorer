@@ -21,6 +21,7 @@ import {
 import { COLUMN_ALIASES, groupMembers, matchKey, pairsOf, unionRecords } from './accession'
 import { condPresent } from './compare'
 import { imputeMissing } from './impute'
+import { normalizeSamples } from './normalize'
 import {
   detectScale,
   histogram,
@@ -46,13 +47,14 @@ function parseCsv(text: string): { rows: Row[]; fields: string[] } {
   return { rows: res.data, fields: (res.meta.fields ?? []).map((f) => f.replace(BOM, '').trim()) }
 }
 
-function detectFormat(filename: string): 'wide' | 'long' {
+/** Wide or long, from the data file's columns: a long file carries a `value` column beside a
+ *  `sample` column; anything else is a wide matrix. A legacy `_wide` /
+ *  `_long` filename stem still decides outright, so older projects read as before. */
+function detectFormat(filename: string, fields: string[]): 'wide' | 'long' {
   const stem = filename.replace(/\.[^.]+$/, '')
   if (stem.endsWith('_wide')) return 'wide'
   if (stem.endsWith('_long')) return 'long'
-  throw new Error(
-    `Cannot detect format from filename '${filename}'. The stem must end with '_wide' or '_long'.`
-  )
+  return fields.includes('sample') && fields.includes('value') ? 'long' : 'wide'
 }
 
 /** Coerce a cell to a finite number, or null for blank/non-numeric. */
@@ -73,23 +75,120 @@ function measured(v: string | undefined | null): number | null {
   return n === 0 ? null : n
 }
 
-/** Read the samplesheet: lowercase headers, synthesize `sample` from well/position/plate.
+/** Read the samplesheet: lowercase headers; its `sample` column names each sample.
  *  `strain` (the pre-rename name of the `cell` condition) is accepted as an alias so older
  *  samplesheets keep working; `cell` wins when both are present. */
 function readSamplesheet(text: string): Row[] {
-  const { rows } = parseCsv(text)
+  const { rows, fields } = parseCsv(text)
+  if (!fields.some((f) => f.toLowerCase() === 'sample'))
+    throw new Error("Samplesheet: needs a 'sample' column naming each sample.")
   return rows.map((r) => {
     const lower: Row = {}
     for (const [k, v] of Object.entries(r)) lower[k.trim().toLowerCase()] = v
     if (lower.cell == null && lower.strain != null) lower.cell = lower.strain
-    if (lower.sample == null || lower.sample === '') {
-      if (lower.position != null && lower.position !== '') lower.sample = String(lower.position)
-      else if (lower.plate != null && lower.well != null)
-        lower.sample = `${lower.plate}_${lower.well}`
-      else if (lower.well != null) lower.sample = String(lower.well)
-    }
     return lower
   })
+}
+
+/** A samplesheet problem that blocks an import: a condition in use left empty for some samples,
+ *  or a dose / time that isn't a number. */
+export interface SheetIssue {
+  field: string
+  kind: 'empty' | 'notNumber'
+  /** notNumber: the offending values, each with the samples carrying it */
+  values: Array<{ value: string; samples: string[] }>
+  /** empty: the samples missing it */
+  samples: string[]
+}
+
+/** The condition fields every sample must fill once any sample uses them (rep may stay empty —
+ *  it's numbered automatically). */
+const SHEET_FIELDS = ['cell', 'cmpd', 'dose', 'time'] as const
+/** Dose and time must be numbers (a vehicle's dose is 0, not its name). */
+const NUMERIC_FIELDS = new Set<string>(['dose', 'time'])
+
+/**
+ * What blocks a samplesheet, for the import's gate and the run's error alike: every condition in
+ * use — cell, cmpd, dose, time and the custom ones, wherever ANY sample has a value — must have a
+ * value for every sample, and dose and time must be numbers. A condition no sample uses is simply
+ * absent, and fine. `rows` are the included samples, keyed by field name (custom ones by theirs).
+ */
+export function samplesheetIssues(
+  rows: Array<{ sample: string } & Record<string, unknown>>,
+  custom: string[] = []
+): SheetIssue[] {
+  const text = (v: unknown): string => (v == null ? '' : String(v).trim())
+  const issues: SheetIssue[] = []
+  for (const field of [...SHEET_FIELDS, ...custom]) {
+    if (!rows.some((r) => text(r[field]) !== '')) continue
+    const empty = rows.filter((r) => text(r[field]) === '').map((r) => r.sample)
+    if (empty.length) issues.push({ field, kind: 'empty', values: [], samples: empty })
+    if (!NUMERIC_FIELDS.has(field)) continue
+    const bad = new Map<string, string[]>()
+    for (const r of rows) {
+      const v = text(r[field])
+      if (v === '' || Number.isFinite(Number(v))) continue
+      const a = bad.get(v)
+      if (a) a.push(r.sample)
+      else bad.set(v, [r.sample])
+    }
+    if (bad.size)
+      issues.push({
+        field,
+        kind: 'notNumber',
+        values: [...bad].map(([value, samples]) => ({ value, samples })),
+        samples: []
+      })
+  }
+  return issues
+}
+
+/** A manual samplesheet checked as the run will check it, for a warning before any run: whether it
+ *  lacks the `sample` column (the run's hard stop), else its issues (samplesheetIssues) over the
+ *  samples the data file carries — all of the sheet's when the data isn't given — with its custom
+ *  conditions detected as the run detects them. */
+export function manualSheetIssues(
+  sheetText: string,
+  dataText?: string | null,
+  dataFilename?: string | null
+): { noSample: boolean; issues: SheetIssue[] } {
+  let ss: Row[]
+  try {
+    ss = readSamplesheet(sheetText)
+  } catch {
+    return { noSample: true, issues: [] }
+  }
+  let inData: Set<string> | null = null
+  if (dataText && dataFilename) {
+    const parsed = parseCsv(dataText)
+    inData =
+      detectFormat(dataFilename, parsed.fields) === 'wide'
+        ? new Set(parsed.fields.slice(1))
+        : new Set(parsed.rows.map((r) => String(r.sample ?? '')))
+  }
+  const rows = ss
+    .filter((r) => r.sample != null && r.sample !== '' && (!inData || inData.has(String(r.sample))))
+    .map((r) => ({ ...r, sample: String(r.sample) }))
+  return { noSample: false, issues: samplesheetIssues(rows, detectCustomConditions(ss)) }
+}
+
+/** A samplesheet issue in a line: which field, what's wrong, and a few of the samples — at most
+ *  three samples, and three bad values, so a large sheet still gives a short line. */
+export function sheetIssueText(i: SheetIssue): string {
+  const few = (a: string[]): string =>
+    `${a.length} sample${a.length === 1 ? '' : 's'}: ${a.slice(0, 3).join(', ')}${a.length > 3 ? ', …' : ''}`
+  if (i.kind === 'empty') return `${i.field} is empty for ${few(i.samples)}`
+  const shown = i.values.slice(0, 3).map((v) => `“${v.value}” (${few(v.samples)})`)
+  const more = i.values.length > 3 ? `; +${i.values.length - 3} more values` : ''
+  return `${i.field} must be a number — ${shown.join('; ')}${more}`
+}
+
+/** The issues as lines to show, at most `max` of them, the rest counted in a last line — so a sheet
+ *  with many broken columns stays readable. */
+export function sheetIssueLines(issues: SheetIssue[], max = 5): string[] {
+  const lines = issues.slice(0, max).map(sheetIssueText)
+  if (issues.length > max) lines.push(`+${issues.length - max} more issues`)
+  return lines
 }
 
 /** Which samplesheet columns to read as custom conditions when the caller didn't say.
@@ -111,7 +210,9 @@ export function detectCustomConditions(ss: Row[]): string[] {
   })
 }
 
-/** Detect the feature-ID column by matching a data column name to a DB column name. */
+/** The DB column the data's feature IDs are matched against: one of the same name as a data
+ *  column, else the DB's `uniqID` — so a data file's `UniProtIDs` (a search engine's IDs, groups
+ *  and all) matches a DB keyed one protein per row by `uniqID`. */
 function detectIdColumn(
   fields: string[],
   dbFields: string[],
@@ -119,7 +220,8 @@ function detectIdColumn(
 ): string | null {
   const nonId = new Set([...RESERVED_COND_NAMES, 'gene_label', ...customConds])
   const dbSet = new Set(dbFields)
-  return fields.find((c) => !nonId.has(c) && dbSet.has(c)) ?? null
+  const shared = fields.find((c) => !nonId.has(c) && dbSet.has(c))
+  return shared ?? (dbSet.has('uniqID') ? 'uniqID' : null)
 }
 
 /** The DB, indexed for matching data feature IDs: `matchKey` of each row's ID-column value → the
@@ -135,16 +237,20 @@ interface DbIndex {
 
 function buildDbIndex(dbRows: Row[], dbFields: string[], idColumn: string): DbIndex {
   const byKey = new Map<string, Row[]>()
-  for (const r of dbRows) {
-    if ((r.uniqID ?? '').trim() === '') continue
+  for (const raw of dbRows) {
+    // uniqID is optional: a DB without it (or a blank cell) uses the ID column's own value.
+    const own = (raw.uniqID ?? '').trim()
+    const r = own ? raw : { ...raw, uniqID: (raw[idColumn] ?? '').trim() }
+    if (r.uniqID === '') continue
     const key = matchKey(r[idColumn] ?? '')
     if (!key) continue
     const arr = byKey.get(key)
     if (arr) arr.push(r)
     else byKey.set(key, [r])
   }
-  // uniqID and the ID column are structural; gene/locus_tag drive the display label.
-  const skip = new Set([idColumn, 'uniqID', 'gene', 'locus_tag'])
+  // uniqID and the ID column are structural; gene/locus drive the display label (`locus_tag` is
+  // the older name of `locus`).
+  const skip = new Set([idColumn, 'uniqID', 'gene', 'locus', 'locus_tag'])
   const fields = new Set(dbFields)
   const annCols = dbFields
     .filter((f) => !skip.has(f))
@@ -168,9 +274,9 @@ function dbRowsFor(index: DbIndex, id: string): Row[] {
 /**
  * Display labels and annotations for the features that made it through Clean data — and only those:
  * the gene selector lists exactly what was measured. A feature's label is its DB rows' distinct gene
- * names joined by "/" (a protein group reads `HDAC1/HDAC2`), else locus tags, else its ID. Its
- * annotation is the UNION of its rows' (see accession.ts): a group belongs to every pathway, term
- * and class any of its members does.
+ * names joined by "/" (a protein group reads `HDAC1/HDAC2`), else its locus (systematic name), else
+ * its ID. Its annotation is the UNION of its rows' (see accession.ts): a group belongs to every
+ * pathway, term and class any of its members does.
  */
 function featureLabels(
   featureIds: Iterable<string>,
@@ -192,7 +298,9 @@ function featureLabels(
   for (const uid of featureIds) {
     const rows = rowsOf(uid)
     const genes = distinct(rows, 'gene')
-    const loci = distinct(rows, 'locus_tag')
+    const loci = distinct(rows, 'locus').length
+      ? distinct(rows, 'locus')
+      : distinct(rows, 'locus_tag')
     displayMap[uid] = genes.length ? genes.join('/') : loci.length ? loci.join('/') : uid
     if (annCols.length) {
       const rec = unionRecords(
@@ -223,7 +331,11 @@ export interface ScalePreview {
 }
 export function previewScale(dataText: string, dataFilename: string): ScalePreview {
   const parsed = parseCsv(dataText)
-  const values = arrivedValues(detectFormat(dataFilename), parsed.fields, parsed.rows)
+  const values = arrivedValues(
+    detectFormat(dataFilename, parsed.fields),
+    parsed.fields,
+    parsed.rows
+  )
   const { scale, evidence } = detectScale(values)
   return { inputScale: scale, evidence, sample: sampleValues(values) }
 }
@@ -249,15 +361,15 @@ function arrivedValues(
  * Full standardization pipeline. Produces the tidy long table and a display map.
  */
 export function standardize(input: StandardizeInput): StandardizeResult {
-  const fmt = detectFormat(input.dataFilename)
   const parsed = parseCsv(input.dataText)
+  const fmt = detectFormat(input.dataFilename, parsed.fields)
   let fields = parsed.fields
   let dataRows = parsed.rows
   // The values as they arrived — what the data scale is judged from (the same set previewScale
   // reads, so the settings' preview and the run agree).
   const arrived = arrivedValues(fmt, fields, dataRows)
 
-  // ── wide → long melt, or long: rename well/position → sample ────────────────
+  // ── wide → long melt ─────────────────────────────────────────────────────────
   if (fmt === 'wide') {
     const idCol = fields[0]
     const sampleCols = fields.slice(1)
@@ -267,17 +379,8 @@ export function standardize(input: StandardizeInput): StandardizeResult {
     }
     dataRows = melted
     fields = [idCol, 'sample', 'value']
-  } else {
-    if (!fields.includes('sample')) {
-      const alias = fields.find((f) => f === 'position') ?? fields.find((f) => f === 'well')
-      if (alias) {
-        dataRows = dataRows.map((r) => {
-          const { [alias]: aliasVal, ...rest } = r
-          return { ...rest, sample: aliasVal }
-        })
-        fields = fields.map((f) => (f === alias ? 'sample' : f))
-      }
-    }
+  } else if (!fields.includes('sample')) {
+    throw new Error("Data file: a long file needs a 'sample' column naming each sample.")
   }
 
   // ── samplesheet: sample → conditions + rep ──────────────────────────────────
@@ -292,6 +395,18 @@ export function standardize(input: StandardizeInput): StandardizeResult {
   const ssBySample = new Map<string, Row>()
   for (const r of ss) if (r.sample != null) ssBySample.set(String(r.sample), r)
   const validSamples = new Set(ssBySample.keys())
+  // The samplesheet must be complete for the samples the data carries: every condition in use
+  // filled, dose and time numbers — else the import stops here, with what to fix.
+  {
+    const inData = new Set(dataRows.map((r) => String(r.sample ?? '')))
+    const issues = samplesheetIssues(
+      ss
+        .filter((r) => r.sample != null && inData.has(String(r.sample)))
+        .map((r) => ({ ...r, sample: String(r.sample) })),
+      customConds
+    )
+    if (issues.length) throw new Error(`Samplesheet: ${sheetIssueLines(issues).join(' · ')}.`)
+  }
 
   // ── filter to samplesheet samples, then attach metadata ─────────────────────
   const idColData = fields.find((f) => f !== 'sample' && f !== 'value') ?? fields[0]
@@ -504,6 +619,16 @@ export function standardize(input: StandardizeInput): StandardizeResult {
     }
   }
 
+  // ── normalisation: median-centre the samples (and their spread), on the kept genes ──
+  // Before imputation, which draws each gap from its sample's distribution — so that draws from
+  // an under-loaded sample aren't pushed further down than the normalised values beside them.
+  let normalization: StandardizeResult['normalization']
+  if (input.normalize) {
+    const res = normalizeSamples(rows, input.normalize)
+    rows = res.rows
+    normalization = res.summary
+  }
+
   // ── imputation: fill what's still missing after clean-up ─────────────────────
   let imputation: StandardizeResult['imputation']
   if (input.impute) {
@@ -535,6 +660,7 @@ export function standardize(input: StandardizeInput): StandardizeResult {
     activeConditions,
     compounds,
     cleanup: { droppedGenes, sampleCount, minSamplePct, ...(grouped ? { by: groupBy } : {}) },
+    ...(normalization ? { normalization } : {}),
     ...(imputation ? { imputation } : {}),
     scale: outputScale(input.logTransform, inputScale),
     inputScale,

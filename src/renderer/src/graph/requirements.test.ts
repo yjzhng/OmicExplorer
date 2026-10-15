@@ -1,7 +1,13 @@
 import { describe, expect, it } from 'vitest'
 
 import { NODE_SPECS, plotEntriesFor } from './registry'
-import { gatePlotEntries, UNWIRED, unmetRequirement, type UpstreamFacts } from './requirements'
+import {
+  factsOf,
+  gatePlotEntries,
+  UNWIRED,
+  unmetRequirement,
+  type UpstreamFacts
+} from './requirements'
 import type { NodeResult } from './types'
 
 const cmpResult = (ann: Record<string, Record<string, string>> = {}): NodeResult =>
@@ -30,18 +36,69 @@ describe('tile requirements', () => {
     expect(unmetRequirement('bubble', {}, none)).toMatch(/dose or time/)
   })
 
-  it('a curve-fit Compare feeds curve plots, not per-dose or group-mean ones', () => {
-    const curve = facts({ kind: 'compare', curve: true })
-    for (const k of ['volcano', 'heatmap', 'dr', 'potency', 'enrich', 'string', 'table'] as const)
+  it('a Curve fit feeds curve plots, not per-dose or group-mean ones', () => {
+    const curve = facts({ kind: 'curveFit', curve: true })
+    for (const k of [
+      'volcano',
+      'heatmap',
+      'dr',
+      'potency',
+      'curveMad',
+      'enrich',
+      'string',
+      'table'
+    ] as const)
       expect(unmetRequirement(k, NODE_SPECS[k].defaultConfig(), curve)).toBeNull()
     for (const k of ['ma', 'scatter', 'bubble', 'tdr'] as const)
-      expect(unmetRequirement(k, NODE_SPECS[k].defaultConfig(), curve)).not.toBeNull()
-    // Potency is a curve fit's only.
-    expect(unmetRequirement('potency', {}, facts({ kind: 'compare', curve: false }))).toMatch(
-      /curve fit/i
-    )
+      expect(unmetRequirement(k, NODE_SPECS[k].defaultConfig(), curve)).toMatch(/Needs a/)
+    // Potency and the residual plots are a curve fit's only.
+    for (const k of ['potency', 'curveMad'] as const)
+      expect(unmetRequirement(k, {}, facts({ kind: 'compare' }))).toMatch(/Curve fit/)
     // A Contrast's scatter (FC1 vs FC2) is unaffected.
     expect(unmetRequirement('scatter', {}, facts({ kind: 'contrast', curve: false }))).toBeNull()
+  })
+
+  it('reads a curve-fit result as a Curve fit upstream (the results panel)', () => {
+    const curveRes = {
+      kind: 'compare',
+      cmp: { rows: [{ uniqID: 'g1', curve: { axis: 'dose' } }], comparisons: [] },
+      displayMap: {},
+      annotationMap: {}
+    } as unknown as NodeResult
+    expect(factsOf(curveRes).kind).toBe('curveFit')
+    expect(unmetRequirement('potency', {}, factsOf(curveRes))).toBeNull()
+    expect(factsOf(cmpResult()).kind).toBe('compare')
+  })
+
+  it('the response surface method: surfaces go to the Response plot, residuals stay CurveCurator’s', () => {
+    const spline = facts({ kind: 'curveFit', curve: true, detection: 'spline' })
+    const surf = facts({ kind: 'curveFit', curve: true, detection: 'spline', surface: true })
+    const cc = facts({ kind: 'curveFit', curve: true, detection: '4pl' })
+    expect(unmetRequirement('curveMad', {}, spline)).toMatch(/CurveCurator method/)
+    expect(unmetRequirement('curveMad', {}, cc)).toBeNull()
+    expect(unmetRequirement('response', {}, surf)).toBeNull()
+    expect(unmetRequirement('response', {}, spline)).toMatch(/dose × time/)
+    expect(unmetRequirement('response', {}, cc)).toMatch(/dose × time/)
+    expect(unmetRequirement('dr', { axis: 'dose' }, surf)).toMatch(/Dose & Time response plot/)
+    // a 4PL surface (CurveCurator in 2-D): a surface too — the Response plot, no residual plots
+    const surf4 = facts({ kind: 'curveFit', curve: true, detection: '4pl', surface: true })
+    expect(unmetRequirement('response', {}, surf4)).toBeNull()
+    expect(unmetRequirement('curveMad', {}, surf4)).toMatch(/CurveCurator method/)
+    expect(unmetRequirement('potency', {}, surf)).toBeNull()
+    // the Response plot takes a Curve fit only
+    expect(unmetRequirement('response', {}, facts({ kind: 'compare' }))).toMatch(/Curve fit/)
+  })
+
+  it('reads a response surface result’s method from its rows (the results panel)', () => {
+    const res = (axis: string): NodeResult =>
+      ({
+        kind: 'compare',
+        cmp: { rows: [{ uniqID: 'g1', rs: { axis } }], comparisons: [] },
+        displayMap: {},
+        annotationMap: {}
+      }) as unknown as NodeResult
+    expect(factsOf(res('surface'))).toMatchObject({ kind: 'curveFit', detection: 'spline', surface: true })
+    expect(factsOf(res('dose'))).toMatchObject({ detection: 'spline', surface: false })
   })
 
   it('kind mismatch is reported before data requirements', () => {

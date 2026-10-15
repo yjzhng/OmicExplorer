@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import {
   deserializeProject,
+  geneMaskKey,
   isNewerVersion,
   newProjectFile,
   nextWorkflowId,
@@ -264,6 +265,78 @@ describe('project (folders) serialization', () => {
     expect(p.folders[0].path).toBe('')
     expect(p.folders[0].workflows).toHaveLength(1)
     expect(p.activeFolderId).toBe(p.folders[0].id)
+  })
+})
+
+describe('project genesets', () => {
+  const gene = (id: string): { id: string; label: string } => ({ id, label: id })
+  const wf = (id: string, doc: Record<string, unknown>): Record<string, unknown> => ({
+    id,
+    name: id,
+    doc: { ...emptyWorkflowDoc(), ...doc },
+    results: {}
+  })
+
+  it('gathers per-workflow genesets (before 0.3.6) into the project, out of the workflow docs', () => {
+    const raw = {
+      format: 'omicexplorer-project',
+      version: 3,
+      name: 'P',
+      activeFolderId: 'fd-1',
+      folders: [
+        {
+          id: 'fd-1',
+          name: 'F',
+          path: '/d',
+          activeWorkflowId: 'wf-1',
+          workflows: [
+            wf('wf-1', {
+              geneSets: [
+                { id: 'gs_a', name: 'A', genes: [gene('g1')], hidden: true },
+                { id: 'gs_b', name: 'B', genes: [gene('g2')] }
+              ]
+            }),
+            // the same set (a copied workflow) merges: genes united, hidden if hidden in any
+            wf('wf-2', { geneSets: [{ id: 'gs_a', name: 'A', genes: [gene('g1'), gene('g3')] }] }),
+            // legacy flat favourites become the "Favourites" set
+            wf('wf-3', { favourites: [gene('g4')] })
+          ]
+        }
+      ]
+    }
+    const p = deserializeProject(JSON.stringify(raw))
+    expect(p.geneSets).toEqual([
+      { id: 'gs_a', name: 'A', genes: [gene('g1'), gene('g3')], hidden: true },
+      { id: 'gs_b', name: 'B', genes: [gene('g2')] },
+      { id: 'gs_favourites', name: 'Favourites', genes: [gene('g4')] }
+    ])
+    const ws = p.folders[0].workflows
+    for (const w of ws) {
+      expect(w.doc.geneSets).toBeUndefined()
+      expect(w.doc.favourites).toBeUndefined()
+    }
+    // each workflow remembers the mask its results were classified under: its OWN hidden sets
+    expect(ws[0].mask).toBe(geneMaskKey([{ id: 'x', name: 'x', genes: [gene('g1')], hidden: true }]))
+    expect(ws[1].mask).toBe('')
+    expect(ws[1].mask).not.toBe(geneMaskKey(p.geneSets ?? []))
+  })
+
+  it('round-trips project genesets and workflow masks', () => {
+    const p = newProjectFile('P')
+    p.geneSets = [{ id: 'gs_a', name: 'A', genes: [gene('g1')], hidden: true, color: '#ff0000' }]
+    p.folders[0].workflows[0].mask = geneMaskKey(p.geneSets)
+    const back = deserializeProject(serializeProject(p))
+    expect(back.geneSets).toEqual(p.geneSets)
+    expect(back.folders[0].workflows[0].mask).toBe(p.folders[0].workflows[0].mask)
+  })
+
+  it('keys the mask by the hidden sets\' genes only', () => {
+    const a = { id: 'a', name: 'a', genes: [gene('g1'), gene('g2')], hidden: true }
+    const b = { id: 'b', name: 'b', genes: [gene('g2'), gene('g1')], hidden: true }
+    expect(geneMaskKey([])).toBe('')
+    expect(geneMaskKey([{ ...a, hidden: false }])).toBe('')
+    expect(geneMaskKey([a])).toBe(geneMaskKey([b]))
+    expect(geneMaskKey([a])).not.toBe(geneMaskKey([{ ...a, genes: [gene('g1')] }]))
   })
 })
 

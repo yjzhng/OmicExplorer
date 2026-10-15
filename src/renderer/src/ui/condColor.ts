@@ -28,6 +28,8 @@ export function conditionColorer<T>(
     base: string
     /** the colour of an item missing the categorical condition */
     missing: string
+    /** the categorical palette its levels cycle (default: the global one, theme.CATEGORICAL) */
+    palette?: readonly string[]
   }
 ): {
   on: boolean
@@ -55,7 +57,8 @@ export function conditionColorer<T>(
     : []
   const cat = catLevels.length > 0
   const num = numLevels.length > 0
-  const catColor = new Map(catLevels.map((v, i) => [v, CATEGORICAL[i % CATEGORICAL.length]]))
+  const pal = opts.palette ?? CATEGORICAL
+  const catColor = new Map(catLevels.map((v, i) => [v, pal[i % pal.length]]))
   // Low → palest, high → the full colour; a single level is the full colour.
   const shadeT = (v: string): number =>
     numLevels.length > 1 ? numLevels.indexOf(v) / (numLevels.length - 1) : 1

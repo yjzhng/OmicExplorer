@@ -32,6 +32,10 @@
 .oe-switch-row {
   border-bottom: 1px solid var(--border);
 }
+/* A gene pager's switch strip with no switches on (GeneSwitch). */
+.oe-gene-controls:empty {
+  display: none !important;
+}
 .oe-switch-row > .oe-switch-strip,
 .oe-switch-row:empty,
 .oe-switch-strip:has(+ .oe-switch-strip, + .oe-switch-row, + * .oe-switch-strip),
@@ -402,4 +406,16 @@
   .oe-menu-out {
     animation-duration: 1ms;
   }
+}
+
+/* Settings › Custom palettes: no focus ring left behind after a click on the builders' buttons
+   (Edit / Delete, Apply / Cancel, +, ×, a colour stop) — keyboard focus still shows one. */
+.oe-palette-builder button:focus,
+button.oe-palette-builder:focus {
+  outline: none;
+}
+.oe-palette-builder button:focus-visible,
+button.oe-palette-builder:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
 }

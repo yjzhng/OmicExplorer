@@ -1,7 +1,7 @@
 /** Renders a single tile's output (table or plot) for the results dashboard.
  *  Salvaged from the retired OutputDock's OutputBody: the per-kind dispatch and
  *  the comparison/contrast column builders live here now. */
-import { useMemo, useState, type CSSProperties, type ReactNode } from 'react'
+import { useCallback, useMemo, useState, type CSSProperties, type ReactNode } from 'react'
 import type { Edge } from '@xyflow/react'
 
 import {
@@ -19,6 +19,8 @@ import {
   type EnrichSource,
   type CompareResultRow,
   type ClusterColorBy,
+  type AxisTail,
+  contrastStatDrag,
   type ConditionKey,
   type ContrastResultRow,
   type QcMetric,
@@ -38,11 +40,21 @@ import {
   plotScaleOf,
   abundanceLabel,
   abundanceOnScale,
+  contrastFeatureLabel,
+  rowsOfFeature,
+  rowsOfFeatureNamed,
   type ValueScale,
   type ThresholdConfig,
   curveGroupKey,
   curveCuratorWall,
-  curveMetrics
+  curvesReplicated,
+  RESIDUAL_DOT_CAP,
+  curveMetrics,
+  curveHasLof,
+  ccTestOf,
+  responseMetrics,
+  DUMBBELL_ORDERS,
+  dumbbellOrderLabel
 } from '../engine'
 import { BubbleView } from '../ui/BubbleView'
 import { EnrichView } from '../ui/EnrichView'
@@ -55,6 +67,7 @@ import { DumbbellView } from '../ui/DumbbellView'
 import { ResponseCompareView } from '../ui/ResponseCompareView'
 import { MAView } from '../ui/MAView'
 import { PotencyView } from '../ui/PotencyView'
+import { ResponseSurfaceView } from '../ui/ResponseSurfaceView'
 import { CurveMadView } from '../ui/CurveMadView'
 import { ClusterTile } from './ClusterTile'
 import { CorrTile } from './CorrTile'
@@ -63,9 +76,19 @@ import { SUBSET_TOGGLE_KINDS } from './subset'
 import { GeneBarTile } from './GeneBarTile'
 import { GeneSwitch } from './GeneSwitch'
 import { ScatterView } from '../ui/ScatterView'
-import { SwitchBar, SwitchBarToggle } from './SwitchBar'
-import { TdrTile } from './TdrTile'
+import { SwitchBar, SwitchStrip, SwitchBarToggle } from './SwitchBar'
+import { TdrBody } from './TdrTile'
 import { divergeStyle, heatStyle, valueRange } from '../ui/colormap'
+import {
+  CATEGORICAL_SCHEMES,
+  ROLE_DEFAULTS,
+  toCategoricalId,
+  toPaletteRef,
+  BUBBLE_SIG_PALETTE,
+  type PaletteRef,
+  type PaletteRole
+} from '../ui/palettes'
+import { useAppSettings, useRolePalette } from '../ui/useAppSettings'
 import { UI } from '../ui/theme'
 import { useSelection } from '../ui/useSelection'
 import { VolcanoView } from '../ui/VolcanoView'
@@ -85,8 +108,10 @@ import {
   axisTitle,
   curveDoseUnit,
   effectLabelsOf,
-  effectColorsOf,
   plotEffectColors,
+  type FcPaletteConfig,
+  type PlotEffectColors,
+  isComparisonKind,
   normalizeCompareConfig,
   type EffectLabels,
   type DRConfig,
@@ -96,9 +121,19 @@ import {
   type HeatmapConfig,
   heatmapCapOn,
   drLook,
+  DR_DETAIL_CAP,
   clusterStyle,
   drYScale,
   qcColorConds,
+  heatmapCondBar,
+  DENDRO_CLADES_DEFAULT,
+  HEATMAP_LINKAGES,
+  HEATMAP_LEAF_ORDERS,
+  type ContrastConfig,
+  primaryColorLevels,
+  SAMPLE_ORDERS,
+  sampleOrderOf,
+  clusterTwoConds,
   plotResultKey,
   geneCapOn,
   labelCapOn,
@@ -106,6 +141,12 @@ import {
   type MAConfig,
   type NodeResult,
   type PotencyConfig,
+  type ResponseConfig,
+  type TdrConfig,
+  responseDim,
+  responseLook,
+  responseShow,
+  responseShowWhy,
   type CurveMadConfig,
   clusterLook,
   type ClusterConfig,
@@ -117,9 +158,14 @@ import {
   type StandardizeConfig,
   type StepNode,
   type StepStatus,
+  TABLE_GENE_MAX,
   type TableConfig,
   type VolcanoConfig
 } from '../graph/types'
+
+/** The fold-change heatmap's linkage and leaf-order choices, as switch-bar options. */
+const HEATMAP_LINKAGE_KEYS = Object.keys(HEATMAP_LINKAGES)
+const HEATMAP_LEAF_ORDER_KEYS = Object.keys(HEATMAP_LEAF_ORDERS)
 
 type StdRow = StandardizeResult['rows'][number]
 
@@ -149,6 +195,33 @@ function cleanDataUpstream(
   return undefined
 }
 
+/** The value range every gene's surface spans in a facet (its level means), padded — the curve-fit
+ *  Response plot's global scale. Cached per Compare result (`all`, its whole row table) and facet,
+ *  so the same range object comes back each render and the plot doesn't redraw for it. */
+const surfaceRanges = new WeakMap<CompareResultRow[], Map<string, [number, number] | undefined>>()
+function surfaceValueRange(
+  all: CompareResultRow[],
+  facetKey: string,
+  rows: CompareResultRow[]
+): [number, number] | undefined {
+  let byFacet = surfaceRanges.get(all)
+  if (!byFacet) surfaceRanges.set(all, (byFacet = new Map()))
+  if (byFacet.has(facetKey)) return byFacet.get(facetKey)
+  let lo = Infinity
+  let hi = -Infinity
+  for (const r of rows)
+    for (const c of r.rs?.cells ?? [])
+      if (Number.isFinite(c.y)) {
+        if (c.y < lo) lo = c.y
+        if (c.y > hi) hi = c.y
+      }
+  // padded more than the measured plot's: a description's curve can run a little past its means
+  const pad = (hi - lo) * 0.08 || 0.1
+  const range: [number, number] | undefined = lo <= hi ? [lo - pad, hi + pad] : undefined
+  byFacet.set(facetKey, range)
+  return range
+}
+
 /** Memoizes a plot-data build inside a FacetedPlot render prop. The render prop runs on every
  *  PanelBody render (a pin click, a status tick anywhere), and an inline `buildX(rows, …)` there
  *  hands the view a FRESH data object each time — which is a full Plotly redraw of the chart, on
@@ -170,8 +243,12 @@ function Built<T>({
 
 /** The viridis `value` heat style for a standardize result, scaled globally across every value
  *  (log10 when the values look like raw intensity). Shared by the matrix cells and the long view. */
-function makeValueHeat(std: StandardizeResult): (v: unknown) => CSSProperties | undefined {
-  return heatStyle(valueRange(std.rows.map((r) => r.value)))
+function makeValueHeat(
+  std: StandardizeResult,
+  palette: PaletteRef = ROLE_DEFAULTS.data
+): (v: unknown) => CSSProperties | undefined {
+  // The Clean data table's abundance cells: on the value palette, as the Clean data heatmap.
+  return heatStyle(valueRange(std.rows.map((r) => r.value)), palette)
 }
 
 /** A table row's custom condition values hoisted to flat `@slug` keys. DataTableView addresses a
@@ -247,7 +324,10 @@ function groupByGene<T extends { uniqID: string }>(rows: T[]): T[] {
 /** Pivot the tidy standardized rows into a gene × sample matrix: one row per uniqID, one column
  *  per sample. The samplesheet's sample names aren't retained in the standardized rows, so a
  *  sample is identified (and labelled) by its condition combination + replicate. */
-function standardizeMatrix(std: StandardizeResult): {
+function standardizeMatrix(
+  std: StandardizeResult,
+  palette?: PaletteRef
+): {
   columns: Column[]
   rows: Record<string, unknown>[]
 } {
@@ -293,7 +373,7 @@ function standardizeMatrix(std: StandardizeResult): {
     row[ck] = r.value
   }
   // Global viridis heat scale across every value cell (matches the Heatmap tile's colour map).
-  const heat = makeValueHeat(std)
+  const heat = makeValueHeat(std, palette)
   const columns: Column[] = [
     { key: 'uniqID', label: 'uniqID' },
     { key: 'gene', label: 'gene' },
@@ -309,25 +389,43 @@ function standardizeMatrix(std: StandardizeResult): {
   return { columns, rows: uidOrder.map((u) => byUid.get(u)!) }
 }
 
+/** A table's cell colouring when a Data table tile owns it (its settings): on / off, and the
+ *  palette (unset = the table's default). Absent: the table keeps its own on/off switch. */
+interface TableColour {
+  on: boolean
+  set: (on: boolean) => void
+  palette?: PaletteRef
+}
+
 /** The standardized table with a Long ⇆ Matrix (gene × sample) view toggle. */
 function StdTable({
   std,
-  initialView = 'matrix'
+  initialView = 'matrix',
+  maxChars,
+  colour
 }: {
   std: StandardizeResult
   initialView?: 'matrix' | 'long'
+  /** the id / gene columns' display caps (characters, by column key) */
+  maxChars?: Record<string, number>
+  colour?: TableColour
 }): ReactNode {
   const [view, setView] = useState<'matrix' | 'long'>(initialView)
-  const [colored, setColored] = useState(true)
+  const [localColored, setLocalColored] = useState(true)
+  const colored = colour?.on ?? localColored
+  const setColored = colour?.set ?? setLocalColored
+  // Abundance cells on the value palette (default viridis, as the Clean data heatmap).
+  const dataPalette = useRolePalette('data')
+  const palette = colour?.palette ?? dataPalette
   const long = useMemo(() => {
-    const heat = makeValueHeat(std)
+    const heat = makeValueHeat(std, palette)
     return {
       // Colour the long view's `value` column with the same viridis heat scale as the matrix.
       columns: stdColumns(std.rows).map((c) => (c.key === 'value' ? { ...c, cellStyle: heat } : c)),
       rows: tableRows(std.rows, std.displayMap)
     }
-  }, [std])
-  const matrix = useMemo(() => standardizeMatrix(std), [std])
+  }, [std, palette])
+  const matrix = useMemo(() => standardizeMatrix(std, palette), [std, palette])
   const cur = view === 'matrix' ? matrix : long
   // Drop the per-cell heat styling when colouring is off.
   const columns = colored
@@ -347,7 +445,7 @@ function StdTable({
       <div style={{ flex: 1, minHeight: 0 }}>
         {/* key by view so the table fully remounts on toggle — otherwise its internal sort/filter
             state (and the Long view's duplicate uniqID row keys) leak across and mis-render. */}
-        <DataTableView key={view} columns={columns} rows={cur.rows} />
+        <DataTableView key={view} columns={columns} rows={cur.rows} maxChars={maxChars} />
       </div>
     </div>
   )
@@ -374,26 +472,57 @@ function compareColumns(
     { key: 'uniqID', label: 'uniqID' },
     { key: 'gene', label: 'gene' }
   ]
-  // Show the comparison label only when several coexist (e.g. two-way factor combos).
-  if (new Set(rows.map((r) => r.comparison)).size > 1) {
+  // Show the comparison label when several coexist (e.g. two-way factor combos) — and always for a
+  // curve fit, where it says what each curve is against: "drugA | baseline (dose 0 · time 60)".
+  if (analysis === 'curve_fit' || new Set(rows.map((r) => r.comparison)).size > 1) {
     cols.push({ key: 'comparison', label: 'comparison' })
   }
   cols.push(...condColumns(rows))
+  // The response surface method (a Curve fit with detection model Spline): its own columns below.
+  const response = analysis === 'curve_fit' && rows.some((r) => r.rs)
   cols.push({
     key: 'log2FC',
     label:
       analysis === 'two_way_anova'
         ? 'interaction'
-        : analysis === 'curve_fit'
-          ? 'curve log₂FC'
-          : 'log₂FC',
+        : response
+          ? 'peak log₂FC'
+          : analysis === 'curve_fit'
+            ? 'curve log₂FC'
+            : 'log₂FC',
     align: 'right',
     format: fixed(3)
   })
+  // Its description (4PL on log₂: plateaus are log₂ vs the control), how much of the spline's fit
+  // that explains (the shape QC), and its moderated F — a surface has the F only.
+  if (response)
+    cols.push(
+      { key: 'pEC50', label: 'pEC50', align: 'right', format: fixed(3) },
+      {
+        key: 'EC50',
+        label: doseUnit ? `EC50 (${doseUnit})` : 'EC50',
+        align: 'right',
+        format: sig3
+      },
+      { key: 'slope', label: 'slope', align: 'right', format: fixed(2) },
+      { key: 'front', label: 'front (log₂)', align: 'right', format: fixed(3) },
+      { key: 'back', label: 'back (log₂)', align: 'right', format: fixed(3) },
+      { key: 'R2', label: 'R²', align: 'right', format: fixed(3) },
+      { key: 'shape_ratio', label: 'shape ratio', align: 'right', format: fixed(2) },
+      { key: 'shape_QC', label: 'shape QC' },
+      { key: 'F', label: 'F', align: 'right', format: sig3 },
+      // a 4PL surface under CurveCurator's threshold: its relevance score and target–decoy q
+      ...(threshold?.type === 'curvecurator' && rows.some((r) => r.rs?.cc)
+        ? [{ key: 'relevance', label: 'relevance', align: 'right' as const, format: fixed(3) }]
+        : []),
+      ...(rows.some((r) => r.rs?.cc?.q != null)
+        ? [{ key: 'q_decoy', label: 'q (decoy)', align: 'right' as const, format: sig3 }]
+        : [])
+    )
   // A curve fit's own parameters and test, as CurveCurator's results table lists them: potency
   // (pEC50 = −log₁₀ EC50, both in the dose's units), the slope and plateaus (ratios to the
   // control), the fit's quality, and the F test.
-  if (analysis === 'curve_fit')
+  if (analysis === 'curve_fit' && !response)
     cols.push(
       { key: 'pEC50', label: 'pEC50', align: 'right', format: fixed(3) },
       {
@@ -411,6 +540,18 @@ function compareColumns(
         : []),
       { key: 'points', label: 'points', align: 'right' },
       { key: 'F', label: 'F', align: 'right', format: sig3 },
+      // The lack-of-fit test, where the doses have replicates to estimate pure error from.
+      ...(rows.some((r) => r.curve && curveHasLof(r.curve))
+        ? [
+            { key: 'F_lof', label: 'lack-of-fit F', align: 'right' as const, format: sig3 },
+            {
+              key: 'pP_lof',
+              label: 'lack-of-fit −log₁₀ P',
+              align: 'right' as const,
+              format: fixed(3)
+            }
+          ]
+        : []),
       // CurveCurator's relevance score (only under its threshold, whose FC limit and α it uses).
       ...(threshold?.type === 'curvecurator'
         ? [{ key: 'relevance', label: 'relevance', align: 'right' as const, format: fixed(3) }]
@@ -422,7 +563,12 @@ function compareColumns(
     )
   cols.push(
     // Only the significance column that drives the calls (the Compare's P/Q switch).
-    { key: statType, label: statType, align: 'right', format: fixed(3) },
+    {
+      key: statType,
+      label: statType === 'pQ' ? '−log₁₀ Q-value' : '−log₁₀ P-value',
+      align: 'right',
+      format: fixed(3)
+    },
     { key: 'signf', label: 'signf' },
     { key: 'effect', label: 'effect', format: effectName(labels) },
     // A curve fit's final model: the 4PL, or M0 (flat) where its F-test doesn't reject flat.
@@ -474,11 +620,13 @@ function facetAlpha(
 function curvePointCounts(rows: CompareResultRow[]): number[] {
   const tally = new Map<number, number>()
   let total = 0
-  for (const r of rows)
-    if (r.curve) {
-      tally.set(r.curve.n, (tally.get(r.curve.n) ?? 0) + 1)
+  for (const r of rows) {
+    const cc = ccTestOf(r)
+    if (cc) {
+      tally.set(cc.n, (tally.get(cc.n) ?? 0) + 1)
       total++
     }
+  }
   return [...tally]
     .filter(([, c]) => c >= total * 0.05)
     .sort((a, b) => b[1] - a[1])
@@ -533,7 +681,12 @@ function pivotMatrix<T extends { uniqID: string }>(
   colOf: (r: T) => string,
   order?: (a: string, b: string) => number,
   /** a column's header as named lines (from its first row) */
-  linesOf?: (r: T) => HeaderLine[]
+  linesOf?: (r: T) => HeaderLine[],
+  /** the fold-change palette a signed value's cell is coloured on */
+  palettes: { fc: PaletteRef; data: PaletteRef } = {
+    fc: ROLE_DEFAULTS.fc,
+    data: ROLE_DEFAULTS.data
+  }
 ): { columns: Column[]; rows: Record<string, unknown>[] } {
   const colKeys: string[] = []
   const colSeen = new Set<string>()
@@ -563,8 +716,11 @@ function pivotMatrix<T extends { uniqID: string }>(
   if (!field.text) {
     const signed = values.some((v) => v < 0)
     cell = signed
-      ? divergeStyle(values.reduce((m, v) => Math.max(m, Math.abs(v)), 0))
-      : heatStyle(valueRange(values))
+      ? divergeStyle(
+          values.reduce((m, v) => Math.max(m, Math.abs(v)), 0),
+          palettes.fc
+        )
+      : heatStyle(valueRange(values), palettes.data)
   }
   const columns: Column[] = [
     { key: 'uniqID', label: 'uniqID' },
@@ -594,8 +750,8 @@ function presentFields<T>(rows: T[], all: MatrixField[]): MatrixField[] {
 /** Cell choices for the comparison matrix (log2FC first — the heatmap's field). */
 const COMPARE_FIELDS: MatrixField[] = [
   { key: 'log2FC', label: 'log₂FC' },
-  { key: 'pP', label: 'pP' },
-  { key: 'pQ', label: 'pQ' },
+  { key: 'pP', label: '−log₁₀ P-value' },
+  { key: 'pQ', label: '−log₁₀ Q-value' },
   { key: 'mean1', label: 'mean1' },
   { key: 'mean2', label: 'mean2' },
   // a curve fit's own (see curveMetrics)
@@ -620,6 +776,27 @@ const CONTRAST_FIELDS: MatrixField[] = [
   { key: 'effect', label: 'effect', text: true }
 ]
 
+/** The compare fields with mean1/mean2 named for the groups they average: a comparison labelled
+ *  "A | B" averages A in mean1 and B in mean2, so each reads as its comparisons' side ("clpP",
+ *  or "clpP, dnaK" over several). Falls back to mean1/mean2 where a label isn't "A | B" (two-way,
+ *  curve fits), there are too many to list, or the two names would collide. */
+function namedMeanFields(rows: CompareResultRow[]): MatrixField[] {
+  const comparisons = [...new Set(rows.map((r) => r.comparison))]
+  const sides = comparisons.map((c) => c.split(' | '))
+  if (!sides.length || sides.some((s) => s.length !== 2)) return COMPARE_FIELDS
+  const side = (i: number): string | null => {
+    const names = [...new Set(sides.map((s) => s[i]))]
+    return names.length <= 3 ? names.join(', ') : null
+  }
+  const m1 = side(0)
+  const m2 = side(1)
+  const taken = new Set(COMPARE_FIELDS.map((f) => f.label))
+  if (!m1 || !m2 || m1 === m2 || taken.has(m1) || taken.has(m2)) return COMPARE_FIELDS
+  return COMPARE_FIELDS.map((f) =>
+    f.key === 'mean1' ? { ...f, label: m1 } : f.key === 'mean2' ? { ...f, label: m2 } : f
+  )
+}
+
 /** Pivot a comparison result into a gene × comparison-column matrix — the tabular twin of the
  *  log₂FC heatmap. Columns are keyed exactly as the Fc heatmap keys them (comparison label + the
  *  context conditions the comparison doesn't consume), so the two line up; the cell field is the
@@ -627,7 +804,8 @@ const CONTRAST_FIELDS: MatrixField[] = [
 function compareMatrix(
   rows: CompareResultRow[],
   displayMap: Record<string, string>,
-  field: MatrixField
+  field: MatrixField,
+  palettes: { fc: PaletteRef; data: PaletteRef }
 ): { columns: Column[]; rows: Record<string, unknown>[] } {
   const consumed = new Set<string>()
   for (const r of rows) for (const p of r.cmp_cond.split(':')) if (p) consumed.add(p)
@@ -640,7 +818,8 @@ function compareMatrix(
     field,
     (r) => [r.comparison, ...ctxDims.map((c) => ctxLabel(c, ctxValue(r, c)))].join(' · '),
     undefined,
-    (r) => [{ key: 'comparison', value: r.comparison }, ...ctxLines(r, ctxDims)]
+    (r) => [{ key: 'comparison', value: r.comparison }, ...ctxLines(r, ctxDims)],
+    palettes
   )
 }
 
@@ -656,7 +835,9 @@ function CompareTable({
   statType,
   threshold,
   dose = NO_DOSE,
-  initialView = 'matrix'
+  initialView = 'matrix',
+  maxChars,
+  colour
 }: {
   rows: CompareResultRow[]
   analysis: CompareConfig['analysis']
@@ -670,9 +851,22 @@ function CompareTable({
   /** a curve fit's dose unit and its molar scale (pEC50 is molar; see curveDoseUnit) */
   dose?: { unit?: string; scale: number }
   initialView?: 'long' | 'matrix'
+  /** the id / gene columns' display caps (characters, by column key) */
+  maxChars?: Record<string, number>
+  colour?: TableColour
 }): ReactNode {
   const [view, setView] = useState<'long' | 'matrix'>(initialView)
-  const [colored, setColored] = useState(true)
+  const [localColored, setLocalColored] = useState(true)
+  const colored = colour?.on ?? localColored
+  const setColored = colour?.set ?? setLocalColored
+  // Signed cells on the fold-change palette (the tile's own, else the global role's); others —
+  // p-values, abundance — on the data-values palette.
+  const fcRole = useRolePalette('fc')
+  const dataRole = useRolePalette('data')
+  const palettes = useMemo(
+    () => ({ fc: colour?.palette ?? fcRole, data: dataRole }),
+    [colour?.palette, fcRole, dataRole]
+  )
   // Matrix cell field ("Show"): any value column the result carries (only the driving one of
   // pP/pQ); log2FC by default.
   // The rows with a curve fit's own cells alongside (pEC50, relevance…), for both views.
@@ -684,13 +878,15 @@ function CompareTable({
               ...r,
               ...curveMetrics(r.log2FC, r.curve, threshold, dose.scale)
             } as CompareResultRow)
-          : r
+          : r.rs
+            ? ({ ...r, ...responseMetrics(r, dose.scale, threshold) } as CompareResultRow)
+            : r
       ),
     [rows, threshold, dose.scale]
   )
   const fields = useMemo(
     () =>
-      presentFields(cellRows, COMPARE_FIELDS).filter(
+      presentFields(cellRows, namedMeanFields(cellRows)).filter(
         (f) => (f.key !== 'pP' && f.key !== 'pQ') || f.key === statType
       ),
     [cellRows, statType]
@@ -700,13 +896,23 @@ function CompareTable({
   const long = useMemo(
     () => ({
       columns: compareColumns(rows, analysis, effectLabels, statType, threshold, dose.unit),
-      rows: tableRows(cellRows, displayMap)
+      // a curve fit's comparison as the plots read it ("drugA | baseline (dose 0)"); the key itself
+      // stays on the result rows
+      rows: tableRows(cellRows, displayMap).map((t) =>
+        analysis === 'curve_fit'
+          ? {
+              ...t,
+              comparison:
+                comparisonOf([t as Parameters<typeof comparisonOf>[0][number]]) ?? t.comparison
+            }
+          : t
+      )
     }),
     [rows, cellRows, analysis, effectLabels, displayMap, statType, threshold, dose.unit]
   )
   const matrix = useMemo(
-    () => compareMatrix(cellRows, displayMap, field),
-    [cellRows, displayMap, field]
+    () => compareMatrix(cellRows, displayMap, field, palettes),
+    [cellRows, displayMap, field, palettes]
   )
   const cur = view === 'matrix' ? matrix : long
   const columns = colored
@@ -740,6 +946,7 @@ function CompareTable({
           key={`${view}¦${field.key}`}
           columns={columns}
           rows={cur.rows}
+          maxChars={maxChars}
           caption={`Comparison — ${comparisons.join(', ')}`}
         />
       </div>
@@ -750,9 +957,21 @@ function CompareTable({
 /** Which response axes the compare rows actually carry (dose, time, or both). Drives whether
  *  DR/TR and Bubble show the dose⇆time switcher — a single-axis dataset needs no switch. */
 function axisChoices(
-  rows: ReadonlyArray<{ dose?: number | null; time?: number | null }>
+  rows: ReadonlyArray<{
+    dose?: number | null
+    time?: number | null
+    curve?: { axis: string }
+    rs?: { axis: string }
+  }>
 ): ('dose' | 'time')[] {
-  return (['dose', 'time'] as const).filter((a) => rows.some((r) => r[a] != null))
+  // A curve fit's row is a whole curve over its own axis (its dose / time field is the context,
+  // e.g. the time a dose curve was measured at); other rows sit at a level of either.
+  return (['dose', 'time'] as const).filter((a) =>
+    rows.some((r) => {
+      const along = r.curve?.axis ?? r.rs?.axis
+      return along ? along === a : r[a] != null
+    })
+  )
 }
 
 /** Columns for a contrast (compare-vs-compare) table. */
@@ -780,7 +999,8 @@ function contrastColumns(rows: ContrastResultRow[]): Column[] {
 function contrastMatrix(
   rows: ContrastResultRow[],
   displayMap: Record<string, string>,
-  field: MatrixField
+  field: MatrixField,
+  palettes: { fc: PaletteRef; data: PaletteRef }
 ): { columns: Column[]; rows: Record<string, unknown>[] } {
   const dims = condsIn(rows).filter((c) => condPresent(rows, c))
   // Column label → its raw context tuple, kept for the numeric-aware ordering below.
@@ -813,8 +1033,14 @@ function contrastMatrix(
     }
     return 0
   }
-  return pivotMatrix(rows, displayMap, field, colOf, order, (r) =>
-    dims.length ? ctxLines(r, dims) : [{ key: '', value: field.label }]
+  return pivotMatrix(
+    rows,
+    displayMap,
+    field,
+    colOf,
+    order,
+    (r) => (dims.length ? ctxLines(r, dims) : [{ key: '', value: field.label }]),
+    palettes
   )
 }
 
@@ -824,15 +1050,30 @@ function ContrastTable({
   rows,
   displayMap,
   comparisons,
-  initialView = 'matrix'
+  initialView = 'matrix',
+  maxChars,
+  colour
 }: {
   rows: ContrastResultRow[]
   displayMap: Record<string, string>
   comparisons: string[]
   initialView?: 'long' | 'matrix'
+  /** the id / gene columns' display caps (characters, by column key) */
+  maxChars?: Record<string, number>
+  colour?: TableColour
 }): ReactNode {
   const [view, setView] = useState<'long' | 'matrix'>(initialView)
-  const [colored, setColored] = useState(true)
+  const [localColored, setLocalColored] = useState(true)
+  const colored = colour?.on ?? localColored
+  const setColored = colour?.set ?? setLocalColored
+  // Signed cells on the fold-change palette (the tile's own, else the global role's); others —
+  // p-values, abundance — on the data-values palette.
+  const fcRole = useRolePalette('fc')
+  const dataRole = useRolePalette('data')
+  const palettes = useMemo(
+    () => ({ fc: colour?.palette ?? fcRole, data: dataRole }),
+    [colour?.palette, fcRole, dataRole]
+  )
   // Matrix cell field ("Show"): any value column the result carries; FCdiff by default.
   const fields = useMemo(() => presentFields(rows, CONTRAST_FIELDS), [rows])
   const [fieldKey, setFieldKey] = useState(CONTRAST_FIELDS[0].key)
@@ -844,7 +1085,10 @@ function ContrastTable({
     }),
     [rows, displayMap]
   )
-  const matrix = useMemo(() => contrastMatrix(rows, displayMap, field), [rows, displayMap, field])
+  const matrix = useMemo(
+    () => contrastMatrix(rows, displayMap, field, palettes),
+    [rows, displayMap, field, palettes]
+  )
   const cur = view === 'matrix' ? matrix : long
   const columns = colored
     ? cur.columns
@@ -874,6 +1118,7 @@ function ContrastTable({
           key={`${view}¦${field.key}`}
           columns={columns}
           rows={cur.rows}
+          maxChars={maxChars}
           caption={`Contrast — ${comparisons.join(', ')}`}
         />
       </div>
@@ -927,10 +1172,39 @@ export function PanelBody({
   const upStep = upNode && isStep(upNode) ? upNode : undefined
   // The upstream Compare's config, for the effect colours its plots inherit.
   const upCompareCfg =
-    upStep?.data.kind === 'compare' ? (upStep.data.config as CompareConfig) : undefined
+    upStep && isComparisonKind(upStep.data.kind) ? (upStep.data.config as CompareConfig) : undefined
+  // The global fold-change palette; a plot with its own (cfg.fcPalette) draws on that instead.
+  // Each palette role's global default (Settings → Customisation): what a plot draws when its own palette
+  // is Automatic — its settings name the same, so the two always agree.
+  const roles = useAppSettings((s) => s.palettes)
+  // A plot's categorical palette: its own, else the global one.
+  const globalCategorical = useAppSettings((s) => s.categorical)
+  const categoricalOf = (c: unknown): readonly string[] =>
+    CATEGORICAL_SCHEMES[
+      toCategoricalId((c as { categorical?: unknown } | undefined)?.categorical) ??
+        globalCategorical
+    ]
+  const responseRoles = useMemo(() => ({ value: roles.fc, points: roles.fcObject }), [roles])
+  const paletteOf = (c: unknown, role: PaletteRole, field = 'fcPalette'): PaletteRef =>
+    toPaletteRef((c as Record<string, unknown> | undefined)?.[field]) ?? roles[role]
+  // A plot's effect colours: its own → its palette → the Compare's → the global palette.
+  const effectsOf = (c: unknown, compare: CompareConfig | undefined, own?: PlotEffectColors) =>
+    plotEffectColors(own, compare, roles.fcObject, (c as FcPaletteConfig | undefined)?.fcPalette)
   // The numeric conditions' units, from the import this plot's data came through (axis titles,
-  // a curve fit's EC50).
-  const units = useCondUnits(node.id)
+  // a curve fit's EC50) — the dose's, for a workflow saved before units moved to the import, the
+  // unit its Curve fit carried (as curveDoseUnit reads it), so every axis titles it alike.
+  const importUnits = useCondUnits(node.id)
+  const legacyDose = upCompareCfg?.doseUnit
+  const units = useMemo(
+    () => (importUnits.dose || !legacyDose ? importUnits : { ...importUnits, dose: legacyDose }),
+    [importUnits, legacyDose]
+  )
+  // A condition's legend heading with its unit — dose (nM), time (min) — for the condition
+  // legends (QC, gene bar, cluster); one function per units, so the plots don't redraw for nothing.
+  const condTitle = useCallback(
+    (c: ConditionKey): string => axisTitle(condLabel(c), units),
+    [units]
+  )
   // The scale every abundance plot shows Clean data on (see plotScaleOf), from the Clean data step
   // this plot reads — directly, or through a Compare / Contrast. Log₁₀ when there's none.
   const cleanId = useMemo(
@@ -952,7 +1226,8 @@ export function PanelBody({
   // from clicking in plots or the gene menu). Only the tiles that DRAW BY SELECTION subscribe —
   // the rest read a stable empty set, so a click doesn't re-render (and redraw) every tile: the
   // point plots take the selection straight from the store themselves, imperatively.
-  const drawsSelection = selectedOnly || kind === 'tdr' || kind === 'geneBar' || kind === 'dr'
+  const drawsSelection =
+    selectedOnly || kind === 'tdr' || kind === 'geneBar' || kind === 'dr' || kind === 'response'
   const pinnedIds = useSelection((s) => (drawsSelection ? s.pinnedIds : NO_IDS))
   // STRING: the confidence levels at which the facet on show has any network (from StringView's
   // read; null until known, or with interactors on) — greys out the empty levels, resolves "auto".
@@ -1018,9 +1293,13 @@ export function PanelBody({
       <StdTable std={presentStd(result.std, presentScaleOf(result.std, stdCfg.logTransform))} />
     )
   }
-  if (kind === 'compare') {
+  if (kind === 'compare' || kind === 'curveFit') {
     if (result?.kind !== 'compare')
-      return <Empty text="Run this tile to produce the comparison table." />
+      return (
+        <Empty
+          text={`Run this tile to produce the ${kind === 'curveFit' ? 'curve fit' : 'comparison'} table.`}
+        />
+      )
     const cmpCfg = node.data.config as CompareConfig
     return (
       <CompareTable
@@ -1040,7 +1319,8 @@ export function PanelBody({
       return <Empty text="Connect a Compare tile, pick two levels to contrast, and run." />
     return (
       <ContrastTable
-        rows={result.ctr.rows}
+        // the feature on the switcher (a table isn't faceted, but it shows one feature)
+        rows={rowsOfFeatureNamed(result.ctr.rows, facetSel?.feature)}
         displayMap={result.displayMap}
         comparisons={result.ctr.comparisons}
       />
@@ -1051,6 +1331,18 @@ export function PanelBody({
     // The configured default view seeds each table's own View switch; keying on it means a change
     // from the settings gear takes effect immediately instead of only on the next mount.
     const view = (cfgSource as TableConfig).view
+    // The uniqID and gene columns' display caps (cut with "…", whole on hover — display only).
+    const tableCfg = cfgSource as TableConfig
+    const maxChars = {
+      uniqID: tableCfg.idMaxLen ?? TABLE_GENE_MAX,
+      gene: tableCfg.geneMaxLen ?? TABLE_GENE_MAX
+    }
+    // Cell colouring: the tile's own (its settings and the in-tile switch write the same field).
+    const colour: TableColour = {
+      on: tableCfg.colored ?? true,
+      set: (on) => patchConfig({ colored: on }),
+      palette: toPaletteRef(tableCfg.palette)
+    }
     if (!upstream) return <Empty text="Connect a Clean data, Compare, or Contrast tile." />
     if (upstream.kind === 'standardize')
       return (
@@ -1064,6 +1356,8 @@ export function PanelBody({
             )
           )}
           initialView={view}
+          maxChars={maxChars}
+          colour={colour}
         />
       )
     if (upstream.kind === 'compare') {
@@ -1080,6 +1374,8 @@ export function PanelBody({
           threshold={upstream.cmp.threshold ?? upCfg?.threshold}
           dose={curveDoseUnit(upCfg, units)}
           initialView={view}
+          maxChars={maxChars}
+          colour={colour}
         />
       )
     }
@@ -1087,17 +1383,21 @@ export function PanelBody({
       return (
         <ContrastTable
           key={view}
-          rows={upstream.ctr.rows}
+          // the feature on the switcher (a table isn't faceted, but it shows one feature)
+          rows={rowsOfFeatureNamed(upstream.ctr.rows, facetSel?.feature)}
           displayMap={upstream.displayMap}
           comparisons={upstream.ctr.comparisons}
           initialView={view}
+          maxChars={maxChars}
+          colour={colour}
         />
       )
     }
     return <Empty text="Run the upstream step to produce its table." />
   }
   if (kind === 'volcano') {
-    if (upstream?.kind !== 'compare') return <Empty text="Connect a Compare tile and run it." />
+    if (upstream?.kind !== 'compare')
+      return <Empty text="Connect a Compare or Curve fit tile and run it." />
     const cfg = cfgSource as VolcanoConfig
     const dm = upstream.displayMap
     // The guide geometry (linear lines vs SAM curve) comes from the threshold the RESULT's calls
@@ -1145,7 +1445,7 @@ export function PanelBody({
                       : undefined
                   }
                   effectLabels={effectLabelsOf(upCfg)}
-                  effectColors={effectColorsOf(upCfg)}
+                  effectColors={effectsOf(cfg, upCfg)}
                   labelTop={labelCapOn(cfg) ? cfg.labelTop : 0}
                   style={cfg.style}
                   // Dragging a guide live-rethresholds the upstream Compare (re-classifies genes).
@@ -1166,19 +1466,78 @@ export function PanelBody({
     const cfg = cfgSource as HeatmapConfig
     // Compare upstream → log2FC heatmap (every comparison/context is a column, no faceting).
     if (upstream?.kind === 'compare') {
+      const linkage = cfg.linkage ?? 'ward'
+      const leafOrder = cfg.leafOrder ?? 'mean'
+      const quickLinkage = quickOn(cfg, 'linkage', 'heatmap')
+      const quickLeaf = quickOn(cfg, 'leafOrder', 'heatmap')
+      // Each side's clustering switches on the tile: the genes' and the conditions' modules + tree.
+      const sideToggles = (
+        [
+          ['gene modules', 'geneModules'],
+          ['gene tree', 'geneTree'],
+          ['condition modules', 'condModules'],
+          ['condition tree', 'condTree']
+        ] as const
+      ).filter(([, f]) => quickOn(cfg, f, 'heatmap'))
+      const catOf = (id: unknown): readonly string[] =>
+        CATEGORICAL_SCHEMES[toCategoricalId(id) ?? globalCategorical]
       return (
         <div style={styles.chart}>
-          <FcHeatmapTile
-            rows={upstream.cmp.rows}
-            displayMap={upstream.displayMap}
-            maxGenes={heatmapCapOn(cfg) ? cfg.maxGenes : 0}
-            focus={focus}
-            // Remount on a flip: it swaps which screen axis carries which data, and Plotly's
-            // key-by-key react diff can leave the previous orientation's own keys behind (a
-            // colourbar's placement, an axis side). A fresh div starts clean.
-            key={cfg.orient ?? 'auto'}
-            orient={cfg.orient}
-          />
+          <div style={styles.stack}>
+            {(quickLinkage || quickLeaf || sideToggles.length > 0) && (
+              <div className="oe-switch-row" style={{ display: 'flex', flexWrap: 'wrap' }}>
+                {quickLinkage && (
+                  <SwitchBar
+                    label="linkage"
+                    value={linkage}
+                    options={HEATMAP_LINKAGE_KEYS}
+                    optionLabel={(o) => (o === 'ward' ? 'Ward' : o)}
+                    onChange={(v) => patchConfig({ linkage: v })}
+                  />
+                )}
+                {quickLeaf && (
+                  <SwitchBar
+                    label="leaf order"
+                    value={leafOrder}
+                    options={HEATMAP_LEAF_ORDER_KEYS}
+                    onChange={(v) => patchConfig({ leafOrder: v })}
+                  />
+                )}
+                {sideToggles.map(([label, f]) => (
+                  <SwitchBarToggle
+                    key={f}
+                    label={label}
+                    on={!!cfg[f]}
+                    onChange={(on) => patchConfig({ [f]: on })}
+                  />
+                ))}
+              </div>
+            )}
+            <div style={styles.stackBody}>
+              <FcHeatmapTile
+                rows={upstream.cmp.rows}
+                displayMap={upstream.displayMap}
+                maxGenes={heatmapCapOn(cfg) ? cfg.maxGenes : 0}
+                focus={focus}
+                // Remount on a flip: it swaps which screen axis carries which data, and Plotly's
+                // key-by-key react diff can leave the previous orientation's own keys behind (a
+                // colourbar's placement, an axis side). A fresh div starts clean.
+                key={cfg.orient ?? 'auto'}
+                orient={cfg.orient}
+                palette={paletteOf(cfg, 'fc')}
+                linkage={linkage}
+                leafOrder={leafOrder}
+                geneMax={cfg.dendroClades ?? DENDRO_CLADES_DEFAULT}
+                geneModules={!!cfg.geneModules}
+                geneTree={!!cfg.geneTree}
+                geneColors={catOf(cfg.geneCategorical)}
+                condMax={cfg.dendroColClades ?? DENDRO_CLADES_DEFAULT}
+                condModules={!!cfg.condModules}
+                condTree={!!cfg.condTree}
+                condColors={catOf(cfg.condCategorical)}
+              />
+            </div>
+          </div>
         </div>
       )
     }
@@ -1187,17 +1546,27 @@ export function PanelBody({
       return <Empty text="Connect a Clean data or Compare tile and run it." />
     // On the scale every abundance plot shows Clean data on (see abScale).
     const scale = abScale
-    const condBar = cfg.condBar ?? true
+    const condBar = heatmapCondBar(cfg, primaryColorLevels(upstream.std))
     return (
       <div style={styles.chart}>
         <div style={styles.stack}>
-          {quickOn(cfg, 'condBar') && (
-            <SwitchBarToggle
-              label="show conditions"
-              on={condBar}
-              onChange={(on) => patchConfig({ condBar: on })}
-            />
-          )}
+          <div className="oe-switch-row" style={{ display: 'flex', flexWrap: 'wrap' }}>
+            {quickOn(cfg, 'condBar') && (
+              <SwitchBarToggle
+                label="show conditions"
+                on={condBar}
+                onChange={(on) => patchConfig({ condBar: on })}
+              />
+            )}
+            {quickOn(cfg, 'sampleOrder') && (
+              <SwitchBar
+                label="sort"
+                value={sampleOrderOf(cfg)}
+                options={SAMPLE_ORDERS}
+                onChange={(v) => patchConfig({ sampleOrder: v })}
+              />
+            )}
+          </div>
           <div style={styles.stackBody}>
             <HeatmapTile
               key={cfg.orient ?? 'auto'}
@@ -1206,6 +1575,8 @@ export function PanelBody({
               focus={focus}
               orient={cfg.orient}
               condBar={condBar}
+              palette={paletteOf(cfg, 'data', 'valuePalette')}
+              sampleOrder={sampleOrderOf(cfg)}
             />
           </div>
         </div>
@@ -1232,7 +1603,7 @@ export function PanelBody({
                     labelTop={labelCapOn(cfg) ? cfg.labelTop : 0}
                     style={cfg.style}
                     effectLabels={effectLabelsOf(upStep?.data.config as CompareConfig | undefined)}
-                    effectColors={effectColorsOf(upStep?.data.config as CompareConfig | undefined)}
+                    effectColors={effectsOf(cfg, upStep?.data.config as CompareConfig | undefined)}
                   />
                 )}
               </Built>
@@ -1244,6 +1615,14 @@ export function PanelBody({
     if (upstream?.kind !== 'contrast')
       return <Empty text="Connect a Compare or Contrast tile and run it." />
     const dm = upstream.displayMap
+    // Dragging a guide live-re-calls the upstream Contrast (as a volcano's drag re-calls its
+    // Compare): the new cutoff, written the way its Statistic panel writes it.
+    const ctrStep = upStep?.data.kind === 'contrast' ? upStep : undefined
+    const ctrStat = (ctrStep?.data.config as ContrastConfig | undefined)?.stat
+    const onStatDrag = ctrStep
+      ? (edge: 'bandUp' | 'bandDown' | AxisTail, value: number) =>
+          useGraph.getState().setContrastStat(ctrStep.id, contrastStatDrag(ctrStat, edge, value))
+      : undefined
     return (
       <div style={styles.chart}>
         <FacetedPlot rows={contrastRows(upstream)} facetSel={facetSel}>
@@ -1253,7 +1632,8 @@ export function PanelBody({
                 buildScatter(rows, {
                   displayMap: dm,
                   valueKind: upstream.ctr.valueKind,
-                  scale: abScale
+                  scale: abScale,
+                  valueLabel: contrastFeatureLabel(rows)
                 })
               }
               deps={[rows, dm, upstream.ctr.valueKind, abScale]}
@@ -1263,6 +1643,8 @@ export function PanelBody({
                   scatter={scatter}
                   labelTop={labelCapOn(cfg) ? cfg.labelTop : 0}
                   style={cfg.style}
+                  onStatDrag={onStatDrag}
+                  asymmetric={ctrStat?.asymmetric ?? false}
                 />
               )}
             </Built>
@@ -1277,22 +1659,37 @@ export function PanelBody({
     const dm = upstream.displayMap
     return (
       <div style={styles.chart}>
-        {/* Full rows (no `sub`): the base list follows the All/Selected toggle via `focus`,
-            and DumbbellView appends any hovered/pinned gene from the full set. */}
-        <FacetedPlot rows={contrastRows(upstream)} facetSel={facetSel}>
-          {(rows) => (
-            <DumbbellView
-              rows={rows}
-              topGenes={geneCapOn(cfg) ? cfg.topGenes : 0}
-              displayMap={dm}
-              focus={focus}
-              key={cfg.orient ?? 'auto'}
-              orient={cfg.orient}
-              valueKind={upstream.ctr.valueKind}
-              valueLabel={abundanceLabel(abScale)}
+        <div style={styles.stack}>
+          {quickOn(cfg, 'order') && (
+            <SwitchBar
+              label="order by"
+              value={cfg.order ?? 'diff'}
+              options={DUMBBELL_ORDERS}
+              optionLabel={(o) => dumbbellOrderLabel(o, upstream.ctr.rows)}
+              onChange={(v) => patchConfig({ order: v })}
             />
           )}
-        </FacetedPlot>
+          <div style={styles.stackBody}>
+            {/* Full rows (no `sub`): the base list follows the All/Selected toggle via `focus`,
+                and DumbbellView appends any hovered/pinned gene from the full set. */}
+            <FacetedPlot rows={contrastRows(upstream)} facetSel={facetSel}>
+              {(rows) => (
+                <DumbbellView
+                  rows={rows}
+                  topGenes={geneCapOn(cfg) ? cfg.topGenes : 0}
+                  displayMap={dm}
+                  focus={focus}
+                  key={cfg.orient ?? 'auto'}
+                  orient={cfg.orient}
+                  order={cfg.order}
+                  // the feature on the switcher, when it's not the sides' own value
+                  valueKind={contrastFeatureLabel(rows) ? 'other' : upstream.ctr.valueKind}
+                  valueLabel={contrastFeatureLabel(rows) ?? abundanceLabel(abScale)}
+                />
+              )}
+            </FacetedPlot>
+          </div>
+        </div>
       </div>
     )
   }
@@ -1329,7 +1726,7 @@ export function PanelBody({
                   samThreshold={maSam}
                   asymmetric={threshold.asymmetric ?? false}
                   effectLabels={effectLabelsOf(maCfg)}
-                  effectColors={effectColorsOf(maCfg)}
+                  effectColors={effectsOf(cfg, maCfg)}
                   style={cfg.style}
                   onThresholdChange={
                     upId
@@ -1346,12 +1743,21 @@ export function PanelBody({
   }
   if (kind === 'dr') {
     const cfg = cfgSource as DRConfig
+    // Dose-response and Time-response are separate plots: the axis is the tile's own, never
+    // switched — data without it says so instead of drawing the other.
+    const axis = cfg.axis
+    const noAxis = (rows: Parameters<typeof axisChoices>[0]): ReactNode =>
+      axisChoices(rows).includes(axis) ? null : (
+        <Empty
+          text={`No ${axis} levels here — add a ${axis === 'dose' ? 'Time' : 'Dose'}-response plot instead.`}
+        />
+      )
     // From a Contrast: the hovered/selected gene's response profile on BOTH sides (FC1 vs FC2), for
     // comparing two datasets/contrasts. From a Compare: every gene's response curve (below).
     if (upstream?.kind === 'contrast') {
       const dm = upstream.displayMap
-      const axes = axisChoices(upstream.ctr.rows)
-      const axis = axes.length > 1 ? cfg.axis : (axes[0] ?? cfg.axis)
+      const missing = noAxis(upstream.ctr.rows)
+      if (missing) return missing
       const present = new Set(upstream.ctr.rows.map((r) => r.uniqID))
       // FC1/FC2 are abundance when the contrast is fed by Clean data inputs (on the plots'
       // abundance scale — see contrastRows), log2 fold-change when fed by Compare inputs.
@@ -1360,14 +1766,6 @@ export function PanelBody({
       return (
         <div style={styles.chart}>
           <div style={styles.stack}>
-            {axes.length > 1 && quickOn(cfg, 'axis') && (
-              <SwitchBar
-                label="axis"
-                value={cfg.axis}
-                options={['dose', 'time']}
-                onChange={(v) => patchConfig({ axis: v })}
-              />
-            )}
             <div style={styles.stackBody}>
               {/* One gene at a time — the pager steps through every gene, or just the selected
                   ones while any are selected. */}
@@ -1375,15 +1773,15 @@ export function PanelBody({
                 genes={pagerGenes(genes, present)}
                 present={present}
                 displayMap={dm}
-                // The axis scale on the gene switcher's own row, right of the gene.
-                aside={
+                // The axis scale on the gene switcher's own row, before the gene.
+                controls={
                   quickOn(cfg, 'yScale') && (
                     <SwitchBar
                       inline
                       label="scale"
                       value={drYScale(cfg, true)}
-                      options={['global', 'gene']}
-                      optionLabel={(o) => (o === 'gene' ? 'per gene' : 'global')}
+                      options={['gene', 'global']}
+                      optionLabel={(o) => (o === 'gene' ? 'adjusted' : 'global')}
                       onChange={(v) => patchConfig({ yScale: v })}
                     />
                   )
@@ -1398,11 +1796,15 @@ export function PanelBody({
                         axis={axis}
                         axisLabel={axisTitle(axis, units)}
                         gene={gene}
-                        yLabel={yLabel}
-                        // Global (default): one y scale for the WHOLE contrast, so paging genes
-                        // (or switching facets) doesn't rescale and the curves stay comparable.
-                        // Per gene: each gene's own range.
-                        scaleRows={drYScale(cfg, true) === 'global' ? ctrRows : undefined}
+                        yLabel={contrastFeatureLabel(rows) ?? yLabel}
+                        // Global (default): one y scale for the WHOLE contrast — of the feature
+                        // on show — so paging genes (or switching facets) doesn't rescale and the
+                        // curves stay comparable. Per gene: each gene's own range.
+                        scaleRows={
+                          drYScale(cfg, true) === 'global'
+                            ? rowsOfFeature(ctrRows, rows[0])
+                            : undefined
+                        }
                         look={drLook(cfg)}
                       />
                     )}
@@ -1415,62 +1817,87 @@ export function PanelBody({
       )
     }
     if (upstream?.kind !== 'compare')
-      return <Empty text="Connect a Compare or Contrast tile and run it." />
+      return <Empty text="Connect a Compare, Curve fit or Contrast tile and run it." />
     const dm = upstream.displayMap
-    // Only offer the dose⇆time switch when the data actually has both; with a single axis
-    // present, force it and drop the switcher (a switch to the absent axis would draw nothing).
-    const axes = axisChoices(upstream.cmp.rows)
-    const axis = axes.length > 1 ? cfg.axis : (axes[0] ?? cfg.axis)
+    const missing = noAxis(upstream.cmp.rows)
+    if (missing) return missing
     const drView = cfg.view ?? 'overview'
+    // Fed by a Curve fit: its look's defaults differ (no confidence band unless asked — drLook).
+    const drCurveFit = upStep?.data.kind === 'curveFit'
+    // A response surface method curve fit: its description 4PL ('curve') or its detection spline.
+    const responseFit = upstream.cmp.rows.some((r) => r.rs && r.rs.axis !== 'surface')
+    const model = cfg.model ?? 'curve'
     const present = new Set(upstream.cmp.rows.map((r) => r.uniqID))
-    // The global ⇆ focused switch: its own bar in the global view, inline on the gene pager's row
-    // when focused. (The stored value for global stays 'overview'.)
-    const viewSwitch = (inline: boolean): ReactNode =>
+    // The global ⇆ detailed ⇆ focused switch. (The stored value for global stays 'overview'.)
+    const viewSwitch = (): ReactNode =>
       quickOn(cfg, 'view') ? (
         <SwitchBar
-          inline={inline}
+          inline
           label="view"
           value={drView}
-          options={['overview', 'focus']}
-          optionLabel={(o) => (o === 'focus' ? 'focused' : 'global')}
+          options={['overview', 'detail', 'focus']}
+          optionLabel={(o) => (o === 'focus' ? 'focused' : o === 'detail' ? 'detailed' : 'global')}
           onChange={(v) => patchConfig({ view: v })}
+        />
+      ) : null
+    // How many genes the detailed view draws: the top-N, at most DR_DETAIL_CAP.
+    const detailN = Math.min(geneCapOn(cfg) ? cfg.topGenes : DR_DETAIL_CAP, DR_DETAIL_CAP)
+    // The axis scale of the gene-by-gene views (detailed, focused).
+    const scaleSwitch = (): ReactNode =>
+      quickOn(cfg, 'yScale') ? (
+        <SwitchBar
+          inline
+          label="scale"
+          value={drYScale(cfg, false)}
+          options={['gene', 'global']}
+          optionLabel={(o) => (o === 'gene' ? 'adjusted' : 'global')}
+          onChange={(v) => patchConfig({ yScale: v })}
+        />
+      ) : null
+    // The detection model ⇆ description switch, for a response surface method fit only.
+    const modelSwitch = (): ReactNode =>
+      responseFit && quickOn(cfg, 'model') ? (
+        <SwitchBar
+          inline
+          label="model"
+          value={model}
+          options={['spline', 'curve']}
+          onChange={(v) => patchConfig({ model: v })}
         />
       ) : null
     return (
       <div style={styles.chart}>
         <div style={styles.stack}>
-          {axes.length > 1 && quickOn(cfg, 'axis') && (
-            <SwitchBar
-              label="axis"
-              value={cfg.axis}
-              options={['dose', 'time']}
-              onChange={(v) => patchConfig({ axis: v })}
-            />
-          )}
-          {drView === 'overview' && viewSwitch(false)}
+          {/* Global / detailed: one strip for the view / model (/ scale) switches, one line while
+              the tile is wide enough, wrapping (not cropped) when it isn't. Focused: the pager's. */}
+          {drView !== 'focus' &&
+            ((responseFit && quickOn(cfg, 'model')) ||
+              quickOn(cfg, 'view') ||
+              (drView === 'detail' && quickOn(cfg, 'yScale'))) && (
+              <SwitchStrip>
+                {viewSwitch()}
+                {modelSwitch()}
+                {drView === 'detail' && scaleSwitch()}
+              </SwitchStrip>
+            )}
           <div style={styles.stackBody}>
             {drView === 'focus' ? (
               // One gene at a time — the pager steps through every gene, or just the selected
               // ones while any are selected (a hovered gene takes over while hovered), drawn for
-              // the compound / context on show. The view switch sits on the pager's own row, left
-              // of the gene.
+              // the compound / context on show. The view / model switches sit on the pager's own
+              // row, before the gene.
               <GeneSwitch
                 genes={pagerGenes(genes, present)}
                 present={present}
                 displayMap={dm}
-                lead={viewSwitch(true)}
-                // The axis scale on the gene switcher's own row, right of the gene (as the bar's).
-                aside={
-                  quickOn(cfg, 'yScale') && (
-                    <SwitchBar
-                      inline
-                      label="scale"
-                      value={drYScale(cfg, false)}
-                      options={['gene', 'global']}
-                      optionLabel={(o) => (o === 'gene' ? 'per gene' : 'global')}
-                      onChange={(v) => patchConfig({ yScale: v })}
-                    />
-                  )
+                // The view, model and axis-scale switches on the gene switcher's own row, before
+                // the gene (as the bar's) — the master view first.
+                controls={
+                  <>
+                    {viewSwitch()}
+                    {modelSwitch()}
+                    {scaleSwitch()}
+                  </>
                 }
               >
                 {(gene) => (
@@ -1482,8 +1909,9 @@ export function PanelBody({
                         axisLabel={axisTitle(axis, units)}
                         gene={gene}
                         std={cleanResult?.kind === 'standardize' ? cleanResult.std.rows : undefined}
-                        look={drLook(cfg)}
-                        effectColors={effectColorsOf(upCompareCfg)}
+                        look={drLook(cfg, drCurveFit)}
+                        effectColors={effectsOf(cfg, upCompareCfg)}
+                        model={model}
                         // Global: one y scale for the WHOLE Compare, so paging genes (or switching
                         // facets) doesn't rescale. Per gene (default): each gene's own range.
                         scaleRows={
@@ -1494,6 +1922,49 @@ export function PanelBody({
                   </FacetedPlot>
                 )}
               </GeneSwitch>
+            ) : drView === 'detail' ? (
+              // The top-N genes by response (at most DR_DETAIL_CAP; buildDR picks them, in its colour
+              // order) without the every-gene background, each drawn in full as the focused view
+              // draws one. The selection narrows the pool they're picked from, not the curves.
+              <FacetedPlot rows={upstream.cmp.rows} exclude={[axis]} facetSel={facetSel}>
+                {(rows) => (
+                  <Built
+                    build={() =>
+                      buildDR(rows, {
+                        axis,
+                        model,
+                        topGenes: detailN,
+                        displayMap: dm,
+                        within: genes
+                      })
+                    }
+                    deps={[rows, axis, model, detailN, dm, genes]}
+                  >
+                    {(dr) => {
+                      const shown = dr.series.slice(0, dr.highlight).map((sr) => sr.uniqID)
+                      const on = new Set(shown)
+                      return (
+                        <DRFocusView
+                          rows={rows.filter((r) => on.has(r.uniqID))}
+                          genes={shown}
+                          displayMap={dm}
+                          axis={axis}
+                          axisLabel={axisTitle(axis, units)}
+                          std={
+                            cleanResult?.kind === 'standardize' ? cleanResult.std.rows : undefined
+                          }
+                          look={drLook(cfg, drCurveFit)}
+                          effectColors={effectsOf(cfg, upCompareCfg)}
+                          model={model}
+                          scaleRows={
+                            drYScale(cfg, false) === 'global' ? upstream.cmp.rows : undefined
+                          }
+                        />
+                      )
+                    }}
+                  </Built>
+                )}
+              </FacetedPlot>
             ) : (
               // DR/TR always draws every gene as a faint background curve; the selection only
               // changes WHICH curves are coloured — the selected genes while any are selected,
@@ -1504,15 +1975,21 @@ export function PanelBody({
                     build={() =>
                       buildDR(rows, {
                         axis,
+                        model,
                         topGenes: geneCapOn(cfg) ? cfg.topGenes : 0,
                         displayMap: dm,
                         focus: genes
                       })
                     }
-                    deps={[rows, axis, geneCapOn(cfg) ? cfg.topGenes : 0, dm, genes]}
+                    deps={[rows, axis, model, geneCapOn(cfg) ? cfg.topGenes : 0, dm, genes]}
                   >
                     {(dr) => (
-                      <DRView dr={dr} axisLabel={axisTitle(dr.axis, units)} look={drLook(cfg)} />
+                      <DRView
+                        dr={dr}
+                        axisLabel={axisTitle(dr.axis, units)}
+                        look={drLook(cfg, drCurveFit)}
+                        palette={paletteOf(cfg, 'fcObject')}
+                      />
                     )}
                   </Built>
                 )}
@@ -1524,28 +2001,85 @@ export function PanelBody({
     )
   }
   if (kind === 'curveMad') {
-    if (upstream?.kind !== 'compare')
-      return <Empty text="Connect a curve-fit Compare and run it." />
+    if (upstream?.kind !== 'compare') return <Empty text="Connect a Curve fit tile and run it." />
     const upCfg = upStep ? normalizeCompareConfig(upStep.data.config as CompareConfig) : undefined
+    const cfg = cfgSource as CurveMadConfig
+    // By sample is offered only where it can differ from by dose (curvesReplicated).
+    const replicated = curvesReplicated(upstream.cmp.rows)
+    const check = cfg.check === 'sample' && !replicated ? 'dose' : (cfg.check ?? 'dose')
     return (
       <div style={styles.chart}>
-        <FacetedPlot rows={upstream.cmp.rows} facetSel={facetSel}>
-          {(rows) => (
-            <CurveMadView
-              rows={rows}
-              displayMap={upstream.displayMap}
-              std={cleanResult?.kind === 'standardize' ? cleanResult.std.rows : undefined}
-              unit={curveDoseUnit(upCfg, units).unit}
-              style={(cfgSource as CurveMadConfig).style}
-            />
-          )}
-        </FacetedPlot>
+        <div style={styles.stack}>
+          {/* One row, wrapping when the tile is narrow (as the PCA's switches). */}
+          <div className="oe-switch-row" style={{ display: 'flex', flexWrap: 'wrap' }}>
+            {quickOn(cfg, 'check') && (
+              <SwitchBar
+                label="check"
+                value={check}
+                options={
+                  replicated
+                    ? ['dose', 'sample', 'fitted', 'normality', 'metrics']
+                    : ['dose', 'fitted', 'normality', 'metrics']
+                }
+                onChange={(v) => patchConfig({ check: v })}
+              />
+            )}
+            {/* how the residuals are drawn: only the dose / sample groupings have a choice */}
+            {(check === 'dose' || check === 'sample') && quickOn(cfg, 'show') && (
+              <SwitchBar
+                label="show"
+                value={cfg.show ?? 'dot'}
+                options={['dot', 'violin']}
+                onChange={(v) => patchConfig({ show: v })}
+              />
+            )}
+            {/* a Q–Q plot's axes are quantiles, not residuals — no scale to choose (nor the
+                metrics', each its own) */}
+            {check !== 'normality' && check !== 'metrics' && quickOn(cfg, 'yScale') && (
+              <SwitchBar
+                label="scale"
+                value={cfg.yScale ?? 'fit'}
+                options={['fit', 'range']}
+                optionLabel={(o) => (o === 'fit' ? 'adjusted' : 'global')}
+                onChange={(v) => patchConfig({ yScale: v })}
+              />
+            )}
+          </div>
+          <div style={styles.stackBody}>
+            <FacetedPlot rows={upstream.cmp.rows} facetSel={facetSel}>
+              {(rows) => (
+                <CurveMadView
+                  rows={rows}
+                  displayMap={upstream.displayMap}
+                  std={cleanResult?.kind === 'standardize' ? cleanResult.std.rows : undefined}
+                  unit={curveDoseUnit(upCfg, units).unit}
+                  style={cfg.style}
+                  yScale={cfg.yScale}
+                  show={cfg.show}
+                  check={check}
+                  metricX={cfg.metricX}
+                  metricY={cfg.metricY}
+                  threshold={upstream.cmp.threshold ?? upCfg?.threshold}
+                  doseScale={curveDoseUnit(upCfg, units).scale}
+                  effectLabels={effectLabelsOf(upCfg)}
+                  effectColors={effectsOf(cfg, upCfg)}
+                  onMetricX={(m) => patchConfig({ metricX: m })}
+                  onMetricY={(m) => patchConfig({ metricY: m })}
+                  maxPoints={
+                    cfg.capEnabled === false
+                      ? Infinity
+                      : Math.min(cfg.maxPoints ?? RESIDUAL_DOT_CAP, RESIDUAL_DOT_CAP)
+                  }
+                />
+              )}
+            </FacetedPlot>
+          </div>
+        </div>
       </div>
     )
   }
   if (kind === 'potency') {
-    if (upstream?.kind !== 'compare')
-      return <Empty text="Connect a curve-fit Compare and run it." />
+    if (upstream?.kind !== 'compare') return <Empty text="Connect a Curve fit tile and run it." />
     const cfg = cfgSource as PotencyConfig
     const upCfg = upStep ? normalizeCompareConfig(upStep.data.config as CompareConfig) : undefined
     const threshold = upstream.cmp.threshold ?? upCfg?.threshold ?? DEFAULT_THRESHOLD
@@ -1555,7 +2089,11 @@ export function PanelBody({
     // under a linear cutoff, the limits themselves; SAM has no fixed wall.
     const wallsFor = (rows: CompareResultRow[]): { low?: number; high?: number } => {
       if (threshold.type === 'sam_fdr') return {}
-      if (threshold.type !== 'curvecurator') return { low: threshold.fcLow, high: threshold.fcHigh }
+      // No limit (the response surface method's default) draws no wall.
+      if (threshold.type !== 'curvecurator')
+        return threshold.fcHigh === 0 && threshold.fcLow === 0
+          ? {}
+          : { low: threshold.fcLow, high: threshold.fcHigh }
       const a =
         threshold.ccCallBy === 'fdr'
           ? facetAlpha(upstream.cmp.ccAlpha, rows)
@@ -1567,7 +2105,7 @@ export function PanelBody({
         high: curveCuratorWall(n, threshold.fcHigh, a)
       }
     }
-    const show = cfg.show ?? 'called'
+    const show = cfg.show ?? 'all'
     return (
       <div style={styles.chart}>
         <div style={styles.stack}>
@@ -1592,11 +2130,112 @@ export function PanelBody({
                   fcHigh={wallsFor(rows).high}
                   labelTop={labelCapOn(cfg) ? cfg.labelTop : 0}
                   effectLabels={effectLabelsOf(upCfg)}
-                  effectColors={effectColorsOf(upCfg)}
+                  effectColors={effectsOf(cfg, upCfg)}
                   style={cfg.style}
                 />
               )}
             </FacetedPlot>
+          </div>
+        </div>
+      </div>
+    )
+  }
+  if (kind === 'response') {
+    if (upstream?.kind !== 'compare') return <Empty text="Connect a Curve fit tile and run it." />
+    const cfg = cfgSource as ResponseConfig
+    const dim = responseDim(cfg)
+    const show = responseShow(cfg)
+    const look = responseLook(cfg)
+    // A Curve fit by the response surface method over dose × time: one surface per gene × compound.
+    const surfaces = upstream.cmp.rows.filter((r) => r.rs?.axis === 'surface')
+    if (!surfaces.length)
+      return <Empty text="Needs dose × time surfaces — set the Curve fit’s axis to dose × time." />
+    const present = new Set(surfaces.map((r) => r.uniqID))
+    // A joint description's or the spline surface's (no description) 3-D lines can be sliced by
+    // time or by dose (a per-time one's by time, a per-dose one's by dose).
+    const sliceable =
+      dim === '3d' &&
+      show === 'line' &&
+      surfaces.some((r) => !r.rs?.surface || r.rs.surface.method === 'joint')
+    const slice = cfg.slice ?? 'time'
+    const yScale = cfg.yScale ?? 'gene'
+    return (
+      <div style={styles.chart}>
+        <div style={styles.stack}>
+          <div style={styles.stackBody}>
+            {/* One gene at a time — every gene, or the selected ones while any are selected. */}
+            <GeneSwitch
+              genes={pagerGenes(genes, present)}
+              present={present}
+              displayMap={upstream.displayMap}
+              // The view / show / lines / scale switches on the gene switcher's row, before the
+              // gene — one strip, wrapping only as the tile's width needs.
+              controls={
+                <>
+                  {quickOn(cfg, 'dim') && (
+                    <SwitchBar
+                      inline
+                      label="view"
+                      value={dim}
+                      options={['2d', '3d']}
+                      optionLabel={(o) => o.toUpperCase()}
+                      onChange={(v) => patchConfig({ dim: v })}
+                    />
+                  )}
+                  {quickOn(cfg, 'show') && (
+                    <SwitchBar
+                      inline
+                      label="show"
+                      value={show}
+                      options={['line', 'surface', 'heatmap']}
+                      optionDisabled={(o) => responseShowWhy(dim, o)}
+                      onChange={(v) => patchConfig({ show: v })}
+                    />
+                  )}
+                  {sliceable && quickOn(cfg, 'slice') && (
+                    <SwitchBar
+                      inline
+                      label="lines per"
+                      value={slice}
+                      options={['time', 'dose']}
+                      onChange={(v) => patchConfig({ slice: v })}
+                    />
+                  )}
+                  {quickOn(cfg, 'yScale') && (
+                    <SwitchBar
+                      inline
+                      label="scale"
+                      value={yScale}
+                      options={['gene', 'global']}
+                      optionLabel={(o) => (o === 'gene' ? 'adjusted' : 'global')}
+                      onChange={(v) => patchConfig({ yScale: v })}
+                    />
+                  )}
+                </>
+              }
+            >
+              {(gene) => (
+                <FacetedPlot rows={surfaces} facetSel={facetSel}>
+                  {(rows, facetKey) => (
+                    <ResponseSurfaceView
+                      row={rows.find((r) => r.uniqID === gene)}
+                      dim={dim}
+                      show={show}
+                      look={look}
+                      rolePalettes={responseRoles}
+                      slice={slice}
+                      valueRange={
+                        yScale === 'global'
+                          ? surfaceValueRange(upstream.cmp.rows, facetKey, rows)
+                          : undefined
+                      }
+                      doseLabel={axisTitle('dose', units)}
+                      timeLabel={axisTitle('time', units)}
+                    />
+                  )}
+                </FacetedPlot>
+              )}
+            </GeneSwitch>
           </div>
         </div>
       </div>
@@ -1609,16 +2248,50 @@ export function PanelBody({
     // Show the dose⇆time switch only when both axes exist; otherwise force the present one.
     const axes = axisChoices(upstream.cmp.rows)
     const axis = axes.length > 1 ? cfg.axis : (axes[0] ?? cfg.axis)
+    // Rank by log₂FC, or by the significance column the Compare calls by (its P or Q value).
+    const statType =
+      (upstream.cmp.threshold ?? (upStep?.data.config as CompareConfig | undefined)?.threshold)
+        ?.statType ?? 'pQ'
+    const statName = statType === 'pP' ? 'P-value' : 'Q-value'
+    const rank = cfg.rank ?? 'fc'
+    const over = cfg.over ?? 'peak'
+    const showAxis = axes.length > 1 && quickOn(cfg, 'axis')
+    const showRank = quickOn(cfg, 'rank')
+    const showOver = quickOn(cfg, 'over')
     return (
       <div style={styles.chart}>
         <div style={styles.stack}>
-          {axes.length > 1 && quickOn(cfg, 'axis') && (
-            <SwitchBar
-              label="axis"
-              value={cfg.axis}
-              options={['dose', 'time']}
-              onChange={(v) => patchConfig({ axis: v })}
-            />
+          {(showAxis || showRank || showOver) && (
+            <SwitchStrip>
+              {showAxis && (
+                <SwitchBar
+                  inline
+                  label="axis"
+                  value={cfg.axis}
+                  options={['dose', 'time']}
+                  onChange={(v) => patchConfig({ axis: v })}
+                />
+              )}
+              {showRank && (
+                <SwitchBar
+                  inline
+                  label="rank"
+                  value={rank}
+                  options={['fc', 'sig']}
+                  optionLabel={(o) => (o === 'fc' ? 'log₂FC' : statName)}
+                  onChange={(v) => patchConfig({ rank: v })}
+                />
+              )}
+              {showOver && (
+                <SwitchBar
+                  inline
+                  label="over levels"
+                  value={over}
+                  options={['peak', 'total']}
+                  onChange={(v) => patchConfig({ over: v })}
+                />
+              )}
+            </SwitchStrip>
           )}
           <div style={styles.stackBody}>
             {/* Full rows (no `sub`): base follows the All/Selected toggle via `focus`, and
@@ -1630,11 +2303,20 @@ export function PanelBody({
                   axis={axis}
                   axisLabel={axisTitle(axis, units)}
                   topGenes={geneCapOn(cfg) ? cfg.topGenes : 0}
+                  rank={rank === 'sig' ? statType : 'fc'}
+                  over={over}
+                  stat={statType}
+                  sizeBy={cfg.sizeBy}
+                  colorBy={cfg.colorBy}
+                  outlineBy={cfg.outlineBy}
+                  outlineColor={cfg.outlineColor}
+                  asterisk={cfg.asterisk}
+                  sigPalette={toPaletteRef(cfg.sigPalette) ?? BUBBLE_SIG_PALETTE}
                   displayMap={dm}
                   focus={focus}
                   key={cfg.orient ?? 'auto'}
                   orient={cfg.orient}
-                  effectColors={plotEffectColors(cfg.effectColors, upCompareCfg)}
+                  palette={paletteOf(cfg, 'fcObject')}
                 />
               )}
             </FacetedPlot>
@@ -1645,21 +2327,102 @@ export function PanelBody({
   }
   if (kind === 'tdr') {
     if (upstream?.kind !== 'compare') return <Empty text="Connect a Compare tile and run it." />
-    // The selected genes drive TDR — a gene clicked in the FC matrix table (or any plot), or
-    // picked in the gene menu — one figure each.
-    const present = new Set(upstream.cmp.rows.map((r) => r.uniqID))
-    const tdrGenes = genes.filter((id) => present.has(id))
-    if (tdrGenes.length === 0) return <Empty text="Select a gene to plot its TDR." />
-    // TDR uses both axes (dose × time) for one gene; the pager steps through however many are set.
+    // A Compare's measured log₂FC over dose × time, drawn as the Response plot draws a surface.
+    const cfg = cfgSource as TdrConfig
+    const dim = responseDim(cfg)
+    const show = responseShow(cfg)
+    const look = responseLook(cfg)
+    const present = new Set(
+      upstream.cmp.rows.filter((r) => r.dose != null && r.time != null).map((r) => r.uniqID)
+    )
+    if (!present.size) return <Empty text="Needs dose and time both active in the Compare." />
+    // 3-D lines can run along dose (one per time) or along time (one per dose).
+    const sliceable = dim === '3d' && show === 'line'
+    const slice = cfg.slice ?? 'time'
+    const yScale = cfg.yScale ?? 'gene'
     return (
       <div style={styles.chart}>
-        {/* TDR plots over dose × time, so facet by the OTHER context dims (e.g. cell);
-            without this a gene's curve mixes cells and zig-zags (two points per dose). */}
-        <FacetedPlot rows={upstream.cmp.rows} exclude={['dose', 'time']} facetSel={facetSel}>
-          {(rows) => (
-            <TdrTile rows={rows} genes={tdrGenes} displayMap={upstream.displayMap} units={units} />
-          )}
-        </FacetedPlot>
+        <div style={styles.stack}>
+          <div style={styles.stackBody}>
+            {/* One gene at a time — every gene, or the selected ones while any are selected. */}
+            <GeneSwitch
+              genes={pagerGenes(genes, present)}
+              present={present}
+              displayMap={upstream.displayMap}
+              // The view / show / lines / scale switches on the gene switcher's row, before the
+              // gene — one strip, wrapping only as the tile's width needs.
+              controls={
+                <>
+                  {quickOn(cfg, 'dim') && (
+                    <SwitchBar
+                      inline
+                      label="view"
+                      value={dim}
+                      options={['2d', '3d']}
+                      optionLabel={(o) => o.toUpperCase()}
+                      onChange={(v) => patchConfig({ dim: v })}
+                    />
+                  )}
+                  {quickOn(cfg, 'show') && (
+                    <SwitchBar
+                      inline
+                      label="show"
+                      value={show}
+                      options={['line', 'surface', 'heatmap']}
+                      optionDisabled={(o) => responseShowWhy(dim, o)}
+                      onChange={(v) => patchConfig({ show: v })}
+                    />
+                  )}
+                  {sliceable && quickOn(cfg, 'slice') && (
+                    <SwitchBar
+                      inline
+                      label="lines per"
+                      value={slice}
+                      options={['time', 'dose']}
+                      onChange={(v) => patchConfig({ slice: v })}
+                    />
+                  )}
+                  {quickOn(cfg, 'yScale') && (
+                    <SwitchBar
+                      inline
+                      label="scale"
+                      value={yScale}
+                      options={['gene', 'global']}
+                      optionLabel={(o) => (o === 'gene' ? 'adjusted' : 'global')}
+                      onChange={(v) => patchConfig({ yScale: v })}
+                    />
+                  )}
+                </>
+              }
+            >
+              {(gene) => (
+                // Over dose × time, so facet by the OTHER context dims (e.g. cell); without this a
+                // gene's levels would mix cells.
+                <FacetedPlot
+                  rows={upstream.cmp.rows}
+                  exclude={['dose', 'time']}
+                  facetSel={facetSel}
+                >
+                  {(rows) => (
+                    <TdrBody
+                      rows={rows}
+                      gene={gene}
+                      std={cleanResult?.kind === 'standardize' ? cleanResult.std.rows : undefined}
+                      global={yScale === 'global'}
+                      dim={dim}
+                      show={show}
+                      look={look}
+                      slice={slice}
+                      rolePalettes={responseRoles}
+                      doseLabel={axisTitle('dose', units)}
+                      timeLabel={axisTitle('time', units)}
+                    />
+                  )}
+                </FacetedPlot>
+              )}
+            </GeneSwitch>
+          </div>
+        </div>
       </div>
     )
   }
@@ -1672,23 +2435,35 @@ export function PanelBody({
     return (
       <div style={styles.chart}>
         <GeneBarTile
+          condTitle={condTitle}
           key={barCfg.orient ?? 'auto'}
           std={presentStd(upstream.std, scale)}
           scale={scale}
           genes={genes}
           config={barCfg}
-          // The axis scale on the gene switcher's own row, right of the gene.
-          aside={
-            quickOn(barCfg, 'yScale') && (
-              <SwitchBar
-                inline
-                label="scale"
-                value={barCfg.yScale ?? 'gene'}
-                options={['gene', 'global']}
-                optionLabel={(o) => (o === 'gene' ? 'per gene' : 'global')}
-                onChange={(v) => patchConfig({ yScale: v })}
-              />
-            )
+          // The quick switches on the gene switcher's row, before the gene.
+          controls={
+            <>
+              {quickOn(barCfg, 'yScale') && (
+                <SwitchBar
+                  inline
+                  label="scale"
+                  value={barCfg.yScale ?? 'gene'}
+                  options={['gene', 'global']}
+                  optionLabel={(o) => (o === 'gene' ? 'adjusted' : 'global')}
+                  onChange={(v) => patchConfig({ yScale: v })}
+                />
+              )}
+              {quickOn(barCfg, 'sampleOrder') && (
+                <SwitchBar
+                  inline
+                  label="sort"
+                  value={sampleOrderOf(barCfg)}
+                  options={SAMPLE_ORDERS}
+                  onChange={(v) => patchConfig({ sampleOrder: v })}
+                />
+              )}
+            </>
           }
         />
       </div>
@@ -1704,7 +2479,6 @@ export function PanelBody({
         display: next.data ?? display,
         outline: next.territory ?? territory
       })
-    const legend = cfg.legend ?? 'simple'
     // All three plots are PCA notions, so the choice is only offered (and only honoured) for PCA.
     const plot = cfg.method === 'pca' ? (cfg.plot ?? 'pc') : 'pc'
     const scree = plot === 'scree'
@@ -1744,17 +2518,7 @@ export function PanelBody({
               />
             )}
             {/* Everything below styles the embedding scatter, which the scree plot replaces. */}
-            {!scree && quickOn(cfg, 'legend', 'pca') && (
-              <SwitchBar
-                label="legend"
-                value={legend}
-                options={['simple', 'complex']}
-                onChange={(v) => patchConfig({ legend: v })}
-              />
-            )}
-            {/* In complex mode colour is driven by every varying condition, so the single
-                colour-by choice no longer applies. */}
-            {!scree && legend === 'simple' && quickOn(cfg, 'colorBy', 'pca') && (
+            {!scree && quickOn(cfg, 'colorBy', 'pca') && (
               <SwitchBar
                 label="colour by"
                 value={cfg.colorBy}
@@ -1764,7 +2528,7 @@ export function PanelBody({
               />
             )}
             {/* Both cluster knobs only mean anything while the colours ARE clusters. */}
-            {!scree && legend === 'simple' && byCluster && quickOn(cfg, 'clusterOn', 'pca') && (
+            {!scree && byCluster && quickOn(cfg, 'clusterOn', 'pca') && (
               <SwitchBar
                 label="cluster on"
                 value={clusterOn}
@@ -1772,7 +2536,7 @@ export function PanelBody({
                 onChange={(v) => patchConfig({ clusterOn: v as ClusterConfig['clusterOn'] })}
               />
             )}
-            {!scree && legend === 'simple' && byCluster && quickOn(cfg, 'clusterCount', 'pca') && (
+            {!scree && byCluster && quickOn(cfg, 'clusterCount', 'pca') && (
               <SwitchBar
                 label="count"
                 value={clusterCount}
@@ -1803,37 +2567,43 @@ export function PanelBody({
         </div>
       </div>
     )
-    if (upstream?.kind === 'standardize')
+    if (upstream?.kind !== 'standardize')
+      return <Empty text="Connect a Clean data tile and run it." />
+    // Drawn from the plot's run (the embedding, computed in the worker). A result from before the
+    // cluster computed in its run (a bare marker) has no embedding: run it.
+    if (plotRun?.kind !== 'cluster')
       return withBar(
-        <ClusterTile
-          std={upstream.std}
-          autoScale={abScale}
-          method={cfg.method}
-          colorBy={cfg.colorBy}
-          clusterOn={cfg.clusterOn}
-          clusterCount={cfg.clusterCount}
-          clusterK={cfg.clusterK}
-          scale={cfg.scale}
-          missing={cfg.missing}
-          center={cfg.center}
-          topVar={cfg.topVar}
-          transform={cfg.transform}
-          replicates={cfg.replicates}
-          display={display}
-          territory={territory}
-          plot={plot}
-          loadings={cfg.loadings}
-          legend={legend}
-          look={clusterStyle(cfg)}
-          schemeColor={cfg.schemeColor}
-          schemeShade={cfg.schemeShade}
-          schemeArrow={cfg.schemeArrow}
+        <PlotNotRun
+          status="idle"
+          onRun={() => {
+            const g = useGraph.getState()
+            void (child ? g.runPlotChild(node.id, child.id) : g.runNode(node.id))
+          }}
         />
       )
-    return <Empty text="Connect a Clean data tile and run it." />
+    return withBar(
+      <ClusterTile
+        condTitle={condTitle}
+        categorical={categoricalOf(cfg)}
+        cluster={plotRun.cluster}
+        colorBy={cfg.colorBy}
+        display={display}
+        territory={territory}
+        plot={plot}
+        loadings={cfg.loadings}
+        // two conditions picked under the simple legend: drawn by the complex legend's colour
+        // and shade (clusterTwoConds)
+        legend={clusterTwoConds(cfg) ? 'complex' : 'simple'}
+        look={clusterStyle(cfg)}
+        schemeColor={clusterTwoConds(cfg)?.color}
+        schemeShade={clusterTwoConds(cfg)?.shade}
+        schemeArrow={clusterTwoConds(cfg)?.arrow}
+      />
+    )
   }
   if (kind === 'enrich') {
-    if (upstream?.kind !== 'compare') return <Empty text="Connect a Compare tile and run it." />
+    if (upstream?.kind !== 'compare')
+      return <Empty text="Connect a Compare or Curve fit tile and run it." />
     const cfg = cfgSource as EnrichConfig
     const method = cfg.method ?? 'ora'
     // 'ridge' is GSEA-only; fall back to dot if a persisted ridge style meets ORA.
@@ -1907,9 +2677,13 @@ export function PanelBody({
                 <EnrichView
                   enrich={enrich}
                   style={style}
-                  measure={fcMeasure(upCompareCfg && normalizeCompareConfig(upCompareCfg).analysis)}
+                  measure={fcMeasure(
+                    upCompareCfg && normalizeCompareConfig(upCompareCfg).analysis,
+                    upCompareCfg?.detection,
+                    upCompareCfg?.surface
+                  )}
                   comparison={comparisonOf(facetRows)}
-                  effectColors={plotEffectColors(cfg.effectColors, upCompareCfg)}
+                  effectColors={effectsOf(cfg, upCompareCfg, cfg.effectColors)}
                 />
               )}
             </Built>
@@ -1919,7 +2693,8 @@ export function PanelBody({
     )
   }
   if (kind === 'string') {
-    if (upstream?.kind !== 'compare') return <Empty text="Connect a Compare tile and run it." />
+    if (upstream?.kind !== 'compare')
+      return <Empty text="Connect a Compare or Curve fit tile and run it." />
     const cfg = cfgSource as StringConfig
     const maxGenes = cfg.maxGenes > 0 ? cfg.maxGenes : 40
     const addInteractors = cfg.addInteractors ?? false
@@ -1990,7 +2765,7 @@ export function PanelBody({
             capOptions={plotRun?.kind === 'string' ? plotRun.caps : caps}
             addInteractors={addInteractors}
             onLevels={setStringLevels}
-            effectColors={plotEffectColors(cfg.effectColors, upCompareCfg)}
+            palette={paletteOf(cfg, 'fcObject')}
           />
         )}
       </FacetedPlot>
@@ -2036,20 +2811,35 @@ export function PanelBody({
                 label="scale"
                 value={cfg.yScale ?? 'global'}
                 options={['range', 'global']}
-                optionLabel={(o) => (o === 'range' ? 'by range' : 'global')}
+                optionLabel={(o) => (o === 'range' ? 'adjusted' : 'global')}
                 onChange={(v) => patchConfig({ yScale: v })}
+              />
+            )}
+            {quickOn(cfg, 'sampleOrder') && (
+              <SwitchBar
+                label="sort"
+                value={sampleOrderOf(cfg)}
+                options={SAMPLE_ORDERS}
+                onChange={(v) => patchConfig({ sampleOrder: v })}
               />
             )}
           </div>
           <div style={styles.stackBody}>
             <QcTile
+              condTitle={condTitle}
+              categorical={categoricalOf(cfg)}
               std={upstream.std}
               metric={metric}
               plot={plot}
               scale={abScale}
               color={cfg.color}
-              colorConds={qcColorConds(cfg)}
+              colorConds={qcColorConds(
+                cfg,
+                upstream.std.activeConditions,
+                primaryColorLevels(upstream.std)
+              )}
               fit={metric === 'proteins' && cfg.yScale === 'range'}
+              sampleOrder={sampleOrderOf(cfg)}
             />
           </div>
         </div>
@@ -2062,7 +2852,12 @@ export function PanelBody({
     const cfg = cfgSource as CorrConfig
     return (
       <div style={styles.chart}>
-        <CorrTile std={upstream.std} cluster={cfg.cluster ?? true} scale={abScale} />
+        <CorrTile
+          std={upstream.std}
+          cluster={cfg.cluster ?? true}
+          scale={abScale}
+          palette={paletteOf(cfg, 'corr', 'palette')}
+        />
       </div>
     )
   }

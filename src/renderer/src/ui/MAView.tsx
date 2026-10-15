@@ -8,6 +8,7 @@ import {
   type PointStyle
 } from '../graph/types'
 import { useGraph } from '../graph/store'
+import { tooltip } from './condTooltip'
 import { PlotlyChart, type GuideDrag } from './PlotlyChart'
 import { legendOn, resolveGroups, resolveHighlight } from './pointStyle'
 import { axisBase, EFFECT_COLOR, guideLine, PALETTES, plotBase } from './theme'
@@ -79,11 +80,20 @@ export function MAView({
 
   const { data, layout, labels, guides } = useMemo(() => {
     const p = PALETTES[mode]
-    // The tooltip names the gene only when the highlight's own label is off (else it's a duplicate).
     // Tooltip terms match the axis titles; the fold-change axis names the comparison
     // ("log₂FC · A | B") when the rows share one.
     const fcLabel = ma.comparison ? `log₂FC · ${ma.comparison}` : 'log₂FC'
-    const hover = `${emphasis.label ? '' : '%{text}<br>'}${ma.xLabel}=%{x:.2f}<br>${fcLabel}=%{y:.3f}<extra></extra>`
+    const hover = tooltip(
+      {
+        title: '%{text}',
+        values: [
+          [ma.xLabel, '%{x:.2f}'],
+          [fcLabel, '%{y:.3f}']
+        ]
+      },
+      p.textMuted,
+      { template: true }
+    )
     const look = (eff: Eff) => groups.get(eff)!
 
     // Always colour EVERY point by effect (up/down/none), so the significance groups stay
@@ -233,18 +243,7 @@ export function MAView({
       .filter((pt) => look(pt.effect).label)
       .map((pt) => ({ x: pt.x, y: pt.y, text: pt.label, priority: Math.abs(pt.y), id: pt.uniqID }))
     return { data: traces, layout: lay, labels, guides }
-  }, [
-    ma,
-    title,
-    mode,
-    selSets,
-    samThreshold,
-    asymmetric,
-    editable,
-    groups,
-    showLegend,
-    emphasis.label
-  ])
+  }, [ma, title, mode, selSets, samThreshold, asymmetric, editable, groups, showLegend])
 
   // Symmetric: whichever line moved, set both cutoffs to ±|value| about 0. Asymmetric: one side.
   const onGuide = (key: string, value: number): void => {

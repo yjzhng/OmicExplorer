@@ -4,13 +4,17 @@ import { describe, expect, it } from 'vitest'
 
 import {
   applyCurveFdr,
+  interpolationGrid,
   boundsFor,
   classifyCompareRow,
   curveCuratorFdr,
   curveGroupKey,
   curveCuratorBoundary,
   curveCuratorWall,
+  curveSampleX,
+  curveResidualPoints,
   curveMetrics,
+  curveLackOfFit,
   curveResidualMad,
   curveDofs,
   fQuantile,
@@ -23,7 +27,7 @@ import {
   type LogisticParams
 } from './curveFit'
 import { runCurveFit } from './direct'
-import { DEFAULT_THRESHOLD, type ThresholdConfig } from './stats'
+import { DEFAULT_THRESHOLD, normalPpf, type ThresholdConfig } from './stats'
 import type { StandardRow } from './types'
 
 const at = (xs: number[], p: LogisticParams): number[] => xs.map((x) => logistic(x, p))
@@ -316,6 +320,47 @@ describe('runCurveFit layouts', () => {
     expect(g1A.model).toBe('4PL')
     expect(viaDose0.rows.find((r) => r.uniqID === 'g1' && r.cmpd === 'B')!.model).toBe('M0')
   })
+
+  it('matches each drug to its own dose 0 when the drugs are pinned alike on both sides', () => {
+    // The Curve fit dialog's "each compound against its own control level": the compounds pinned
+    // on both sides, nothing in `match`. B sits 4× higher than A throughout, its control too — a
+    // control pooled over both drugs would put B's curve at ratio 1.6 and A's at 0.4.
+    const rows = genes.flatMap((g) => [
+      ...treated(g).map((r) => (r.cmpd === 'B' ? { ...r, value: (r.value as number) * 4 } : r)),
+      row(g, 'A', 0, 100),
+      row(g, 'B', 0, 400),
+      row(g, 'C', 0, 5) // another drug's control, outside the comparison
+    ])
+    const res = runCurveFit({
+      rows,
+      num: { cmpd: ['A', 'B'], dose: doses.map(String) },
+      den: { cmpd: ['A', 'B'], dose: ['0'] },
+      match: [],
+      activeConditions: ['cmpd', 'dose'],
+      curveAxis: 'dose'
+    })
+    expect(res.rows).toHaveLength(4)
+    for (const r of res.rows) {
+      expect(r.curve!.cy).toHaveLength(1) // its own control sample only
+      expect(r.curve!.cy![0]).toBeCloseTo(1, 9)
+    }
+    const flatB = res.rows.find((r) => r.uniqID === 'flat' && r.cmpd === 'B')!
+    for (const y of flatB.curve!.y!) expect(y).toBeGreaterThan(0.95)
+    for (const y of flatB.curve!.y!) expect(y).toBeLessThan(1.1)
+  })
+
+  it('skips a drug with no dose 0 of its own instead of borrowing another drug’s', () => {
+    const rows = genes.flatMap((g) => [...treated(g), row(g, 'A', 0, 100)])
+    const res = runCurveFit({
+      rows,
+      num: { cmpd: ['A', 'B'], dose: doses.map(String) },
+      den: { cmpd: ['A', 'B'], dose: ['0'] },
+      match: [],
+      activeConditions: ['cmpd', 'dose'],
+      curveAxis: 'dose'
+    })
+    expect(new Set(res.rows.map((r) => r.cmpd))).toEqual(new Set(['A']))
+  })
 })
 
 describe('CurveCurator relevance score', () => {
@@ -468,5 +513,156 @@ describe('CurveCurator target–decoy FDR', () => {
     )
     expect(strict.fdr).toBeDefined()
     expect(strict.rows.some((r, i) => r.curve?.q !== res.rows[i].curve?.q)).toBe(true)
+  })
+})
+
+describe('curveSampleX', () => {
+  const f = (lx: number, p: Parameters<typeof logistic>[1]): number => Math.log2(logistic(lx, p))
+  /** the largest gap between the curve and its drawn polyline, checked finely */
+  const worstChordError = (xs: number[], p: Parameters<typeof logistic>[1]): number => {
+    let worst = 0
+    for (let i = 1; i < xs.length; i++)
+      for (let k = 1; k < 10; k++) {
+        const t = k / 10
+        const lx = xs[i - 1] + (xs[i] - xs[i - 1]) * t
+        const chord = f(xs[i - 1], p) * (1 - t) + f(xs[i], p) * t
+        worst = Math.max(worst, Math.abs(f(lx, p) - chord))
+      }
+    return worst
+  }
+
+  it('adds points at a steep turn — even one centred between two even samples', () => {
+    // 25 even samples over [−9, −5] are 1/6 decade apart; centre the turn on a gap's midpoint.
+    const p = { pec50: 7 - 1 / 12, slope: 20, front: 1, back: 0.1, xMin: -9, xMax: -5 }
+    const xs = curveSampleX(p, 25)
+    expect(xs.length).toBeGreaterThan(25)
+    expect(xs[0]).toBe(-9)
+    expect(xs[xs.length - 1]).toBe(-5)
+    expect(xs.every((x, i) => i === 0 || x > xs[i - 1])).toBe(true)
+    expect(worstChordError(xs, p)).toBeLessThan(0.05)
+  })
+
+  it('keeps a flat curve at its even samples', () => {
+    const p = { pec50: 7, slope: 1, front: 1, back: 1, xMin: -9, xMax: -5 }
+    expect(curveSampleX(p, 25)).toHaveLength(25)
+  })
+})
+
+describe('curveResidualPoints', () => {
+  it('gives each residual its fitted value and the curve-standardised residual', () => {
+    const p = { pec50: 7, slope: 1, front: 1, back: 0.5 }
+    const x = [-9, -8, -7, -6, -5, -9, -8]
+    const noise = [0.02, -0.01, 0.03, -0.02, 0.01, -0.03, 0.02]
+    const y = x.map((lx, i) => logistic(lx, p) + noise[i])
+    const pts = curveResidualPoints([{ ...p, x, y, cy: [1.01, 0.99], id: 'g' }])
+    expect(pts).toHaveLength(9)
+    // the control samples sit against the front plateau
+    expect(pts[0]).toMatchObject({ x: null, fitted: 1, id: 'g' })
+    expect(pts[0].residual).toBeCloseTo(0.01)
+    // a treated point: fitted on the curve, residual = the noise
+    expect(pts[2].fitted).toBeCloseTo(logistic(-9, p))
+    expect(pts[2].residual).toBeCloseTo(0.02)
+    // standardised over √(SS / (n − 4)) of the 7 dosed points
+    const dosed = pts.filter((q) => q.x != null)
+    const sd = Math.sqrt(dosed.reduce((s, q) => s + q.residual ** 2, 0) / (7 - 4))
+    expect(pts[2].std).toBeCloseTo(0.02 / sd)
+  })
+
+  it('leaves out a curve of four dosed points (an exact fit, residuals all 0)', () => {
+    const p = { pec50: 7, slope: 1, front: 1, back: 0.5 }
+    const x = [-9, -8, -7, -6]
+    expect(curveResidualPoints([{ ...p, x, y: x.map((lx) => logistic(lx, p)) }])).toHaveLength(0)
+  })
+})
+
+describe('normalPpf', () => {
+  it('inverts the standard normal', () => {
+    expect(normalPpf(0.5)).toBeCloseTo(0, 6)
+    expect(normalPpf(0.975)).toBeCloseTo(1.959964, 5)
+    expect(normalPpf(0.025)).toBeCloseTo(-1.959964, 5)
+    expect(normalPpf(0)).toBe(-Infinity)
+    expect(Number.isNaN(normalPpf(1.5))).toBe(true)
+  })
+})
+
+describe('CurveCurator interpolation', () => {
+  it('builds the grid: one midpoint in every gap, whatever its width', () => {
+    const doses = [3, 10, 30, 100, 300, 1000, 3000, 30000].map((d) => Math.log10(d * 1e-9))
+    const g = interpolationGrid(doses)
+    expect(g).toHaveLength(15)
+    // the 3 → 30 µM decade gets one point, as every half-log gap does
+    expect(g[g.length - 2]).toBeCloseTo((doses[6] + doses[7]) / 2)
+  })
+  it('tests on the real points only, whatever the grid', () => {
+    const x = [0, 0.5, 1, 1.5, 2, 2.5, 3, 4]
+    const y = [1, 0.98, 0.9, 0.7, 0.4, 0.25, 0.2, 0.18]
+    const plain = fitCurve(x, y)!
+    const interp = fitCurve(x, y, interpolationGrid(x))!
+    expect(interp.n).toBe(plain.n)
+    expect(interp.f).toBeGreaterThan(0)
+    expect(Math.abs(interp.pec50 - plain.pec50)).toBeLessThan(0.3)
+  })
+})
+
+describe('lack-of-fit test', () => {
+  const p: LogisticParams = { pec50: 7, slope: 1, front: 1, back: 0.4 }
+  const doses = [-9, -8.5, -8, -7.5, -7, -6.5, -6, -5.5]
+  // Three replicates at each dose, spread ±0.02 about `at(x)`.
+  const reps = (at: (x: number) => number): { x: number[]; y: number[] } => {
+    const x: number[] = []
+    const y: number[] = []
+    for (const d of doses)
+      for (const e of [-0.02, 0, 0.02]) {
+        x.push(d)
+        y.push(at(d) + e)
+      }
+    return { x, y }
+  }
+
+  it('splits the residual into pure error and lack of fit, against F(c − 4, n − c)', () => {
+    // Dose means off the curve by a known amount: SS_lof and SS_pe by hand.
+    const off = [0.05, -0.05, 0.05, -0.05, 0.05, -0.05, 0.05, -0.05]
+    const { x, y } = reps((d) => logistic(d, p) + off[doses.indexOf(d)])
+    const lof = curveLackOfFit(x, y, p)!
+    const ssPe = doses.length * 2 * 0.02 ** 2
+    const ssLof = 3 * off.reduce((s, o) => s + o * o, 0)
+    // 8 doses + the control = 9 groups; 24 points + the control = 25.
+    expect(lof.f).toBeCloseTo(ssLof / (9 - 4) / (ssPe / (25 - 9)), 6)
+    expect(lof.p).toBeCloseTo(fSurvival(lof.f, 5, 16), 10)
+  })
+
+  it('passes a curve the 4PL describes, and flags one it can’t', () => {
+    const fits = reps((d) => logistic(d, p))
+    const fitted = fitCurve(fits.x, fits.y)!
+    expect(fitted.lofP).toBeGreaterThan(0.05)
+    // A bump at the middle doses: no 4PL follows it.
+    const bump = reps((d) => (d === -7.5 || d === -7 ? 0.6 : 1))
+    const bumped = fitCurve(bump.x, bump.y)!
+    expect(bumped.lofP).toBeLessThan(0.001)
+  })
+
+  it('has no test without replicates, or with 4 or fewer doses', () => {
+    expect(
+      curveLackOfFit(
+        doses,
+        doses.map((d) => logistic(d, p)),
+        p
+      )
+    ).toBeUndefined()
+    const few = reps((d) => logistic(d, p))
+    const keep = few.x.map((d) => d <= -8)
+    const x = few.x.filter((_, i) => keep[i])
+    const y = few.y.filter((_, i) => keep[i])
+    // 3 doses + the control = 4 groups: no degrees of freedom left for lack of fit.
+    expect(curveLackOfFit(x, y, p)).toBeUndefined()
+  })
+
+  it('is given to older fits from their kept points', () => {
+    const { x, y } = reps((d) => logistic(d, p))
+    const fit = fitCurve(x, y)!
+    const { lofF, lofP, ...older } = fit
+    const m = curveMetrics(fit.log2FC, { ...older, x, y }, undefined)
+    expect(m.F_lof).toBeCloseTo(lofF!, 9)
+    expect(m.pP_lof).toBeCloseTo(-Math.log10(lofP!), 9)
   })
 })

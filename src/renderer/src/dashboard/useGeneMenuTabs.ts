@@ -1,6 +1,6 @@
 /**
  * The gene selector's menu: every gene, grouped three ways — Function (GO by default, or COG /
- * MSigDB), Pathway (KEGG by default, or Reactome) and Essentiality (CEG/NEG before DEG), each by ONE
+ * MSigDB), Pathway (KEGG by default, or Reactome) and Essentiality (DEG), each by ONE
  * set the results carry, with a dropdown in the tab to pick another. Only each tab's chosen set is
  * grouped: GO alone can run to thousands of terms, so building every set up front would pay for
  * groupings nobody opened. Shared by the dashboard and the form layout (the main nav's selector).
@@ -27,11 +27,10 @@ import type { GeneCategory, GeneGroupTab } from '../ui/GeneSelectMenu'
 /** Essentiality classes, in menu order. */
 const ESS_CLASSES = ['Essential', 'Non-essential', 'NA'] as const
 type EssClass = (typeof ESS_CLASSES)[number]
-/** The essentiality columns — exactly these two, preferred first. CEG_NEG outranks DEG: it's a
- *  curated human gold standard that reports non-essential too, where DEG — a union of screens over
- *  many organisms — can only say "essential in at least one of them". (A DB's older names for them
- *  arrive renamed — COLUMN_ALIASES.) */
-const ESSENTIALITY_COLS = ['CEG_NEG', 'DEG']
+/** The essentiality columns, preferred first: DEG — a union of screens over many organisms, so it
+ *  can only say "essential in at least one of them". (A DB's older name for it arrives renamed —
+ *  COLUMN_ALIASES.) */
+const ESSENTIALITY_COLS = ['DEG']
 /** Natural-order name compare for every sort here. One collator, shared: `localeCompare` with
  *  options builds a fresh one per call, which across thousands of GO terms and their genes cost
  *  seconds per grouping. */
@@ -67,7 +66,6 @@ const triples = (parts: MenuParts): Array<[DisplayMap?, AnnMap?, DisplayMap?]> =
 const shortLabel = (s: EnrichSource): string => ENRICH_SOURCE_LABEL[s].replace(/\s*\(human\)$/, '')
 /** What each essentiality column is, for the tab's dropdown. */
 const ESSENTIALITY_LABEL: Record<string, string> = {
-  CEG_NEG: 'CEG-NEG',
   DEG: 'DEG'
 }
 
@@ -237,11 +235,10 @@ export function useGeneMenuTabs(parts: MenuParts): GeneGroupTab[] {
 
   // Genes grouped by essentiality — a flat tree for the menu's second tab. NA means "this source
   // doesn't say", which is not the same as non-essential: DEG is essential-only, so under it every
-  // unlisted gene is NA, while CEG/NEG can positively call a gene non-essential. Empty classes are
-  // dropped so a DEG-only dataset doesn't show a Non-essential bucket it can never fill.
-  // The essentiality columns the genes carry (CEG_NEG before DEG — see ESSENTIALITY_COLS). The tab's
-  // dropdown picks between them; they're kept apart rather than merged because they answer
-  // different questions.
+  // unlisted gene is NA. Empty classes are dropped so a DEG-only dataset doesn't show a
+  // Non-essential bucket it can never fill.
+  // The essentiality columns the genes carry (see ESSENTIALITY_COLS); the tab's dropdown picks
+  // between them when there's more than one.
   const essCols = useMemo(() => {
     const present = new Set(Object.values(annById).flatMap((rec) => Object.keys(rec)))
     return ESSENTIALITY_COLS.filter((c) => present.has(c))

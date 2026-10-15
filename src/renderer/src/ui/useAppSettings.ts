@@ -1,6 +1,21 @@
 import { create } from 'zustand'
 
 import type { NodeKind } from '../graph/types'
+import {
+  CUSTOM_CATEGORICAL_MAX,
+  CUSTOM_SPECTRUM_MAX,
+  DEFAULT_CATEGORICAL,
+  isCategoricalId,
+  setCustomCategorical,
+  setCustomSpectrum,
+  type CustomSpectrum,
+  ROLE_DEFAULTS,
+  toPaletteRef,
+  type CategoricalId,
+  type PaletteRef,
+  type PaletteRole
+} from './palettes'
+import { setCategorical } from './theme'
 
 /** Image format a plot tile's Copy button puts on the clipboard (PDF has no clipboard form). */
 export type CopyFormat = 'png' | 'svg'
@@ -52,6 +67,14 @@ export interface AppSettings {
    *  highlight, axes), caps, and whatever else that kind's config panel offers. Merged over the
    *  kind's built-in defaults at creation; existing tiles keep what they have. */
   plotDefaults: Partial<Record<NodeKind, Record<string, unknown>>>
+  /** each palette role's default (see palettes.ts PaletteRole): a plot's Automatic palette */
+  palettes: Record<PaletteRole, PaletteRef>
+  /** the categorical palette groups and conditions are coloured from */
+  categorical: CategoricalId
+  /** the user's custom spectrum (palette id 'custom'), when defined */
+  customSpectrum?: CustomSpectrum
+  /** the user's custom categorical palette (id 'custom'), when defined */
+  customCategorical?: string[]
 }
 
 const DEFAULTS: AppSettings = {
@@ -65,7 +88,9 @@ const DEFAULTS: AppSettings = {
   downloadFormat: 'png',
   downloadDpi: 300,
   tableFormat: 'csv',
-  plotDefaults: {}
+  plotDefaults: {},
+  palettes: ROLE_DEFAULTS,
+  categorical: DEFAULT_CATEGORICAL
 }
 
 /** A stored width, held inside its bounds; anything unusable falls back to the default. */
@@ -77,11 +102,33 @@ export const clampWidth = (
 const dpiOr = (v: unknown, fb: number): number =>
   DPI_CHOICES.includes(v as (typeof DPI_CHOICES)[number]) ? (v as number) : fb
 
+const HEX = /^#[0-9a-f]{6}$/i
+/** A stored custom spectrum, if it's well-formed (2–5 hex colours, a midpoint per pair). */
+function readSpectrum(v: unknown): CustomSpectrum | undefined {
+  const d = v as Partial<CustomSpectrum> | undefined
+  const colors = Array.isArray(d?.colors) ? d.colors.filter((c) => HEX.test(String(c))) : []
+  if (colors.length < 2 || colors.length > CUSTOM_SPECTRUM_MAX) return undefined
+  const mids = colors.slice(1).map((_, i) => {
+    const m = Number(d?.mids?.[i])
+    return Number.isFinite(m) ? Math.min(0.95, Math.max(0.05, m)) : 0.5
+  })
+  return { colors, mids }
+}
+const readCategorical = (v: unknown): string[] | undefined => {
+  const c = Array.isArray(v) ? v.filter((x) => HEX.test(String(x))) : []
+  return c.length ? c.slice(0, CUSTOM_CATEGORICAL_MAX) : undefined
+}
+
 function load(): AppSettings {
   try {
     const raw = localStorage.getItem(KEY)
     if (!raw) return DEFAULTS
     const v = JSON.parse(raw) as Partial<AppSettings>
+    // The custom palettes first, so a role or the categorical setting naming one reads as valid.
+    const customSpectrum = readSpectrum(v.customSpectrum)
+    const customCategorical = readCategorical(v.customCategorical)
+    setCustomSpectrum(customSpectrum)
+    setCustomCategorical(customCategorical)
     return {
       uiStyle: v.uiStyle === 'form' ? 'form' : 'flow',
       navWidth: clampWidth(v.navWidth, NAV_WIDTH),
@@ -97,7 +144,17 @@ function load(): AppSettings {
       // Shapes change as the panels grow, so this is taken as-is and merged over the current
       // defaults at creation: a stale or unknown key simply never matches a config field.
       plotDefaults:
-        v.plotDefaults && typeof v.plotDefaults === 'object' ? { ...v.plotDefaults } : {}
+        v.plotDefaults && typeof v.plotDefaults === 'object' ? { ...v.plotDefaults } : {},
+      palettes: Object.fromEntries(
+        (Object.keys(ROLE_DEFAULTS) as PaletteRole[]).map((r) => [
+          r,
+          toPaletteRef((v.palettes as Partial<Record<PaletteRole, unknown>> | undefined)?.[r]) ??
+            ROLE_DEFAULTS[r]
+        ])
+      ) as Record<PaletteRole, PaletteRef>,
+      categorical: isCategoricalId(v.categorical) ? v.categorical : DEFAULT_CATEGORICAL,
+      customSpectrum,
+      customCategorical
     }
   } catch {
     return DEFAULTS
@@ -121,8 +178,12 @@ interface AppSettingsState extends AppSettings {
 }
 
 /** App-wide preferences (the Settings window), persisted to localStorage like the theme. */
+const initial = load()
+// The live categorical palette (theme.CATEGORICAL) follows the setting from the start.
+setCategorical(initial.categorical)
+
 export const useAppSettings = create<AppSettingsState>((set, get) => ({
-  ...load(),
+  ...initial,
   update: (patch) => {
     const {
       uiStyle,
@@ -135,7 +196,11 @@ export const useAppSettings = create<AppSettingsState>((set, get) => ({
       downloadFormat,
       downloadDpi,
       tableFormat,
-      plotDefaults
+      plotDefaults,
+      palettes,
+      categorical,
+      customSpectrum,
+      customCategorical
     } = get()
     const next: AppSettings = {
       uiStyle,
@@ -149,9 +214,32 @@ export const useAppSettings = create<AppSettingsState>((set, get) => ({
       downloadDpi,
       tableFormat,
       plotDefaults,
+      palettes,
+      categorical,
+      customSpectrum,
+      customCategorical,
       ...patch
     }
+    // A custom palette changed: register it — and, dropped, send whatever used it back to its
+    // default (a role → its built-in default; the categorical setting → tab10).
+    if ('customSpectrum' in patch) {
+      setCustomSpectrum(next.customSpectrum)
+      if (!next.customSpectrum)
+        next.palettes = Object.fromEntries(
+          (Object.keys(next.palettes) as PaletteRole[]).map((r) => [
+            r,
+            next.palettes[r].id === 'custom' ? ROLE_DEFAULTS[r] : next.palettes[r]
+          ])
+        ) as Record<PaletteRole, PaletteRef>
+    }
+    if ('customCategorical' in patch) {
+      setCustomCategorical(next.customCategorical)
+      if (!next.customCategorical?.length && next.categorical === 'custom')
+        next.categorical = DEFAULT_CATEGORICAL
+    }
     persist(next)
+    if (next.categorical !== categorical || 'customCategorical' in patch)
+      setCategorical(next.categorical)
     set(next)
   },
   setPlotDefault: (kind, patch) => {
@@ -167,3 +255,7 @@ export const useAppSettings = create<AppSettingsState>((set, get) => ({
     get().update({ plotDefaults })
   }
 }))
+
+/** A palette role's global default — what a plot's Automatic palette for that role is. */
+export const useRolePalette = (role: PaletteRole): PaletteRef =>
+  useAppSettings((s) => s.palettes[role])

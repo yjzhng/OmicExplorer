@@ -38,26 +38,9 @@ export const styles: Record<string, CSSProperties> = {
     overflow: 'auto',
     minHeight: 0
   },
-  section: { display: 'flex', flexDirection: 'column', gap: 12 },
-  sectionTitle: {
-    fontSize: 11,
-    textTransform: 'uppercase',
-    letterSpacing: 0.6,
-    fontWeight: 700,
-    color: UI.text,
-    borderBottom: `1px solid ${UI.border}`,
-    paddingBottom: 6
-  },
   // The canvas panel's sections carry their own padding + dividers; let them span the window's
   // full width (cancelling the body padding) so they read as they do on the canvas.
   plotConfig: { display: 'flex', flexDirection: 'column', margin: '-2px -16px -16px' },
-  field: { display: 'flex', flexDirection: 'column', gap: 6 },
-  fieldLabel: {
-    fontSize: 11,
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
-    color: UI.textMuted
-  },
 
   hint: { fontSize: 11, color: UI.textMuted },
   // Pinned below the scrolling body (see TileDialog), like the header above it.

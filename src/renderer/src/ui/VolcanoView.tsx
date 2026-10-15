@@ -15,6 +15,7 @@ import {
   type PointStyle
 } from '../graph/types'
 import { useGraph } from '../graph/store'
+import { tooltip } from './condTooltip'
 import { PlotlyChart, type GuideDrag } from './PlotlyChart'
 import { legendOn, resolveGroups, resolveHighlight } from './pointStyle'
 import { axisBase, EFFECT_COLOR, guideLine, PALETTES, plotBase } from './theme'
@@ -106,10 +107,20 @@ export function VolcanoView({
 
   const { data, layout, labels, guides } = useMemo(() => {
     const p = PALETTES[mode]
-    // The tooltip names the gene only when the highlight's own label is off (else it's a duplicate).
     // Fold-change axis names the comparison ("log₂FC · A | B") when the rows share one.
-    const fcLabel = volcano.comparison ? `log₂FC · ${volcano.comparison}` : 'log₂FC'
-    const hover = `${emphasis.label ? '' : '%{text}<br>'}${fcLabel}=%{x:.3f}<br>${yLabel}=%{y:.3f}<extra></extra>`
+    const fc = volcano.measure ?? 'log₂FC'
+    const fcLabel = volcano.comparison ? `${fc} · ${volcano.comparison}` : fc
+    const hover = tooltip(
+      {
+        title: '%{text}',
+        values: [
+          [fcLabel, '%{x:.3f}'],
+          [yLabel, '%{y:.3f}']
+        ]
+      },
+      p.textMuted,
+      { template: true }
+    )
     const look = (eff: Eff) => groups.get(eff)!
 
     // Always colour EVERY point by effect (up/down/none), so the significance groups stay
@@ -181,6 +192,10 @@ export function VolcanoView({
     // A loop, not Math.max(...points): spreading every gene as an argument can overflow the stack.
     let yMax = 1
     for (const pt of volcano.points) yMax = Math.max(yMax, pt.y)
+    // Always past the significance threshold, so the guides (drawn from it up to yMax) show whole
+    // and the empty significant region reads as empty — with nothing past it (every q = 1, say),
+    // a range fitted to the points alone would end below the threshold and cut the guides to stubs.
+    if (Number.isFinite(volcano.statMin)) yMax = Math.max(yMax, volcano.statMin * 1.25)
     // Pin explicit axis ranges (with padding) so the range never re-pads on hover — otherwise
     // the enlarged overlay marker on an edge point shifts the whole cloud, sliding the point
     // out from under the cursor and bouncing between hover/unhover.
@@ -352,15 +367,34 @@ export function VolcanoView({
       const yCap = yMax * 1.08 * 2
       const branch = (lim: number, xEnd: number): Array<[number, number]> => {
         const pts: Array<[number, number]> = []
+        if (!(xEnd > lim)) return pts
+        // Where the boundary starts: the limit itself when it's finite there, else its asymptote
+        // further out (CurveCurator's F at the cutoff, called by FDR; SAM's c·s0) — found by
+        // bisection, so the line rises from the true start rather than from the first even sample
+        // past it, which sat partway up and left the line short of the top.
+        let x0 = lim
+        if (!Number.isFinite(need.at(lim, lim))) {
+          if (!Number.isFinite(need.at(xEnd, lim))) return pts
+          let a = lim
+          let b = xEnd
+          for (let k = 0; k < 50; k++) {
+            const m = (a + b) / 2
+            if (Number.isFinite(need.at(m, lim))) b = m
+            else a = m
+          }
+          x0 = b
+        }
+        // Points packed toward the start (cubic spacing), where the boundary climbs steeply.
         const N = 140
         for (let i = 0; i < N; i++) {
-          const x = lim + ((xEnd - lim) * i) / (N - 1)
+          const x = x0 + (xEnd - x0) * (i / (N - 1)) ** 3
           const y = need.at(x, lim)
           if (Number.isFinite(y)) pts.push([x, Math.min(y, yCap)])
         }
-        // The fold-change wall: straight down from the top to where the curve starts at the limit.
-        if (need.hardWall && pts.length && pts[0][0] === lim && pts[0][1] < yCap)
-          pts.unshift([lim, yCap])
+        // Up to the top from where it starts: the fold-change wall when the boundary is finite at
+        // the limit, else the last sliver of the asymptote's climb.
+        if ((need.hardWall || x0 > lim) && pts.length && pts[0][1] < yCap)
+          pts.unshift([pts[0][0], yCap])
         return pts
       }
       const toPath = (pts: Array<[number, number]>): string =>
@@ -617,7 +651,6 @@ export function VolcanoView({
     labelTop,
     groups,
     showLegend,
-    emphasis.label,
     nsKey,
     samCut,
     ccAlpha

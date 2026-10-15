@@ -1,11 +1,12 @@
 /** Static metadata for node operations, grouped under high-level categories. */
 import { DEFAULT_THRESHOLD } from '../engine'
-import { isStep } from './types'
+import { clusterRunMatches, CURVECURATOR_THRESHOLD, isStep } from './types'
 import type {
   BarConfig,
   BubbleConfig,
   CompareConfig,
   ContrastConfig,
+  CurveFitConfig,
   DRConfig,
   DumbbellConfig,
   EnrichConfig,
@@ -14,6 +15,7 @@ import type {
   LoadConfig,
   MAConfig,
   MergeConfig,
+  SubsetConfig,
   NodeCategory,
   NodeConfig,
   NodeKind,
@@ -24,6 +26,7 @@ import type {
   PlotGroupConfig,
   PotencyConfig,
   CurveMadConfig,
+  ResponseConfig,
   QcConfig,
   ScatterConfig,
   StandardizeConfig,
@@ -87,6 +90,16 @@ export const NODE_SPECS: Record<NodeKind, NodeSpec> = {
     hasRun: true,
     defaultConfig: (): MergeConfig => ({})
   },
+  subset: {
+    kind: 'subset',
+    label: 'Subset',
+    subtitle: 'keep chosen conditions',
+    category: 'processing',
+    // Like Merge, it emits a Clean-data result (see outputKindOf), so it chains off either.
+    acceptsFrom: ['standardize'],
+    hasRun: true,
+    defaultConfig: (): SubsetConfig => ({ keep: {} })
+  },
   compare: {
     kind: 'compare',
     label: 'Compare',
@@ -107,7 +120,33 @@ export const NODE_SPECS: Record<NodeKind, NodeSpec> = {
       condition2: 'dose',
       pair2Num: '',
       pair2Den: '',
-      threshold: { ...DEFAULT_THRESHOLD, statType: 'pP' }
+      // The P-value route, on the hyperbolic boundary (as switching back to P-value picks).
+      threshold: { ...DEFAULT_THRESHOLD, type: 'non-linear', statType: 'pP' }
+    })
+  },
+  curveFit: {
+    kind: 'curveFit',
+    label: 'Curve fit',
+    subtitle: 'dose / time curves',
+    category: 'processing',
+    acceptsFrom: ['standardize'],
+    hasRun: true,
+    defaultConfig: (): CurveFitConfig => ({
+      analysis: 'curve_fit',
+      method: 'ttest',
+      curveAxis: 'dose',
+      // Fresh tile: nothing declared — the user opens "Configure curve fit" to pick the
+      // treatments and the control.
+      num: {},
+      den: {},
+      match: [],
+      condition: 'cmpd',
+      pairNum: '',
+      pairDen: '',
+      condition2: 'dose',
+      pair2Num: '',
+      pair2Den: '',
+      threshold: { ...DEFAULT_THRESHOLD, ...CURVECURATOR_THRESHOLD }
     })
   },
   contrast: {
@@ -117,7 +156,7 @@ export const NODE_SPECS: Record<NodeKind, NodeSpec> = {
     category: 'processing',
     // One Compare (split by a condition), or two same-kind inputs (Compare or Standardize) joined
     // as FC1/FC2 in 'pair' mode.
-    acceptsFrom: ['compare', 'standardize'],
+    acceptsFrom: ['compare', 'curveFit', 'standardize'],
     hasRun: true,
     defaultConfig: (): ContrastConfig => ({
       relationship: 'correlated',
@@ -131,7 +170,7 @@ export const NODE_SPECS: Record<NodeKind, NodeSpec> = {
     kind: 'volcano',
     label: 'Volcano',
     category: 'plotting',
-    acceptsFrom: ['compare'],
+    acceptsFrom: ['compare', 'curveFit'],
     hasRun: true,
     defaultConfig: (): VolcanoConfig => ({ capEnabled: false, labelTop: 20 })
   },
@@ -139,8 +178,9 @@ export const NODE_SPECS: Record<NodeKind, NodeSpec> = {
     kind: 'heatmap',
     label: 'Heatmap',
     category: 'plotting',
-    // Standardize → intensity heatmap; Compare → log2FC heatmap (same tile, upstream decides).
-    acceptsFrom: ['standardize', 'compare'],
+    // Standardize → intensity heatmap; Compare / Curve fit → log2FC heatmap (same tile, upstream
+    // decides).
+    acceptsFrom: ['standardize', 'compare', 'curveFit'],
     hasRun: true,
     defaultConfig: (): HeatmapConfig => ({ capEnabled: false, maxGenes: 50 })
   },
@@ -166,9 +206,10 @@ export const NODE_SPECS: Record<NodeKind, NodeSpec> = {
     kind: 'dr',
     label: 'Dose/time-response',
     category: 'plotting',
-    // From a Compare: every gene's response curve. From a Contrast: the hovered gene's response on
+    // From a Compare: every gene's response over the levels; from a Curve fit: its fitted curves.
+    // From a Contrast: the hovered gene's response on
     // BOTH contrasted sides (FC1 vs FC2), for comparing profiles between two datasets/contrasts.
-    acceptsFrom: ['compare', 'contrast'],
+    acceptsFrom: ['compare', 'curveFit', 'contrast'],
     hasRun: true,
     defaultConfig: (): DRConfig => ({ axis: 'dose', capEnabled: true, topGenes: 10 })
   },
@@ -177,18 +218,32 @@ export const NODE_SPECS: Record<NodeKind, NodeSpec> = {
     label: 'Potency',
     category: 'plotting',
     // A curve fit's pEC50 against its curve fold change (CurveCurator's potency plot).
-    acceptsFrom: ['compare'],
+    acceptsFrom: ['curveFit'],
     hasRun: true,
-    defaultConfig: (): PotencyConfig => ({ show: 'called', capEnabled: false, labelTop: 20 })
+    defaultConfig: (): PotencyConfig => ({ show: 'all', capEnabled: false, labelTop: 20 })
   },
   curveMad: {
     kind: 'curveMad',
-    label: 'Residual plots',
+    // Shown under the same name as Clean data's QC plot (qc): each tile only appears for its own
+    // input, so the two never sit side by side.
+    label: 'QC',
     category: 'plotting',
-    // A curve fit's per-dose residuals from the fits (CurveCurator's MAD analysis).
-    acceptsFrom: ['compare'],
+    // A curve fit's QC: its residuals from the fits (CurveCurator's MAD analysis), and the curves'
+    // metrics against each other.
+    acceptsFrom: ['curveFit'],
     hasRun: true,
     defaultConfig: (): CurveMadConfig => ({})
+  },
+  response: {
+    kind: 'response',
+    // Shown under the same name as the Compare's dose × time plot (tdr): each tile only appears
+    // for its own input, so the two never sit side by side.
+    label: 'Dose & Time response',
+    category: 'plotting',
+    // A Curve fit's dose × time surfaces (the response surface method), one gene at a time.
+    acceptsFrom: ['curveFit'],
+    hasRun: true,
+    defaultConfig: (): ResponseConfig => ({ show: 'line' })
   },
   bubble: {
     kind: 'bubble',
@@ -208,7 +263,8 @@ export const NODE_SPECS: Record<NodeKind, NodeSpec> = {
   },
   tdr: {
     kind: 'tdr',
-    label: 'Time & Dose-response',
+    // The same name as the Curve fit's (response) — see there.
+    label: 'Dose & Time response',
     category: 'plotting',
     acceptsFrom: ['compare'],
     hasRun: true,
@@ -220,6 +276,7 @@ export const NODE_SPECS: Record<NodeKind, NodeSpec> = {
     category: 'plotting',
     acceptsFrom: ['standardize'],
     hasRun: true,
+    // Colour left unset: by condition with few samples, by value with many (barColorConds).
     defaultConfig: (): BarConfig => ({})
   },
   pca: {
@@ -257,7 +314,7 @@ export const NODE_SPECS: Record<NodeKind, NodeSpec> = {
     kind: 'enrich',
     label: 'Enrichment',
     category: 'plotting',
-    acceptsFrom: ['compare'],
+    acceptsFrom: ['compare', 'curveFit'],
     hasRun: true,
     defaultConfig: (): EnrichConfig => ({
       method: 'ora',
@@ -270,7 +327,7 @@ export const NODE_SPECS: Record<NodeKind, NodeSpec> = {
     kind: 'string',
     label: 'STRING network',
     category: 'plotting',
-    acceptsFrom: ['compare'],
+    acceptsFrom: ['compare', 'curveFit'],
     hasRun: true,
     // No confidence: auto — the highest level that still draws a network.
     defaultConfig: (): StringConfig => ({
@@ -284,6 +341,7 @@ export const NODE_SPECS: Record<NodeKind, NodeSpec> = {
     category: 'plotting',
     acceptsFrom: ['standardize'],
     hasRun: true,
+    // Colour left unset: by condition with few samples, one colour with many (qcColorBy).
     defaultConfig: (): QcConfig => ({ metric: 'intensity', plot: 'box' })
   },
   corr: {
@@ -299,7 +357,7 @@ export const NODE_SPECS: Record<NodeKind, NodeSpec> = {
     label: 'Data table',
     category: 'plotting',
     // Shows the upstream step's results table; any processing step can feed it.
-    acceptsFrom: ['standardize', 'compare', 'contrast'],
+    acceptsFrom: ['standardize', 'compare', 'curveFit', 'contrast'],
     hasRun: true,
     defaultConfig: (): TableConfig => ({})
   },
@@ -309,7 +367,7 @@ export const NODE_SPECS: Record<NodeKind, NodeSpec> = {
     category: 'plotting',
     // Union of every plotting op's inputs, so a group can wire from any of them; all its
     // children must be compatible with the single upstream it actually binds to.
-    acceptsFrom: ['standardize', 'compare', 'contrast'],
+    acceptsFrom: ['standardize', 'compare', 'curveFit', 'contrast'],
     hasRun: true,
     defaultConfig: (): PlotGroupConfig => ({ children: [] })
   }
@@ -321,6 +379,10 @@ export const NODE_SPECS: Record<NodeKind, NodeSpec> = {
 // covered, below.
 for (const spec of Object.values(NODE_SPECS))
   if (spec.category === 'plotting' && !spec.staleOn) spec.staleOn = () => false
+// Cluster: the embedding's settings (and, colouring by cluster, the clustering's) need another
+// run; colour by a condition, the plot, territory and look only redraw (clusterRunMatches).
+NODE_SPECS.pca.staleOn = (next, _prev, result) =>
+  result?.kind !== 'cluster' || !clusterRunMatches(next as ClusterConfig, result.ran)
 // STRING: a species override reads another organism; a gene cap the run didn't cover (a custom one
 // typed in the gear) needs its query read.
 NODE_SPECS.string.staleOn = (next, prev, result) => {
@@ -345,7 +407,7 @@ export const CATEGORIES: Record<NodeCategory, CategorySpec> = {
     category: 'processing',
     label: 'Processing',
     accent: '#8a7fe0',
-    ops: ['standardize', 'merge', 'compare', 'contrast']
+    ops: ['standardize', 'merge', 'subset', 'compare', 'curveFit', 'contrast']
   },
   plotting: {
     category: 'plotting',
@@ -359,6 +421,7 @@ export const CATEGORIES: Record<NodeCategory, CategorySpec> = {
       'dr',
       'potency',
       'curveMad',
+      'response',
       'bubble',
       'dumbbell',
       'tdr',
@@ -383,7 +446,7 @@ export const PLOT_SECTIONS: { label: string; kinds: NodeKind[] }[] = [
   { label: 'Data', kinds: ['table'] },
   { label: 'Global', kinds: ['qc', 'curveMad', 'heatmap', 'corr', 'pca', 'geneBar'] },
   { label: 'Differential', kinds: ['volcano', 'ma'] },
-  { label: 'Conditions', kinds: ['bubble', 'dr', 'potency', 'tdr'] },
+  { label: 'Conditions', kinds: ['bubble', 'dr', 'response', 'potency', 'tdr'] },
   { label: 'Contrast', kinds: ['scatter', 'dumbbell'] },
   { label: 'Function', kinds: ['enrich', 'string'] }
 ]
@@ -391,7 +454,9 @@ export const ALL_OPS: NodeKind[] = [
   'load',
   'standardize',
   'merge',
+  'subset',
   'compare',
+  'curveFit',
   'contrast',
   'volcano',
   'heatmap',
@@ -400,6 +465,7 @@ export const ALL_OPS: NodeKind[] = [
   'dr',
   'potency',
   'curveMad',
+  'response',
   'bubble',
   'dumbbell',
   'tdr',
@@ -426,6 +492,7 @@ export const PLOT_CONFIG_KINDS: ReadonlySet<NodeKind> = new Set<NodeKind>([
   'dr',
   'potency',
   'curveMad',
+  'response',
   'bubble',
   'tdr',
   'geneBar',
@@ -439,6 +506,24 @@ export const PLOT_CONFIG_KINDS: ReadonlySet<NodeKind> = new Set<NodeKind>([
 
 export function categoryOf(op: NodeKind): NodeCategory {
   return NODE_SPECS[op].category
+}
+/** The plots whose run computes something of their own (graph/plotRun.ts): enrichment's term
+ *  tests, STRING's network read and the cluster's embedding. Every other plot draws live from its
+ *  upstream's result — its run only marks it ready, so there's nothing for a Re-run to redo. */
+export const plotComputes = (kind: NodeKind): boolean =>
+  kind === 'enrich' || kind === 'string' || kind === 'pca'
+/** Whether a done plot tile — one plot, or a group of them — has nothing to re-run: none of its
+ *  plots computes anything of its own (plotComputes), so a re-run would finish at once and change
+ *  nothing. Such a tile offers no Re-run; a fresh result comes from re-running the step it reads. */
+export function nothingToRerun(data: {
+  kind: NodeKind
+  config: NodeConfig
+  status?: string
+}): boolean {
+  if (data.status !== 'done') return false
+  if (data.kind === 'plotGroup')
+    return (data.config as PlotGroupConfig).children.every((c) => !plotComputes(c.kind))
+  return categoryOf(data.kind) === 'plotting' && !plotComputes(data.kind)
 }
 export function accentOf(category: NodeCategory): string {
   return CATEGORIES[category].accent
@@ -556,10 +641,13 @@ export function axisAvailFor(g: AxisGraph, upstreamId: string | undefined): Axis
   return walk(upstreamId)
 }
 /** The node kind an op's OUTPUT behaves as, for wiring. Merge pools Clean data into one more
- *  Clean-data result, so anything that accepts `standardize` accepts a Merge — expressing that here
- *  rather than adding 'merge' to a dozen `acceptsFrom` lists means a tile added later can't
- *  accidentally omit it. */
-const OUTPUT_KIND: Partial<Record<NodeKind, NodeKind>> = { merge: 'standardize' }
+ *  Clean-data result (and Subset filters one down to another), so anything that accepts
+ *  `standardize` accepts either — expressing that here rather than adding them to a dozen
+ *  `acceptsFrom` lists means a tile added later can't accidentally omit them. */
+const OUTPUT_KIND: Partial<Record<NodeKind, NodeKind>> = {
+  merge: 'standardize',
+  subset: 'standardize'
+}
 export function outputKindOf(op: NodeKind): NodeKind {
   return OUTPUT_KIND[op] ?? op
 }
@@ -571,9 +659,13 @@ export function canConnect(source: NodeKind, target: NodeKind): boolean {
  *  comparisons; `compare` pools two datasets so conditions can be drawn from either (joined by
  *  uniqID — see combineStandardize). */
 /** Nodes that accept several upstream inputs; every other node accepts one. Contrast can take
- *  any number (the selector picks the two datasets to contrast); Compare pools two. */
+ *  any number (the selector picks the two datasets to contrast); Compare and Curve fit pool two. */
 export function maxInputsFor(kind: NodeKind): number {
-  return kind === 'contrast' || kind === 'merge' ? Infinity : kind === 'compare' ? 2 : 1
+  return kind === 'contrast' || kind === 'merge'
+    ? Infinity
+    : kind === 'compare' || kind === 'curveFit'
+      ? 2
+      : 1
 }
 /** True if any op accepts `op` as an input (i.e. the node can be a source). */
 export function hasSourceHandle(op: NodeKind): boolean {

@@ -5,9 +5,10 @@
  *  A folder is a filesystem directory (holding input/output/data) scanned for
  *  inputs; each folder owns its own workflows. Opening a project restores the
  *  session exactly (embedded results and all). */
-import type { NodeResult } from './types'
+import type { GeneSet, NodeResult } from './types'
+import { dirOf, relativeTo, resolveFrom } from './relPath'
 import { packResults, unpackResults } from './resultPack'
-import { emptyWorkflowDoc, type WorkflowDoc } from './workflowDoc'
+import { emptyWorkflowDoc, legacyGeneSets, type WorkflowDoc } from './workflowDoc'
 
 export interface ProjectWorkflow {
   id: string
@@ -24,6 +25,9 @@ export interface ProjectWorkflow {
   /** processing step id → its output/ subfolder name on disk; set at the step's first download,
    *  follows the step's name at the next save after a rename */
   outDirs?: Record<string, string>
+  /** the gene mask (see geneMaskKey) its results were last classified under; when the project's
+   *  differs on opening the workflow, the mask is re-applied to them. Unset = not known. */
+  mask?: string
 }
 
 /** JSON text placed into a serialized project as is — a parked workflow's results, already
@@ -47,6 +51,10 @@ export interface ProjectFolder {
   name: string
   /** filesystem folder scanned for inputs; '' until the user picks one */
   path: string
+  /** `path` relative to the project file's folder, written at each save (see relPath.ts): a
+   *  project copied to another machine along with its folders finds them there (openProject).
+   *  Unset when there's no relative path (another drive) or the project has no file yet. */
+  rel?: string
   workflows: ProjectWorkflow[]
   activeWorkflowId: string
   /** the project data folder's name on disk, inside `path` (`<project>_data`); unset until the
@@ -70,6 +78,9 @@ export interface ProjectFile {
   view?: 'canvas' | 'results'
   /** the Results tab (analysis-group id) that was active, restored alongside `view`. */
   resultsTab?: string | null
+  /** named genesets, shared by every workflow in the project (before 0.3.6 each workflow kept
+   *  its own — gathered here on open, see deserializeProject) */
+  geneSets?: GeneSet[]
 }
 
 /** The newest project format this build reads and writes. */
@@ -120,6 +131,55 @@ function reserveIds(raw: Partial<ProjectFile> & ProjectFileV1): void {
   }
   for (const w of Array.isArray(raw.workflows) ? raw.workflows : []) scan(w?.id) // v1
   seq = max
+}
+
+/** Identifies the gene mask — the genes of every HIDDEN geneset — so a workflow can tell whether
+ *  its results were classified under the project's current one. '' = nothing masked. */
+export function geneMaskKey(sets: GeneSet[]): string {
+  const ids = new Set<string>()
+  for (const g of sets) if (g.hidden) for (const gene of g.genes) ids.add(gene.id)
+  if (ids.size === 0) return ''
+  // FNV-1a over the sorted ids: short enough to save per workflow.
+  let h = 0x811c9dc5
+  for (const ch of [...ids].sort().join('\n')) {
+    h ^= ch.charCodeAt(0)
+    h = Math.imul(h, 0x01000193)
+  }
+  return `${ids.size}:${(h >>> 0).toString(36)}`
+}
+
+/** Genesets were per workflow before 0.3.6: gather every workflow's into the project's list, and
+ *  record on each workflow the mask its results were classified under (its own hidden sets), so
+ *  opening it re-applies the project's. A set found in several workflows (same id — a copied
+ *  workflow, or the legacy Favourites) becomes one: its genes united, hidden if hidden in any. */
+function gatherGeneSets(folders: ProjectFolder[]): GeneSet[] {
+  const byId = new Map<string, GeneSet>()
+  for (const f of folders)
+    for (const w of f.workflows) {
+      const own = legacyGeneSets(w.doc)
+      if (w.mask === undefined) w.mask = geneMaskKey(own)
+      for (const g of own) {
+        const had = byId.get(g.id)
+        if (!had) {
+          byId.set(g.id, { ...g, genes: [...g.genes] })
+          continue
+        }
+        const ids = new Set(had.genes.map((x) => x.id))
+        had.genes.push(...g.genes.filter((x) => !ids.has(x.id)))
+        if (g.hidden) had.hidden = true
+        if (!had.color && g.color) had.color = g.color
+      }
+    }
+  return [...byId.values()]
+}
+
+/** The workflow's doc without the genesets it kept before they were the project's. */
+function withoutLegacySets(w: ProjectWorkflow): ProjectWorkflow {
+  if (!('geneSets' in w.doc) && !('favourites' in w.doc)) return w
+  const doc = { ...w.doc }
+  delete doc.geneSets
+  delete doc.favourites
+  return { ...w, doc }
 }
 
 export function emptyWorkflow(name = 'Workflow 1'): ProjectWorkflow {
@@ -270,7 +330,8 @@ function coerceWorkflows(
           doc: w.doc ?? emptyWorkflowDoc(),
           results: unpackResults(w.results),
           ...(typeof w.dir === 'string' && w.dir ? { dir: w.dir } : null),
-          ...(w.outDirs && typeof w.outDirs === 'object' ? { outDirs: { ...w.outDirs } } : null)
+          ...(w.outDirs && typeof w.outDirs === 'object' ? { outDirs: { ...w.outDirs } } : null),
+          ...(typeof w.mask === 'string' ? { mask: w.mask } : null)
         }))
       : [emptyWorkflow()]
   const active = activeId && workflows.some((w) => w.id === activeId) ? activeId : workflows[0].id
@@ -345,7 +406,8 @@ export function deserializeProject(text: string): ProjectFile {
         path: f.path ?? '',
         workflows,
         activeWorkflowId,
-        ...(typeof f.dataName === 'string' && f.dataName ? { dataName: f.dataName } : null)
+        ...(typeof f.dataName === 'string' && f.dataName ? { dataName: f.dataName } : null),
+        ...(typeof f.rel === 'string' && f.rel ? { rel: f.rel } : null)
       }
     })
   } else {
@@ -362,6 +424,8 @@ export function deserializeProject(text: string): ProjectFile {
       }
     ]
   }
+  const geneSets = Array.isArray(raw.geneSets) ? raw.geneSets : gatherGeneSets(folders)
+  folders = folders.map((f) => ({ ...f, workflows: f.workflows.map(withoutLegacySets) }))
   const activeFolderId =
     raw.activeFolderId && folders.some((f) => f.id === raw.activeFolderId)
       ? raw.activeFolderId
@@ -373,8 +437,47 @@ export function deserializeProject(text: string): ProjectFile {
     folders,
     activeFolderId,
     view: raw.view === 'results' ? 'results' : 'canvas',
-    resultsTab: typeof raw.resultsTab === 'string' ? raw.resultsTab : null
+    resultsTab: typeof raw.resultsTab === 'string' ? raw.resultsTab : null,
+    geneSets
   }
+}
+
+/** The folders with each one's path relative to the project file at `projectPath` (see
+ *  ProjectFolder.rel), for saving there. */
+export function withRelPaths(folders: ProjectFolder[], projectPath: string): ProjectFolder[] {
+  const dir = dirOf(projectPath)
+  return folders.map((f) => {
+    const rel = f.path && dir ? relativeTo(dir, f.path) : null
+    if (rel) return { ...f, rel }
+    if (!f.rel) return f
+    const out = { ...f }
+    delete out.rel
+    return out
+  })
+}
+
+/** On opening the project at `projectPath`: each folder's saved relative path, when it leads to a
+ *  folder that exists, is where the folder is — it wins over the saved full path, so a copy of a
+ *  project and its folders reads its own data, never the original's. Otherwise the full path is
+ *  kept (it's flagged as missing later if that doesn't exist either). Returns the folders and
+ *  whether any moved. */
+export async function relocateFolders(
+  folders: ProjectFolder[],
+  projectPath: string,
+  isDir: (path: string) => Promise<boolean>
+): Promise<{ folders: ProjectFolder[]; moved: number }> {
+  const dir = dirOf(projectPath)
+  let moved = 0
+  const out = await Promise.all(
+    folders.map(async (f) => {
+      if (!f.rel || !dir) return f
+      const there = resolveFrom(dir, f.rel)
+      if (there === f.path || !(await isDir(there).catch(() => false))) return f
+      moved += 1
+      return { ...f, path: there }
+    })
+  )
+  return { folders: out, moved }
 }
 
 /** A fresh single-folder, single-workflow project (unsaved, no data folder yet). */
@@ -385,6 +488,7 @@ export function newProjectFile(name = 'Untitled project'): ProjectFile {
     version: PROJECT_VERSION,
     name,
     folders: [folder],
-    activeFolderId: folder.id
+    activeFolderId: folder.id,
+    geneSets: []
   }
 }

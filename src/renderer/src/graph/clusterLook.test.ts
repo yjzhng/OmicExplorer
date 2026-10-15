@@ -37,7 +37,7 @@ describe('clusterLook', () => {
 describe('cluster quick access', () => {
   it('starts with only the plot type, the colouring and the territory on the tile', () => {
     const on = ['plot', 'colorBy', 'territory']
-    const off = ['legend', 'clusterOn', 'clusterCount', 'display']
+    const off = ['clusterOn', 'clusterCount', 'display']
     for (const f of on) expect(quickOn({}, f, 'pca'), f).toBe(true)
     for (const f of off) expect(quickOn({}, f, 'pca'), f).toBe(false)
   })

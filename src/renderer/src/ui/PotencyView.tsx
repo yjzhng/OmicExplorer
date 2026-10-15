@@ -6,7 +6,7 @@
  */
 import { useMemo } from 'react'
 
-import type { CompareResultRow } from '../engine'
+import { comparisonOf, fcName, type CompareResultRow } from '../engine'
 import {
   DEFAULT_EFFECT_LABELS,
   type EffectColors,
@@ -14,6 +14,7 @@ import {
   type PointStyle
 } from '../graph/types'
 import { useGraph } from '../graph/store'
+import { tooltip } from './condTooltip'
 import { PlotlyChart } from './PlotlyChart'
 import { legendOn, resolveGroups, resolveHighlight } from './pointStyle'
 import { axisBase, EFFECT_COLOR, guideLine, PALETTES, plotBase } from './theme'
@@ -87,32 +88,56 @@ export function PotencyView({
 
   const points = useMemo(() => {
     const out: Point[] = []
-    for (const r of rows) {
-      const c = r.curve
-      if (!c || r.log2FC == null || !Number.isFinite(r.log2FC) || !Number.isFinite(c.pec50))
-        continue
-      const effect = (r.effect ?? 'none') as Eff
-      if (show === 'called' && !r.signf) continue
+    // A point from its EC50 (in the axis's units) and its fold change: pEC50 = −log₁₀ EC50 in
+    // molar (the unit's scale), as CurveCurator reports it.
+    const add = (r: CompareResultRow, ec50: number, y: number, at?: string): void => {
+      if (!(ec50 > 0) || !Number.isFinite(y)) return
       out.push({
         uniqID: r.uniqID,
-        label: displayMap[r.uniqID] || r.uniqID,
-        x: c.pec50 - Math.log10(dose.scale),
-        y: r.log2FC,
-        ec50: 10 ** -c.pec50,
-        effect
+        label: (displayMap[r.uniqID] || r.uniqID) + (at ? ` · ${at}` : ''),
+        x: -Math.log10(ec50 * dose.scale),
+        y,
+        ec50,
+        effect: (r.effect ?? 'none') as Eff
       })
+    }
+    for (const r of rows) {
+      if (show === 'called' && !r.signf) continue
+      const c = r.curve
+      if (c) {
+        if (r.log2FC != null && Number.isFinite(c.pec50)) add(r, 10 ** -c.pec50, r.log2FC)
+        continue
+      }
+      // The response surface method: a curve's description midpoint against its peak; a
+      // surface's per time slice, against that slice's top.
+      if (r.rs?.desc && r.log2FC != null) add(r, r.rs.desc.mid, r.log2FC)
+      for (const sl of r.rs?.surface?.byTime ?? []) add(r, sl.mid, sl.back, `t=${sl.at}`)
     }
     return out
   }, [rows, displayMap, show, dose.scale])
 
   const { data, layout, labels } = useMemo(() => {
     const p = PALETTES[mode]
-    const cmp = rows[0]?.comparison
-    const fcLabel = cmp ? `curve log₂FC · ${cmp}` : 'curve log₂FC'
+    const cmp = comparisonOf(rows)
+    // CurveCurator's curve fold change (its range); the response surface method's peak (a curve's,
+    // or each time slice's top on a surface).
+    const what = fcName(rows)
+    const fcLabel = cmp ? `${what} · ${cmp}` : what
     const unitSfx = dose.unit ? ` ${dose.unit}` : ''
     // Per point (hovertemplate takes an array), with its EC50 in the dose's units written in.
-    const hover = (pt: Point, named = !emphasis.label): string =>
-      `${named ? '%{text}<br>' : ''}pEC50=%{x:.2f} (EC50 ${Number(pt.ec50.toPrecision(3))}${unitSfx})<br>${fcLabel}=%{y:.3f}<extra></extra>`
+    const hover = (pt: Point): string =>
+      tooltip(
+        {
+          title: '%{text}',
+          values: [
+            ['pEC50', '%{x:.2f}'],
+            ['EC50', `${Number(pt.ec50.toPrecision(3))}${unitSfx}`],
+            [fcLabel, '%{y:.3f}']
+          ]
+        },
+        p.textMuted,
+        { template: true }
+      )
     const look = (eff: Eff) => groups.get(eff)!
     const byEffect: Record<Eff, Point[]> = { up: [], down: [], none: [] }
     for (const pt of points) byEffect[pt.effect].push(pt)
@@ -151,7 +176,7 @@ export function PotencyView({
         y: sel.map((pt) => pt.y),
         text: sel.map((pt) => pt.label),
         customdata: sel.map((pt) => pt.uniqID),
-        hovertemplate: sel.map((pt) => hover(pt, true)),
+        hovertemplate: sel.map((pt) => hover(pt)),
         marker: {
           color: set.color ?? sel.map((pt) => look(pt.effect).color),
           size: sel.map((pt) => look(pt.effect).size),
@@ -193,7 +218,7 @@ export function PotencyView({
       title: title ? { text: title, font: { size: 13 } } : undefined,
       xaxis: {
         ...axisBase(p),
-        title: dose.molar ? 'pEC50 (−log₁₀ EC50 [M])' : '−log₁₀ EC50',
+        title: dose.molar ? 'pEC50 (M)' : '−log₁₀ EC50',
         range: [xLo - xPad, xHi + xPad],
         autorange: false
       },
@@ -225,8 +250,7 @@ export function PotencyView({
     mode,
     selSets,
     groups,
-    showLegend,
-    emphasis.label
+    showLegend
   ])
 
   if (!points.length)

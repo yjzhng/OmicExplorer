@@ -1,6 +1,7 @@
 import { useMemo } from 'react'
 
 import type { ClusterData } from '../engine'
+import { tooltip } from './condTooltip'
 import { PlotlyChart } from './PlotlyChart'
 import { axisBase, PALETTES, plotBase } from './theme'
 import { useUiTheme } from './useUiTheme'
@@ -92,7 +93,17 @@ export function LoadingView({ cluster, title }: { cluster: ClusterData; title?: 
         x: lo.map((l) => l.x),
         y: lo.map((l) => l.y),
         text: lo.map((l) => l.label),
-        hovertemplate: `%{text}<br>PC1=%{x:.3f}<br>PC2=%{y:.3f}<extra></extra>`,
+        hovertemplate: tooltip(
+          {
+            title: '%{text}',
+            values: [
+              ['PC1', '%{x:.3f}'],
+              ['PC2', '%{y:.3f}']
+            ]
+          },
+          p.textMuted,
+          { template: true }
+        ),
         marker: { color: p.text, size: 6 }
       }
     ]

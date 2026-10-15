@@ -12,7 +12,8 @@ import { useMemo, type CSSProperties, type ReactNode } from 'react'
 
 import { TileBody } from '../graph/GraphNode'
 import { Section } from '../graph/NodeConfigPanel'
-import { deriveGroups, parsePanelId } from '../graph/groups'
+import { deriveTabs, parsePanelId } from '../graph/groups'
+import { usePlotGroupTitle } from '../graph/usePlotGroupTitle'
 import {
   accentOf,
   categoryOf,
@@ -49,7 +50,7 @@ export default function PlotPanel({ node }: { node: StepNode }): ReactNode {
   const updateSettings = useAppSettings((s) => s.update)
 
   const pages = useMemo(() => derivePages(nodes, edges), [nodes, edges])
-  const analyses = useMemo(() => deriveGroups(nodes, edges), [nodes, edges])
+  const analyses = useMemo(() => deriveTabs(nodes, edges), [nodes, edges])
   // This step's pages (a group has one per plot); the picked one, else the first.
   const mine = pages.filter((p) => parsePanelId(p.panelId).nodeId === node.id)
   const page = mine.find((p) => parsePanelId(p.panelId).childId === selectedSub) ?? mine[0]
@@ -116,15 +117,17 @@ function StepTileCard({ node, activeChild }: { node: StepNode; activeChild?: str
   const type = group
     ? `${NODE_SPECS[data.kind].label} · ${(data.config as PlotGroupConfig).children.length}`
     : plotLabel(data.kind, data.config)
+  // A plot group unnamed reads as its results tab does (after the step it reads from).
+  const title = usePlotGroupTitle(id, group) ?? stepTitle(node)
   return (
     <div style={{ ...styles.card, borderTopColor: accent }}>
       <div style={styles.head}>
         <span style={styles.titleWrap}>
           <span style={{ ...styles.catTag, color: accent }}>{CATEGORIES[category].label}</span>
-          <span style={styles.name} title={stepTitle(node)}>
-            {stepTitle(node)}
+          <span style={styles.name} title={title}>
+            {title}
           </span>
-          {data.name && <span style={styles.typeSub}>{type}</span>}
+          {(data.name || group) && <span style={styles.typeSub}>{type}</span>}
         </span>
         <div style={styles.headRight}>
           <button

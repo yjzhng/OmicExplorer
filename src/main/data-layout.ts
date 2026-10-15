@@ -7,7 +7,7 @@
 import { rmSync } from 'node:fs'
 import { cp, rename, rm, stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { basename, dirname, join } from 'node:path'
+import { basename, dirname, join, relative, isAbsolute, resolve } from 'node:path'
 
 import { app, ipcMain } from 'electron'
 
@@ -114,7 +114,34 @@ async function applyDirOps(ops: DirOp[]): Promise<DirOpResult[]> {
   return out
 }
 
+/**
+ * Delete files and folders (recursively) for a project folder clean-up — each only if it lies
+ * strictly inside `root` (the project's data folder), so a bad plan can never reach outside it.
+ * One failing path doesn't stop the rest; returns what couldn't be removed.
+ */
+async function removeInside(root: string, paths: string[]): Promise<string[]> {
+  const base = resolve(root)
+  const errors: string[] = []
+  for (const p of paths) {
+    const full = resolve(p)
+    const rel = relative(base, full)
+    if (!rel || rel.startsWith('..') || isAbsolute(rel)) {
+      errors.push(`${p}: outside the project data folder — not removed`)
+      continue
+    }
+    try {
+      await rm(full, { recursive: true, force: true })
+    } catch (e) {
+      errors.push(`${p}: ${e instanceof Error ? e.message : String(e)}`)
+    }
+  }
+  return errors
+}
+
 export function registerDataLayout(): void {
+  ipcMain.handle('layout:removeInside', (_evt, root: string, paths: string[]): Promise<string[]> =>
+    removeInside(root, paths)
+  )
   ipcMain.handle('layout:scratchDir', (): string => scratch)
   ipcMain.handle('layout:applyDirOps', (_evt, ops: DirOp[]): Promise<DirOpResult[]> =>
     applyDirOps(ops)

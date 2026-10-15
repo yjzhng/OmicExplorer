@@ -22,9 +22,11 @@ import {
 } from './stats'
 
 /** CurveCurator's global limits (models.py). */
-const PEC50_DELTA = 2 // pEC50 may lie this many log₁₀ units beyond the tested doses
+export const PEC50_DELTA = 2 // pEC50 may lie this many log₁₀ units beyond the tested doses
 const SLOPE_LIMITS: [number, number] = [0.01, 10]
 const Y_LIMITS: [number, number] = [1e-4, 1e6]
+/** The same plateau limits for a fit on log₂ ratios. */
+export const Y_LIMITS_LOG2: [number, number] = [Math.log2(Y_LIMITS[0]), Math.log2(Y_LIMITS[1])]
 /** The fit's starting slopes ('standard' speed): flat, unit and steep. */
 const START_SLOPES = [SLOPE_LIMITS[0], 1, SLOPE_LIMITS[1]]
 /** The recalibrated F distribution's location (CurveCurator's default `loc`). */
@@ -57,6 +59,48 @@ export function logistic(x: number, p: LogisticParams): number {
   return (p.front - p.back) / (1 + 10 ** (p.slope * (x + p.pec50))) + p.back
 }
 
+/** Log-doses to draw a fitted curve at, over [xMin, xMax]: `base` evenly spaced, then each span
+ *  split in half while the curve still bends inside it — so a steep turn gets as many points as it
+ *  needs to look smooth and a flat stretch none extra (thousands of background curves stay cheap).
+ *  A span bends when the curve's log₂ value at its quarter points strays from the straight chord
+ *  by more than `tol`: a fraction of the curve's own rise, floored. Quarter points, not the
+ *  midpoint: a turn centred on the midpoint meets the chord there exactly and would pass. */
+export function curveSampleX(
+  p: LogisticParams & { xMin: number; xMax: number },
+  base = 25,
+  maxDepth = 7
+): number[] {
+  const { xMin, xMax } = p
+  const f = (lx: number): number => Math.log2(logistic(lx, p))
+  if (!(xMax > xMin) || base < 2) return [xMin, xMax]
+  const rise = Math.abs(f(xMax) - f(xMin))
+  const tol = Math.max(0.004, rise * 0.002)
+  const out: number[] = [xMin]
+  const split = (a: number, fa: number, b: number, fb: number, depth: number): void => {
+    const q1 = a + (b - a) / 4
+    const q3 = a + ((b - a) * 3) / 4
+    const bent =
+      depth < maxDepth &&
+      (Math.abs(f(q1) - (fa * 3 + fb) / 4) > tol || Math.abs(f(q3) - (fa + fb * 3) / 4) > tol)
+    if (bent) {
+      const m = (a + b) / 2
+      const fm = f(m)
+      split(a, fa, m, fm, depth + 1)
+      split(m, fm, b, fb, depth + 1)
+    } else out.push(b)
+  }
+  let a = xMin
+  let fa = f(a)
+  for (let i = 1; i < base; i++) {
+    const b = xMin + ((xMax - xMin) * i) / (base - 1)
+    const fb = f(b)
+    split(a, fa, b, fb, 0)
+    a = b
+    fa = fb
+  }
+  return out
+}
+
 /** ∂f/∂(pec50, slope, front, back) at x — CurveCurator's `jacobian_matrix`, with its NaN → 0 at
  *  the control (x = −∞, where only the front plateau matters). */
 function gradient(x: number, v: Vec): Vec {
@@ -68,10 +112,19 @@ function gradient(x: number, v: Vec): Vec {
 }
 
 function sse(xs: number[], ys: number[], v: Vec): number {
-  const p = fromVec(v)
+  return sse4(xs, ys, v[0], v[1], v[2], v[3])
+}
+
+/** `logistic` on bare parameters (pec50, slope, front, back) — the same arithmetic, without an
+ *  object per call. The fit's hot loops call it tens of millions of times. */
+function logistic4(x: number, pec50: number, slope: number, front: number, back: number): number {
+  return (front - back) / (1 + 10 ** (slope * (x + pec50))) + back
+}
+/** `sse` on bare parameters (see logistic4). */
+function sse4(xs: number[], ys: number[], p0: number, p1: number, p2: number, p3: number): number {
   let s = 0
   for (let i = 0; i < xs.length; i++) {
-    const r = ys[i] - logistic(xs[i], p)
+    const r = ys[i] - logistic4(xs[i], p0, p1, p2, p3)
     s += r * r
   }
   return s
@@ -82,8 +135,9 @@ export interface Bounds {
   hi: Vec
 }
 /** CurveCurator's `set_boundaries`: pEC50 within the tested doses ± PEC50_DELTA (from the treated
- *  doses only — the control's −∞ is not a dose), slope and plateaus within the global limits. */
-export function boundsFor(doseX: number[]): Bounds {
+ *  doses only — the control's −∞ is not a dose), slope and plateaus within the global limits
+ *  (`yLimits`: CurveCurator's ratio limits unless given). */
+export function boundsFor(doseX: number[], yLimits: [number, number] = Y_LIMITS): Bounds {
   let lo = Infinity
   let hi = -Infinity
   for (const x of doseX) {
@@ -91,8 +145,8 @@ export function boundsFor(doseX: number[]): Bounds {
     hi = Math.max(hi, -x)
   }
   return {
-    lo: [lo - PEC50_DELTA, SLOPE_LIMITS[0], Y_LIMITS[0], Y_LIMITS[0]],
-    hi: [hi + PEC50_DELTA, SLOPE_LIMITS[1], Y_LIMITS[1], Y_LIMITS[1]]
+    lo: [lo - PEC50_DELTA, SLOPE_LIMITS[0], yLimits[0], yLimits[0]],
+    hi: [hi + PEC50_DELTA, SLOPE_LIMITS[1], yLimits[1], yLimits[1]]
   }
 }
 const clampVec = (v: Vec, b: Bounds): Vec =>
@@ -125,63 +179,138 @@ export function startGuesses(xs: number[], ys: number[], b: Bounds): Vec[] {
 }
 
 /** Solve the 4×4 system A·d = g (Gaussian elimination, partial pivoting), over the free indices
- *  only (the rest of d stays 0). Null when singular. */
-function solve(A: number[][], g: number[], free: number[]): Vec | null {
-  const m = free.length
-  const M = free.map((i) => [...free.map((j) => A[i][j]), g[i]])
+ *  only (the rest of d stays 0). False when singular. Allocation-free: `A` is row-major 4×4, the
+ *  answer goes into `d`, and `M` holds the m working rows (each m + 1 wide). */
+function solve(
+  A: Float64Array,
+  g: Float64Array,
+  free: Int32Array,
+  m: number,
+  d: Float64Array,
+  M: Float64Array[]
+): boolean {
+  for (let r = 0; r < m; r++) {
+    const row = M[r]
+    const fr = free[r]
+    for (let j = 0; j < m; j++) row[j] = A[fr * 4 + free[j]]
+    row[m] = g[fr]
+  }
   for (let c = 0; c < m; c++) {
     let piv = c
     for (let r = c + 1; r < m; r++) if (Math.abs(M[r][c]) > Math.abs(M[piv][c])) piv = r
-    if (!(Math.abs(M[piv][c]) > 1e-300)) return null
-    ;[M[c], M[piv]] = [M[piv], M[c]]
+    if (!(Math.abs(M[piv][c]) > 1e-300)) return false
+    const tmp = M[c]
+    M[c] = M[piv]
+    M[piv] = tmp
+    const Mc = M[c]
     for (let r = c + 1; r < m; r++) {
-      const f = M[r][c] / M[c][c]
-      for (let k = c; k <= m; k++) M[r][k] -= f * M[c][k]
+      const Mr = M[r]
+      const f = Mr[c] / Mc[c]
+      for (let k = c; k <= m; k++) Mr[k] -= f * Mc[k]
     }
   }
-  const d: Vec = [0, 0, 0, 0]
+  d[0] = 0
+  d[1] = 0
+  d[2] = 0
+  d[3] = 0
   for (let r = m - 1; r >= 0; r--) {
-    let s = M[r][m]
-    for (let k = r + 1; k < m; k++) s -= M[r][k] * d[free[k]]
-    d[free[r]] = s / M[r][r]
+    const Mr = M[r]
+    let s = Mr[m]
+    for (let k = r + 1; k < m; k++) s -= Mr[k] * d[free[k]]
+    d[free[r]] = s / Mr[r]
   }
-  return d
+  return true
 }
+
+const clampTo = (x: number, lo: number, hi: number): number => Math.min(hi, Math.max(lo, x))
 
 /** Bounded Levenberg–Marquardt least squares from `start`. A parameter pinned at a bound with the
  *  gradient pushing it further out is held there for the step (a simple active set), so the rest
- *  can still move. Returns the refined parameters and their SSE. */
+ *  can still move. Returns the refined parameters and their SSE.
+ *
+ *  Written on scalars and preallocated buffers (it runs ~10⁵ times per curve-fit comparison), in
+ *  exactly the floating-point operations and order of the straightforward version — so its
+ *  results are bit-identical to it. */
 function refine(xs: number[], ys: number[], start: Vec, b: Bounds): { v: Vec; cost: number } {
-  let v = clampVec(start, b)
-  let cost = sse(xs, ys, v)
+  const lo = b.lo
+  const hi = b.hi
+  let v0 = clampTo(start[0], lo[0], hi[0])
+  let v1 = clampTo(start[1], lo[1], hi[1])
+  let v2 = clampTo(start[2], lo[2], hi[2])
+  let v3 = clampTo(start[3], lo[3], hi[3])
+  let cost = sse4(xs, ys, v0, v1, v2, v3)
   let lambda = 1e-3
+  const A = new Float64Array(16)
+  const D = new Float64Array(16)
+  const g = new Float64Array(4)
+  const d = new Float64Array(4)
+  const free = new Int32Array(4)
+  const M = [new Float64Array(5), new Float64Array(5), new Float64Array(5), new Float64Array(5)]
+  const n = xs.length
   for (let iter = 0; iter < 200 && cost > 0; iter++) {
     // Normal equations: A = JᵀJ, g = Jᵀr (r = y − f).
-    const A = [0, 1, 2, 3].map(() => [0, 0, 0, 0])
-    const g = [0, 0, 0, 0]
-    const p = fromVec(v)
-    for (let i = 0; i < xs.length; i++) {
-      const J = gradient(xs[i], v)
-      const r = ys[i] - logistic(xs[i], p)
-      for (let a = 0; a < 4; a++) {
-        g[a] += J[a] * r
-        for (let c = 0; c < 4; c++) A[a][c] += J[a] * J[c]
+    A.fill(0)
+    g.fill(0)
+    const fb = v2 - v3
+    for (let i = 0; i < n; i++) {
+      const x = xs[i]
+      // the gradient (see `gradient`)
+      const w = lowShare(x, v0, v1)
+      let J0 = 0
+      let J1 = 0
+      const J2 = w
+      const J3 = 1 - w
+      if (Number.isFinite(x)) {
+        const dw = -w * (1 - w) * LN10
+        J0 = fb * dw * v1
+        J1 = fb * dw * (x + v0)
       }
+      const r = ys[i] - logistic4(x, v0, v1, v2, v3)
+      g[0] += J0 * r
+      A[0] += J0 * J0
+      A[1] += J0 * J1
+      A[2] += J0 * J2
+      A[3] += J0 * J3
+      g[1] += J1 * r
+      A[4] += J1 * J0
+      A[5] += J1 * J1
+      A[6] += J1 * J2
+      A[7] += J1 * J3
+      g[2] += J2 * r
+      A[8] += J2 * J0
+      A[9] += J2 * J1
+      A[10] += J2 * J2
+      A[11] += J2 * J3
+      g[3] += J3 * r
+      A[12] += J3 * J0
+      A[13] += J3 * J1
+      A[14] += J3 * J2
+      A[15] += J3 * J3
     }
-    const atBound = (i: number): boolean =>
-      (v[i] <= b.lo[i] && g[i] < 0) || (v[i] >= b.hi[i] && g[i] > 0)
-    const free = [0, 1, 2, 3].filter((i) => !atBound(i))
-    if (free.length === 0) break
+    let m = 0
+    if (!((v0 <= lo[0] && g[0] < 0) || (v0 >= hi[0] && g[0] > 0))) free[m++] = 0
+    if (!((v1 <= lo[1] && g[1] < 0) || (v1 >= hi[1] && g[1] > 0))) free[m++] = 1
+    if (!((v2 <= lo[2] && g[2] < 0) || (v2 >= hi[2] && g[2] > 0))) free[m++] = 2
+    if (!((v3 <= lo[3] && g[3] < 0) || (v3 >= hi[3] && g[3] > 0))) free[m++] = 3
+    if (m === 0) break
     let improved = false
     while (lambda < 1e12) {
-      const D = A.map((row, i) => row.map((x, j) => (i === j ? x + lambda * (x + 1e-9) : x)))
-      const d = solve(D, g, free)
-      if (d) {
-        const next = clampVec(v.map((x, i) => x + d[i]) as Vec, b)
-        const nextCost = sse(xs, ys, next)
+      for (let k = 0; k < 16; k++) {
+        const x = A[k]
+        D[k] = k % 5 === 0 ? x + lambda * (x + 1e-9) : x
+      }
+      if (solve(D, g, free, m, d, M)) {
+        const n0 = clampTo(v0 + d[0], lo[0], hi[0])
+        const n1 = clampTo(v1 + d[1], lo[1], hi[1])
+        const n2 = clampTo(v2 + d[2], lo[2], hi[2])
+        const n3 = clampTo(v3 + d[3], lo[3], hi[3])
+        const nextCost = sse4(xs, ys, n0, n1, n2, n3)
         if (nextCost < cost) {
           const gain = cost - nextCost
-          v = next
+          v0 = n0
+          v1 = n1
+          v2 = n2
+          v3 = n3
           cost = nextCost
           lambda = Math.max(lambda / 10, 1e-12)
           improved = gain > 1e-14 + 1e-12 * cost
@@ -192,16 +321,26 @@ function refine(xs: number[], ys: number[], start: Vec, b: Bounds): { v: Vec; co
     }
     if (!improved) break
   }
-  return { v, cost }
+  return { v: [v0, v1, v2, v3], cost }
 }
 
 /** CurveCurator's 'standard' OLS fit: the starting guess with the lowest SSE, refined from each
- *  of the three starting slopes; the lowest-SSE result wins. `doseX` sets the pEC50 bounds. */
-export function fitLogistic(xs: number[], ys: number[], doseX: number[]): LogisticParams {
-  const b = boundsFor(doseX)
-  let best: Vec = startGuesses(xs, ys, b)[0]
+ *  of the three starting slopes; the lowest-SSE result wins. `doseX` sets the pEC50 bounds,
+ *  `yLimits` the plateaus' (see boundsFor); `pec50Max` caps pEC50 further (the midpoint may not lie
+ *  below −pec50Max on x); `front` fixes the low plateau. */
+export function fitLogistic(
+  xs: number[],
+  ys: number[],
+  doseX: number[],
+  opts: { yLimits?: [number, number]; pec50Max?: number; front?: number } = {}
+): LogisticParams {
+  const b = boundsFor(doseX, opts.yLimits)
+  if (opts.pec50Max != null) b.hi[0] = Math.max(b.lo[0], Math.min(b.hi[0], opts.pec50Max))
+  if (opts.front != null) b.lo[2] = b.hi[2] = opts.front
+  const guesses = startGuesses(xs, ys, b)
+  let best: Vec = guesses[0]
   let bestCost = Infinity
-  for (const guess of startGuesses(xs, ys, b)) {
+  for (const guess of guesses) {
     const c = sse(xs, ys, guess)
     if (c <= bestCost) [best, bestCost] = [guess, c]
   }
@@ -347,6 +486,10 @@ export interface CurveFit extends LogisticParams {
   rmse?: number
   /** points in the fit, the control's included */
   n: number
+  /** the lack-of-fit test (curveLackOfFit): its F and p-value — absent where the doses have no
+   *  replicates to estimate pure error from, or on results run before it was kept */
+  lofF?: number
+  lofP?: number
   xMin: number
   xMax: number
   /** M0, the flat null the F-test compares against: the mean ratio of the fit's points (control
@@ -361,7 +504,7 @@ export interface CurveFit extends LogisticParams {
  * order; non-finite ratios are dropped). The control is added as one point, ratio 1 at −∞. Null
  * when 4 or fewer points remain — the fit has 4 parameters.
  */
-export function fitCurve(doseX: number[], ratios: number[]): CurveFit | null {
+export function fitCurve(doseX: number[], ratios: number[], grid?: number[]): CurveFit | null {
   const pts: Array<[number, number]> = []
   for (let i = 0; i < doseX.length; i++)
     if (Number.isFinite(doseX[i]) && Number.isFinite(ratios[i])) pts.push([doseX[i], ratios[i]])
@@ -371,14 +514,20 @@ export function fitCurve(doseX: number[], ratios: number[]): CurveFit | null {
   const n = xs.length
   if (n <= 4) return null
   const dx = xs.slice(1)
-  const p = fitLogistic(xs, ys, dx)
+  // CurveCurator's interpolation (`interpolation = true`): the fit — both models — also sees the
+  // grid's points within the curve's measured range, each read off the straight line between the
+  // neighbouring measured ratios; the test, R² and fold change stay on the real points alone.
+  const fitPts = grid?.length ? withInterpolation(xs, ys, pts, grid) : { x: xs, y: ys }
+  const p = fitLogistic(fitPts.x, fitPts.y, dx)
   const v = toVec(p)
 
-  // Null model: the mean of every point (control included); both SSEs nudged as CurveCurator does
-  // so a perfect fit doesn't divide by zero.
+  // Null model: the flat line fitted to the same points as the curve — the mean of every point
+  // (control included), the grid's too when interpolating; both SSEs on the real points, nudged as
+  // CurveCurator does so a perfect fit doesn't divide by zero.
+  const level = mean(fitPts.y)
   const yMean = mean(ys)
   const sst = ys.reduce((s, y) => s + (y - yMean) ** 2, 0)
-  const m0 = sst + 1e-20
+  const m0 = ys.reduce((s, y) => s + (y - level) ** 2, 0) + 1e-20
   const m1 = sse(xs, ys, v) + 1e-20
   const k = 4
   const f = Math.max(0, ((m0 - m1) / m1) * (n / k))
@@ -386,8 +535,10 @@ export function fitCurve(doseX: number[], ratios: number[]): CurveFit | null {
   const r2 = Math.max(0, 1 - (m1 - 1e-20 + 1e-10) / (sst + 1e-10))
   const xMin = dx[0]
   const xMax = dx[dx.length - 1]
+  const lof = curveLackOfFit(dx, ys.slice(1), p)
   return {
     ...p,
+    ...(lof ? { lofF: lof.f, lofP: lof.p } : null),
     log2FC: Math.log2(logistic(xMax, p)) - Math.log2(logistic(xMin, p)),
     f,
     pVal: fSurvival(f, dfn, dfd, F_LOC),
@@ -396,9 +547,112 @@ export function fitCurve(doseX: number[], ratios: number[]): CurveFit | null {
     n,
     xMin,
     xMax,
-    m0: yMean,
+    m0: level,
     m0SE: Math.sqrt(sst / (n - 1) / n)
   }
+}
+
+/**
+ * The lack-of-fit test of a fitted curve: does the 4PL describe the dose means, given how much the
+ * replicates scatter about them? The fit's residual sum of squares (on its real points, the
+ * control — ratio 1 at −∞ — included, as the F-test's) splits into pure error (each replicate
+ * about its dose's mean) and lack of fit (the rest); F = (SS_lof / (c − 4)) / (SS_pe / (n − c)) over
+ * c dose groups and n points, against F(c − 4, n − c). Undefined without both degrees of freedom —
+ * no replicates, or 4 or fewer doses. `doseX` / `ratios` are the treated points (log₁₀ dose, ratio
+ * to the control).
+ */
+export function curveLackOfFit(
+  doseX: number[],
+  ratios: number[],
+  p: LogisticParams
+): { f: number; p: number } | undefined {
+  const groups = new Map<number, number[]>()
+  let sseAll = (1 - p.front) ** 2
+  let n = 1
+  for (let i = 0; i < doseX.length; i++) {
+    const x = doseX[i]
+    const y = ratios[i]
+    if (!Number.isFinite(x) || !Number.isFinite(y)) continue
+    sseAll += (y - logistic(x, p)) ** 2
+    n++
+    const g = groups.get(x)
+    if (g) g.push(y)
+    else groups.set(x, [y])
+  }
+  const c = groups.size + 1
+  const dfLof = c - 4
+  const dfPe = n - c
+  if (dfLof < 1 || dfPe < 1) return undefined
+  let ssPe = 0
+  for (const ys of groups.values()) {
+    const m = mean(ys)
+    for (const y of ys) ssPe += (y - m) ** 2
+  }
+  const ssLof = Math.max(0, sseAll - ssPe)
+  if (!(ssPe > 0)) return undefined
+  const f = ssLof / dfLof / (ssPe / dfPe)
+  return { f, p: fSurvival(f, dfLof, dfPe) }
+}
+
+/** Whether a curve has (or can be given, from its kept points) a lack-of-fit test. */
+export function curveHasLof(
+  c: LogisticParams & { lofF?: number; x?: number[]; y?: number[] }
+): boolean {
+  return c.lofF != null || (!!c.x && !!c.y && curveLackOfFit(c.x, c.y, c) != null)
+}
+
+/** The interpolation grid: the tested positions (log₁₀ dose, or log time) with ONE midpoint in
+ *  every gap between neighbours, whatever its width — so each gap weighs the same in the fit, on any
+ *  dilution series. (CurveCurator's own `build_interpolation_points` keeps halving gaps wider than
+ *  half a 10/3-fold step instead: 0, 1 or 3 points a gap depending on the series.) */
+export function interpolationGrid(doseX: number[]): number[] {
+  const x = [...new Set(doseX.filter(Number.isFinite))].sort((a, b) => a - b)
+  const mid = x.slice(1).map((v, i) => (x[i] + v) / 2)
+  return [...x, ...mid].sort((a, b) => a - b)
+}
+
+/** The fit's points with CurveCurator's interpolation: the real ones (control first) plus the
+ *  grid's (interpolatedPoints). */
+function withInterpolation(
+  xs: number[],
+  ys: number[],
+  pts: Array<[number, number]>,
+  grid: number[]
+): { x: number[]; y: number[] } {
+  const extra = interpolatedPoints(
+    pts.map((p) => p[0]),
+    pts.map((p) => p[1]),
+    grid
+  )
+  return { x: [...xs, ...extra.x], y: [...ys, ...extra.y] }
+}
+
+/** CurveCurator's interpolation points for one line of measurements (x along one axis, y the
+ *  responses): every grid point within the measured x, its y read off the straight line between
+ *  the measured values either side (replicates at an x averaged). Fit-only helpers — added to a
+ *  fit's points, never to what it is scored on. Empty with fewer than two measured x. */
+export function interpolatedPoints(
+  px: number[],
+  py: number[],
+  grid: number[]
+): { x: number[]; y: number[] } {
+  const byX = new Map<number, number[]>()
+  px.forEach((x, i) => {
+    if (!Number.isFinite(x) || !Number.isFinite(py[i])) return
+    const a = byX.get(x)
+    if (a) a.push(py[i])
+    else byX.set(x, [py[i]])
+  })
+  const ux = [...byX.keys()].sort((a, b) => a - b)
+  if (ux.length < 2) return { x: [], y: [] }
+  const uy = ux.map((x) => mean(byX.get(x)!))
+  const at = (v: number): number => {
+    let k = 0
+    while (k < ux.length - 2 && ux[k + 1] < v) k++
+    return uy[k] + ((uy[k + 1] - uy[k]) * (v - ux[k])) / (ux[k + 1] - ux[k])
+  }
+  const inside = grid.filter((v) => v >= ux[0] && v <= ux[ux.length - 1])
+  return { x: inside, y: inside.map(at) }
 }
 
 // ── CurveCurator's significance: the relevance score (thresholding.py) ───────────────────────
@@ -422,6 +676,14 @@ export function fInverseSurvival(tail: number, dfn: number, dfd: number, loc = 0
     else hi = mid
   }
   return (lo + hi) / 2 + loc
+}
+
+/** The F a CurveCurator curve of `n` points would need for raw p `p` — on that scale another test
+ *  (a 4PL surface's adjusted F) runs through CurveCurator's relevance score and decoy FDR as is. */
+export function ccEquivalentF(p: number, n: number): number {
+  if (!(p < 1)) return 0
+  const { dfn, dfd } = curveDofs(n)
+  return fInverseSurvival(Math.max(p, 1e-300), dfn, dfd, F_LOC)
 }
 
 /** CurveCurator's SAM fudge factor for a fold-change limit and alpha: s0 = FC_lim / √F⁻¹(1 − α)
@@ -516,13 +778,28 @@ export function classifyCompareRow(
     log2FC: number | null
     pP: number | null
     pQ: number | null
-    curve?: { f: number; n: number; q?: number; ccAlpha?: number }
+    curve?: CcTest
+    rs?: { cc?: CcTest }
   },
   t: ThresholdConfig
 ): ThresholdCall {
   const call = classifyCall(r, t)
   return r.curve ? { ...call, model: curveModel(r, t) } : call
 }
+
+/** The per-row test CurveCurator's relevance score and target–decoy FDR run on: its F, its point
+ *  count n (which sets the F's recalibrated distribution), its decoy q and — called by FDR — the
+ *  α its group settled on. */
+export interface CcTest {
+  f: number
+  n: number
+  q?: number
+  ccAlpha?: number
+}
+
+/** A row's CurveCurator test: a 4PL curve's, or a 4PL surface's (`rs.cc` — see scoreJoint4pl). */
+export const ccTestOf = (r: { curve?: CcTest; rs?: { cc?: CcTest } }): CcTest | undefined =>
+  r.curve ?? r.rs?.cc
 
 /** A curve's final model: the 4PL when its F-test (the row's raw p, `pP` = −log₁₀ p) rejects the
  *  flat null at the threshold's α — 10^−statMin, or under CurveCurator called by FDR the α its
@@ -552,9 +829,9 @@ function classifyCall(
     const lim = fc < 0 ? -t.fcLow : t.fcHigh
     // By α: the relevance score's own cutoff. By FDR: the same, at the α its comparison settled on
     // for the target (applyCurveFdr) — none until that's been worked out (no decoys, no FDR).
-    const a = t.ccCallBy === 'fdr' ? r.curve?.ccAlpha : Math.pow(10, -t.statMin)
-    const signf =
-      !!r.curve && a != null && curveCuratorSignificant(fc, r.curve.f, r.curve.n, lim, a)
+    const cc = ccTestOf(r)
+    const a = t.ccCallBy === 'fdr' ? cc?.ccAlpha : Math.pow(10, -t.statMin)
+    const signf = !!cc && a != null && curveCuratorSignificant(fc, cc.f, cc.n, lim, a)
     return { signf, effect: signf ? (fc > 0 ? 'up' : 'down') : 'none' }
   }
   const stat = t.statType === 'pP' ? r.pP : r.pQ
@@ -572,6 +849,8 @@ export const CURVE_METRICS = [
   'RMSE',
   'points',
   'F',
+  'F_lof',
+  'pP_lof',
   'relevance',
   'q_decoy'
 ] as const
@@ -579,7 +858,8 @@ export const CURVE_METRICS = [
 /**
  * A fitted curve's metrics as CurveCurator's results table lists them, for tables and exports:
  * potency (EC50 in the dose's units; pEC50 = −log₁₀ of it in molar, given the unit's scale), the slope and plateaus (ratios to the
- * control), the fit's quality (R², RMSE, points incl. the control), the F statistic, and — under
+ * control), the fit's quality (R², RMSE, points incl. the control, the lack-of-fit test's F and
+ * −log₁₀ p), the F statistic, and — under
  * CurveCurator's threshold — the relevance score (at the threshold's fold-change limit on the
  * curve's side, and its α: the one the comparison settled on when called by a target FDR) and the
  * target–decoy q.
@@ -610,6 +890,13 @@ export function curveMetrics(
     for (let i = 0; i < c.x.length; i++) ss += (c.y[i] - logistic(c.x[i], c)) ** 2
     rmse = Math.sqrt(ss / (c.x.length + 1))
   }
+  // Kept with newer fits; an older one's from its kept points.
+  const lof =
+    c.lofF != null && c.lofP != null
+      ? { f: c.lofF, p: c.lofP }
+      : c.x && c.y
+        ? curveLackOfFit(c.x, c.y, c)
+        : undefined
   return {
     pEC50: c.pec50 - Math.log10(doseScale),
     EC50: 10 ** -c.pec50,
@@ -620,6 +907,8 @@ export function curveMetrics(
     RMSE: rmse,
     points: c.n,
     F: c.f,
+    F_lof: lof?.f,
+    pP_lof: lof ? -Math.log10(Math.max(lof.p, 1e-300)) : undefined,
     relevance,
     q_decoy: c.q
   }
@@ -718,6 +1007,95 @@ export function curveResidualMad(
     })
 }
 
+/** Whether a residual check by sample (dose × replicate) can differ from by dose: some curve with
+ *  two numbered replicates at one dose, or two in its control. Curves without their kept points
+ *  can't say (they're rebuilt with their replicates when drawn), so with none kept: true. */
+export function curvesReplicated(
+  rows: ReadonlyArray<{
+    curve?: { x?: number[]; rep?: Array<number | null>; cy?: number[]; crep?: Array<number | null> }
+  }>
+): boolean {
+  const kept = rows.filter((r) => r.curve?.x)
+  if (!kept.length) return true
+  // more distinct (dose, replicate) pairs than doses: a dose holds several replicates
+  const several = (xs: Array<number | null>, reps: Array<number | null> | undefined): boolean =>
+    new Set(xs.map((x, i) => `${x}|${reps?.[i] ?? ''}`)).size > new Set(xs).size
+  return kept.some(
+    (r) =>
+      several(r.curve!.x!, r.curve!.rep) ||
+      several(
+        (r.curve!.cy ?? []).map(() => null),
+        r.curve!.crep
+      )
+  )
+}
+
+/** One residual of a curve's fit, with what the residual checks plot it against. */
+export interface ResidualPoint {
+  /** the fitted ratio at this point (the front plateau for a control sample) */
+  fitted: number
+  /** ratio − fitted ratio */
+  residual: number
+  /** the residual over its curve's residual standard deviation (√(SS / (n − 4)) over its n dosed
+   *  points — the four parameters' degrees of freedom) */
+  std: number
+  /** log₁₀ dose (null = a control sample) and replicate */
+  x: number | null
+  rep: number | null
+  /** the curve's own key (e.g. its gene) */
+  id?: string
+}
+
+/** Every residual of every curve's fit, flat — for the checks curveResidualMad's per-dose view
+ *  can't make: against the fitted value (does the error grow with the signal — the constant-
+ *  variance assumption the F-test makes) and their distribution (normal, as the F-test also
+ *  assumes). Residuals as curveResidualMad's: the linear ratio scale, the control's samples
+ *  against the front plateau. Curves without their kept points are skipped, and so are curves of
+ *  four or fewer dosed points (fitted exactly — no residual information). */
+export function curveResidualPoints(
+  curves: Array<
+    LogisticParams & {
+      x?: number[]
+      y?: number[]
+      rep?: Array<number | null>
+      cy?: number[]
+      crep?: Array<number | null>
+      id?: string
+    }
+  >
+): ResidualPoint[] {
+  const out: ResidualPoint[] = []
+  for (const c of curves) {
+    if (!c.x || !c.y) continue
+    // Four parameters through four (or fewer) dosed points fit them exactly: residuals of 0 that
+    // say nothing about the noise, and would pile on the zero line — such curves are left out.
+    const nFit = c.y.filter(Number.isFinite).length
+    if (nFit <= 4) continue
+    const pts: Omit<ResidualPoint, 'std'>[] = []
+    c.cy?.forEach((y, i) =>
+      pts.push({
+        fitted: c.front,
+        residual: y - c.front,
+        x: null,
+        rep: c.crep?.[i] ?? null,
+        id: c.id
+      })
+    )
+    for (let i = 0; i < c.x.length; i++) {
+      const f = logistic(c.x[i], c)
+      pts.push({ fitted: f, residual: c.y[i] - f, x: c.x[i], rep: c.rep?.[i] ?? null, id: c.id })
+    }
+    const ok = pts.filter((q) => Number.isFinite(q.residual) && Number.isFinite(q.fitted))
+    // The residual SD from the points the curve was fitted to (the dosed ones), on their degrees
+    // of freedom; the control's residuals are standardised by it too.
+    const dosed = ok.filter((q) => q.x != null)
+    const dof = dosed.length - 4
+    const sd = dof > 0 ? Math.sqrt(dosed.reduce((s, q) => s + q.residual ** 2, 0) / dof) : NaN
+    for (const q of ok) out.push({ ...q, std: sd > 0 ? q.residual / sd : NaN })
+  }
+  return out
+}
+
 // ── CurveCurator's target–decoy FDR (data_simulator.py, thresholding.calculate_qvalue) ───────
 
 /** A decoy curve's fit, as far as the relevance score needs it. */
@@ -768,6 +1146,25 @@ export function simulateDecoys(
   nControls: number,
   seed: number
 ): DecoyCurve[] {
+  return decoyFits(decoyInputs(targets, doseX, nControls, seed).map((c) => fitCurve(c.x, c.y)))
+}
+
+/** The decoys from their fits (decoyInputs' curves, fitted in order; null = no fit). */
+export function decoyFits(fits: Array<CurveFit | null>): DecoyCurve[] {
+  const out: DecoyCurve[] = []
+  for (const fit of fits) if (fit) out.push({ f: fit.f, log2FC: fit.log2FC, n: fit.n })
+  return out
+}
+
+/** simulateDecoys' random curves before fitting: one per target, each its treated points' log₁₀
+ *  doses and ratios — drawn in order from the one seeded stream, so the fitting (the slow part)
+ *  can be shared out (engine/pool) and still give exactly the same decoys. */
+export function decoyInputs(
+  targets: TargetCurve[],
+  doseX: number[],
+  nControls: number,
+  seed: number
+): Array<{ x: number[]; y: number[] }> {
   const noise = targets
     .map(curveNoise)
     .filter((v) => Number.isFinite(v) && v > 0)
@@ -783,7 +1180,7 @@ export function simulateDecoys(
   }
   const clip = (v: number): number => Math.min(1000, Math.max(1 / 1000, v))
   const nCtrl = Math.max(1, nControls)
-  const out: DecoyCurve[] = []
+  const out: Array<{ x: number[]; y: number[] }> = []
   for (let k = 0; k < targets.length; k++) {
     let sd = pool[Math.floor(rand() * pool.length)]
     let raw: number[]
@@ -796,11 +1193,7 @@ export function simulateDecoys(
     }
     raw = raw.map(clip)
     const ctrl = raw.slice(doseX.length).reduce((a, b) => a + b, 0) / nCtrl
-    const fit = fitCurve(
-      doseX,
-      raw.slice(0, doseX.length).map((v) => v / ctrl)
-    )
-    if (fit) out.push({ f: fit.f, log2FC: fit.log2FC, n: fit.n })
+    out.push({ x: doseX, y: raw.slice(0, doseX.length).map((v) => v / ctrl) })
   }
   return out
 }
@@ -885,7 +1278,8 @@ export function applyCurveFdr<
     log2FC: number | null
     pP: number | null
     pQ: number | null
-    curve?: { f: number; n: number; q?: number; ccAlpha?: number }
+    curve?: CcTest
+    rs?: { cc?: CcTest }
   }
 >(
   rows: R[],
@@ -911,9 +1305,8 @@ export function applyCurveFdr<
     if (!ds?.length) continue
     const targets = idx.map((i) => {
       const r = rows[i]
-      return r.curve && r.log2FC != null
-        ? { f: r.curve.f, log2FC: r.log2FC, n: r.curve.n }
-        : undefined
+      const cc = ccTestOf(r)
+      return cc && r.log2FC != null ? { f: cc.f, log2FC: r.log2FC, n: cc.n } : undefined
     })
     let a = alpha
     let res = curveCuratorFdr(targets, ds, t.fcHigh, -t.fcLow, a)
@@ -956,11 +1349,9 @@ export function applyCurveFdr<
     // Called by FDR, each curve carries its group's settled α: its call is CurveCurator's at that α.
     idx.forEach((i, j) => {
       const r = rows[i]
-      if (r.curve)
-        out[i] = {
-          ...r,
-          curve: { ...r.curve, q: res.q[j], ...(byFdr ? { ccAlpha: a } : { ccAlpha: undefined }) }
-        }
+      const set = { q: res.q[j], ...(byFdr ? { ccAlpha: a } : { ccAlpha: undefined }) }
+      if (r.curve) out[i] = { ...r, curve: { ...r.curve, ...set } }
+      else if (r.rs?.cc) out[i] = { ...r, rs: { ...r.rs, cc: { ...r.rs.cc, ...set } } }
     })
     if (Number.isFinite(res.ratio)) decoyCalled += res.decoyCalled * res.ratio
   }
@@ -969,7 +1360,7 @@ export function applyCurveFdr<
   if (byFdr)
     return {
       rows: out,
-      fdr: calls.length ? calls.reduce((m, r) => Math.max(m, r.curve?.q ?? 0), 0) : NaN,
+      fdr: calls.length ? calls.reduce((m, r) => Math.max(m, ccTestOf(r)?.q ?? 0), 0) : NaN,
       alphas
     }
   return { rows: out, fdr: Math.min(1, (decoyCalled + 1) / (calls.length + 1)) }

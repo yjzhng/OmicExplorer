@@ -1,5 +1,6 @@
 import type { LogTransform, ScaleEvidence, ValueHistogram, ValueScale } from './scale'
 import type { ImputeOptions, ImputeSummary } from './impute'
+import type { NormalizeOptions, NormalizeSummary } from './normalize'
 /** Shared types for the analysis engine. */
 
 /** The four built-in condition axes. `cell`/`cmpd` are categorical, `dose`/`time` numeric. */
@@ -103,7 +104,7 @@ export interface StandardRow {
 export interface StandardizeInput {
   /** raw text of the data CSV (wide or long) */
   dataText: string
-  /** filename — its stem must end with _wide or _long to detect the format */
+  /** filename, e.g. `mydata_datamatrix.csv`; wide vs long is read from the columns */
   dataFilename: string
   /** raw text of the samplesheet CSV */
   samplesheetText: string
@@ -123,6 +124,9 @@ export interface StandardizeInput {
    *  in EVERY group (clearing it in any one group keeps the gene whole — absence elsewhere may just
    *  be below the detection limit). Empty / undefined pools all samples. */
   minSamplePctBy?: ConditionKey[]
+  /** median-normalise the samples after clean-up, before imputation (see normalize.ts);
+   *  undefined = leave them as they arrived */
+  normalize?: NormalizeOptions
   /** fill missing values after clean-up (see impute.ts); undefined = leave them missing */
   impute?: ImputeOptions
   /** pathway name → KEGG category (global; from the interactive import). Passed straight through to
@@ -149,7 +153,7 @@ export interface StandardizeResult {
   /** every sample with its conditions — the small sample space behind the gene × sample rows (what
    *  the data's shape is read from; see dataShape). Absent on results from before it was kept. */
   samples?: SampleConds[]
-  /** uniqID → display label (gene name / locus_tag / uniqID) */
+  /** uniqID → display label (gene name / locus / uniqID) */
   displayMap: Record<string, string>
   /** uniqID → { annotation column → value } carried from the ID-map DB (e.g. GO terms,
    *  KEGG fetched in the interactive import). Empty when no DB / no annotations.
@@ -170,6 +174,8 @@ export interface StandardizeResult {
     minSamplePct: number
     by?: ConditionKey[]
   }
+  /** normalisation summary when it ran (absent = not normalised) */
+  normalization?: NormalizeSummary
   /** imputation summary when it ran (absent = values left missing) */
   imputation?: ImputeSummary
   /** The scale the values are PRESENTED on (the table, the written CSV) — `rows` themselves are
@@ -201,6 +207,12 @@ export interface CompareInput {
   den: CondSelector
   /** conditions (not the comparison axis) to match like-for-like; others are pooled */
   match: ConditionKey[]
+  /** the compared conditions, stated by the Compare dialog (several allowed). Absent = inferred from
+   *  the pins: the one condition both sides pin to different values (configs saved before). */
+  compared?: ConditionKey[]
+  /** conditions merged into one group on BOTH sides: not split on the numerator, not matched on the
+   *  denominator. Absent = none (an unmatched condition still splits the numerator). */
+  pool?: ConditionKey[]
   activeConditions: ConditionKey[]
   method?: 'ttest'
   transform?: boolean
@@ -208,6 +220,12 @@ export interface CompareInput {
   /** curve fit only: the numeric condition the curve runs over (dose). It is the fit's x-axis, so
    *  neither a facet nor matched — each numerator group pools every level of it into one curve. */
   curveAxis?: ConditionKey
+  /** curve fit, every model and axis: CurveCurator's interpolation (`interpolation = true`) — every
+   *  4PL fit also sees points midway between the measured levels (a surface: one per grid cell),
+   *  read off straight lines between the measured values; SSEs stay on the real points. 4PL: the
+   *  detector's fits, decoys and simulated nulls alike (fitCurve, surfaceJoint). Hybrid: only the
+   *  description's 4PL — the spline detector, and so the calls, never see it. */
+  interpolation?: boolean
 }
 
 export interface VehNormInput {
@@ -257,6 +275,8 @@ export interface CompareResultRow {
    *  change, pP its recalibrated F-test). x is log₁₀ of the curve axis, in its own units. */
   curve?: Omit<import('./curveFit').CurveFit, 'log2FC' | 'pVal'> & {
     axis: ConditionKey
+    /** the baseline in words (baselineText): "DMSO · dose 0", "dose 0 · time 60" */
+    baseline?: string
     /** CurveCurator's target–decoy q-value (under its relevance threshold; see applyCurveFdr) */
     q?: number
     /** called by a target FDR: the α its comparison settled on (see applyCurveFdr) */
@@ -274,6 +294,46 @@ export interface CompareResultRow {
   /** SAM permutation FDR only: the moderated difference d and the pooled t's degrees of freedom
    *  (pP is that t-test; pQ the permutation q-value) */
   sam?: { d: number; df: number }
+  /** Curve fit by the response surface method only (detection model Spline): the spline test and
+   *  its description. log2FC is the fitted curve's / surface's peak, pP its moderated-F p, pQ its
+   *  q (BH × Storey's π₀ over the run). Never set together with `curve` (the CurveCurator
+   *  method's 4PL). */
+  rs?: ResponseFit
+}
+
+/** A response surface method fit behind one result row — a curve over one axis, or a dose × time
+ *  surface (one row per gene × compound). Values are log₂ relative to the vehicle. */
+export interface ResponseFit {
+  /** the curve's axis, or 'surface' for a dose × time surface */
+  axis: ConditionKey | 'surface'
+  /** the baseline in words (baselineText): "DMSO · dose 0", "time 0" */
+  baseline?: string
+  /** a surface's detector: absent = the spline surface; '4pl' = the 4PL surface (adjusted F) */
+  detector?: '4pl'
+  /** a 4PL surface's CurveCurator test, for its relevance score and target–decoy FDR (as a 4PL
+   *  curve's `curve`): its F on CurveCurator's scale and n (see scoreJoint4pl), its decoy q and
+   *  settled α */
+  cc?: import('./curveFit').CcTest
+  /** the moderated F-test of spline vs flat: statistic and its two df */
+  F: number
+  df1: number
+  df2: number
+  /** one-axis curves: the level positions — baseline first (dose: log₁₀ dose, the baseline a step
+   *  below the lowest; time: log₁₀(t + timeOffset), t₀ the baseline) — the log₂ level means vs
+   *  the baseline, the spline's fit at them, and the spline sampled finely for drawing */
+  x?: number[]
+  y?: number[]
+  fitted?: number[]
+  line?: { x: number[]; y: number[] }
+  /** time axis and surfaces: the offset in log₁₀(t + offset) */
+  timeOffset?: number
+  /** surfaces: every treated cell — its dose, time, log₂ effect vs that time's vehicle, and the
+   *  spline surface's fit there */
+  cells?: Array<{ dose: number; time: number; y: number; fitted: number }>
+  /** the description, for curves with q within the describe cutoff: a one-axis curve's 4PL, or a
+   *  surface's (per time slice, or joint) */
+  desc?: import('./splineFit').CurveDescription
+  surface?: import('./splineFit').SurfaceDescription
 }
 
 export interface VehNormResult {

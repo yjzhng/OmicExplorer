@@ -59,7 +59,7 @@ function gauss(rand: () => number): number {
 /** Identity of one physical sample. Custom conditions are part of it — two rows differing only in
  *  a custom condition are different samples, and merging them would let one's values fill the
  *  other's holes. Slugs are sorted so the key doesn't depend on key-insertion order. */
-const sampleKey = (r: StandardRow): string =>
+export const sampleKey = (r: StandardRow): string =>
   [
     r.cell,
     r.cmpd,

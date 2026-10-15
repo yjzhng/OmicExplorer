@@ -1,9 +1,15 @@
 import { useMemo } from 'react'
 
-import { condLabel, type ConditionKey, type GeneBarData } from '../engine'
+import { condLabel, metaValue, type ConditionKey, type GeneBarData } from '../engine'
+import { condsOf } from './clusterPlan'
+import { condTooltip, geneLine, valueLine } from './condTooltip'
+import { bindSampleLink, sampleKey, sampleMeta } from './sampleLink'
+import { groupMeta } from './traceFocus'
 import { valueColor, type ValueRange } from './colormap'
 import { conditionColorer } from './condColor'
 import { PlotlyChart } from './PlotlyChart'
+import { ROLE_DEFAULTS, type PaletteRef } from './palettes'
+import { sectionKey, SECTIONED_LEGEND } from './legendSections'
 import { axisBase, CATEGORICAL, PALETTES, plotBase } from './theme'
 import { useUiTheme } from './useUiTheme'
 
@@ -36,8 +42,13 @@ export function GeneBarView({
   colorNum,
   errorWidth = 1.4,
   errorColor = 'auto',
-  valueRangeFixed
+  valueRangeFixed,
+  categorical = CATEGORICAL,
+  valuePalette = ROLE_DEFAULTS.data,
+  condTitle = condLabel
 }: {
+  /** a condition's legend heading — with its unit for dose / time (default: its name) */
+  condTitle?: (c: ConditionKey) => string
   bar: GeneBarData
   title?: string
   orient?: 'landscape' | 'portrait'
@@ -55,13 +66,17 @@ export function GeneBarView({
   errorColor?: string
   /** a fixed value axis range (the global scale); unset = fit this gene's bars */
   valueRangeFixed?: [number, number]
+  /** the categorical palette conditions and genes cycle (the plot's own, else the global one) */
+  categorical?: readonly string[]
+  /** colour by value: the data-values palette (the global role's) */
+  valuePalette?: PaletteRef
 }) {
   const mode = useUiTheme((s) => s.mode)
 
   const { data, layout } = useMemo(() => {
     const p = PALETTES[mode]
     const horizontal = orient === 'portrait'
-    const barColor = range ? valueColor(range) : null
+    const barColor = range ? valueColor(range, valuePalette) : null
     const logVal = range?.log ?? false
     // Error bars, in one colour per set (Plotly's error bars take a single colour). Asymmetric
     // arrays (errUp/errDown) so log-space spread renders as unequal linear whiskers on the log axis.
@@ -78,8 +93,9 @@ export function GeneBarView({
     // Colour by condition. A condition the data doesn't carry (a stale setting) is left out; with
     // neither left, bars colour by value.
     const byCond = conditionColorer(bar.conds, (c) => bar.condMeta[c], colorCat, colorNum, {
-      base: CATEGORICAL[0],
-      missing: p.textMuted
+      base: categorical[0],
+      missing: p.textMuted,
+      palette: categorical
     })
     const byCondition = byCond.on
     /** The fill of one bar. */
@@ -88,13 +104,39 @@ export function GeneBarView({
         ? byCond.fill(b.cond)
         : barColor
           ? (barColor(b.mean) ?? p.textMuted)
-          : CATEGORICAL[geneIndex % CATEGORICAL.length]
+          : categorical[geneIndex % categorical.length]
     /** A bar's GROUP colour — its fill without the numeric condition's shade (the categorical
      *  condition's colour, or the base colour when only a dose/time colours the bars). What an
      *  'auto' replicate dot and error bar take. */
     const primaryOf = (b: { cond: string; mean: number | null }, geneIndex: number): string =>
       byCondition ? byCond.primary(b.cond) : fillOf(b, geneIndex)
     const autoError = errorColor === 'auto'
+    // Error bars on traces of their own (`errorSets` below), one per colour and condition, so a
+    // condition's error bar dims with its bar on a sample hover (Plotly's error bars take their
+    // trace's opacity, not a bar's). Several genes' bars sit side by side, off their category's
+    // centre, so a fixed colour's error bars then ride on the bars themselves.
+    const ownErrors = autoError || bar.genes.length === 1
+    // Each condition slot's identity for its tooltip, one condition per line; the slot's label
+    // when it carries no condition values.
+    const tipConds = condsOf(Object.values(bar.condMeta))
+    const identOf = (cond: string): string =>
+      (bar.condMeta[cond] &&
+        condTooltip(bar.condMeta[cond], tipConds, p.textMuted, { rep: false })) ||
+      cond
+    const valueAt = horizontal ? '%{x:.4~g}' : '%{y:.4~g}'
+    // A condition slot's link key (see sampleLink): a whole condition, so it answers every
+    // replicate of it.
+    // A condition slot's groups — the legend swatches it falls under (`cond=value`), so selecting a
+    // swatch keeps that condition's bars and dots and fades the rest (traceFocus), as on the QC.
+    const condGroups = (cond: string): string[] =>
+      byCondition && bar.condMeta[cond]
+        ? [colorCat, colorNum].flatMap((c) => {
+            const v = c ? metaValue(bar.condMeta[cond], c) : null
+            return c && v != null && v !== '' ? [`${c}=${v}`] : []
+          })
+        : []
+    const keyOf = (cond: string): string | null =>
+      bar.condMeta[cond] ? sampleKey(bar.condMeta[cond], null) : null
     const traces = bar.genes.map((g, i) => {
       const gb = bar.bars.filter((b) => b.uniqID === g.uniqID)
       const conds = gb.map((b) => b.cond)
@@ -105,8 +147,16 @@ export function GeneBarView({
         orientation: horizontal ? 'h' : 'v',
         x: horizontal ? means : conds,
         y: horizontal ? conds : means,
-        // A fixed colour rides on the bars; 'auto' (per group) is drawn by `errorSets` below.
-        ...(autoError ? {} : { [horizontal ? 'error_x' : 'error_y']: err(gb, errorColor) }),
+        // the tooltip's text only — never drawn on the bar
+        text: conds.map(identOf),
+        textposition: 'none',
+        meta: {
+          ...sampleMeta(conds.map(keyOf)),
+          ...groupMeta({ pointGroups: conds.map(condGroups) })
+        },
+        hovertemplate: `${geneLine(g.label)}<br>%{text}<br>${valueLine('mean', valueAt)}<extra></extra>`,
+        // Drawn by `errorSets` below, unless several genes' bars share a category (see ownErrors).
+        ...(ownErrors ? {} : { [horizontal ? 'error_x' : 'error_y']: err(gb, errorColor) }),
         marker: {
           color: gb.map((b) => (b.mean == null ? 'rgba(0,0,0,0)' : fillOf(b, i))),
           // A category colour's bars sit a little fainter than the colour itself, so the replicate
@@ -190,26 +240,36 @@ export function GeneBarView({
     // the text colour, so a dot shows on its bar); a fixed colour is one colour for all. Drawn as
     // box traces with the box itself hidden: Plotly only jitters points sideways within a category
     // for boxes (a scatter on a category axis can't be offset), and a box's points take one colour
-    // — so one trace per colour. The jitter is seeded, so the dots stay put across redraws.
+    // — so one trace per colour (and condition, below). The jitter is seeded, so the dots stay put across redraws.
     const rep = replicates?.show ? replicates : null
     const auto = rep?.color === 'auto'
-    const byColor = new Map<string, { cats: string[]; vals: number[] }>()
+    // One trace per colour AND condition, so a condition's dots dim together with its bar when
+    // another sample is hovered (see sampleLink — a box's points take one trace-level opacity).
+    const byColor = new Map<
+      string,
+      { color: string; cond: string; cats: string[]; vals: number[]; tips: string[] }
+    >()
     if (rep)
       bar.genes.forEach((g, i) => {
         for (const b of bar.bars) {
           if (b.uniqID !== g.uniqID || b.values.length === 0) continue
           const c = auto ? primaryOf(b, i) : rep.color
-          let grp = byColor.get(c)
-          if (!grp) byColor.set(c, (grp = { cats: [], vals: [] }))
+          const id = `${c}\u0000${b.cond}`
+          let grp = byColor.get(id)
+          if (!grp)
+            byColor.set(id, (grp = { color: c, cond: b.cond, cats: [], vals: [], tips: [] }))
+          // the dot's gene, then its condition (several genes' dots share a condition's trace)
+          const tip = `${geneLine(g.label)}<br>${identOf(b.cond)}`
           for (const v of b.values) {
             grp.cats.push(b.cond)
             grp.vals.push(v)
+            grp.tips.push(tip)
           }
         }
       })
     const clear = 'rgba(0,0,0,0)'
     const dots = rep
-      ? [...byColor].map(([color, { cats, vals }]) => ({
+      ? [...byColor.values()].map(({ color, cond, cats, vals, tips }) => ({
           type: 'box',
           name: 'replicates',
           showlegend: false,
@@ -228,70 +288,57 @@ export function GeneBarView({
             opacity: rep.opacity,
             line: auto ? { color: p.text, width: 0.8 } : { width: 0 }
           },
-          hovertemplate: horizontal
-            ? '%{y}<br>replicate %{x:.4~g}<extra></extra>'
-            : '%{x}<br>replicate %{y:.4~g}<extra></extra>'
+          text: tips,
+          meta: {
+            ...(keyOf(cond) ? sampleMeta(keyOf(cond)!) : {}),
+            ...groupMeta({ groups: condGroups(cond) })
+          },
+          hovertemplate: `%{text}<br>${valueLine('replicate', valueAt)}<extra></extra>`
         }))
       : []
-    const catName = colorCat ? condLabel(colorCat) : ''
-    const numName = colorNum ? condLabel(colorNum) : ''
+    const catName = colorCat ? condTitle(colorCat) : ''
+    const numName = colorNum ? condTitle(colorNum) : ''
     const lay: Record<string, unknown> = {
       ...plotBase(p),
       barmode: 'group',
       // A legend to tell several genes' bars apart, or to key the condition colours. One gene
       // coloured by value needs none — and Plotly would otherwise add one for the replicate dots.
       showlegend: bar.genes.length > 1 || byCondition,
-      ...(byCondition
-        ? {
-            legend: {
-              title: {
-                text: [byCond.cats.length > 0 && catName, byCond.nums.length > 0 && numName]
-                  .filter(Boolean)
-                  .join(' · ')
-              }
-            }
-          }
-        : {}),
+      // the condition key: a section per condition (see the keys below)
+      ...(byCondition ? { legend: { ...SECTIONED_LEGEND } } : {}),
       title: title ? { text: title, font: { size: 13 } } : undefined,
       xaxis: horizontal ? valAxis : condAxis,
       yaxis: horizontal ? condAxis : valAxis,
       ...(annotations.length > 0 ? { annotations } : {})
     }
-    // The condition legend: a swatch per categorical value (its colour), then per numeric value
-    // (its shade — of the bars' own colour when it's the only condition, else of a neutral grey).
-    // Empty marker traces: they draw nothing, the bars being one trace per gene.
-    const key = (name: string, color: string) => ({
-      type: 'scatter',
-      mode: 'markers',
-      name,
-      x: [null],
-      y: [null],
-      marker: { symbol: 'square', size: 11, color },
-      hoverinfo: 'skip',
-      showlegend: true
-    })
+    // The condition legend, a section per condition: a swatch per categorical value (its colour),
+    // then per numeric value (its shade — of the bars' own colour when it's the only condition,
+    // else of a neutral grey). Each selects the bars' own group (condGroups). Empty marker traces:
+    // they draw nothing, the bars being one trace per gene.
+    const key = (name: string, color: string, group: string, section: string) =>
+      sectionKey({ name, section, group, marker: { symbol: 'square', size: 11, color } })
     const keys = [
-      ...byCond.cats.map((k) => key(k.value, k.color)),
-      ...byCond.nums.map((k) =>
-        key(byCond.cats.length ? `${numName} ${k.value}` : k.value, k.color)
-      )
+      ...byCond.cats.map((k) => key(k.value, k.color, `${colorCat}=${k.value}`, catName)),
+      ...byCond.nums.map((k) => key(k.value, k.color, `${colorNum}=${k.value}`, numName))
     ]
-    // 'auto' error bars in each bar's group colour: one invisible-marker scatter per colour, at the
-    // bars' centres, carrying the error bars (Plotly's error bars take one colour per trace). The tile
-    // shows one gene at a time, so a bar's centre is its category's.
+    // The error bars (see ownErrors): one invisible-marker scatter per colour ('auto': each bar's
+    // group colour — Plotly's error bars take one colour per trace) and condition, at the bars'
+    // centres, tagged as the condition's so the sample link and a legend selection fade it. The
+    // tile shows one gene at a time, so a bar's centre is its category's.
     const errorSets: Record<string, unknown>[] = []
-    if (autoError) {
-      const byErrColor = new Map<string, typeof bar.bars>()
+    if (ownErrors) {
+      const byErr = new Map<string, { color: string; cond: string; bars: typeof bar.bars }>()
       bar.genes.forEach((g, i) => {
         for (const b of bar.bars) {
           if (b.uniqID !== g.uniqID || b.mean == null) continue
-          const c = primaryOf(b, i)
-          const list = byErrColor.get(c) ?? []
-          list.push(b)
-          byErrColor.set(c, list)
+          const c = autoError ? primaryOf(b, i) : errorColor
+          const id = `${c}\u0000${b.cond}`
+          let grp = byErr.get(id)
+          if (!grp) byErr.set(id, (grp = { color: c, cond: b.cond, bars: [] }))
+          grp.bars.push(b)
         }
       })
-      for (const [color, gb] of byErrColor) {
+      for (const { color, cond, bars: gb } of byErr.values()) {
         const conds = gb.map((b) => b.cond)
         const means = gb.map((b) => b.mean)
         errorSets.push({
@@ -302,6 +349,10 @@ export function GeneBarView({
           x: horizontal ? means : conds,
           y: horizontal ? conds : means,
           marker: { size: 1, opacity: 0 },
+          meta: {
+            ...(keyOf(cond) ? sampleMeta(keyOf(cond)!) : {}),
+            ...groupMeta({ groups: condGroups(cond) })
+          },
           [horizontal ? 'error_x' : 'error_y']: err(gb, color)
         })
       }
@@ -319,8 +370,11 @@ export function GeneBarView({
     colorNum,
     errorWidth,
     errorColor,
-    valueRangeFixed
+    valueRangeFixed,
+    categorical,
+    valuePalette,
+    condTitle
   ])
 
-  return <PlotlyChart data={data} layout={layout} />
+  return <PlotlyChart data={data} layout={layout} onGraphMount={bindSampleLink} />
 }

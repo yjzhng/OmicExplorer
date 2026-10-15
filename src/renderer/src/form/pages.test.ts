@@ -26,10 +26,11 @@ describe('derivePages', () => {
     // Clean data and Compare root analyses; they are not plots, so they get no page of their own.
     expect(pages.map((p) => p.panelId)).toEqual(['v1', 'h1'])
     expect(pages.map((p) => p.title)).toEqual(['Volcano', 'Heatmap'])
-    // Every page names the analysis it belongs to, which is what the kicker and jump list show.
-    expect(new Set(pages.map((p) => p.groupId))).toEqual(new Set(['c1']))
-    // Matches the dashboard's tab label exactly — the same analysis reads the same in both layouts.
-    expect(pages[0].groupLabel).toBe('Compare')
+    // Every page names its results tab — one per plot tile (group) — which is what the kicker and
+    // jump list show.
+    expect(pages.map((p) => p.groupId)).toEqual(['v1', 'h1'])
+    // Matches the dashboard's tab labels exactly: after the step they read from, numbered.
+    expect(pages.map((p) => p.groupLabel)).toEqual(['Compare_1', 'Compare_2'])
   })
 
   it('expands a plot group into one page per child', () => {
@@ -76,10 +77,10 @@ describe('derivePages', () => {
     expect(groups.join(',')).toBe(
       firstSeen.map((g) => groups.filter((x) => x === g).join(',')).join(',')
     )
-    expect(firstSeen).toHaveLength(2)
+    expect(firstSeen).toHaveLength(4)
   })
 
-  it('shows a renamed step by its name, in both the page and its nav heading', () => {
+  it('shows a renamed plot by its name, in both the page and its nav heading', () => {
     const nodes = [
       {
         ...node('c1', 'compare'),
@@ -89,7 +90,8 @@ describe('derivePages', () => {
     ] as GraphNode[]
     const pages = derivePages(nodes, [edge('c1', 'v1')] as never)
     expect(pages[0].title).toBe('Key hits')
-    expect(pages[0].groupLabel).toBe('Drug vs vehicle')
+    // its tab is its own (a plot group's name leads its tab), not the step's
+    expect(pages[0].groupLabel).toBe('Key hits')
   })
 
   it('falls back to the type label when a name is blank or absent', () => {

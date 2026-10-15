@@ -53,7 +53,8 @@ describe('merge wiring', () => {
 
   it('reports Clean data as its output kind; other ops are their own', () => {
     expect(outputKindOf('merge')).toBe('standardize')
-    for (const k of ALL_OPS) if (k !== 'merge') expect(outputKindOf(k)).toBe(k)
+    expect(outputKindOf('subset')).toBe('standardize')
+    for (const k of ALL_OPS) if (k !== 'merge' && k !== 'subset') expect(outputKindOf(k)).toBe(k)
   })
 
   it('roots its own analysis group, so its plots are not absorbed upstream', () => {

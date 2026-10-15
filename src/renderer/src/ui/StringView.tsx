@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { createPortal } from 'react-dom'
 import Plotly, { type PlotlyGraphDiv } from 'plotly.js-dist-min'
 
 import type { CompareResultRow } from '../engine'
@@ -13,20 +14,19 @@ import {
   type StringAll,
   type StringLevel
 } from './stringModel'
+import { useElementSize } from '../dashboard/useElementSize'
+import { fitText, flowChips, measureText } from './legendChips'
+import { tooltip } from './condTooltip'
 import { PlotlyChart, type PlotLabel } from './PlotlyChart'
 import { useSelection } from './useSelection'
-import { axisBase, CATEGORICAL, EFFECT_COLOR, plotBase, PALETTES } from './theme'
+import { ROLE_DEFAULTS, paletteScale, type PaletteRef } from './palettes'
+import { axisBase, CATEGORICAL, plotBase, PALETTES, UI } from './theme'
 import { useUiTheme } from './useUiTheme'
-import type { EffectColors } from '../graph/types'
 
-/** Pixel width of `text` at `font` via a memoised offscreen canvas (for wrapping the cluster legend). */
-let measureCtx: CanvasRenderingContext2D | null = null
-function measureText(text: string, font: string): number {
-  if (!measureCtx) measureCtx = document.createElement('canvas').getContext('2d')
-  if (!measureCtx) return text.length * 6
-  measureCtx.font = font
-  return measureCtx.measureText(text).width
-}
+/** A cluster's own id — its hull's, as the hover and a click's selection see it (apart from any
+ *  gene's id). */
+const MODULE_KEY = 'module:'
+const moduleKey = (ci: number): string => `${MODULE_KEY}${ci}`
 
 /** Precomputed geometry/adjacency for the imperative hover neighbour-highlight (see onGraphMount). */
 interface HoverInfo {
@@ -47,6 +47,9 @@ interface HoverInfo {
   cmax: number
   /** highlight colour for incident edges */
   hi: string
+  /** per-node name, and the ink a lit node is named in */
+  name: string[]
+  ink: string
   /** shared-hover id per node (uniqID for query genes, node key for context) */
   focusId: string[]
   /** shared-hover id → its node indices (a protein group's members are several nodes), for
@@ -56,33 +59,45 @@ interface HoverInfo {
   nodeOrder: number[]
   /** module (cluster) index per node, −1 = none; for bolding the cluster legend on hover */
   moduleByNode: number[]
-  /** flat legend items (module colour ■ + label), pre-measured, for width-aware wrapping on mount */
-  legItems: LegItem[]
-  /** wrap the flat items onto lines that fit `budgetPx` (measured bold width so bolding never reflows) */
-  legWrap: (budgetPx: number) => LegItem[][]
-  /** render wrapped lines to annotation HTML, bolding the given module(s) (−1 / empty set = none) */
-  legRender: (active: number | Set<number>, lines: LegItem[][]) => string
-  /** annotation index of the cluster legend (−1 when absent) */
-  legendIdx: number
+  /** the cluster legend's chips, in annotation order (annotation i = chips[i]) */
+  chips: LegChip[]
+  /** a chip's text: bold + full colour when active, faded when another is active */
+  chipText: (c: LegChip, active: boolean, anyActive: boolean) => string
+  /** the folded clusters (behind "+N more") */
+  restCis: number[]
+  /** "+N more" while `n` of its folded clusters are active (and its list is closed) */
+  moreActiveText: (n: number) => string
 }
 
-/** One cluster-legend entry: a module's index, colour swatch, ORA label, and measured bold width. */
-interface LegItem {
+/** One cluster-legend chip: its module (−1 for the "+N more" chip), colour and shown label. */
+interface LegChip {
   ci: number
-  label: string
   color: string
-  w: number
+  label: string
+  /** "+N more": how many clusters it folds */
+  n?: number
 }
+
+/** Prefix of a cluster chip's annotation name (the rest is its module index). */
+const CHIP = 'oe-mod:'
+/** The "+N more" chip's annotation name: it opens the folded clusters' list. */
+const MORE = 'oe-mod-more'
+/** The legend's text size, row height and its most rows: past them the rest fold into a "+N more"
+ *  chip, so a long list can't push the network out of the tile. */
+const LEG_FS = 10
+const LEG_ROW = LEG_FS + 5
+const LEG_MAX_ROWS = 3
+const LEG_FONT = `bold ${LEG_FS}px system-ui, sans-serif`
+/** Space between chips. */
+const LEG_PAD = 16
 
 /** Resting opacity of the edge layer — deliberately faint so the network reads as a light mesh
  *  behind the (fully opaque) nodes. */
 const EDGE_OPACITY = 0.15
 /** Edge opacity while a node is focused: the base edges recede behind the bright incident ones. */
 const EDGE_DIM_OPACITY = 0.05
-/** Base-node opacity while a node is focused, so non-neighbour nodes recede. */
+/** Base-node opacity while a node is focused, so the rest recede. */
 const NODE_DIM_OPACITY = 0.12
-/** Neighbour-node opacity in the highlight overlay, so the focused node reads as the centre. */
-const NEIGHBOUR_OPACITY = 0.45
 /** Extra px added to a node's radius when trimming edges back, so the line clears the outline. */
 const NODE_INSET = 1
 
@@ -104,7 +119,7 @@ export function StringView({
   addInteractors = false,
   title,
   onLevels,
-  effectColors
+  palette
 }: {
   rows: CompareResultRow[]
   displayMap?: Record<string, string>
@@ -125,14 +140,23 @@ export function StringView({
    *  the read is back), so the tile can grey out the empty ones and resolve its "auto" level.
    *  Omitted (e.g. export) = not reported. */
   onLevels?: (levels: Set<StringLevel> | null) => void
-  /** the upstream Compare's effect colours (with any of the plot's own on top); unset = the
-   *  shared defaults */
-  effectColors?: EffectColors
+  /** the fold-change palette the nodes are coloured on (the plot's own, else the global one) */
+  palette?: PaletteRef
 }) {
   const mode = useUiTheme((s) => s.mode)
-  const upColor = effectColors?.up ?? EFFECT_COLOR.up
-  const downColor = effectColors?.down ?? EFFECT_COLOR.down
-  const noneColor = effectColors?.none ?? EFFECT_COLOR.none
+  // The tile's width, so the cluster legend flows into what fits — and re-flows as the tile is
+  // resized either way. The plot area is the width less its margins (6 left, 60 right); 20px steps
+  // so dragging an edge rebuilds only when the flow could change.
+  const { ref: boxRef, width: boxW } = useElementSize<HTMLDivElement>()
+  const legendBudget = boxW > 0 ? Math.max(160, Math.floor((boxW - 74) / 20) * 20) : 520
+  // The "+N more" chip's open list: where it opens, and the legend it belongs to.
+  const [moreOpen, setMoreOpen] = useState<{ at: DOMRect; of: unknown } | null>(null)
+  // Whether that list is open, for the legend's imperative re-texting (a closed list folding an
+  // active cluster says so on its chip), and the mount's re-text, to call when it opens or closes.
+  const moreOpenRef = useRef(false)
+  const legendRefresh = useRef<(() => void) | null>(null)
+  // The nodes' log₂FC on the fold-change palette (the plot's own, else the global one).
+  const fcScale = useMemo(() => paletteScale(palette ?? ROLE_DEFAULTS.fcObject), [palette])
 
   // The caps one read covers (always including the one drawn), and the widest query among them —
   // significant genes, one per feature (max |log₂FC|), strongest first. A smaller cap's query is a
@@ -176,7 +200,7 @@ export function StringView({
     onLevels?.(levels)
   }, [levels, onLevels])
 
-  const { data, layout, nConnected, labels, labelColor, hover } = useMemo(() => {
+  const { data, layout, nConnected, labels, labelColor, hover, moduleIds, more } = useMemo(() => {
     const p = PALETTES[mode]
     if (!net)
       return {
@@ -185,7 +209,9 @@ export function StringView({
         nConnected: 0,
         labels: [] as PlotLabel[],
         labelColor: undefined as string | undefined,
-        hover: undefined as HoverInfo | undefined
+        hover: undefined as HoverInfo | undefined,
+        moduleIds: [] as string[][],
+        more: { at: -1, items: [] as LegChip[] }
       }
     // The network's model — what's drawn, its modules and their labels — shared with the
     // background export of the tile's tables (stringModel.ts).
@@ -219,7 +245,12 @@ export function StringView({
           fill: 'toself',
           fillcolor: hexA(color, 0.12),
           line: { color: hexA(color, 0.45), width: 1, shape: 'linear' },
-          hoverinfo: 'skip'
+          // Hovered as a whole, with no tooltip: its module's id (moduleKey) is the hover, which
+          // lights the whole cluster (indexByFocus) and its chip; a click selects its genes, as
+          // the chip does (PlotlyChart's pinIdsOf).
+          hoveron: 'fills',
+          hoverinfo: 'none',
+          __oeId: moduleKey(ci)
         }
       })
       .filter(Boolean)
@@ -287,9 +318,17 @@ export function StringView({
       customdata: nodeOrder.map((i) => focusId[i]),
       x: nodeOrder.map((i) => pos.x[i]),
       y: nodeOrder.map((i) => pos.y[i]),
-      text: nodeOrder.map(
-        (i) =>
-          `${vis[i].name}<br>log₂FC ${vis[i].isQuery ? vis[i].log2FC.toFixed(2) : '—'}<br>${degree[i]} links`
+      text: nodeOrder.map((i) =>
+        tooltip(
+          {
+            title: vis[i].name,
+            values: [
+              ['log₂FC', vis[i].isQuery ? vis[i].log2FC.toFixed(2) : '—'],
+              ['links', degree[i]]
+            ]
+          },
+          p.textMuted
+        )
       ),
       hovertemplate: '%{text}<extra></extra>',
       marker: {
@@ -299,11 +338,7 @@ export function StringView({
         // leave the resting nodes faintly translucent.
         opacity: 1,
         color: nodeOrder.map((i) => vis[i].log2FC),
-        colorscale: [
-          [0, downColor],
-          [0.5, noneColor],
-          [1, upColor]
-        ],
+        colorscale: fcScale,
         cmid: 0,
         cmin: -maxAbs,
         cmax: maxAbs,
@@ -327,84 +362,97 @@ export function StringView({
         y: pos.y[i],
         text: g.name,
         priority: degree[i],
-        // shared-selection id (uniqID for query genes) so non-selected labels fade with the selection.
-        id: uniqByStringId.get(g.key) ?? g.key,
+        // the node's shared id (as its hover and the highlight key it) so its label stays, bold,
+        // while it's lit and the others hide (labelsInPlace)
+        id: focusId[i],
         // marker radius (size is a diameter) + half the stroke, so the label clears large nodes.
         radius: sizeOf(degree[i]) / 2 + 1.8 / 2,
         // tight gap so the label hugs the node.
         margin: 1
       }))
 
-    // Cluster legend (centre-bottom): the module's colour ■ + its ORA pathway label. Wrapped onto
-    // lines by measured BOLD width so bolding one on hover never reflows. Wrapping is width-aware:
-    // laid out here with a conservative budget, then reflowed to the live plot width on mount so the
-    // items never crop against a narrow tile's edges.
-    const LEG_FS = 10
-    const LEG_GAP = 20
-    const legItems: LegItem[] = territoryGroups.map((grp, ci) => ({
+    // Cluster legend (bottom, left-aligned): one chip per module — its colour ■ and ORA pathway
+    // label — flowed into rows that fit the plot's width (legendBudget), at most LEG_MAX_ROWS of
+    // them: a label longer than a row is shortened (the full one on hover), and modules past the
+    // last row fold into a "+N more" chip (listing them on hover). Each slot is sized for the BOLD
+    // text, so bolding one on hover never moves another. A chip is clickable: it selects its
+    // module's genes (onAnnotationClick), as a volcano legend click selects its group's.
+    const allChips: LegChip[] = territoryGroups.map((grp, ci) => ({
       ci,
-      label: grp.label,
       color: CATEGORICAL[ci % CATEGORICAL.length],
-      w: measureText(`■ ${grp.label}`, `bold ${LEG_FS}px sans-serif`)
+      label: fitText(grp.label, legendBudget - 20, LEG_FONT)
     }))
-    // Greedy line-wrap: pack items until the next one would exceed the pixel budget.
-    const legWrap = (budgetPx: number): LegItem[][] => {
-      const lines: LegItem[][] = []
-      let cur: LegItem[] = []
-      let w = 0
-      for (const it of legItems) {
-        if (cur.length && w + LEG_GAP + it.w > budgetPx) {
-          lines.push(cur)
-          cur = []
-          w = 0
+    // "… n modules" while folded clusters are active (moreActiveText).
+    const moreActive = (n: number): string => `… ${n} module${n === 1 ? '' : 's'}`
+    // A chip's slot, for its bold text — "+N more"'s for the wider of its two texts, so the swap
+    // never moves a chip beside it.
+    const slot = (c: LegChip): number =>
+      Math.ceil(
+        c.ci < 0
+          ? Math.max(measureText(c.label, LEG_FONT), measureText(moreActive(c.n ?? 0), LEG_FONT))
+          : measureText(`■ ${c.label}`, LEG_FONT)
+      ) + LEG_PAD
+    const flowOf = (cs: LegChip[]) =>
+      flowChips(
+        cs.map((c, k) => ({ c: String(k), width: slot(c) })),
+        legendBudget
+      )
+    let chips = allChips
+    let flow = flowOf(chips)
+    if (flow.lines > LEG_MAX_ROWS) {
+      // Keep the chips that fit the rows, then drop from the end until "+N more" fits too.
+      let keep = flow.at.filter((a) => a.line < LEG_MAX_ROWS).length
+      for (; keep >= 0; keep--) {
+        const more: LegChip = {
+          ci: -1,
+          color: p.textMuted,
+          label: `+${allChips.length - keep} more`,
+          n: allChips.length - keep
         }
-        w += (cur.length ? LEG_GAP : 0) + it.w
-        cur.push(it)
+        const f = flowOf([...allChips.slice(0, keep), more])
+        if (f.lines <= LEG_MAX_ROWS) {
+          chips = [...allChips.slice(0, keep), more]
+          flow = f
+          break
+        }
       }
-      if (cur.length) lines.push(cur)
-      return lines
     }
-    // `active` is either a single module index (−1 = none) or a set of active modules (for a
-    // multi-gene selection). Active modules bold at full colour; the rest fade when anything is active.
-    const legRender = (active: number | Set<number>, lines: LegItem[][]): string => {
-      const set =
-        typeof active === 'number'
-          ? active < 0
-            ? null
-            : new Set([active])
-          : active.size
-            ? active
-            : null
-      return lines
-        .map((line) =>
-          line
-            .map((it) => {
-              const on = set?.has(it.ci) ?? false
-              const col = !set || on ? it.color : hexA(it.color, 0.3)
-              return `<span style="color:${col}">■ ${on ? `<b>${it.label}</b>` : it.label}</span>`
-            })
-            .join('   ')
-        )
-        .join('<br>')
+    const rest = allChips.slice(chips.filter((c) => c.ci >= 0).length)
+    const chipText = (c: LegChip, active: boolean, anyActive: boolean): string => {
+      const col = anyActive && !active ? hexA(c.color, 0.3) : c.color
+      if (c.ci < 0) return `<span style="color:${col}">${c.label}</span>`
+      return `<span style="color:${col}">■ ${active ? `<b>${c.label}</b>` : c.label}</span>`
     }
-    const legLines = legWrap(620) // conservative initial wrap; onGraphMount reflows to actual width
-    const clusterLegend = territoryGroups.length
-      ? [
-          {
-            x: 0.5,
-            xref: 'paper',
-            xanchor: 'center',
-            y: 0,
-            yref: 'paper',
-            yanchor: 'top',
-            yshift: -6,
-            showarrow: false,
-            text: legRender(-1, legLines),
-            font: { size: LEG_FS },
-            captureevents: false
-          }
-        ]
-      : []
+    const clusterLegend = flow.at.map(({ c, x, line }) => {
+      const chip = chips[Number(c)]
+      const full = chip.ci >= 0 ? territoryGroups[chip.ci].label : ''
+      return {
+        x: 0,
+        xref: 'paper',
+        xanchor: 'left',
+        xshift: x,
+        y: 0,
+        yref: 'paper',
+        yanchor: 'top',
+        yshift: -6 - line * LEG_ROW,
+        showarrow: false,
+        text: chipText(chip, false, false),
+        font: { size: LEG_FS },
+        // the full label when shortened
+        ...(chip.ci >= 0 && full !== chip.label ? { hovertext: full } : {}),
+        // a module chip: click to select its genes; "+N more": click to list the folded ones
+        name: chip.ci >= 0 ? `${CHIP}${chip.ci}` : MORE,
+        captureevents: true
+      }
+    })
+    // The folded clusters, for the "+N more" list: each with its full label, and the chip's
+    // annotation index (where the list opens under).
+    const more = {
+      at: chips.findIndex((c) => c.ci < 0),
+      items: rest.map((c) => ({ ...c, label: territoryGroups[c.ci].label }))
+    }
+    // Each module's genes (their shared ids), for a chip's click.
+    const moduleIds = territoryGroups.map((grp) => [...new Set(grp.members.map((i) => focusId[i]))])
 
     const heading = title ?? ''
     const hidden = { ...axisBase(p), visible: false, showgrid: false, zeroline: false }
@@ -416,10 +464,14 @@ export function StringView({
         l: 6,
         r: 60,
         t: heading ? 30 : 10,
-        b: legLines.length ? 12 + legLines.length * 15 : 10
+        b: flow.lines ? 12 + flow.lines * LEG_ROW : 10
       },
       xaxis: hidden,
       yaxis: { ...hidden, scaleanchor: 'x', scaleratio: 1 },
+      // A node answers the cursor only on (or just off) its own marker: Plotly's default reach
+      // (20px) let the nearest node take the hover — and the click — anywhere in a cluster, so its
+      // hull (hovered as a whole) rarely could.
+      hoverdistance: 2,
       annotations: clusterLegend
     }
     // Data for the imperative neighbour-highlight on hover (see onGraphMount). The node trace is last;
@@ -437,6 +489,8 @@ export function StringView({
       if (arr) arr.push(i)
       else indexByFocus.set(f, [i])
     })
+    // …and a module's own id (its hull hovered) → every node of it
+    territoryGroups.forEach((grp, ci) => indexByFocus.set(moduleKey(ci), grp.members))
     const hover = {
       nodeIdx: territoryTraces.length + edgeTraces.length,
       edgeIdxs: edgeTraces.map((_, i) => territoryTraces.length + i),
@@ -446,22 +500,21 @@ export function StringView({
       y: pos.y,
       color: vis.map((g) => g.log2FC),
       size: vis.map((_, i) => sizeOf(degree[i])),
-      colorscale: [
-        [0, downColor],
-        [0.5, noneColor],
-        [1, upColor]
-      ] as [number, string][],
+      colorscale: fcScale,
       cmin: -maxAbs,
       cmax: maxAbs,
       hi: p.textMuted,
+      // each node's name, and the ink it's named in while lit
+      name: vis.map((g) => g.name),
+      ink: p.text,
       focusId,
       indexByFocus,
       nodeOrder,
       moduleByNode,
-      legItems,
-      legWrap,
-      legRender,
-      legendIdx: territoryGroups.length ? 0 : -1
+      chips,
+      chipText,
+      restCis: rest.map((c) => c.ci),
+      moreActiveText: (n: number) => `<span style="color:${p.text}"><b>${moreActive(n)}</b></span>`
     }
     return {
       data: [...territoryTraces, ...edgeTraces, nodeTrace],
@@ -469,9 +522,11 @@ export function StringView({
       nConnected: vis.length,
       labels,
       labelColor: p.textMuted,
-      hover
+      hover,
+      moduleIds,
+      more
     }
-  }, [net, mode, title, genes, annotationMap, maxGenes, upColor, downColor, noneColor])
+  }, [net, mode, title, genes, annotationMap, maxGenes, fcScale, legendBudget])
 
   // Hover a node → highlight it + its neighbours + the connecting edges. Done imperatively (restyle
   // + overlay traces) so it never re-renders/resets the pan-zoom. Dims the base nodes/edges and draws
@@ -584,25 +639,28 @@ export function StringView({
           /* cosmetic */
         }
       }
-      // Reflow the legend to the LIVE plot width so items never crop against a narrow tile's edge.
-      // The legend is centred on the plot area (l=6 margin), so its safe span is ~the plot width;
-      // pad in a little. Also grow the bottom margin to fit however many lines the reflow produced.
-      let legLinesLive = h.legWrap(620)
-      const reflowLegend = (): void => {
-        if (h.legendIdx < 0) return
-        const size = (el as unknown as { _fullLayout?: { _size?: { w: number } } })._fullLayout
-          ?._size
-        if (!size || size.w <= 0) return
-        legLinesLive = h.legWrap(Math.max(120, size.w - 8))
-        relayout({
-          [`annotations[${h.legendIdx}].text`]: h.legRender(-1, legLinesLive),
-          'margin.b': 12 + legLinesLive.length * 15
-        })
-      }
-      // Bold the given module(s) in the cluster legend (fade the rest); −1 / empty clears.
+      // Bold the given module(s)' chips (fade the rest); −1 / empty clears. Each chip is its own
+      // annotation, so only its text is rewritten — nothing moves.
       const boldLegend = (active: number | Set<number>): void => {
-        if (h.legendIdx < 0) return
-        relayout({ [`annotations[${h.legendIdx}].text`]: h.legRender(active, legLinesLive) })
+        if (!h.chips.length) return
+        const set =
+          typeof active === 'number'
+            ? active < 0
+              ? null
+              : new Set([active])
+            : active.size
+              ? active
+              : null
+        const u: Record<string, unknown> = {}
+        h.chips.forEach((c, k) => {
+          // "+N more", list closed, folding active clusters → "… n modules", highlighted
+          const nOn =
+            c.ci < 0 && !moreOpenRef.current ? h.restCis.filter((ci) => set?.has(ci)).length : 0
+          u[`annotations[${k}].text`] = nOn
+            ? h.moreActiveText(nOn)
+            : h.chipText(c, set?.has(c.ci) ?? false, !!set)
+        })
+        relayout(u)
       }
       // Overlay a set of nodes (bright markers) + the given edge segments, over the dimmed base.
       // `focus` (the hovered gene's nodes — several for a protein group) gets a heavier outline.
@@ -614,6 +672,10 @@ export function StringView({
       ): void => {
         clearOverlay()
         dim(true)
+        // the nodes with a label placed (the shared layer's, tagged with the node's id)
+        const anns = (el as unknown as { layout?: { annotations?: { __oeLabelId?: string }[] } })
+          .layout?.annotations
+        const labelled = new Set((anns ?? []).map((a) => a.__oeLabelId).filter(Boolean))
         try {
           void P.addTraces(el, [
             {
@@ -629,9 +691,14 @@ export function StringView({
             {
               __oeHoverOverlay: true,
               type: 'scatter',
-              mode: 'markers',
+              // A lit node keeps its own label where it sits, bold (labelsInPlace); one with none
+              // placed — an interactor, or a gene crowded out — is named here, over it.
+              mode: 'markers+text',
               x: idxs.map((i) => h.x[i]),
               y: idxs.map((i) => h.y[i]),
+              text: idxs.map((i) => (labelled.has(h.focusId[i]) ? '' : `<b>${h.name[i]}</b>`)),
+              textposition: 'top center',
+              textfont: { size: 10, color: h.ink, family: 'system-ui, sans-serif' },
               hoverinfo: 'skip',
               marker: {
                 size: idxs.map((i) => h.size[i]),
@@ -640,11 +707,7 @@ export function StringView({
                 cmid: 0,
                 cmin: h.cmin,
                 cmax: h.cmax,
-                // When one node is the focus (a hover), fade its neighbours so it reads as the centre;
-                // for a selection with no single focus, keep every highlighted node at full strength.
-                opacity: idxs.map((i) =>
-                  focus.size === 0 || focus.has(i) ? 1 : NEIGHBOUR_OPACITY
-                ),
+                opacity: 1,
                 line: { width: idxs.map((i) => (focus.has(i) ? 2.4 : 1.4)), color: '#000000' }
               }
             }
@@ -653,16 +716,20 @@ export function StringView({
           /* cosmetic */
         }
       }
-      // Highlight the given nodes: their closed neighbourhoods + incident edges, bolding every
-      // involved module. `focus` (the hovered node, if any) gets the heavier outline.
-      const highlightNodes = (ks: number[], focus: Set<number>): void => {
-        const nb = new Set<number>(ks)
+      // Highlight the given nodes — only them, never their neighbours (a lit neighbour reads as
+      // the gene itself) — and their edges, bolding every involved module. `focus` (the hovered
+      // node, if any) gets the heavier outline. `spread` = the nodes whose every edge lights (a
+      // hovered or selected gene); the rest (a hovered GROUP's members — an enrichment term's
+      // genes, a cluster) light just the links among them: all of theirs would light most of the
+      // network.
+      const highlightNodes = (ks: number[], focus: Set<number>, spread: Set<number>): void => {
+        const inSet = new Set<number>(ks)
         const ex: (number | null)[] = []
         const ey: (number | null)[] = []
         const pd = pxPerData()
         for (const k of ks) {
           for (const j of h.adj[k] ?? []) {
-            nb.add(j)
+            if (!spread.has(k) && !inSet.has(j)) continue
             const s = pd ? trimSeg(k, j, pd) : null
             if (s) {
               ex.push(s[0], s[2], null)
@@ -673,7 +740,7 @@ export function StringView({
             }
           }
         }
-        overlay([...nb], ex, ey, focus)
+        overlay([...inSet], ex, ey, focus)
         const mods = new Set<number>()
         for (const k of ks) {
           const m = h.moduleByNode[k] ?? -1
@@ -689,20 +756,33 @@ export function StringView({
       // React to the SHARED hover (from any view): highlight the node for the hovered gene.
       let last = ' '
       const applyFocus = (): void => {
-        const { hoverId, pinnedIds } = useSelection.getState()
+        const { hoverId, hoverMembers, pinnedIds } = useSelection.getState()
         const ids = new Set<string>(pinnedIds)
         if (hoverId) ids.add(hoverId)
+        // a group hovered elsewhere (an enrichment term): its member genes, as hovered genes
+        for (const g of hoverMembers) ids.add(g)
         const sig = [...ids].sort().join('|')
         if (sig === last) return
         last = sig
-        const idxs = [...ids].flatMap((id) => h.indexByFocus.get(id) ?? [])
+        const at = (id: string): number[] => h.indexByFocus.get(id) ?? []
+        const pinIdx = [...pinnedIds].flatMap(at)
+        const hovIdx = hoverId != null ? at(hoverId) : []
+        const memIdx = hoverMembers.flatMap(at)
+        const idxs = [...pinIdx, ...hovIdx, ...memIdx]
         if (idxs.length === 0) return clear()
-        const focus = new Set(hoverId != null ? (h.indexByFocus.get(hoverId) ?? []) : [])
-        highlightNodes(idxs, focus)
+        // A hovered group (its members carried with it, or a hull's own id) lights only itself; a
+        // hovered or selected gene lights its neighbourhood as well.
+        const group = hoverMembers.length > 0
+        const spread = new Set([...pinIdx, ...(group ? [] : hovIdx)])
+        highlightNodes(idxs, new Set([...hovIdx, ...memIdx]), spread)
       }
-      reflowLegend()
       trimEdges()
       applyFocus()
+      // the re-text the "+N more" list calls as it opens or closes
+      legendRefresh.current = () => {
+        last = ' '
+        applyFocus()
+      }
       const unsub = useSelection.subscribe(applyFocus)
       // Re-trim the edges to the node radius whenever the axis scale changes — zoom/pan (relayout)
       // or a tile resize (Plotly.Plots.resize doesn't re-run this mount, so observe directly).
@@ -738,13 +818,21 @@ export function StringView({
         removeListener?: (e: string, cb: (...a: unknown[]) => void) => void
       }
       const onRelayout = (ed: Record<string, unknown>): void => {
+        const keys = Object.keys(ed ?? {})
         // Only the range keys (zoom/pan/autorange) change the scale — ignore our own cosmetic writes.
-        if (Object.keys(ed ?? {}).some((k) => k.includes('range'))) scheduleTrim()
+        if (keys.some((k) => k.includes('range'))) scheduleTrim()
+        // The labels were (re)placed: the lit nodes' names follow (a lit node whose label is gone
+        // is named by the overlay, one that gained a label isn't).
+        if (keys.includes('annotations')) {
+          last = ' '
+          applyFocus()
+        }
       }
       ev.on('plotly_hover', onHover as (...a: unknown[]) => void)
       ev.on('plotly_unhover', onUnhover)
       ev.on('plotly_relayout', onRelayout as (...a: unknown[]) => void)
       return () => {
+        legendRefresh.current = null
         unsub()
         clear()
         cancelAnimationFrame(trimRaf)
@@ -756,6 +844,17 @@ export function StringView({
     },
     [hover]
   )
+
+  // Open only for the legend it was opened from: a new network (another level, cap, facet) has
+  // other chips, so its list starts closed.
+  const moreAt = moreOpen && moreOpen.of === more ? moreOpen.at : null
+  const moreIsOpen = moreAt != null
+  useEffect(() => {
+    moreOpenRef.current = moreIsOpen
+    legendRefresh.current?.()
+  }, [moreIsOpen])
+  // the selection, for the "not in view" count (the plot's own highlight reads the store itself)
+  const pinnedIds = useSelection((s) => s.pinnedIds)
 
   if (genes.length < 2) return <Center>Need at least 2 significant genes for a network.</Center>
   if (!all) return <Center>No network read for this facet — re-run the plot.</Center>
@@ -774,14 +873,164 @@ export function StringView({
       </Center>
     )
 
+  // A cluster chip selects its module's genes (pins them, as a volcano legend click does); again
+  // clears them. "+N more" opens (or closes) the folded clusters' list, under the chip.
+  const toggleModule = (ci: number): void => {
+    const ids = moduleIds[ci]
+    if (ids?.length) useSelection.getState().togglePins(ids)
+  }
+  // A hull's module id → its genes, which a click on the hull selects (PlotlyChart's pinIdsOf).
+  const pinIdsOf = (id: string): string[] | null =>
+    id.startsWith(MODULE_KEY) ? (moduleIds[Number(id.slice(MODULE_KEY.length))] ?? []) : null
+  const onAnnotationClick = (name: string): void => {
+    if (name === MORE) {
+      const el = boxRef.current?.querySelector(`.annotation[data-index="${more.at}"]`)
+      setMoreOpen(moreAt || !el ? null : { at: el.getBoundingClientRect(), of: more })
+      return
+    }
+    if (name.startsWith(CHIP)) toggleModule(Number(name.slice(CHIP.length)))
+  }
+
+  // Selected genes this network doesn't draw (filtered out by the confidence or the node cap, or
+  // not in it at all) — said top-right, so a selection that lights nothing here explains itself.
+  const notInView = hover ? [...pinnedIds].filter((id) => !hover.indexByFocus.has(id)).length : 0
+
   return (
-    <PlotlyChart
-      data={data}
-      layout={layout}
-      labels={labels}
-      labelColor={labelColor}
-      onGraphMount={onGraphMount}
-    />
+    // Measured (for the legend's flow width) and otherwise invisible — the chart fills it.
+    <div ref={boxRef} style={{ position: 'relative', width: '100%', height: '100%' }}>
+      <PlotlyChart
+        data={data}
+        layout={layout}
+        labels={labels}
+        labelColor={labelColor}
+        onGraphMount={onGraphMount}
+        onAnnotationClick={onAnnotationClick}
+        pinIdsOf={pinIdsOf}
+        labelsInPlace
+      />
+      {notInView > 0 && (
+        <div
+          style={{
+            position: 'absolute',
+            top: 6,
+            right: 10,
+            pointerEvents: 'none',
+            fontSize: 11,
+            fontFamily: 'system-ui, sans-serif',
+            color: UI.textMuted
+          }}
+        >
+          {notInView}/{pinnedIds.size} selected not in view
+        </div>
+      )}
+      {moreAt && more.items.length > 0 && (
+        <MoreClusters
+          anchor={moreAt}
+          items={more.items}
+          moduleIds={moduleIds}
+          onToggle={toggleModule}
+          onClose={() => setMoreOpen(null)}
+        />
+      )}
+    </div>
+  )
+}
+
+/** The "+N more" chip's list: the folded clusters, in the legend's own look — ■ in the cluster's
+ *  colour, its label (in full here), bold while active as a chip is (its genes selected, or the
+ *  hovered gene one of them; the rest fade), tinted under the pointer — each clickable as a chip
+ *  is. Opens under the chip; Escape or a click outside closes it (a click on the chip itself is
+ *  the chip's own toggle). */
+function MoreClusters({
+  anchor,
+  items,
+  moduleIds,
+  onToggle,
+  onClose
+}: {
+  anchor: DOMRect
+  items: LegChip[]
+  moduleIds: string[][]
+  onToggle: (ci: number) => void
+  onClose: () => void
+}): ReactNode {
+  const pinnedIds = useSelection((s) => s.pinnedIds)
+  const hoverId = useSelection((s) => s.hoverId)
+  // the entry under the pointer (its tint)
+  const [under, setUnder] = useState(-1)
+  useEffect(() => {
+    const onDown = (e: MouseEvent): void => {
+      const t = e.target as Element | null
+      if (t?.closest?.('[data-oe-more-list]') || t?.closest?.('.annotation')) return
+      onClose()
+    }
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key === 'Escape') onClose()
+    }
+    document.addEventListener('mousedown', onDown)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', onDown)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [onClose])
+  // Active as a legend chip is: its genes selected, the hovered gene (in any view) one of them, or
+  // its hull hovered.
+  const active = (ci: number): boolean =>
+    ((moduleIds[ci]?.length ?? 0) > 0 && moduleIds[ci].every((id) => pinnedIds.has(id))) ||
+    (hoverId != null && (moduleIds[ci]?.includes(hoverId) ?? false)) ||
+    hoverId === moduleKey(ci)
+  // any cluster at all — a visible chip's too — fades the others, as on the plot
+  const anyActive = moduleIds.some((_, ci) => active(ci))
+  return createPortal(
+    <div
+      data-oe-more-list
+      className="oe-menu-in"
+      style={{
+        position: 'fixed',
+        left: anchor.left,
+        top: anchor.bottom + 4,
+        zIndex: 4000,
+        maxWidth: 360,
+        maxHeight: Math.max(120, window.innerHeight - anchor.bottom - 16),
+        overflowY: 'auto',
+        background: UI.panel,
+        border: `1px solid ${UI.border}`,
+        borderRadius: 8,
+        boxShadow: '0 8px 30px rgba(0,0,0,0.55)',
+        padding: '6px 4px',
+        display: 'flex',
+        flexDirection: 'column'
+      }}
+    >
+      {items.map((c) => {
+        const on = active(c.ci)
+        return (
+          <button
+            key={c.ci}
+            onClick={() => onToggle(c.ci)}
+            onMouseEnter={() => setUnder(c.ci)}
+            onMouseLeave={() => setUnder((u) => (u === c.ci ? -1 : u))}
+            style={{
+              all: 'unset',
+              cursor: 'pointer',
+              padding: '3px 8px',
+              borderRadius: 4,
+              fontSize: LEG_FS,
+              fontFamily: 'system-ui, sans-serif',
+              fontWeight: on ? 700 : 400,
+              // as the chips: full colour when active (or nothing is), faded when another is
+              color: anyActive && !on ? hexA(c.color, 0.3) : c.color,
+              background: under === c.ci ? UI.panelRaised : 'transparent',
+              lineHeight: 1.35
+            }}
+          >
+            ■ {c.label}
+          </button>
+        )
+      })}
+    </div>,
+    document.body
   )
 }
 

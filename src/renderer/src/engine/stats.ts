@@ -133,6 +133,22 @@ export function normalSf(z: number): number {
   return 0.5 * erfc(z / Math.SQRT2)
 }
 
+/** Standard normal quantile: z with P(Z ≤ z) = p (bisection on normalSf, to its ~1e-7 precision).
+ *  ±Infinity at p = 0 / 1, NaN outside [0, 1]. */
+export function normalPpf(p: number): number {
+  if (!(p >= 0 && p <= 1)) return NaN
+  if (p === 0) return -Infinity
+  if (p === 1) return Infinity
+  let lo = -40
+  let hi = 40
+  for (let i = 0; i < 100; i++) {
+    const mid = (lo + hi) / 2
+    if (1 - normalSf(mid) < p) lo = mid
+    else hi = mid
+  }
+  return (lo + hi) / 2
+}
+
 /** Median of the finite values (NaN if none). */
 export function median(vals: number[]): number {
   const a = vals.filter(Number.isFinite).sort((x, y) => x - y)

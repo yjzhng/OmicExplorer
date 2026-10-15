@@ -1,6 +1,7 @@
 import { useMemo } from 'react'
 
 import type { ClusterData } from '../engine'
+import { tooltip } from './condTooltip'
 import { PlotlyChart } from './PlotlyChart'
 import { axisBase, CATEGORICAL, PALETTES, plotBase } from './theme'
 import { useUiTheme } from './useUiTheme'
@@ -37,10 +38,13 @@ export function ScreeView({ cluster, title }: { cluster: ClusterData; title?: st
     const lay: Record<string, unknown> = {
       ...plotBase(p),
       title: title ? { text: title, font: { size: 13 } } : undefined,
-      xaxis: { ...axisBase(p), title: 'component', type: 'category' },
+      // automargin: room for the tick labels however Plotly lays them (tilted when the tile is
+      // narrow), so the title sits below them rather than over them — as the other plots' axes.
+      xaxis: { ...axisBase(p), title: 'component', type: 'category', automargin: true },
       yaxis: {
         ...axisBase(p),
         title: 'variance explained (%)',
+        automargin: true,
         // Pinned to 0–100: the same dataset at a different PC count must not appear to change
         // shape because the axis rescaled.
         range: [0, 100],
@@ -58,7 +62,11 @@ export function ScreeView({ cluster, title }: { cluster: ClusterData; title?: st
         x: labels,
         y: pct,
         marker: { color: CATEGORICAL[0] },
-        hovertemplate: '%{x}: %{y:.1f}%<extra></extra>'
+        hovertemplate: tooltip(
+          { title: '%{x}', values: [['variance', '%{y:.1f}%']] },
+          p.textMuted,
+          { template: true }
+        )
       },
       {
         type: 'scatter',
@@ -68,7 +76,11 @@ export function ScreeView({ cluster, title }: { cluster: ClusterData; title?: st
         y: cum,
         line: { color: p.textMuted, width: 2 },
         marker: { color: p.textMuted, size: 6 },
-        hovertemplate: '%{x}: %{y:.1f}% cumulative<extra></extra>'
+        hovertemplate: tooltip(
+          { title: '%{x}', values: [['cumulative variance', '%{y:.1f}%']] },
+          p.textMuted,
+          { template: true }
+        )
       }
     ]
     return { data, layout: lay }

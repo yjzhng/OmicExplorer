@@ -18,12 +18,17 @@ export function usePopover(closeKey?: string): {
   setOpen: (v: boolean) => void
   toggle: () => void
   /** the trigger's box at the moment it opened */
-  rect: { left: number; bottom: number; width: number } | null
+  rect: { left: number; top: number; bottom: number; width: number } | null
   btnRef: RefObject<HTMLButtonElement | null>
   menuRef: RefObject<HTMLDivElement | null>
 } {
   const [open, setOpen] = useState(false)
-  const [rect, setRect] = useState<{ left: number; bottom: number; width: number } | null>(null)
+  const [rect, setRect] = useState<{
+    left: number
+    top: number
+    bottom: number
+    width: number
+  } | null>(null)
   const btnRef = useRef<HTMLButtonElement>(null)
   const menuRef = useRef<HTMLDivElement>(null)
   // The functional updater bails when it's already closed, so this doesn't cascade — reacting to
@@ -56,7 +61,7 @@ export function usePopover(closeKey?: string): {
   const toggle = (): void => {
     if (open) return setOpen(false)
     const r = btnRef.current?.getBoundingClientRect()
-    if (r) setRect({ left: r.left, bottom: r.bottom, width: r.width })
+    if (r) setRect({ left: r.left, top: r.top, bottom: r.bottom, width: r.width })
     setOpen(true)
   }
   return { open, setOpen, toggle, rect, btnRef, menuRef }

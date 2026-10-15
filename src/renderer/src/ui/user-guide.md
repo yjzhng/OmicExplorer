@@ -42,13 +42,13 @@ Plots | Volcano, MA, heatmap, cluster, enrichment, STRING… redrawn from result
 
 **Merge** pools several Clean data steps into one, for analyses across datasets.
 
-### Layouts
+### Workflow editor mode
 
 Choose one in **Settings → Appearance**:
 
 [[layouts]]
 
-In **Flow**, move between the canvas and the dashboard with **Results →** and **← Workflow**. In
+In **Flowchart**, move between the canvas and the dashboard with **Results →** and **← Workflow**. In
 **Form**, interactive dialogs open in a panel on the right.
 
 ### Running
@@ -75,9 +75,9 @@ file, with a subfolder per workflow:
 ```folder
 my_folder/
   input/ | your input files
-    mydata_wide.csv | data matrix — stem ends _wide or _long
+    mydata_datamatrix.csv | data matrix, wide or long
     mydata_samplesheet.csv | sample → conditions
-    mydata_DB.csv | optional: ID → gene + annotations
+    mydata_metadata.csv | optional: ID → gene + annotations
   My Study_data/ | named after My Study.omicexplorer
     Workflow 1/ | named after the workflow
       input/ | files made by the interactive import
@@ -108,14 +108,14 @@ Pick a category | Data, Processing or Visualisation.
 Pick the step | e.g. Clean data, Compare, Volcano.
 ```
 
-- **Flow:** **+ New step** at the bottom of the canvas (Esc cancels), or drag from a step's
+- **Flowchart:** **+ New step** at the bottom of the canvas (Esc cancels), or drag from a step's
   right-hand handle onto empty canvas — the new step comes already wired, and if only one kind of
   step can follow, it's created straight away.
 - **Form:** **+ Add step** opens the same picker; the step is wired to the last step that can feed
   it.
-- **Wiring:** in Flow, drag between handles; select a connection to delete it. In Form, use a
+- **Wiring:** in Flowchart, drag between handles; select a connection to delete it. In Form, use a
   step's **Input** row. Form steps can be dragged to reorder.
-- **Editing:** a step's panel has **Duplicate** and **Delete**. In Flow, drag on empty canvas to
+- **Editing:** a step's panel has **Duplicate** and **Delete**. In Flowchart, drag on empty canvas to
   select several steps, then Group, Duplicate or Delete them. **↺ / ↻** in the top bar undo and
   redo.
 
@@ -153,12 +153,12 @@ Metadata | Fetch annotations; preview the DB.
 
 ### Data file
 
-The intensity / abundance matrix. Its filename **stem must end in** `_wide` (one row per feature,
-one column per sample) or `_long` (one row per feature × sample, with a `sample`, `well` or
-`position` column and a `value` column).
+The intensity / abundance matrix, named e.g. `mydata_datamatrix.csv`. It can be **wide** (one row
+per feature, one column per sample) or **long** (one row per feature × sample, with a `sample` and a
+`value` column); the app tells them apart from the columns.
 
 ```table id sample sample sample sample missing-zero
-UniProtID | A1 | A2 | B1 | B2
+UniProtIDs | A1 | A2 | B1 | B2
 O05154 | 305.15 | 260.60 | 298.4 | 271.9
 P99999 | 1024.7 | | 1102.5 | 0
 Q13547;Q92769-2 | 88.1 | 91.4 | NA | 85.0
@@ -168,29 +168,34 @@ Accepted columns:
 
 ```table plain plain plain
 Column | Needed | What it holds
-first column (any name) | wide: required | Feature ID, e.g. UniProtID
+first column | wide: required | Feature ID as the search engine wrote it, e.g. `UniProtIDs`
 one per sample | wide: required | That sample's values; the header is the sample name
 ID column (any name) | long: required | Feature ID; the first column that isn't sample or value
-sample (or position, well) | long: required | Sample name, matching the samplesheet
+sample | long: required | Sample name, matching the samplesheet
 value | long: required | The measured value
 peptides | long: optional | Peptide count; read but not used in analysis yet
 ```
 
-- **Names:** in a `_long` file, `sample`, `position`, `well`, `value` and `peptides` are
-  lowercase and case-sensitive. The ID column can be named anything; give it the same name as
-  the DB's ID column to pick up labels and annotations.
+- **Names:** in a long file, `sample`, `value` and `peptides` are lowercase and case-sensitive.
+  The ID column (e.g. `UniProtIDs`) is matched to the metadata file's `uniqID`.
 - **Wide files:** every column after the first is read as a sample. One the samplesheet doesn't
   list is dropped.
 - **Missing:** a blank cell, `NA`, `NaN` and `0` all mean "not measured".
 - **Raw or logged:** either works — see **Clean data**.
-- **Protein groups:** an ID may name several proteins, `;`-joined; the group stays one feature.
+- **IDs as exported:** the IDs can be left as your search engine wrote them — a protein group
+  `;`-joined (`Q13547;Q92769-2`, which stays one feature), an isoform (`P06733-2`) or a FASTA
+  header (`sp|O14733|MP2K7_HUMAN`) all find their proteins in the metadata file.
+- **Decoys:** an ID starting `REV__`, `rev_`, `DECOY_` or `reverse_` is kept and analysed like any
+  other, but never gets annotations — not from the metadata file, not from the fetch — so it
+  can't borrow the label of the real protein it mirrors.
 
 ### Samplesheet
 
-Each sample's conditions, one row per sample. Headers are matched case-insensitively.
+Each sample's conditions, one row per sample, named e.g. `mydata_samplesheet.csv`. Headers are
+matched case-insensitively.
 
 ```table sample cond cond cond cond
-well | cell | cmpd | dose | rep
+sample | cell | cmpd | dose | rep
 A1 | WT | Amk | 10 | 1
 A2 | WT | Amk | 10 | 2
 B1 | clpP | Amk | 5 | 1
@@ -200,10 +205,7 @@ Accepted columns:
 
 ```table plain plain plain
 Column | Needed | What it holds
-sample | one sample key | Sample name, matching the data file
-position | one sample key | Used as the sample name when there's no sample column
-plate + well | one sample key | Sample name becomes plate_well (e.g. P1_A1)
-well | one sample key | Used as the sample name when there's no sample, position or plate
+sample | required | Sample name, matching the data file
 cell | optional | Cell line or strain, text (strain is also accepted)
 cmpd | optional | Compound, text
 dose | optional | Dose, a number (0 is the vehicle)
@@ -212,7 +214,7 @@ rep | optional | Replicate number; numbered automatically when absent
 your own (e.g. medium) | optional | A custom condition, always categorical
 ```
 
-- **Sample key:** checked in the order above. Only samples listed here are kept.
+- **Samples:** only samples listed here are kept.
 - **Units:** set the units for `dose` and `time` on the Load tile.
 - **Your own conditions:** any further column (`medium`, `batch`…) becomes a condition like
   `cell`. Names start with a lowercase letter, then lowercase letters, digits and `_`; the
@@ -221,24 +223,23 @@ your own (e.g. medium) | optional | A custom condition, always categorical
 
 ### ID mapping (DB file)
 
-**Optional.** Maps feature IDs to a stable `uniqID`, a gene label, and annotations — **one row per
-protein**. The data's ID column is matched to the DB column of the same name, on the canonical
-accession (`Q9ULV3-5` finds `Q9ULV3`).
+**Optional.** Named e.g. `mydata_metadata.csv`. Maps feature IDs to a gene label and annotations
+— **one row per protein, one accession per `uniqID`**. The data's IDs are matched to `uniqID` on
+the canonical accession (`Q9ULV3-5` finds `Q9ULV3`); a protein group finds each member's row.
 
-```table id id label label
-uniqID | UniProtID | gene | product
-Q2G2H5 | Q2G2H5 | dnaA | Chromosomal replication initiator
-Q2G2H4 | Q2G2H4 | | Beta sliding clamp
+```table id label label
+uniqID | gene | proteinName
+Q2G2H5 | dnaA | Chromosomal replication initiator
+Q2G2H4 | | Beta sliding clamp
 ```
 
 Accepted columns (names are case-sensitive):
 
 ```table plain plain plain
 Column | Needed | What it holds
-uniqID | required | Stable feature ID; a row without one is skipped
-ID column (same name as data's) | required | The accession matched to the data's feature IDs
+uniqID | required | One protein's accession, e.g. `P06733`; one row each
 gene | optional | Gene name, shown as the feature's label
-locus_tag | optional | The label when gene is empty
+locus | optional | Systematic gene name (e.g. Rv0001, YAL001C; UniProt's ordered locus name, fetched as **Gene locus**); the label when gene is empty
 taxon | optional | NCBI taxon id; the most common one sets the STRING species
 GO_BP, GO_MF, GO_CC | optional | GO terms: biological process, molecular function, component
 KEGG | optional | KEGG pathway(s)
@@ -251,7 +252,6 @@ KOG, KOG_cat, KOG_area | optional | The same three for KOG (eukaryotes)
 MSigDB | optional | MSigDB hallmark gene set(s)
 stringId | optional | The protein's STRING id, for the STRING network
 DEG | optional | Essentiality from the Database of Essential Genes
-CEG_NEG | optional | Essentiality from the curated human CEG/NEG sets
 anything else (e.g. product) | optional | Carried along as an annotation
 ```
 
@@ -260,7 +260,7 @@ anything else (e.g. product) | optional | Carried along as an annotation
   columns list one entry per term, in the same order as the column they belong to.
 - **Older names:** `GO` (read with the GO aspects), `keggPathway` and `KG_PW` (→ `KEGG`),
   `cogCategory` (→ `COG_cat`), `cogArea` (→ `COG_area`), `reactomePathway` (→ `Reactome`),
-  `msigdbSet` (→ `MSigDB`), `essentiality` (→ `DEG`), `essentialityCEG` (→ `CEG_NEG`).
+  `msigdbSet` (→ `MSigDB`), `essentiality` (→ `DEG`), `locus_tag` (→ `locus`).
 
 [[protein-groups]]
 
@@ -296,7 +296,7 @@ category | Transcription
   `Reactome_cat`.
 - **GO** — `GO_BP`, `GO_MF`, `GO_CC`. **COG** (prokaryotes) / **KOG** (eukaryotes) — `COG`,
   `COG_cat`, `COG_area`; the same for KOG.
-- **MSigDB** — hallmark gene sets. **Essentiality** — `DEG` and `CEG_NEG` (human). **STRING** —
+- **MSigDB** — hallmark gene sets. **Essentiality** — `DEG`. **STRING** —
   `stringId`, each protein's STRING id.
 - Your own DB can carry these columns too — see **ID mapping (DB file)** for the full list.
 
@@ -333,7 +333,7 @@ upstream steps:
 Plot | Clean data | Compare | Contrast
 QC · Correlation · Cluster · Bar | ✓ | |
 Heatmap | ✓ | ✓ |
-Volcano · MA · Bubble · Time & Dose | | ✓ |
+Volcano · MA · Bubble · Dose & Time response | | ✓ |
 Enrichment · STRING | | ✓ |
 Scatter · Dose/time-response | | ✓ | ✓
 Dumbbell | | | ✓
@@ -349,7 +349,7 @@ Data table | ✓ | ✓ | ✓
 - **Apply to all** copies a plot's settings to every other plot of that kind, after you confirm.
 - **Quick access:** a setting can be shown as a switch bar in the tile itself (e.g. View, Colour),
   to flip without opening the settings.
-- **Defaults:** **Settings → Plots** sets the starting settings for new plots of each kind;
+- **Defaults:** **Settings → Customisation** sets the starting settings for new plots of each kind;
   existing plots are never changed.
 
 # Exploring data

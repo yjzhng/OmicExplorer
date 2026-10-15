@@ -196,3 +196,37 @@ describe('workflow v2 serialization', () => {
     }
   })
 })
+
+describe('Curve fit migration', () => {
+  it('opens a Compare saved in curve-fit mode as a Curve fit tile, keeping id, config and wiring', () => {
+    const cmp = (id: string, analysis: string): GraphNode => ({
+      id,
+      type: 'step',
+      position: { x: 0, y: 0 },
+      data: {
+        kind: 'compare',
+        config: { analysis, num: { cmpd: ['A'] }, den: { cmpd: ['DMSO'] }, match: [] } as never,
+        status: 'idle',
+        name: `my ${analysis}`
+      }
+    })
+    const back = deserializeWorkflow(
+      serializeWorkflow({
+        nodes: [NODES[0], cmp('compare-2', 'curve_fit'), cmp('compare-3', 'compare')],
+        edges: [edge('standardize-1', 'compare-2'), edge('standardize-1', 'compare-3')],
+        nextId: 4,
+        groupLayouts: {},
+        groupMeta: {}
+      })
+    )
+    const byId = Object.fromEntries(back.nodes.map((n) => [n.id, n]))
+    const curve = byId['compare-2']
+    const plain = byId['compare-3']
+    if (curve.type !== 'step' || plain.type !== 'step') throw new Error('not steps')
+    expect(curve.data.kind).toBe('curveFit')
+    expect(curve.data.name).toBe('my curve_fit')
+    expect((curve.data.config as { den: unknown }).den).toEqual({ cmpd: ['DMSO'] })
+    expect(plain.data.kind).toBe('compare')
+    expect(back.edges.map((e) => e.target).sort()).toEqual(['compare-2', 'compare-3'])
+  })
+})

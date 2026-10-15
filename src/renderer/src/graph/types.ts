@@ -4,6 +4,7 @@ import type { Node } from '@xyflow/react'
 import type {
   CondSelector,
   ClusterColorBy,
+  ClusterData,
   ConditionKey,
   ContrastResult,
   ContrastStat,
@@ -12,16 +13,18 @@ import type {
   FilterSpec,
   ImputeMethod,
   InteractiveRole,
+  NormalizeReference,
   PairFix,
   InteractiveSampleCond,
+  SampleOrder,
   MatrixPreset,
   StandardizeResult,
   ThresholdConfig,
   VehNormResult
 } from '../engine'
-import { VALID_CONDITIONS } from '../engine'
+import { condValue, isNumericCond, VALID_CONDITIONS, type LeafOrder, type Linkage } from '../engine'
 import type { StringAll } from '../ui/stringModel'
-import { EFFECT_COLOR } from '../ui/theme'
+import { ROLE_DEFAULTS, paletteEffectColors, toPaletteRef, type PaletteRef } from '../ui/palettes'
 export type { StringAll }
 
 /** High-level node category — derived from the op, never stored (see `categoryOf`). */
@@ -31,7 +34,9 @@ export type NodeKind =
   | 'load'
   | 'standardize'
   | 'merge'
+  | 'subset'
   | 'compare'
+  | 'curveFit'
   | 'contrast'
   | 'volcano'
   | 'heatmap'
@@ -40,6 +45,7 @@ export type NodeKind =
   | 'dr'
   | 'potency'
   | 'curveMad'
+  | 'response'
   | 'bubble'
   | 'dumbbell'
   | 'pca'
@@ -58,6 +64,12 @@ export type PlotOrient = 'landscape' | 'portrait'
 
 /** Merge has nothing to configure yet — which datasets it pools is the wiring, not a setting. */
 export type MergeConfig = Record<string, never>
+
+/** Subset keeps the samples whose conditions take the chosen values: condition → kept values. A
+ *  condition absent or empty is unfiltered, so the default passes the dataset through. */
+export interface SubsetConfig {
+  keep: CondSelector
+}
 
 export interface FileEntry {
   name: string
@@ -128,6 +140,9 @@ export interface InteractiveImport {
    *  a samplesheet column of the same name, and a `@name` condition key downstream. Always
    *  categorical — see the engine's CustomConditionKey. */
   customConditions?: string[]
+  /** conditions switched off that still carry values: kept (switching one back on restores them),
+   *  but left out of the samplesheet and the checks while off */
+  hiddenConditions?: string[]
   /** filter-column header → row-filter spec (Filtering step); absent = no row filtering */
   filters?: Record<string, FilterSpec>
   /** sample header → condition field → the token-index range [start, end) that field occupies in
@@ -180,6 +195,12 @@ export interface StandardizeConfig {
    *  arrived, or log₁₀ / log₂. Analyses always work from exact linear values (see engine scale.ts).
    *  Absent = the default for the detected input scale: log₁₀ for linear input, none for logged. */
   logTransform?: 'none' | 'log2' | 'log10'
+  /** median normalisation on/off (absent = off) */
+  normalizeEnabled?: boolean
+  /** the genes each sample's median is taken over (absent = 'shared': genes in every sample) */
+  normalizeReference?: NormalizeReference
+  /** also equalise each sample's spread, Perseus width adjustment (absent = off) */
+  normalizeSpread?: boolean
   /** imputation on/off (absent = off) */
   imputeEnabled?: boolean
   /** imputation method while enabled (absent = 'perseus') */
@@ -201,13 +222,36 @@ export const cleanupOn = (c: StandardizeConfig): boolean =>
 export const imputeOn = (c: StandardizeConfig): boolean => !!c.imputeEnabled && cleanupOn(c)
 
 export interface CompareConfig {
-  /** which comparison analysis to run — a config choice, not a distinct node kind.
-   *  'compare' is the explicit numerator/denominator model; 'two_way_anova' keeps its own factors;
-   *  'curve_fit' is the num/den model with one dose–response curve per numerator group. */
+  /** which comparison analysis to run. On a Compare tile: 'compare' (the explicit numerator /
+   *  denominator model) or 'two_way_anova' (its own factors). A Curve fit tile is always
+   *  'curve_fit' — the same config with `num` as the treatments (one curve per numerator group)
+   *  and `den` as the control, the curve's baseline. A Compare saved in curve-fit mode opens as a
+   *  Curve fit tile (see migrateCurveCompare). */
   analysis: 'compare' | 'two_way_anova' | 'curve_fit'
   method: 'ttest'
   /** curve_fit only: the numeric condition the curve runs over (absent = dose) */
   curveAxis?: ConditionKey
+  /** curve_fit only: the detection model — '4pl' (absent): the CurveCurator method; 'spline': the
+   *  response surface method (spline detection, moderated F, 4PL description) */
+  detection?: '4pl' | 'spline'
+  /** curve_fit, the CurveCurator method (4PL over one axis): its interpolation — the fit also sees
+   *  points between the doses, read off straight lines between the measured ratios; the test stays
+   *  on the real points. Off (unset) by default, as CurveCurator's own. */
+  interpolation?: boolean
+  /** curve_fit, spline only: one dose × time surface per gene × compound instead of curves over
+   *  `curveAxis` */
+  surface?: boolean
+  /** curve_fit, surfaces only: describe slice by slice — drawn per time (absent / 'slices') or per
+   *  dose ('doseSlices') — or by one joint model ('joint') */
+  surfaceDescription?: 'slices' | 'doseSlices' | 'joint'
+  /** curve_fit, Hybrid model only (ignored under 4PL): describe (4PL — EC50, top) every gene, not just the
+   *  responders (q ≤ DESCRIBE_Q, the default). Slower, and a flat curve's EC50 means little — but
+   *  every gene then has one, e.g. to contrast pEC50 between two conditions. */
+  describeAll?: boolean
+  /** curve_fit only: the control is a background treatment (e.g. drug B alone, for drug A
+   *  titrated on top of it) rather than the vehicle — confirmed by the user, since a curve's
+   *  control is its starting point (see controlIsBaseline) */
+  controlBackground?: boolean
   /** Legacy: the dose unit a curve fit used to carry itself. The unit now lives on the Load tile
    *  (LoadConfig.units); this is only read as a fallback for a workflow saved before. */
   doseUnit?: DoseUnit
@@ -219,6 +263,11 @@ export interface CompareConfig {
   num: CondSelector
   den: CondSelector
   match: ConditionKey[]
+  /** explicit comparison, as the Compare dialog states it: the compared conditions (several allowed)
+   *  and the context conditions merged into one group on both sides. Absent (configs saved before)
+   *  = inferred from the pins, and nothing pooled. */
+  compared?: ConditionKey[]
+  pool?: ConditionKey[]
   /** two_way_anova only: the two factors and their numerator/denominator levels */
   condition: ConditionKey
   pairNum: string
@@ -303,12 +352,36 @@ export function curveDoseUnit(
 
 /** CurveCurator's default significance (its example config): α = 0.05, |curve log₂FC| ≥ 0.45, on
  *  raw p. */
-const CURVECURATOR_THRESHOLD: Partial<ThresholdConfig> = {
+export const CURVECURATOR_THRESHOLD: Partial<ThresholdConfig> = {
   type: 'curvecurator',
   statType: 'pP',
   statMin: -Math.log10(0.05),
   fcHigh: 0.45,
   fcLow: -0.45
+}
+
+/** The response surface method's default call (as the engine's RESPONSE_THRESHOLD): q ≤ 5%, no
+ *  fold-change limit. */
+export const RESPONSE_THRESHOLD_DEFAULT: Partial<ThresholdConfig> = {
+  type: 'linear',
+  statType: 'pQ',
+  statMin: -Math.log10(0.05),
+  fcHigh: 0,
+  fcLow: 0
+}
+
+/** The threshold a Curve fit should carry for its detection model `to` (and, `surface`, over
+ *  dose × time) — or null when it can stay. The CurveCurator method's curves start on its
+ *  relevance score; the response surface method, and any dose × time surface, start on q (a 4PL
+ *  surface can then switch to the relevance score, its decoys surfaces). */
+export function thresholdForDetection(
+  to: NonNullable<CompareConfig['detection']>,
+  t: ThresholdConfig,
+  surface = false
+): ThresholdConfig | null {
+  if (to === 'spline' || surface)
+    return t.type === 'curvecurator' ? { ...t, ...RESPONSE_THRESHOLD_DEFAULT } : null
+  return t.type === 'curvecurator' ? null : { ...t, ...CURVECURATOR_THRESHOLD }
 }
 
 /** The threshold a Compare should carry after switching its analysis from `from` to `to` — or null
@@ -355,26 +428,41 @@ export interface EffectColors {
 }
 /** A plot's own effect colours over its upstream's (unset or 'auto' = follow the upstream). */
 export type PlotEffectColors = Partial<Record<'up' | 'down' | 'none', string>>
-/** The colours a plot draws its effect groups in: its own where set, else the Compare's. */
+/** A plot that draws fold changes may follow its own palette instead of the global one. */
+export interface FcPaletteConfig {
+  /** this plot's fold-change palette (unset = the global one, app settings → fcPalette) */
+  fcPalette?: PaletteRef
+}
+/** The palette a plot draws fold changes on: its own, else the global one. */
+export const fcPaletteOf = (plot: FcPaletteConfig | undefined, global: PaletteRef): PaletteRef =>
+  toPaletteRef(plot?.fcPalette) ?? global
+/**
+ * The colours a plot draws its effect groups in, most specific first: the plot's own colour for
+ * the group; sampled from the plot's own palette, when it has one; the Compare's colour for the
+ * group; sampled from the global palette (down its low end, none its middle, up its high end).
+ */
 export function plotEffectColors(
   own: PlotEffectColors | undefined,
-  compare: Pick<CompareConfig, 'effectColors'> | undefined
+  compare: Pick<CompareConfig, 'effectColors'> | undefined,
+  global: PaletteRef = ROLE_DEFAULTS.fcObject,
+  plotPalette?: PaletteRef
 ): EffectColors {
-  const base = effectColorsOf(compare)
+  const own_ = toPaletteRef(plotPalette)
+  const sampled = paletteEffectColors(own_ ?? global)
   const pick = (k: 'up' | 'down' | 'none'): string => {
     const c = own?.[k]
-    return c && c !== 'auto' ? c : base[k]
+    if (c && c !== 'auto') return c
+    if (own_) return sampled[k]
+    const fromCompare = compare?.effectColors?.[k]
+    return fromCompare && fromCompare !== 'auto' ? fromCompare : sampled[k]
   }
   return { up: pick('up'), down: pick('down'), none: pick('none') }
 }
-/** A Compare's effect colours with the shared defaults filled in (EFFECT_COLOR). */
+/** A Compare's effect colours: its own where set, else sampled from the (global) palette. */
 export const effectColorsOf = (
-  c: Pick<CompareConfig, 'effectColors'> | undefined
-): EffectColors => ({
-  up: c?.effectColors?.up || EFFECT_COLOR.up,
-  down: c?.effectColors?.down || EFFECT_COLOR.down,
-  none: c?.effectColors?.none || EFFECT_COLOR.none
-})
+  c: Pick<CompareConfig, 'effectColors'> | undefined,
+  global: PaletteRef = ROLE_DEFAULTS.fcObject
+): EffectColors => plotEffectColors(undefined, c, global)
 /** A Compare's effect names with defaults filled in (blank entries fall back too). */
 export const effectLabelsOf = (
   c: Pick<CompareConfig, 'effectLabels'> | undefined
@@ -564,7 +652,7 @@ export interface PlotAxes {
 
 /** Volcano (compare). The y-axis stat (−log10 p vs q) follows the upstream Compare's threshold
  *  `statType`, so the drawn guide matches the calls — it isn't a per-tile choice. */
-export interface VolcanoConfig {
+export interface VolcanoConfig extends FcPaletteConfig {
   /** cap labels: explicit switch (undefined on older configs → inferred from labelTop > 0) */
   capEnabled?: boolean
   /** cap labels: label only the top-N most significant genes (applied only while `capEnabled`);
@@ -633,7 +721,10 @@ export interface PointStyle {
 
 /** Heatmap: genes × samples log10 intensity (from Standardize) OR genes × comparisons log2FC
  *  (from Compare) — the tile picks the rendering from its upstream. */
-export interface HeatmapConfig {
+export interface HeatmapConfig extends FcPaletteConfig {
+  /** from Clean data: the value palette (unset = viridis). From a Compare it draws log₂FC on
+   *  `fcPalette` instead. */
+  valuePalette?: PaletteRef
   /** cap genes: explicit switch (undefined on older configs → inferred from maxGenes > 0) */
   capEnabled?: boolean
   /** cap genes: top-N differential genes by |log2FC| (applied only while `capEnabled`). Only
@@ -646,26 +737,142 @@ export interface HeatmapConfig {
   /** tile orientation (persisted); undefined = portrait default */
   orient?: PlotOrient
   /** a Clean-data heatmap's condition bar (a coloured track per condition along the samples):
-   *  shown (default) or hidden */
+   *  shown or hidden; unset = shown with few samples (see heatmapCondBar) */
   condBar?: boolean
+  /** a Clean-data heatmap's sample columns: natural by condition (default) or the data's own
+   *  order — see SampleOrder; read through sampleOrderOf */
+  sampleOrder?: SampleOrder
+  /** a fold-change heatmap's clustering linkage; unset = Ward (see HEATMAP_LINKAGES) */
+  linkage?: HeatmapLinkage
+  /** a fold-change heatmap's leaf order; unset = by mean (see HEATMAP_LEAF_ORDERS) */
+  leafOrder?: LeafOrder
+  /** A fold-change heatmap's gene clustering look: the tree cut into at most `dendroClades`
+   *  clusters (unset = DENDRO_CLADES_DEFAULT), a coloured bar over each (modules), the tree itself,
+   *  and the bars' palette (unset = the global categorical one). Modules and tree unset = hidden. */
+  dendroClades?: number
+  geneModules?: boolean
+  geneTree?: boolean
+  geneCategorical?: import('../ui/palettes').CategoricalId
+  /** …and its condition (comparison column) clustering look, likewise. */
+  dendroColClades?: number
+  condModules?: boolean
+  condTree?: boolean
+  condCategorical?: import('../ui/palettes').CategoricalId
   /** which settings the tile surfaces as quick-access switch bars (unset = all) */
   quick?: QuickAccess
   /** x / y axis overrides (title, fonts, range, ticks, grid, line); unset = the view's layout */
   axes?: PlotAxes
 }
 
+/** The condition a by-condition colouring starts from when none is picked yet: the data's first
+ *  categorical condition, else its first condition at all. */
+export function defaultColorConds(active: readonly ConditionKey[]): ConditionKey[] {
+  const cats = active.filter((c) => !isNumericCond(c))
+  return (cats.length ? cats : active).slice(0, 1)
+}
+
+/** The conditions a cluster colours by: `colorConds` while colorBy is a categorical condition
+ *  that it still includes (a later pick of colorBy alone — the tile's switch — supersedes it), else
+ *  colorBy alone; none for the cluster colouring. */
+export function clusterColorConds(c: ClusterConfig): ConditionKey[] {
+  if (c.colorBy === 'cluster') return []
+  const by = c.colorBy as ConditionKey
+  // the shade is added to a categorical colour only (the picker shows for those alone)
+  return !isNumericCond(by) && c.colorConds?.includes(by) ? c.colorConds.slice(0, 2) : [by]
+}
+
+/** A cluster coloured by two conditions (`colorConds`: a colour and a shade): the scheme its
+ *  multi-condition drawing takes (ClusterView's complex build) — the colour by the one, the shade
+ *  by the other, no arrows. Null for one condition (colorBy alone) or the cluster colouring. */
+export function clusterTwoConds(c: ClusterConfig): {
+  color: ConditionKey[]
+  shade: ConditionKey
+  arrow: 'none'
+} | null {
+  const picks = clusterColorConds(c)
+  const shade = picks.find((k) => isNumericCond(k))
+  const color = picks.find((k) => k !== shade)
+  return picks.length === 2 && shade && color ? { color: [color], shade, arrow: 'none' } : null
+}
+
+/** Past this many levels of the primary condition (the one a plot colours by first — see
+ *  primaryColorLevels), a Clean-data plot's condition colouring starts off (a heatmap's condition
+ *  bar, a bar or QC plot's fill by condition): a categorical palette has ~10 distinct colours, so
+ *  more levels would repeat them. A tile that set it either way keeps that. */
+export const MAX_COLOR_LEVELS = 10
+
+/** How many distinct values the primary colour condition has in this data — the condition a new
+ *  plot colours by (defaultColorConds: the first categorical one, e.g. cell or cmpd). Read off the
+ *  samples (the rows when an older result has none); 0 with no condition at all. */
+export function primaryColorLevels(
+  std: Pick<StandardizeResult, 'activeConditions' | 'samples' | 'rows'>
+): number {
+  const [c] = defaultColorConds(std.activeConditions)
+  if (!c) return 0
+  const seen = new Set<string>()
+  for (const s of std.samples ?? std.rows) {
+    const v = condValue(s, c)
+    if (v != null && v !== '') seen.add(String(v))
+  }
+  return seen.size
+}
+
+/** Whether a Clean-data plot colours by condition when its config doesn't say: while the primary
+ *  condition's levels fit the categorical palette (primaryColorLevels). */
+export const condColorByDefault = (levels: number): boolean => levels <= MAX_COLOR_LEVELS
+
+/** A sample axis' order options (heatmap, gene bar, QC), with their labels — the settings select
+ *  and the tile's switch bar share them. */
+export const SAMPLE_ORDERS: readonly SampleOrder[] = ['natural', 'original']
+/** What each order means, for the settings select's options. */
+export const SAMPLE_ORDER_HINT: Record<SampleOrder, string> = {
+  natural: 'natural (by condition: cell, cmpd, dose, time)',
+  original: 'original (the data’s sample order)'
+}
+/** A plot's sample order: as set, else natural. */
+export const sampleOrderOf = (c: { sampleOrder?: SampleOrder }): SampleOrder =>
+  c.sampleOrder === 'original' ? 'original' : 'natural'
+
+/** A Clean-data heatmap's condition bar: as set, else on while the primary condition's levels fit
+ *  the palette (condColorByDefault). */
+export const heatmapCondBar = (c: HeatmapConfig, levels: number): boolean =>
+  c.condBar ?? condColorByDefault(levels)
+
+/** The most clusters a fold-change heatmap's gene or condition tree is cut into (a tree of fewer
+ *  rows / columns: one cluster each). */
+export const DENDRO_CLADES_DEFAULT = 10
+
+/** A fold-change heatmap's linkages (hierarchical, euclidean distance), for the settings select. */
+export type HeatmapLinkage = Extract<Linkage, 'ward' | 'complete'>
+export const HEATMAP_LINKAGES: Record<HeatmapLinkage, string> = {
+  ward: 'Ward (compact, even-sized clusters)',
+  complete: 'complete (farthest pair — tight clusters)'
+}
+/** …and its leaf orders. */
+export const HEATMAP_LEAF_ORDERS: Record<LeafOrder, string> = {
+  mean: 'by mean (branches low → high log₂FC)',
+  optimal: 'optimal (neighbouring rows most alike)'
+}
+
 /** The conditions a bar plot colours by — none when it colours by value. Reads an older config's
- *  single condition key in `colorBy` too. */
-export function barColorConds(c: BarConfig): ConditionKey[] {
-  if (c.colorBy === 'condition') return (c.colorConds ?? []).slice(0, 2)
-  if (c.colorBy && c.colorBy !== 'value') return [c.colorBy]
+ *  single condition key in `colorBy` too. Unset (a new tile) → by condition while the primary
+ *  condition's levels fit the palette, else by value (condColorByDefault). Coloured by condition with none picked yet → the default
+ *  (defaultColorConds of the data's `active` conditions). */
+export function barColorConds(
+  c: BarConfig,
+  active: readonly ConditionKey[],
+  levels: number
+): ConditionKey[] {
+  const by = c.colorBy ?? (condColorByDefault(levels) ? 'condition' : 'value')
+  if (by === 'condition') return (c.colorConds ?? defaultColorConds(active)).slice(0, 2)
+  if (by !== 'value') return [by]
   return []
 }
 
 export const heatmapCapOn = (c: HeatmapConfig): boolean => capOn(c.capEnabled, c.maxGenes)
 
 /** Contrast scatter (FC1 vs FC2); labels the top-N most divergent genes. */
-export interface ScatterConfig {
+export interface ScatterConfig extends FcPaletteConfig {
   /** cap labels: explicit switch (undefined on older configs → inferred from labelTop > 0) */
   capEnabled?: boolean
   /** cap labels: label only the top-N most divergent genes (applied only while `capEnabled`) */
@@ -679,7 +886,7 @@ export const labelCapOn = (c: VolcanoConfig | ScatterConfig | PotencyConfig): bo
   capOn(c.capEnabled, c.labelTop)
 
 /** MA plot (compare): mean abundance vs log2FC, with fold-change guide lines. */
-export interface MAConfig {
+export interface MAConfig extends FcPaletteConfig {
   fcLow: number
   fcHigh: number
   /** marker/legend/highlight look; unset fields fall back to the plot's defaults */
@@ -694,9 +901,17 @@ export interface MAConfig {
 export type QuickAccess = Record<string, boolean>
 /** Quick access a kind's settings start with, where it isn't simply on: a setting not listed is on.
  *  The user's own choice (`quick`) always wins. Cluster: only the plot type, the colouring and the
- *  territory sit on the tile by default — the rest are tuned once, in the settings window. */
+ *  territory sit on the tile by default — the rest are tuned once, in the settings window. Heatmap:
+ *  of the clustering, only the linkage, leaf order and gene modules. */
 export const QUICK_DEFAULTS: Partial<Record<NodeKind, Record<string, boolean>>> = {
-  pca: { legend: false, clusterOn: false, clusterCount: false, display: false }
+  pca: { clusterOn: false, clusterCount: false, display: false },
+  // log₂FC heatmap: of its clustering, the linkage, leaf order and gene modules sit on the tile by
+  // default; the trees and the condition modules are tuned in the settings window
+  heatmap: {
+    geneTree: false,
+    condModules: false,
+    condTree: false
+  }
 }
 /** Whether a setting is surfaced in the tile as a quick-access switch bar: the user's choice, else
  *  the kind's default (QUICK_DEFAULTS), else on. */
@@ -706,8 +921,11 @@ export const quickOn = (
   kind?: NodeKind
 ): boolean => cfg?.quick?.[field] ?? (kind ? QUICK_DEFAULTS[kind]?.[field] : undefined) ?? true
 
-export interface DRConfig {
+export interface DRConfig extends FcPaletteConfig {
   axis: 'dose' | 'time'
+  /** a response surface method curve fit: draw its description 4PL ('curve', default) or the
+   *  spline its detection fitted ('spline') */
+  model?: 'spline' | 'curve'
   /** cap genes: explicit switch (undefined on older configs → inferred from topGenes > 0) */
   capEnabled?: boolean
   /** cap genes: colour only the top-N most-differential genes (applied only while `capEnabled`;
@@ -724,8 +942,11 @@ export interface DRConfig {
   yScale?: 'global' | 'gene'
   /** a Compare-fed DR: every gene at once ('overview', shown as "global"; default), or one gene
    *  at a time with its points (and, for a curve fit, the fitted curve and EC50) — 'focus'. The
-   *  focused pager steps through every gene, or only the selected ones while any are selected. */
-  view?: 'overview' | 'focus'
+   *  focused pager steps through every gene, or only the selected ones while any are selected.
+   *  'detail' ("detailed"): the top-N genes by response (at most DR_DETAIL_CAP; picked from the
+   *  selected genes while any are selected) without the every-gene background, each drawn in full
+   *  as focused. */
+  view?: 'overview' | 'detail' | 'focus'
   /** the response lines: width (px; default 2), colour ('auto', the default = one colour per
    *  comparison when focused — the gene's effect group (up / down / none) when it's the only one —
    *  per gene in the global view, per side from a Contrast), opacity (0–1;
@@ -736,19 +957,26 @@ export interface DRConfig {
   lineOpacity?: number
   /** focused view: the points behind each line (a t-test's replicates, a curve fit's measured
    *  points; from a Contrast, each side's level means on its line) — shown (default), size (px;
-   *  default 7), colour ('auto' = the line's), opacity (0–1; default 0.7) */
+   *  default 7), colour ('auto' = the line's), opacity (0–1; default 0.5) */
   points?: boolean
   pointSize?: number
   pointColor?: string
   pointOpacity?: number
   /** focused view: the error — a t-test's (or a Contrast's) fold-change SE, a curve fit's 95%
-   *  confidence band — shown (default), as a shaded band (default) or whiskers, colour ('auto' =
-   *  the line's), opacity (0–1; default 0.2 for a band, 1 for whiskers) */
+   *  confidence band — shown (default; hidden by default from a Curve fit), as a shaded band
+   *  (default) or whiskers, colour ('auto' = the line's), opacity (0–1; default 0.2 for a band, 1
+   *  for whiskers) */
   errors?: boolean
   errorStyle?: 'whisker' | 'band'
   errorColor?: string
   errorOpacity?: number
+  /** focused / detailed view, from a Curve fit: a dotted line at each curve's EC50 (the 4PL's
+   *  midpoint) — off by default */
+  ec50Line?: boolean
 }
+/** The most genes the DR's detailed view draws in full (each with its points and error). */
+export const DR_DETAIL_CAP = 5
+
 /** A DR's line / point / error look with every default filled in ('auto' colours stay 'auto' —
  *  the view resolves them per series). */
 export interface DRLook {
@@ -763,20 +991,26 @@ export interface DRLook {
   errorStyle: 'whisker' | 'band'
   errorColor: string
   errorOpacity: number
+  ec50Line: boolean
 }
 // One resolved look per config object (the store replaces the object on any edit), so a view's
-// memo keyed on the look only rebuilds when a setting actually changed.
+// memo keyed on the look only rebuilds when a setting actually changed — one cache per upstream
+// kind, as a Curve fit's defaults differ.
 const drLookCache = new WeakMap<object, DRLook>()
-export function drLook(c: Partial<DRConfig>): DRLook {
-  let look = drLookCache.get(c)
-  if (!look) drLookCache.set(c, (look = resolveDRLook(c)))
+const drLookCurveCache = new WeakMap<object, DRLook>()
+/** A DR's look; `curveFit` — fed by a Curve fit, whose error (its confidence band) is hidden by
+ *  default. */
+export function drLook(c: Partial<DRConfig>, curveFit = false): DRLook {
+  const cache = curveFit ? drLookCurveCache : drLookCache
+  let look = cache.get(c)
+  if (!look) cache.set(c, (look = resolveDRLook(c, curveFit)))
   return look
 }
 /** A one-gene DR's value-axis scale: the setting, else global from a Contrast, per gene from a
  *  Compare. */
 export const drYScale = (c: Partial<DRConfig>, fromContrast: boolean): 'global' | 'gene' =>
   c.yScale ?? (fromContrast ? 'global' : 'gene')
-function resolveDRLook(c: Partial<DRConfig>): DRLook {
+function resolveDRLook(c: Partial<DRConfig>, curveFit: boolean): DRLook {
   // A shaded band by default, from a Compare or a Contrast alike.
   const errorStyle = c.errorStyle ?? 'band'
   return {
@@ -786,17 +1020,18 @@ function resolveDRLook(c: Partial<DRConfig>): DRLook {
     points: c.points ?? true,
     pointSize: c.pointSize ?? 7,
     pointColor: c.pointColor ?? 'auto',
-    pointOpacity: c.pointOpacity ?? 0.7,
-    errors: c.errors ?? true,
+    pointOpacity: c.pointOpacity ?? 0.5,
+    errors: c.errors ?? !curveFit,
     errorStyle,
     errorColor: c.errorColor ?? 'auto',
-    errorOpacity: c.errorOpacity ?? (errorStyle === 'band' ? 0.2 : 1)
+    errorOpacity: c.errorOpacity ?? (errorStyle === 'band' ? 0.2 : 1),
+    ec50Line: c.ec50Line ?? false
   }
 }
 /** Potency plot (curve-fit Compare, as CurveCurator draws it): each curve's potency (pEC50)
  *  against its curve fold change. */
-export interface PotencyConfig {
-  /** the called curves only (default) — a flat curve's pEC50 means nothing — or every curve */
+export interface PotencyConfig extends FcPaletteConfig {
+  /** every curve (default), or the called curves only — a flat curve's pEC50 means little */
   show?: 'called' | 'all'
   /** which settings the tile surfaces as quick-access switch bars (unset = all) */
   quick?: QuickAccess
@@ -809,16 +1044,240 @@ export interface PotencyConfig {
   /** x / y axis overrides (title, fonts, range, ticks, grid, line); unset = the view's layout */
   axes?: PlotAxes
 }
-/** Residual plots (curve-fit QC, after CurveCurator's MAD analysis): each dose's residuals from
- *  the curves' fits, as violins with their outliers. */
+/** Response plot: a Curve fit's dose × time surfaces (the response surface method), one gene at a
+ *  time, in 2-D or 3-D. 2-D: dose curves with a line per time ('line') or a dose × time heatmap
+ *  ('heatmap'). 3-D: the fitted surface ('surface'), or its dose curves as lines along each time
+ *  point ('line') — the surface without the surface. */
+export interface ResponseConfig extends FcPaletteConfig {
+  /** the value axis fitted to each gene's own values ('gene', default — shown as "adjusted") or
+   *  to every gene's in the facet, so paging genes keeps one scale */
+  yScale?: 'gene' | 'global'
+  /** unset: 3-D for a 'surface' show (configs from before the switch), else 2-D */
+  dim?: '2d' | '3d'
+  /** what's drawn; one the dimension can't draw (a heatmap in 3-D, a surface in 2-D) falls back
+   *  to the dimension's default (see responseShow) */
+  show?: 'line' | 'surface' | 'heatmap'
+  /** 3-D lines from a joint description: slices of its surface at each time (dose curves; the
+   *  default) or at each dose (time curves). A per-time description has dose curves only. */
+  slice?: 'time' | 'dose'
+  /** the lines: width (px; default 2), colour ('auto' = one per slice, low → high, along
+   *  `linePalette` — unset: the dose / time levels' palette role, as the lines are per dose / per
+   *  time), opacity. Earlier versions stored the palette's name, with `linePaletteReverse` beside
+   *  it; both are still read. */
+  linePalette?: PaletteRef | string
+  linePaletteReverse?: boolean
+  lineWidth?: number
+  lineColor?: string
+  lineOpacity?: number
+  /** the level means: shown (default), size in the 2-D and 3-D views each (px; default 7 in
+   *  2-D, 3 in 3-D), colour ('auto' = each one's log₂ on the value palette, as the surface),
+   *  opacity (default 0.5) */
+  points?: boolean
+  pointSize?: number
+  pointSize3d?: number
+  pointColor?: string
+  pointOpacity?: number
+  /** the 3-D surface's opacity (default 0.85) */
+  surfaceOpacity?: number
+  /** the surface's curves, traced on it in both directions (a dose curve at each time, a time
+   *  curve at each dose): shown (default), width (px; default 1), colour ('auto' = the text
+   *  colour), opacity (default 0.6) */
+  curves?: boolean
+  curveWidth?: number
+  curveColor?: string
+  curveOpacity?: number
+  /** earlier versions' value scale (a Plotly name, or 'effect'); now `fcPalette`, still read */
+  colorScale?: string
+  /** which settings the tile surfaces as quick-access switch bars (unset = all) */
+  quick?: QuickAccess
+}
+export const responseDim = (c: Partial<ResponseConfig>): '2d' | '3d' =>
+  c.dim ?? (c.show === 'surface' ? '3d' : '2d')
+/** The view drawn: the pick, unless its dimension can't draw it (heatmap 3-D, surface 2-D). */
+export function responseShow(c: Partial<ResponseConfig>): 'line' | 'surface' | 'heatmap' {
+  const dim = responseDim(c)
+  const show = c.show ?? 'line'
+  if (dim === '3d' && show === 'heatmap') return 'surface'
+  if (dim === '2d' && show === 'surface') return 'line'
+  return show
+}
+/** Why a show can't be picked in a dimension (its tooltip), else undefined. */
+export const responseShowWhy = (dim: '2d' | '3d', show: string): string | undefined =>
+  dim === '3d' && show === 'heatmap'
+    ? 'A heatmap is 2-D — switch the view to 2D'
+    : dim === '2d' && show === 'surface'
+      ? 'A surface is 3-D — switch the view to 3D'
+      : undefined
+/** A Response plot's look with every default filled in ('auto' colours stay 'auto'). */
+export interface ResponseLook {
+  lineWidth: number
+  lineColor: string
+  lineOpacity: number
+  /** the plot's own line palette (undefined = the dose / time levels' role) */
+  linePalette: PaletteRef | undefined
+  points: boolean
+  /** 2-D and 3-D, each; unset → the plot's default (the view picks) */
+  pointSize: number | undefined
+  pointSize3d: number | undefined
+  pointColor: string
+  pointOpacity: number
+  surfaceOpacity: number
+  curves: boolean
+  curveWidth: number
+  curveColor: string
+  curveOpacity: number
+  /** the surface / heatmap's own palette (undefined = the global fold-change palette) */
+  valuePalette: PaletteRef | undefined
+  /** the measured values' error (the Time & Dose-response plot's; see TdrConfig) */
+  errors: boolean
+  errorStyle: 'whisker' | 'band'
+  errorColor: string
+  errorOpacity: number
+}
+// One resolved look per config object (as drLook), so the view's memo rebuilds only on an edit.
+const responseLookCache = new WeakMap<object, ResponseLook>()
+export function responseLook(c: Partial<TdrConfig>): ResponseLook {
+  let look = responseLookCache.get(c)
+  if (!look) responseLookCache.set(c, (look = resolveResponseLook(c)))
+  return look
+}
+const resolveResponseLook = (c: Partial<TdrConfig>): ResponseLook => ({
+  lineWidth: c.lineWidth ?? 2,
+  lineColor: c.lineColor ?? 'auto',
+  lineOpacity: c.lineOpacity ?? 1,
+  linePalette: toPaletteRef(c.linePalette, c.linePaletteReverse),
+  points: c.points ?? true,
+  pointSize: c.pointSize,
+  pointSize3d: c.pointSize3d,
+  pointColor: c.pointColor ?? 'auto',
+  pointOpacity: c.pointOpacity ?? 0.5,
+  surfaceOpacity: c.surfaceOpacity ?? 0.85,
+  curves: c.curves ?? true,
+  curveWidth: c.curveWidth ?? 1,
+  curveColor: c.curveColor ?? 'auto',
+  curveOpacity: c.curveOpacity ?? 0.6,
+  // an earlier 'effect' (or a Plotly scale with no counterpart) follows the global palette
+  valuePalette: toPaletteRef(c.fcPalette) ?? toPaletteRef(c.colorScale),
+  errors: c.errors ?? true,
+  errorStyle: c.errorStyle ?? 'band',
+  errorColor: c.errorColor ?? 'auto',
+  errorOpacity: c.errorOpacity ?? ((c.errorStyle ?? 'band') === 'band' ? 0.2 : 1)
+})
+/** QC plots (curve-fit QC, after CurveCurator's MAD analysis): each dose's residuals from the
+ *  curves' fits, as violins with their outliers — or the curves' metrics against each other. */
+/** A QC plot's check: by dose (replicates pooled — CurveCurator's MAD view: a dose off zero
+ *  is a sample problem), by sample (dose × replicate — one bad injection), against the fitted value
+ *  (constant variance), or normality (a Q–Q plot) — the last two the F-test's assumptions — or the
+ *  curves' own metrics, one against another (each curve a dot). */
+export type ResidualCheck = 'dose' | 'sample' | 'fitted' | 'normality' | 'metrics'
+
+/** The metrics the QC plot's metrics check can put on an axis: the curve fold change, a curve's
+ *  parameters and fit quality (curveMetrics), and its test. */
+export const CURVE_QC_METRICS = [
+  'log2FC',
+  'pEC50',
+  'slope',
+  'front',
+  'back',
+  'R2',
+  'RMSE',
+  'F',
+  'pP',
+  'F_lof',
+  'pP_lof',
+  'relevance',
+  'q_decoy'
+] as const
+export type CurveQcMetric = (typeof CURVE_QC_METRICS)[number]
+export const CURVE_QC_METRIC_LABEL: Record<CurveQcMetric, string> = {
+  log2FC: 'curve log₂FC',
+  pEC50: 'pEC50',
+  slope: 'slope',
+  front: 'front',
+  back: 'back',
+  R2: 'R²',
+  RMSE: 'RMSE',
+  F: 'F',
+  pP: '−log₁₀ P-value',
+  F_lof: 'lack-of-fit F',
+  pP_lof: 'lack-of-fit −log₁₀ P',
+  relevance: 'relevance',
+  q_decoy: 'q (decoy)'
+}
+/** The metrics check's axes when unset: R² (y) against the curve log₂FC (x) — whether the strong
+ *  responses are also well-fitted ones. */
+export const CURVE_QC_DEFAULT_X = 'log2FC' satisfies CurveQcMetric
+export const CURVE_QC_DEFAULT_Y = 'R2' satisfies CurveQcMetric
+/** A metrics-check axis: a metric, or none — the other axis's metric then shown as a distribution
+ *  (a histogram of the curves along it). */
+export type CurveQcAxis = CurveQcMetric | 'none'
+/** The metric pick-list's groups, in order, and each metric's: what it tells of a curve — its
+ *  effect, whether it beats flat, the 4PL's parameters, how well the 4PL describes the data. */
+const CURVE_QC_GROUPS = ['response', 'significance', 'curve parameters', 'fit quality'] as const
+const CURVE_QC_GROUP: Record<CurveQcMetric, (typeof CURVE_QC_GROUPS)[number]> = {
+  log2FC: 'response',
+  F: 'significance',
+  pP: 'significance',
+  relevance: 'significance',
+  q_decoy: 'significance',
+  pEC50: 'curve parameters',
+  slope: 'curve parameters',
+  front: 'curve parameters',
+  back: 'curve parameters',
+  R2: 'fit quality',
+  RMSE: 'fit quality',
+  F_lof: 'fit quality',
+  pP_lof: 'fit quality'
+}
+/** The metric pick-list for one axis, grouped (CURVE_QC_GROUP): none first while the other axis
+ *  has a metric (both none would show nothing), then each group's metrics — the other axis's own
+ *  pick marked (highlighted, its tooltip saying where). */
+export function curveQcAxisOptions(
+  other: CurveQcAxis,
+  otherAxis: 'x' | 'y'
+): { value: CurveQcAxis; label: string; group?: string; marked?: string }[] {
+  return [
+    ...(other !== 'none' ? [{ value: 'none' as const, label: 'none (freq)' }] : []),
+    ...CURVE_QC_GROUPS.flatMap((g) =>
+      CURVE_QC_METRICS.filter((m) => CURVE_QC_GROUP[m] === g).map((m) => ({
+        value: m,
+        label: CURVE_QC_METRIC_LABEL[m],
+        group: g,
+        ...(m === other ? { marked: `Picked on the ${otherAxis} axis` } : null)
+      }))
+    )
+  ]
+}
+
 export interface CurveMadConfig {
+  /** the residual axis: 'range' spans every residual, outliers included; 'fit' (default) is
+   *  symmetric about zero and holds 99.9% of the residuals, so a few extremes don't flatten them */
+  yScale?: 'fit' | 'range'
+  /** each dose's residuals as a violin (quartile box, outlier dots) or every residual as a
+   *  dot (default; quartile box over them) */
+  show?: 'violin' | 'dot'
+  /** what the residuals are checked against (see ResidualCheck); unset = 'dose' */
+  check?: ResidualCheck
+  /** the metrics check's x and y (unset = R² against curve log₂FC — CURVE_QC_DEFAULT_X / _Y); one
+   *  may be 'none' — the other's
+   *  distribution */
+  metricX?: CurveQcAxis
+  metricY?: CurveQcAxis
+  /** cap points: the dot views draw at most `maxPoints` residuals (every outlier kept, the rest
+   *  sampled evenly — thinPoints); unset = on, at RESIDUAL_DOT_CAP, which is also the most it
+   *  takes (a larger stored value is read as it). Off draws them all (slow past ~20k). Boxes, medians and trend lines always use every residual. */
+  capEnabled?: boolean
+  maxPoints?: number
+  /** which of this plot's settings the tile surfaces as quick-access switch bars (unset = all;
+   *  the gear always carries every setting). Keyed by config field. */
+  quick?: QuickAccess
   /** marker/legend look of the control and dosed samples; unset fields use the defaults */
   style?: PointStyle
   /** x / y axis overrides (title, fonts, range, ticks, grid, line); unset = the view's layout */
   axes?: PlotAxes
 }
 /** Bubble grid (compare) over dose or time, one gene per row. */
-export interface BubbleConfig {
+export interface BubbleConfig extends FcPaletteConfig {
   axis: 'dose' | 'time'
   /** the up / down / none colours, this plot's own; unset (or 'auto') = the upstream Compare's */
   effectColors?: PlotEffectColors
@@ -827,6 +1286,23 @@ export interface BubbleConfig {
   /** cap genes: top-N by |log2FC| (applied only while `capEnabled`; otherwise all, up to the
    *  renderer's safety cap) */
   topGenes: number
+  /** what ranks the top genes: their log₂FC ('fc', default) or the significance column the
+   *  upstream Compare calls by ('sig' — its P or Q value) */
+  rank?: 'fc' | 'sig'
+  /** that score over the dose/time levels: its peak ('peak', default) or its total */
+  over?: 'peak' | 'total'
+  /** what a bubble's size shows: |log₂FC| ('fc', default) or −log₁₀ of the Compare's P or Q */
+  sizeBy?: 'fc' | 'sig'
+  /** what its colour shows: log₂FC on the FC palette ('fc', default), or −log₁₀ P/Q on `sigPalette` */
+  colorBy?: 'fc' | 'sig'
+  /** the palette −log₁₀ P/Q is coloured on (unset = Purples, BUBBLE_SIG_PALETTE) */
+  sigPalette?: PaletteRef
+  /** what its outline's width shows: nothing ('none', default — no outline), |log₂FC| or −log₁₀ P/Q */
+  outlineBy?: 'none' | 'fc' | 'sig'
+  /** the outline's colour (unset or 'auto' = a darker shade of each bubble's own colour) */
+  outlineColor?: string
+  /** a ∗ at the centre of each bubble significant at its level */
+  asterisk?: boolean
   /** tile orientation (persisted); undefined = landscape default */
   orient?: PlotOrient
   /** which of this plot's settings the tile surfaces as quick-access switch bars (unset = all;
@@ -843,28 +1319,45 @@ export interface DumbbellConfig {
   /** cap genes: top-N significant genes by |FCdiff| (applied only while `capEnabled`; otherwise
    *  all significant, up to the renderer's safety cap) */
   topGenes: number
+  /** gene order: by the first side's value, the second side's, or |FCdiff| (unset = 'diff') */
+  order?: 'fc1' | 'fc2' | 'diff'
   /** tile orientation (persisted); undefined = portrait default */
   orient?: PlotOrient
+  /** which of this plot's settings the tile surfaces as quick-access switch bars (unset = all;
+   *  the gear always carries every setting). Keyed by config field. */
+  quick?: QuickAccess
   /** x / y axis overrides (title, fonts, range, ticks, grid, line); unset = the view's layout */
   axes?: PlotAxes
 }
 export const geneCapOn = (c: BubbleConfig | DumbbellConfig | DRConfig): boolean =>
   capOn(c.capEnabled, c.topGenes)
 
-/** TDR (compare, dose×time): per-gene time-series dose-response, one gene per figure.
- *  Renders the selected genes (linked gene selection). */
-export interface TdrConfig {
-  /** x / y axis overrides (title, fonts, range, ticks, grid, line); unset = the view's layout */
+/** Time & Dose-response (compare, dose × time): one gene's measured log₂FC over dose × time, drawn
+ *  as the Response plot draws a surface — 2-D lines per time or a heatmap, 3-D lines (per time or
+ *  per dose, `slice`) or a surface — with the same settings. */
+export interface TdrConfig extends ResponseConfig {
+  /** the line views' error — each level's fold change SE, as the Dose/time-response plot's
+   *  focused view draws it: shown (default), as a shaded band (default) or
+   *  whiskers, its colour ('auto' = the line's) and opacity (default 0.2 band, 1 whiskers) */
+  errors?: boolean
+  errorStyle?: 'whisker' | 'band'
+  errorColor?: string
+  errorOpacity?: number
+  /** earlier versions' x / y axis overrides (a 2-D dose plot); no longer applied */
   axes?: PlotAxes
 }
 
 /** Gene bar (standardize): each selected gene's value across every condition. */
 export interface BarConfig {
+  /** its categorical palette (unset = the global one, app settings → categorical) */
+  categorical?: import('../ui/palettes').CategoricalId
   /** tile orientation (persisted); undefined = landscape default */
   orient?: PlotOrient
   /** the value axis scaled to each gene's own values — its min to its max (default) — or to the
    *  whole dataset's, so paging genes keeps one scale */
   yScale?: 'global' | 'gene'
+  /** the conditions along the axis: natural by condition (default) or the data's own order */
+  sampleOrder?: SampleOrder
   /** which settings the tile surfaces as quick-access switch bars (unset = all) */
   quick?: QuickAccess
   /** each replicate drawn as a dot over its bar (off by default) */
@@ -884,8 +1377,9 @@ export interface BarConfig {
   /** error bar colour: 'auto' (default) = its bar's group colour (without the numeric condition's
    *  shade), else a fixed colour */
   errorColor?: string
-  /** bar fill: by value (default) or by condition (`colorConds`). An older config may hold a
-   *  single condition key here — read it through barColorConds. */
+  /** bar fill: by value or by condition (`colorConds`); unset = by condition with few samples, by
+   *  value with many. An older config may hold a single condition key here — read it through
+   *  barColorConds. */
   colorBy?: 'value' | 'condition' | ConditionKey
   /** colour by condition: up to two — one categorical (the colour) and one numeric, dose or time
    *  (the shade, light = low → dark = high) */
@@ -897,7 +1391,7 @@ export interface BarConfig {
 /** Enrichment (compare): over-representation of GO / KEGG / COG / MSigDB / Reactome terms in the
  *  significant gene set, drawn as a dot or bar plot. Reads the annotations fetched in the
  *  interactive import. */
-export interface EnrichConfig {
+export interface EnrichConfig extends FcPaletteConfig {
   /** the up / down / none colours, this plot's own; unset (or 'auto') = the upstream Compare's */
   effectColors?: PlotEffectColors
   /** 'ora' = over-representation (hypergeometric); 'gsea' reserved (ranked, not yet computed). */
@@ -918,7 +1412,7 @@ export interface EnrichConfig {
 /** STRING network (compare): PPI network among the top differential genes, fetched from STRING-DB.
  *  Species comes from the interactive-import annotation fetch (NCBI taxon); a non-zero `species`
  *  here overrides it. Nodes = genes coloured by log₂FC, sized by degree; edges = STRING confidence. */
-export interface StringConfig {
+export interface StringConfig extends FcPaletteConfig {
   /** the up / down / none colours, this plot's own; unset (or 'auto') = the upstream Compare's */
   effectColors?: PlotEffectColors
   /** STRING confidence cutoff bucket (maps to required_score 150/400/700/900); unset = auto, the
@@ -940,12 +1434,18 @@ export interface StringConfig {
 /** Sample QC plot (standardize): a per-sample distribution of one quality metric, drawn as
  *  a violin, box, or bar. */
 export interface QcConfig {
+  /** its categorical palette (unset = the global one, app settings → categorical) */
+  categorical?: import('../ui/palettes').CategoricalId
   metric: 'intensity' | 'cv' | 'proteins'
   plot: 'violin' | 'box' | 'bar'
   /** # proteins: the count axis global — from zero (default) — or by range, fitted to the counts
    *  so small differences between samples show */
   yScale?: 'global' | 'range'
-  /** the fill: one colour for every sample (default) or by condition (`colorConds`) */
+  /** the samples (or CV's condition groups) along the axis: natural by condition (default) or the
+   *  data's own order */
+  sampleOrder?: SampleOrder
+  /** the fill: one colour for every sample or by condition (`colorConds`); unset = by condition
+   *  with few samples, one colour with many (see qcColorBy) */
   colorBy?: 'single' | 'condition'
   /** the single fill colour (default the QC steel blue) */
   color?: string
@@ -959,14 +1459,28 @@ export interface QcConfig {
   axes?: PlotAxes
 }
 
-/** The conditions a QC plot colours by — none when it uses its single colour. */
-export const qcColorConds = (c: QcConfig): ConditionKey[] =>
-  c.colorBy === 'condition' ? (c.colorConds ?? []).slice(0, 2) : []
+/** A QC plot's fill: as set, else by condition while the primary condition's levels fit the
+ *  palette, one colour past that (condColorByDefault). */
+export const qcColorBy = (c: QcConfig, levels: number): 'single' | 'condition' =>
+  c.colorBy ?? (condColorByDefault(levels) ? 'condition' : 'single')
+
+/** The conditions a QC plot colours by — none when it uses its single colour; none picked yet (a
+ *  new tile) → the default (defaultColorConds of the data's `active` conditions). */
+export const qcColorConds = (
+  c: QcConfig,
+  active: readonly ConditionKey[],
+  levels: number
+): ConditionKey[] =>
+  qcColorBy(c, levels) === 'condition'
+    ? (c.colorConds ?? defaultColorConds(active)).slice(0, 2)
+    : []
 
 /** Sample correlation matrix (standardize): all-samples × all-samples Pearson r heatmap. */
 export interface CorrConfig {
   /** cluster samples by correlation profile so replicate groups block on the diagonal */
   cluster: boolean
+  /** the correlation palette (unset = Greens) */
+  palette?: PaletteRef
   /** x / y axis overrides (title, fonts, range, ticks, grid, line); unset = the view's layout */
   axes?: PlotAxes
 }
@@ -977,7 +1491,20 @@ export interface TableConfig {
   /** initial view for tables that offer a Long ⇆ Matrix toggle (standardize/compare/contrast);
    *  absent = matrix. */
   view?: 'long' | 'matrix'
+  /** the gene column's display cap in characters (longer names cut with "…", in full on hover);
+   *  unset = TABLE_GENE_MAX */
+  geneMaxLen?: number
+  /** the same for the uniqID column; unset = TABLE_GENE_MAX */
+  idMaxLen?: number
+  /** colour the value cells (default on) */
+  colored?: boolean
+  /** the cells' palette (unset: viridis for Clean data's abundance, RdBu reversed for a Compare's
+   *  or Contrast's signed values) */
+  palette?: PaletteRef
 }
+/** The table's default display cap for its uniqID and gene columns (TableConfig.idMaxLen /
+ *  geneMaxLen). */
+export const TABLE_GENE_MAX = 20
 
 /** One plot inside a group tile: a full plot spec with a stable subcard id. The `kind`
  *  is always a plotting op (never `plotGroup` — groups don't nest). */
@@ -1017,11 +1544,64 @@ export interface PlotGroupConfig {
   collapsed?: boolean
 }
 
+/** The cluster settings its run computes under: the embedding's, and — colouring by a computed
+ *  clustering — the clustering's. Any change to these needs another run; the rest only redraw. */
+export interface ClusterRun {
+  method: ClusterConfig['method']
+  scale: ClusterConfig['scale']
+  missing: ClusterConfig['missing']
+  center: ClusterConfig['center']
+  topVar: ClusterConfig['topVar']
+  transform: ClusterConfig['transform']
+  replicates: ClusterConfig['replicates']
+  /** set only while colouring by cluster: what the groups were computed from */
+  clustering?: { on: 'coords' | 'features'; count: 'fixed' | 'conditions' | 'auto'; k?: number }
+}
+
+/** A cluster config's run settings (see ClusterRun). */
+export const clusterRunOf = (c: ClusterConfig): ClusterRun => {
+  const count = c.clusterCount ?? 'fixed'
+  return {
+    method: c.method,
+    scale: c.scale,
+    missing: c.missing,
+    center: c.center,
+    topVar: c.topVar,
+    transform: c.transform,
+    replicates: c.replicates,
+    ...(c.colorBy === 'cluster'
+      ? {
+          clustering: {
+            on: c.clusterOn ?? 'coords',
+            count,
+            ...(count === 'fixed' ? { k: c.clusterK ?? 3 } : null)
+          }
+        }
+      : null)
+  }
+}
+
+/** Whether a cluster result was computed under these settings — or a run is needed. Colouring by
+ *  a condition reads any run's embedding; colouring by cluster needs the same clustering. */
+export function clusterRunMatches(c: ClusterConfig, ran: ClusterRun): boolean {
+  const want = clusterRunOf(c)
+  const embed = (r: ClusterRun): string =>
+    JSON.stringify([r.method, r.scale, r.missing, r.center, r.topVar, r.transform, r.replicates])
+  if (embed(want) !== embed(ran)) return false
+  return !want.clustering || JSON.stringify(want.clustering) === JSON.stringify(ran.clustering)
+}
+
 /** Sample cluster/embedding (standardize): method + coloring condition. */
 export interface ClusterConfig {
+  /** its categorical palette (unset = the global one, app settings → categorical) */
+  categorical?: import('../ui/palettes').CategoricalId
   method: 'pca' | 'umap' | 'tsne'
   /** A condition, or `'cluster'` to colour by a grouping computed from the data itself. */
   colorBy: ClusterColorBy
+  /** simple legend, coloured by condition: up to two — one categorical (the colour) and one
+   *  numeric, dose or time (the shade, light = low → dark = high), as QC and the gene bar do.
+   *  Unset = `colorBy` alone; read only while it includes `colorBy` (see clusterColorConds). */
+  colorConds?: ConditionKey[]
   /** `colorBy: 'cluster'` only — what the grouping is computed from. 'coords' clusters the embedded
    *  x/y, so colours always match the visual grouping; 'features' clusters the high-dimensional
    *  matrix, so the grouping is the real structure and is the same under PCA/UMAP/t-SNE. */
@@ -1094,7 +1674,8 @@ export interface ClusterConfig {
    *  high-variance genes dominate (covariance PCA — matches Spectronaut). Defaults to 'unit'. */
   scale?: 'unit' | 'none'
   /** Missing-value policy. 'impute' fills gaps with the gene mean (keeps every gene); 'complete'
-   *  drops any gene missing in any sample (Spectronaut-style, no imputation). Defaults to 'impute'. */
+   *  drops any gene missing in any sample (Spectronaut-style, no imputation) — imputing instead when that
+   *  leaves too few genes (MIN_COMPLETE_FEATURES). Defaults to 'complete'. */
   missing?: 'impute' | 'complete'
   /** Per-sample normalization. 'median' removes each sample's offset; 'zscore' also removes its
    *  scale (per-sample standardization, like Pearson); 'quantile' forces a common distribution;
@@ -1174,6 +1755,7 @@ export type NodeConfig =
   | LoadConfig
   | StandardizeConfig
   | MergeConfig
+  | SubsetConfig
   | CompareConfig
   | ContrastConfig
   | VolcanoConfig
@@ -1183,6 +1765,7 @@ export type NodeConfig =
   | DRConfig
   | PotencyConfig
   | CurveMadConfig
+  | ResponseConfig
   | BubbleConfig
   | DumbbellConfig
   | ClusterConfig
@@ -1194,6 +1777,24 @@ export type NodeConfig =
   | CorrConfig
   | TableConfig
   | PlotGroupConfig
+
+/** A Curve fit tile's config: a CompareConfig locked to curve fitting. */
+export type CurveFitConfig = CompareConfig & { analysis: 'curve_fit' }
+
+/** Steps whose result is a comparison table (result kind 'compare'): a Compare, or a Curve fit. */
+export const isComparisonKind = (k: NodeKind | undefined): boolean =>
+  k === 'compare' || k === 'curveFit'
+
+/**
+ * A Compare saved in curve-fit mode (before Curve fit was its own tile) as a Curve fit tile: same
+ * id, config and wiring, so its parked result and downstream plots carry over. Anything else is
+ * returned unchanged.
+ */
+export function migrateCurveCompare<T extends { kind: NodeKind; config: NodeConfig }>(data: T): T {
+  if (data.kind !== 'compare' || (data.config as CompareConfig).analysis !== 'curve_fit')
+    return data
+  return { ...data, kind: 'curveFit' }
+}
 
 /** Data carried on a materialized step node (kept light — heavy results live in the store).
  *  The category is intentionally NOT stored: it is always `categoryOf(kind)`. */
@@ -1255,6 +1856,10 @@ export type NodeResult =
   | { kind: 'enrich'; facets: Record<string, Record<string, EnrichData>> }
   /** STRING, every confidence × gene cap × interactor setting, per facet (facetKey) — see StringAll */
   | { kind: 'string'; species: number; caps: number[]; facets: Record<string, StringAll> }
+  /** a cluster plot's sample embedding (in the worker), with the settings it was computed under
+   *  (`ran`, see clusterRunOf) — its view settings (colour by a condition, plot, territory, look)
+   *  draw from it without another run */
+  | { kind: 'cluster'; cluster: ClusterData; ran: ClusterRun }
 
 /** A step's data result — what a downstream step or plot reads (not a plot's own run result). */
 export type DataResult = Extract<NodeResult, { kind: 'standardize' | 'compare' | 'contrast' }>

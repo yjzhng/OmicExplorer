@@ -9,6 +9,8 @@ import {
   condPresent,
   curveMetrics,
   CURVE_METRICS,
+  responseMetrics,
+  RESPONSE_METRICS,
   customCondsIn,
   customSlug,
   isCustomCond,
@@ -111,12 +113,20 @@ function compareTable(
   const src = result.cmp.rows
   const multiCmp = new Set(src.map((r) => r.comparison)).size > 1
   const t = result.cmp.threshold
-  const metrics = src.map((r) =>
-    r.curve ? curveMetrics(r.log2FC, r.curve, t, dose.scale) : undefined
+  // A curve fit's metrics: CurveCurator's (curveMetrics), or the response surface method's
+  // (responseMetrics) — whichever the rows carry.
+  const response = src.some((r) => r.rs)
+  const metrics: Array<Partial<Record<string, Cell | undefined>> | undefined> = src.map((r) =>
+    r.curve
+      ? curveMetrics(r.log2FC, r.curve, t, dose.scale)
+      : r.rs
+        ? responseMetrics(r, dose.scale, t)
+        : undefined
   )
+  const keys: readonly string[] = response ? RESPONSE_METRICS : CURVE_METRICS
   const curveCols =
     analysis === 'curve_fit' || metrics.some(Boolean)
-      ? CURVE_METRICS.filter((k) => metrics.some((m) => m?.[k] != null))
+      ? keys.filter((k) => metrics.some((m) => m?.[k] != null))
       : []
   const cols = [
     'uniqID',
@@ -140,9 +150,11 @@ function compareTable(
   const label =
     analysis === 'two_way_anova'
       ? 'interaction'
-      : analysis === 'curve_fit'
-        ? 'curve_log2FC'
-        : 'log2FC'
+      : response
+        ? 'peak_log2FC'
+        : analysis === 'curve_fit'
+          ? 'curve_log2FC'
+          : 'log2FC'
   const headers = cols.map((c) =>
     c === 'log2FC'
       ? label
@@ -156,7 +168,7 @@ function compareTable(
     return cols.map((c): Cell => {
       if (c === 'gene') return gene
       if (c === 'signf') return b(r.signf)
-      if (curveSet.has(c)) return metrics[i]?.[c as (typeof CURVE_METRICS)[number]] ?? null
+      if (curveSet.has(c)) return metrics[i]?.[c] ?? null
       return cellOf(r, c)
     })
   })
@@ -171,6 +183,8 @@ function contrastTable(result: Extract<NodeResult, { kind: 'contrast' }>): {
   const dm = result.displayMap
   const src = result.ctr.rows
   const cols = [
+    // every feature the contrast offers, each row saying which
+    ...(src.some((r) => r.feature) ? ['feature'] : []),
     'uniqID',
     'gene',
     ...(present(src, 'cell') ? ['cell'] : []),

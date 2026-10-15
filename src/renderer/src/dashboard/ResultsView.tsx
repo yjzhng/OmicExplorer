@@ -1,4 +1,4 @@
-/** The results dashboard: one tab per analysis group, each a reconfigurable grid
+/** The results dashboard: one tab per plot group (see deriveTabs), each a reconfigurable grid
  *  of panel tiles. Replaces the old two-level (section pill → tile tab) OutputDock
  *  that showed a single plot at a time. Grouping is derived from the pipeline DAG;
  *  tile layout is drag/resizable in edit mode (persisted with the workflow later). */
@@ -6,13 +6,14 @@ import { Fragment, useMemo, useState, type CSSProperties, type ReactNode } from 
 import type { Edge } from '@xyflow/react'
 
 import {
-  deriveGroups,
+  deriveTabs,
   expandMembers,
   parsePanelId,
+  tabTitles,
   topoStepOrder,
   type AnalysisGroup
 } from '../graph/groups'
-import { NODE_SPECS, safeTileName, stepTitle } from '../graph/registry'
+import { safeTileName } from '../graph/registry'
 import { useGraph } from '../graph/store'
 import { isStep, type NodeResult, type PlotGroupConfig, type StepNode } from '../graph/types'
 import type { PanelLayoutItem } from '../graph/types'
@@ -30,15 +31,6 @@ function groupComparisons(group: AnalysisGroup, results: Record<string, NodeResu
   if (r?.kind === 'compare') return r.cmp.comparisons
   if (r?.kind === 'contrast') return r.ctr.comparisons
   return []
-}
-
-/** Tab label = the step tile's user-given name if set, else its type label (kind, e.g.
- *  "Compare"). What's actually being compared lives in the hover tooltip (groupTitle).
- *
- *  Reads the ROOT NODE's kind, not `group.kind`: the latter is the group's OUTPUT kind, so a Merge
- *  (which emits a Clean-data result) would otherwise label its tab "Clean data". */
-function groupLabel(group: AnalysisGroup, root?: StepNode): string {
-  return root ? stepTitle(root) : NODE_SPECS[group.kind].label
 }
 
 /** Full comparison list for the tab's hover tooltip (the label itself is trimmed). */
@@ -76,21 +68,29 @@ export function ResultsView(): ReactNode {
   const [dragId, setDragId] = useState<string | null>(null)
   const [dropIndex, setDropIndex] = useState<number | null>(null)
 
+  // One tab per plot group, named after it (tabTitles).
   const groups = useMemo(() => {
-    const derived = deriveGroups(nodes, edges)
-    // Default order follows workflow TOPOLOGY (upstream analyses first), not creation order.
+    const derived = deriveTabs(nodes, edges)
+    // Default order follows workflow TOPOLOGY (upstream analyses first, then the plot groups
+    // under each), not creation order.
     const topo = topoStepOrder(nodes, edges)
     const rank = new Map(topo.map((id, i) => [id, i]))
-    // A user-set `order` (from drag-reorder) wins; otherwise fall back to the topological rank.
+    const rankOf = (g: AnalysisGroup): number =>
+      (rank.get(g.rootId) ?? Infinity) * 1e6 + (rank.get(g.id) ?? 0)
+    // A user-set `order` (from drag-reorder) wins — the tab's own, else (a workflow from before
+    // tabs were per plot group) its step's; otherwise the topological rank.
+    const orderOf = (g: AnalysisGroup): number =>
+      groupMeta[g.id]?.order ?? groupMeta[g.rootId]?.order ?? Infinity
     return derived
-      .map((g) => ({ g, rank: rank.get(g.rootId) ?? Infinity, order: groupMeta[g.rootId]?.order }))
-      .sort((a, b) => (a.order ?? Infinity) - (b.order ?? Infinity) || a.rank - b.rank)
+      .map((g) => ({ g, rank: rankOf(g), order: orderOf(g) }))
+      .sort((a, b) => a.order - b.order || a.rank - b.rank)
       .map((x) => x.g)
   }, [nodes, edges, groupMeta])
+  const titles = useMemo(() => tabTitles(groups, nodes), [groups, nodes])
 
   // Drop `fromId` into insertion slot `index` (0..n in the current order) and persist.
   const dropTabAt = (fromId: string, index: number): void => {
-    const ids = groups.map((g) => g.rootId)
+    const ids = groups.map((g) => g.id)
     const from = ids.indexOf(fromId)
     if (from < 0) return
     ids.splice(from, 1)
@@ -104,7 +104,12 @@ export function ResultsView(): ReactNode {
     setDragId(null)
     setDropIndex(null)
   }
-  const active = groups.find((g) => g.id === activeId) ?? groups[0] ?? null
+  // (A remembered tab from before tabs were per plot group names its step: its first plot group.)
+  const active =
+    groups.find((g) => g.id === activeId) ??
+    groups.find((g) => g.rootId === activeId) ??
+    groups[0] ??
+    null
   // Tabs are kept alive once opened: building a tab's plots costs ~1s, and
   // unmounting on every switch made you pay it again each time you came back.
   // Panes are only created on first visit, so unopened tabs still cost nothing.
@@ -120,19 +125,18 @@ export function ResultsView(): ReactNode {
   }
 
   const nodeById = useMemo(() => new Map(nodes.filter(isStep).map((n) => [n.id, n])), [nodes])
-  // Clicking the open tab again renames it — the name of the step the analysis comes from, the same
-  // name its canvas tile shows (and its downloads lead with). Enter / leaving the field saves,
-  // Esc cancels; an empty name goes back to the default.
+  // Clicking the open tab again renames it — its plot group's name, the same name the group's
+  // canvas tile shows (and its downloads' folder takes). Enter / leaving the field saves, Esc
+  // cancels; an empty name goes back to the default (the step it reads from).
   const renameNode = useGraph((s) => s.renameNode)
   // `width`: the tab's own, so the field takes its place without growing the chip.
   const [renaming, setRenaming] = useState<{
     id: string
-    rootId: string
     draft: string
     width: number
   } | null>(null)
   const commitTabName = (): void => {
-    if (renaming) renameNode(renaming.rootId, safeTileName(renaming.draft).trim())
+    if (renaming) renameNode(renaming.id, safeTileName(renaming.draft).trim())
     setRenaming(null)
   }
 
@@ -141,7 +145,7 @@ export function ResultsView(): ReactNode {
       <div style={styles.view}>
         <div style={styles.tabRow}>{backToWorkflow}</div>
         <div style={styles.empty}>
-          No analyses yet. Add a Clean data, Compare, or Contrast step with its plots on the canvas.
+          No plots yet. Add a Clean data, Compare, or Contrast step with its plots on the canvas.
         </div>
       </div>
     )
@@ -152,8 +156,9 @@ export function ResultsView(): ReactNode {
       <div style={styles.header}>
         <div style={styles.tabRow}>
           {backToWorkflow}
-          {/* Named like the condition switchers below ("DOSE", "TIME", …): this row picks the data. */}
-          <span style={styles.tabLabel}>Data</span>
+          {/* Named like the condition switchers below ("DOSE", "TIME", …): this row picks the plot
+              group. */}
+          <span style={styles.tabLabel}>Group</span>
           <div
             className="oe-tabscroll"
             style={styles.tabs}
@@ -183,7 +188,7 @@ export function ResultsView(): ReactNode {
                     <input
                       autoFocus
                       value={renaming.draft}
-                      placeholder={NODE_SPECS[g.kind].label}
+                      placeholder={titles.get(g.id)}
                       // File-name-safe, like the tile's own rename (the name leads downloads).
                       onChange={(e) =>
                         setRenaming({ ...renaming, draft: safeTileName(e.target.value) })
@@ -200,18 +205,17 @@ export function ResultsView(): ReactNode {
                     <button
                       draggable
                       onClick={(e) => {
-                        const root = nodeById.get(g.rootId)
-                        if (isActive && root)
+                        const own = nodeById.get(g.id)
+                        if (isActive && own)
                           setRenaming({
                             id: g.id,
-                            rootId: g.rootId,
-                            draft: root.data.name ?? '',
+                            draft: own.data.name ?? '',
                             width: e.currentTarget.getBoundingClientRect().width
                           })
                         else openTab(g.id)
                       }}
                       onDragStart={(e) => {
-                        setDragId(g.rootId)
+                        setDragId(g.id)
                         e.dataTransfer.effectAllowed = 'move'
                       }}
                       onDragOver={(e) => {
@@ -233,7 +237,7 @@ export function ResultsView(): ReactNode {
                       style={{
                         ...styles.tab,
                         ...(isActive ? styles.tabActive : {}),
-                        ...(dragId === g.rootId ? { opacity: 0.4 } : {})
+                        ...(dragId === g.id ? { opacity: 0.4 } : {})
                       }}
                       title={
                         isActive
@@ -241,7 +245,7 @@ export function ResultsView(): ReactNode {
                           : groupTitle(g, results)
                       }
                     >
-                      {groupLabel(g, nodeById.get(g.rootId))}
+                      {titles.get(g.id)}
                       {/* Real panel count: plot groups unfold into one panel per subcard, so this
                         matches the tiles actually shown (a folded group is not counted as 1). */}
                       <span style={styles.tabCount}>
@@ -283,7 +287,9 @@ export function ResultsView(): ReactNode {
                 nodeById={nodeById}
                 edges={edges}
                 results={results}
-                saved={groupLayouts[g.id] as PanelLayout | undefined}
+                // its own layout, else (a workflow from before tabs were per plot group) its
+                // step's, which reconcileLayout narrows to this group's panels
+                saved={(groupLayouts[g.id] ?? groupLayouts[g.rootId]) as PanelLayout | undefined}
                 onLayout={setGroupLayout}
               />
             </div>

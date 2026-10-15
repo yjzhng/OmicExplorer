@@ -10,7 +10,20 @@
  *
  * So annotation is fetched per member and saved per member, and a group carries the UNION of its
  * members' annotation — it is "one of these proteins", so it belongs wherever any of them does.
+ *
+ * A DECOY names no protein: it stays in the data as measured, but is never a member, so it is
+ * never fetched and never matches a DB row (`REV__sp|Q15147|…` would otherwise unwrap to the real
+ * Q15147 and borrow its label and annotation).
  */
+
+/** A decoy entry's prefix, as search engines write it: MaxQuant `REV__`, FragPipe `rev_`, and the
+ *  generic `DECOY_` / `decoy_` / `reverse_`. Case-insensitive; checked before any unwrapping. */
+const DECOY_PREFIX = /^(?:rev_|decoy_|reverse_)/i
+
+/** Whether one ID token (a single group member, wrapped or not) is a decoy. */
+export function isDecoy(token: string): boolean {
+  return DECOY_PREFIX.test(token.trim())
+}
 
 /** A UniProt accession with an isoform suffix, capturing the accession. UniProt's own accession
  *  format (uniprot.org/help/accession_numbers), so only a real accession loses its `-N`: a gene
@@ -23,13 +36,13 @@ export function canonicalAccession(id: string): string {
   return id.trim().replace(UNIPROT_ISOFORM, '$1')
 }
 
-/** The distinct proteins a feature ID names, canonical and in order: split on `;`, unwrap
- *  `db|ACC|NAME`, drop isoform suffixes. `Q6P1R3-3;Q6P1R3;Q6P1R3-2` → `['Q6P1R3']`. */
+/** The distinct proteins a feature ID names, canonical and in order: split on `;`, skip decoys,
+ *  unwrap `db|ACC|NAME`, drop isoform suffixes. `Q6P1R3-3;Q6P1R3;Q6P1R3-2` → `['Q6P1R3']`. */
 export function groupMembers(id: string): string[] {
   const out: string[] = []
   for (const raw of id.split(';')) {
     const t = raw.trim()
-    if (!t) continue
+    if (!t || isDecoy(t)) continue
     const parts = t.split('|')
     const acc = canonicalAccession(parts.length >= 3 ? parts[1] : t)
     if (acc && !out.includes(acc)) out.push(acc)
@@ -142,7 +155,6 @@ export const COLUMN_ALIASES: Record<string, string> = {
   msigdbSet: 'MSigDB',
   reactomePathway: 'Reactome',
   essentiality: 'DEG',
-  essentialityCEG: 'CEG_NEG',
   // the prokaryotic DB format's pathway column (its KG_PC / KG_PG levels aren't position-aligned
   // with it, so they can't stand in for KEGG_cat / KEGG_grp)
   KG_PW: 'KEGG'

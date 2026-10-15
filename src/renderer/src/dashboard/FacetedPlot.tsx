@@ -13,7 +13,7 @@ import { useMemo, useState, type CSSProperties, type ReactNode } from 'react'
 
 import { facetDims, facetKeyLabel, type ContextRow, type ConditionKey } from '../engine'
 import { UI } from '../ui/theme'
-import { ToggleSwitch } from '../ui/ToggleSwitch'
+import { ChoiceSwitch, PILL_CAP } from '../ui/ChoiceSwitch'
 import { resolveFacets } from './facet'
 
 export function FacetedPlot<T extends ContextRow>({
@@ -55,10 +55,13 @@ export function FacetedPlot<T extends ContextRow>({
             <span style={styles.barLabel}>{facetKeyLabel(dim)}</span>
             {/* The plot tiles' switch (as in SwitchBar). A one-sided contrast level (outer-join
                 rows with nothing to pair) is greyed, not selectable — the tooltip says which side
-                has the data. */}
-            <ToggleSwitch
+                has the data. Past PILL_CAP levels of a categorical condition, a searchable
+                dropdown. */}
+            <ChoiceSwitch
               size="sm"
-              label={`${facetKeyLabel(dim)} level`}
+              cap={dim === 'dose' || dim === 'time' ? Infinity : PILL_CAP}
+              counter
+              label={facetKeyLabel(dim)}
               value={String(value)}
               options={options.map(({ value: v, onlyOn }) => ({
                 value: String(v),

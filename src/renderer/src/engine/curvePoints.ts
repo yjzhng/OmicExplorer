@@ -3,7 +3,8 @@
  * don't carry them (fitted before they were kept). The same ratios the fit was made on: every
  * numerator sample of the gene above dose 0 (carrying the row's compared value and context), each
  * over the mean of its control samples — those at the comparison's reference value(s) (the label
- * after "|"), matched on the same context — and the control samples' own ratios.
+ * after "|"), matched on the same context — and the control samples' own ratios. Like the fit, every
+ * finite control value counts towards the mean (and a mean ≤ 0 leaves no ratios).
  */
 import { condValue } from './compare'
 import type { CompareResultRow, StandardRow } from './types'
@@ -41,12 +42,13 @@ export function curvePointsFromStd(
   const ctrl = geneStd.filter(
     (s) =>
       s.value != null &&
-      s.value > 0 &&
+      Number.isFinite(s.value) &&
       dims.every((c, i) => String(condValue(s, c) ?? '') === den[i]) &&
       inContext(s)
   )
   if (!ctrl.length) return null
   const base = ctrl.reduce((a, s) => a + (s.value as number), 0) / ctrl.length
+  if (!(base > 0)) return null
   const out: CurvePoints = {
     x: [],
     y: [],
@@ -70,9 +72,17 @@ export function curvePointsFromStd(
   return out
 }
 
-/** Clean data rows grouped by gene, for looking many genes up. */
+/** One index per Clean data array (a result's rows never change in place), so every view paging
+ *  through genes shares it instead of scanning every row per gene. */
+const byGeneCache = new WeakMap<StandardRow[], Map<string, StandardRow[]>>()
+
+/** Clean data rows grouped by gene, for looking many genes up — built once per array and shared
+ *  (read-only: callers must not change the lists). */
 export function stdByGene(std: StandardRow[]): Map<string, StandardRow[]> {
+  const cached = byGeneCache.get(std)
+  if (cached) return cached
   const by = new Map<string, StandardRow[]>()
+  byGeneCache.set(std, by)
   for (const s of std) {
     let list = by.get(s.uniqID)
     if (!list) by.set(s.uniqID, (list = []))

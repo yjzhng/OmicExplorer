@@ -10,6 +10,7 @@ import { orderedByWiring } from './sequence'
 
 import {
   isStep,
+  migrateCurveCompare,
   type CanvasFrame,
   type FavGene,
   type GeneSet,
@@ -35,7 +36,8 @@ export interface WorkflowDoc {
   edges: Array<{ id: string; source: string; target: string }>
   groupLayouts?: Record<string, PanelLayoutItem[]>
   groupMeta?: Record<string, GroupMeta>
-  /** named custom genesets for this workflow */
+  /** legacy (before 0.3.6): this workflow's own genesets — they're the project's now, and are
+   *  gathered from here into the project file on open (see project.ts) */
   geneSets?: GeneSet[]
   /** canvas frames (labelled areas grouping tiles) */
   frames?: CanvasFrame[]
@@ -49,7 +51,6 @@ export interface SerializeInput {
   nextId: number
   groupLayouts: Record<string, PanelLayoutItem[]>
   groupMeta: Record<string, GroupMeta>
-  geneSets: GeneSet[]
   frames?: CanvasFrame[]
 }
 
@@ -60,7 +61,6 @@ export interface LoadedWorkflow {
   nextId: number
   groupLayouts: Record<string, PanelLayoutItem[]>
   groupMeta: Record<string, GroupMeta>
-  geneSets: GeneSet[]
   frames: CanvasFrame[]
 }
 
@@ -119,7 +119,6 @@ export function buildWorkflowDoc(s: SerializeInput): WorkflowDoc {
       .map((e) => ({ id: e.id, source: e.source, target: e.target })),
     ...(Object.keys(groupLayouts).length ? { groupLayouts } : {}),
     ...(Object.keys(groupMeta).length ? { groupMeta } : {}),
-    ...(s.geneSets?.length ? { geneSets: s.geneSets } : {}),
     ...(frames.length ? { frames } : {})
   }
 }
@@ -131,13 +130,14 @@ export function parseWorkflowDoc(doc: WorkflowDoc): LoadedWorkflow {
   // per-axis scale so an old layout keeps its pixel footprint on the current 48-col grid.
   const kx = (version < 3 ? 2 : 1) * (version < 4 ? 2 : 1) // x, w
   const ky = version < 3 ? 2 : 1 // y, h
+  // A Compare saved in curve-fit mode opens as the Curve fit tile it now is (same id, so its parked
+  // result and its plots carry over).
   const nodes: GraphNode[] = doc.nodes.map((n) => ({
     id: n.id,
     type: 'step',
     position: n.position,
     data: {
-      kind: n.data.kind,
-      config: n.data.config,
+      ...migrateCurveCompare({ kind: n.data.kind, config: n.data.config }),
       status: 'idle',
       ...(n.data.name ? { name: n.data.name } : {})
     }
@@ -174,14 +174,17 @@ export function parseWorkflowDoc(doc: WorkflowDoc): LoadedWorkflow {
     nextId: wrapped.nextId,
     groupLayouts: wrapped.layouts,
     groupMeta: version >= 2 ? (doc.groupMeta ?? {}) : {},
-    frames: doc.frames ?? [],
-    // Legacy flat favourites migrate into a single "Favourites" geneset.
-    geneSets:
-      doc.geneSets ??
-      (doc.favourites?.length
-        ? [{ id: 'gs_favourites', name: 'Favourites', genes: doc.favourites }]
-        : [])
+    frames: doc.frames ?? []
   }
+}
+
+/** The genesets a workflow saved before they became the project's (0.3.6) — legacy flat
+ *  favourites as a single "Favourites" geneset. */
+export function legacyGeneSets(doc: WorkflowDoc): GeneSet[] {
+  if (doc.geneSets) return doc.geneSets
+  return doc.favourites?.length
+    ? [{ id: 'gs_favourites', name: 'Favourites', genes: doc.favourites }]
+    : []
 }
 
 /** Serializable workflow = graph + per-node config + dashboard layout (string form). */

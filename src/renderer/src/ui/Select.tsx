@@ -7,9 +7,10 @@
  * Self-contained (see usePopover). On the canvas, the caller passes its `zoom` so the menu matches
  * the tile's scale, and a `closeKey` that changes when the canvas moves.
  */
-import { useState, type ReactNode } from 'react'
+import { Fragment, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 
+import { groupHeading, markedTint } from './groupHeading'
 import { PALETTES, UI } from './theme'
 import { POPOVER_PROPS, usePopover } from './usePopover'
 import { useUiTheme } from './useUiTheme'
@@ -20,6 +21,11 @@ export interface SelectOption {
   disabled?: boolean
   /** drawn instead of the label text (e.g. a line swatch); the label stays the accessible name */
   render?: ReactNode
+  /** a heading the option sits under: one is drawn wherever it changes from the option before */
+  group?: string
+  /** highlighted with a soft neutral tint (e.g. what another control has picked); the text is its
+   *  tooltip */
+  marked?: string
 }
 
 export function Select({
@@ -109,21 +115,27 @@ export function Select({
               flexDirection: 'column'
             }}
           >
-            {options.map((o) => (
-              <SelectItem
-                key={o.value}
-                label={o.label}
-                render={o.render}
-                selected={o.value === value}
-                disabled={o.disabled}
-                z={z}
-                colors={{ text: p.text, hover: p.panel, accent: p.accent }}
-                onClick={() => {
-                  if (o.disabled) return
-                  onChange(o.value)
-                  setOpen(false)
-                }}
-              />
+            {options.map((o, i) => (
+              <Fragment key={o.value}>
+                {o.group && o.group !== options[i - 1]?.group && (
+                  <div style={groupHeading(z, p.textMuted, i > 0)}>{o.group}</div>
+                )}
+                <SelectItem
+                  label={o.label}
+                  render={o.render}
+                  selected={o.value === value}
+                  indent={!!o.group}
+                  marked={o.marked}
+                  disabled={o.disabled}
+                  z={z}
+                  colors={{ text: p.text, hover: p.panel, accent: p.accent, muted: p.textMuted }}
+                  onClick={() => {
+                    if (o.disabled) return
+                    onChange(o.value)
+                    setOpen(false)
+                  }}
+                />
+              </Fragment>
             ))}
           </div>,
           document.body
@@ -137,6 +149,8 @@ function SelectItem({
   label,
   render,
   selected,
+  indent,
+  marked,
   disabled,
   z,
   colors,
@@ -145,9 +159,12 @@ function SelectItem({
   label: string
   render?: ReactNode
   selected: boolean
+  /** under a group heading: set in from it */
+  indent?: boolean
+  marked?: string
   disabled?: boolean
   z: number
-  colors: { text: string; hover: string; accent: string }
+  colors: { text: string; hover: string; accent: string; muted: string }
   onClick: () => void
 }): ReactNode {
   const [hover, setHover] = useState(false)
@@ -157,6 +174,7 @@ function SelectItem({
       onMouseLeave={() => setHover(false)}
       onClick={onClick}
       disabled={disabled}
+      title={marked}
       style={{
         opacity: disabled ? 0.4 : 1,
         display: 'flex',
@@ -165,11 +183,17 @@ function SelectItem({
         width: '100%',
         border: 'none',
         borderRadius: 4 * z,
-        padding: `${5 * z}px ${8 * z}px`,
+        padding: `${5 * z}px ${8 * z}px ${5 * z}px ${(indent ? 18 : 8) * z}px`,
         fontSize: 12 * z,
         fontWeight: selected ? 600 : 400,
         color: selected ? colors.accent : colors.text,
-        background: selected ? `${colors.accent}22` : hover ? colors.hover : 'transparent',
+        background: selected
+          ? `${colors.accent}22`
+          : hover
+            ? colors.hover
+            : marked
+              ? markedTint(colors.muted)
+              : 'transparent',
         cursor: 'pointer',
         textAlign: 'left',
         whiteSpace: 'nowrap'

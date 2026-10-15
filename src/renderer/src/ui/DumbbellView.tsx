@@ -1,12 +1,13 @@
 import { useMemo } from 'react'
 
-import { buildDumbbell, type ContrastResultRow } from '../engine'
+import { buildDumbbell, type ContrastResultRow, type DumbbellOrder } from '../engine'
+import { tooltip } from './condTooltip'
 import { PlotlyChart } from './PlotlyChart'
 import { axisBase, CATEGORICAL, PALETTES, plotBase } from './theme'
 import { useSelection } from './useSelection'
 import { useUiTheme } from './useUiTheme'
 
-/** Dumbbell: per gene, FC1 and FC2 dots joined by a line; sorted by |FCdiff|. The base
+/** Dumbbell: per gene, FC1 and FC2 dots joined by a line; sorted by |FCdiff| (or either side). The base
  *  set is top-N (or the selected subset); hovered/pinned genes are appended so a linked
  *  selection shows up alongside rather than replacing the list. */
 export function DumbbellView({
@@ -16,6 +17,7 @@ export function DumbbellView({
   focus,
   title,
   orient = 'portrait',
+  order,
   valueKind = 'fc',
   valueLabel
 }: {
@@ -24,12 +26,15 @@ export function DumbbellView({
   displayMap?: Record<string, string>
   focus?: string[]
   title?: string
-  /** what the two sides hold (ContrastResult.valueKind): the value axis title follows it */
-  valueKind?: 'abundance' | 'fc'
+  /** what the two sides hold (ContrastResult.valueKind, or 'other' for another Contrast feature):
+   *  the value axis title follows it — `valueLabel` titles an abundance or a feature */
+  valueKind?: 'abundance' | 'fc' | 'other'
   /** the abundance axis title, with its log base (see abundanceLabel); default "log abundance" */
   valueLabel?: string
   /** portrait = genes down the y axis (tall list); landscape = genes across x. */
   orient?: 'landscape' | 'portrait'
+  /** gene order (see buildDumbbell); default |FCdiff| */
+  order?: DumbbellOrder
 }) {
   const mode = useUiTheme((s) => s.mode)
   const hoverId = useSelection((s) => s.hoverId)
@@ -44,7 +49,7 @@ export function DumbbellView({
     }
     const extra = new Set(pinnedIds)
     if (hoverId) extra.add(hoverId)
-    const dumbbell = buildDumbbell(rows, { topGenes, displayMap, focus, extra: [...extra] })
+    const dumbbell = buildDumbbell(rows, { topGenes, displayMap, focus, extra: [...extra], order })
     const genes = dumbbell.rows.map((r) => r.label)
     // uniqIDs parallel to `genes` — what the selection store keys on, so the bold restyle can
     // match a hovered/pinned gene to its tick.
@@ -82,16 +87,24 @@ export function DumbbellView({
       x: landscape ? genes : dumbbell.rows.map((r) => r[key]),
       y: landscape ? dumbbell.rows.map((r) => r[key]) : genes,
       customdata: dumbbell.rows.map((r) => r.uniqID),
-      hovertemplate: landscape
-        ? `%{x}<br>${name}=%{y:.3f}<extra></extra>`
-        : `%{y}<br>${name}=%{x:.3f}<extra></extra>`,
+      hovertemplate: tooltip(
+        {
+          title: landscape ? '%{x}' : '%{y}',
+          values: [[name, landscape ? '%{y:.3f}' : '%{x:.3f}']]
+        },
+        p.textMuted,
+        { template: true }
+      ),
       marker: { color, size: 9 }
     })
 
     const heading = title ?? ''
     const fcAxis = {
       ...axisBase(p),
-      title: valueKind === 'abundance' ? (valueLabel ?? 'log abundance') : 'log₂FC',
+      title:
+        valueKind === 'fc'
+          ? 'log₂FC'
+          : (valueLabel ?? (valueKind === 'abundance' ? 'log abundance' : '')),
       zeroline: false
     }
     const geneAxis = {
@@ -140,6 +153,7 @@ export function DumbbellView({
     displayMap,
     focus,
     orient,
+    order,
     valueKind,
     valueLabel,
     hoverId,

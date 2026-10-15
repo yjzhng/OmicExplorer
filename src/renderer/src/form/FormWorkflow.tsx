@@ -40,6 +40,7 @@ import {
   canConnect,
   categoryOf,
   maxInputsFor,
+  nothingToRerun,
   plotLabel,
   safeTileName,
   stepTitle
@@ -531,7 +532,7 @@ function StepTile({
           it reads have results — pressing it early only reproduces the error it was always going
           to give. */}
       <div style={styles.tileSide}>
-        {NODE_SPECS[kind].hasRun && (hovered || selected) && (
+        {NODE_SPECS[kind].hasRun && (hovered || selected) && !nothingToRerun(node.data) && (
           <RunControl
             status={status}
             accent={accent}
@@ -547,7 +548,8 @@ function StepTile({
 }
 
 /** The right side. A plot is its output, so it shows the analysis's plots and the chart; anything
- *  else is its settings, with the wiring as the first thing in the card's body. */
+ *  else is its settings, with the wiring as the first thing in the card's body, and a details column
+ *  beside them — so every step reads as the same three columns. */
 function StepPanel({ node }: { node: StepNode }): ReactNode {
   if (categoryOf(node.data.kind) === 'plotting')
     return (
@@ -557,24 +559,24 @@ function StepPanel({ node }: { node: StepNode }): ReactNode {
     )
   // Keyed by step: the docked window reads its config at mount, so moving to another step of the
   // same kind must remount it rather than carry the last one's unapplied state across.
-  if (hasDetailsWindow(node)) return <SettingsWithDetails key={node.id} node={node} />
-  return (
-    <div className="oe-scroll" style={styles.settings}>
-      <NodeConfigPanel id={node.id} embedded inputs={inputsSection(node)} />
-    </div>
-  )
+  return <SettingsWithDetails key={node.id} node={node} />
 }
 
 /** What the details column says while its window is closed: where to open it. */
 const DETAILS_EMPTY: Partial<Record<NodeKind, string>> = {
   load: 'Configure samples… opens the interactive import here.',
   compare: 'Configure… opens the comparison here.',
+  curveFit: 'Configure… opens the curve fit here.',
   contrast: 'Configure… opens the contrast here.'
 }
 
-/** A step with a configuration window (interactive import, Compare, Contrast): its settings in the
- *  middle and a third column on the right, where Configure… opens the window — the modal the canvas
- *  shows, laid out beside the settings instead of over them. */
+/** What the details column says for a step with no configuration window. */
+const NO_DETAILS = 'This step has no configuration window — its settings are all in the middle column.'
+
+/** A step's settings in the middle and a third column on the right. For a step with a
+ *  configuration window (interactive import, Compare, Curve fit, Contrast), Configure… opens it
+ *  there — the modal the canvas shows, laid out beside the settings instead of over them. Any
+ *  other step keeps the column, empty, so the layout doesn't jump between steps. */
 function SettingsWithDetails({ node }: { node: StepNode }): ReactNode {
   const configWidth = useAppSettings((s) => s.configWidth)
   const updateSettings = useAppSettings((s) => s.update)
@@ -599,7 +601,7 @@ function SettingsWithDetails({ node }: { node: StepNode }): ReactNode {
       <div
         ref={setDock}
         className="oe-dock"
-        data-empty={DETAILS_EMPTY[node.data.kind] ?? ''}
+        data-empty={hasDetailsWindow(node) ? (DETAILS_EMPTY[node.data.kind] ?? '') : NO_DETAILS}
         style={styles.details}
       />
     </DialogDock.Provider>

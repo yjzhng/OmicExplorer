@@ -159,9 +159,9 @@ describe('buildStandardInputs', () => {
 
   it('emits wide data (raw sample headers) and a uniqID→gene db', () => {
     const a = buildStandardInputs(MATRIX, { roles, conditions: {} })
-    expect(a.dataFilename).toMatch(/_wide\.csv$/)
+    expect(a.dataFilename).toMatch(/_datamatrix\.csv$/)
     const header = a.dataText.split(/\r?\n/)[0]
-    expect(header.startsWith('uniqID,')).toBe(true)
+    expect(header.startsWith('UniProtIDs,')).toBe(true)
     expect(header).toContain('run_x1.d') // raw header kept verbatim
     expect(a.dbText.split(/\r?\n/)[0].startsWith('uniqID,gene')).toBe(true)
     expect(a.dbText).toContain('PRT001,G1,') // gene from the label (Genes) column
@@ -189,6 +189,28 @@ describe('buildStandardInputs', () => {
       'uniqID,gene,keggPathway',
       'Q13547,HDAC1,A',
       'Q92769,HDAC2,B'
+    ])
+  })
+
+  it('keeps a decoy as its own row, never given its real twin’s annotation', () => {
+    const matrix = [
+      'Protein.Group,Genes,s1,s2',
+      'sp|Q13547|HDAC1_HUMAN,,10,20',
+      'REV__sp|Q13547|HDAC1_HUMAN,,30,40'
+    ].join('\n')
+    const a = buildStandardInputs(matrix, {
+      roles: { 'Protein.Group': 'id', Genes: 'label', s1: 'sample', s2: 'sample' },
+      conditions: {},
+      annotations: {
+        fields: ['keggPathway'],
+        byId: { Q13547: { geneName: 'HDAC1', keggPathway: 'A' } }
+      }
+    })
+    expect(a.dataText).toContain('REV__sp|Q13547|HDAC1_HUMAN')
+    expect(a.dbText.split(/\r?\n/)).toEqual([
+      'uniqID,gene,keggPathway',
+      'Q13547,HDAC1,A',
+      'REV__sp|Q13547|HDAC1_HUMAN,,'
     ])
   })
 

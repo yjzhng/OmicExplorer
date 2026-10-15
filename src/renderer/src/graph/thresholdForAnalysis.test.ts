@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import { DEFAULT_THRESHOLD, type ThresholdConfig } from '../engine'
-import { thresholdForAnalysis } from './types'
+import { thresholdForAnalysis, thresholdForDetection } from './types'
 
 const t = (over: Partial<ThresholdConfig>): ThresholdConfig => ({ ...DEFAULT_THRESHOLD, ...over })
 
@@ -24,5 +24,19 @@ describe('thresholdForAnalysis', () => {
   it('keeps a threshold the new analysis supports', () => {
     expect(thresholdForAnalysis('compare', 'two_way_anova', t({ type: 'linear' }))).toBeNull()
     expect(thresholdForAnalysis('two_way_anova', 'compare', t({ type: 'non-linear' }))).toBeNull()
+  })
+})
+
+describe('thresholdForDetection', () => {
+  it('moves a curve fit between the relevance score and the q-value call', () => {
+    const toSpline = thresholdForDetection('spline', t({ type: 'curvecurator', statType: 'pP' }))!
+    expect(toSpline).toMatchObject({ type: 'linear', statType: 'pQ', fcHigh: 0, fcLow: 0 })
+    expect(toSpline.statMin).toBeCloseTo(-Math.log10(0.05))
+    expect(thresholdForDetection('spline', t({ type: 'non-linear' }))).toBeNull()
+    expect(thresholdForDetection('4pl', t({ type: 'linear' }))?.type).toBe('curvecurator')
+    expect(thresholdForDetection('4pl', t({ type: 'curvecurator' }))).toBeNull()
+    // a 4PL surface calls by its target–decoy q, not the relevance score
+    expect(thresholdForDetection('4pl', t({ type: 'curvecurator' }), true)?.type).toBe('linear')
+    expect(thresholdForDetection('4pl', t({ type: 'linear' }), true)).toBeNull()
   })
 })

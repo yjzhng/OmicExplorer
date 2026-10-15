@@ -25,6 +25,7 @@ export function HoverTip({
   children,
   label,
   focusable = false,
+  above = false,
   style
 }: {
   tip: ReactNode
@@ -33,19 +34,19 @@ export function HoverTip({
   label?: string
   /** reachable by Tab (for a mark that isn't a control itself) */
   focusable?: boolean
+  /** open above the content (for content near the window's bottom, e.g. a dialog footer) */
+  above?: boolean
   style?: CSSProperties
 }): ReactNode {
   const mode = useUiTheme((s) => s.mode)
   const ref = useRef<HTMLSpanElement>(null)
-  const [at, setAt] = useState<{ left: number; top: number } | null>(null)
+  const [at, setAt] = useState<{ left: number; top?: number; bottom?: number } | null>(null)
   const show = (): void => {
     const r = ref.current?.getBoundingClientRect()
     if (!r) return
-    // Below the content, left-aligned to it, nudged in from the window's right edge.
-    setAt({
-      left: Math.max(8, Math.min(r.left, window.innerWidth - 8 - TIP_W)),
-      top: r.bottom + 6
-    })
+    // Below (or above) the content, left-aligned to it, nudged in from the window's right edge.
+    const left = Math.max(8, Math.min(r.left, window.innerWidth - 8 - TIP_W))
+    setAt(above ? { left, bottom: window.innerHeight - r.top + 6 } : { left, top: r.bottom + 6 })
   }
   const hide = (): void => setAt(null)
   return (
@@ -66,10 +67,7 @@ export function HoverTip({
       </span>
       {at &&
         createPortal(
-          <div
-            role="tooltip"
-            style={{ ...cssVars(PALETTES[mode]), ...styles.tip, left: at.left, top: at.top }}
-          >
+          <div role="tooltip" style={{ ...cssVars(PALETTES[mode]), ...styles.tip, ...at }}>
             {tip}
           </div>,
           document.body

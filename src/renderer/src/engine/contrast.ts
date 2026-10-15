@@ -43,6 +43,10 @@ export type AxisTail = 'aUp' | 'aDown' | 'bUp' | 'bDown'
 export const AXIS_TAILS: AxisTail[] = ['aUp', 'aDown', 'bUp', 'bDown']
 
 export interface ContrastStat {
+  /** correlated only — what the band is centred on: 'linear' (default) a line fitted through the
+   *  two sides (OLS; genes outside its prediction band diverge), 'identity' the line y = x itself
+   *  ("the same response on both sides"; nothing fitted, the spread the residuals' RMS about it) */
+  model?: 'linear' | 'identity'
   /** prediction band confidence, 0–1 (default 0.99); the UP tail (above the line) while
    *  `asymmetric` */
   bandConfidence?: number
@@ -71,7 +75,18 @@ export function statTails(stat: ContrastStat = {}): {
   return { confUp, confDown, q }
 }
 
+/** What a Contrast compares on its two sides — picked on the results page's switcher row, which
+ *  every plot of the Contrast follows. 'value' is the side's own value (a Compare's log₂FC — a
+ *  curve fit's curve or peak fold change — or Clean data's abundance); the rest are further
+ *  per-gene features of the same inputs: Clean data's replicate SD (log₁₀) and CV (%), a Compare's
+ *  significance (−log₁₀ p or q, as it calls by), a curve fit's pEC50. */
+export type ContrastFeatureId = 'value' | 'sd' | 'cv' | 'p' | 'pec50'
+
 export interface ContrastResultRow {
+  /** the feature this row contrasts and its name on the switcher and the value axes — absent
+   *  when the inputs offer one feature only (then nothing is switched) */
+  featureId?: ContrastFeatureId
+  feature?: string
   uniqID: string
   cell?: string | null
   cmpd?: string | null
@@ -113,6 +128,10 @@ export interface ContrastResultRow {
 export interface ContrastResult {
   rows: ContrastResultRow[]
   comparisons: string[]
+  /** how the divergence calls were grouped (by comparison + these context conditions) and masked
+   *  (by a side's own significance) — what reclassifyContrast needs to redo them under new
+   *  cutoffs without a re-run. Absent on results from before it was kept. */
+  classify?: { ctxConds: ConditionKey[]; driverMask: boolean }
   /** What the FC1/FC2 side values represent: 'fc' = log2 fold-change (Compare-fed contrasts),
    *  'abundance' = log10 abundance (Standardize-fed pair). Drives axis labelling; defaults to 'fc'. */
   valueKind?: 'abundance' | 'fc'
@@ -136,6 +155,8 @@ export function abundanceOnScale(
   const f = (v: number | null | undefined): number | null =>
     v == null || !Number.isFinite(v) ? null : fromLog10(v, scale)
   const out = rows.map((r): ContrastResultRow => {
+    // only the abundance itself is rescaled — a spread (SD, CV) keeps its own units
+    if (r.featureId && r.featureId !== 'value') return r
     if (scale === 'log2') {
       const k = 1 / Math.log10(2)
       const m = (v: number | null | undefined): number | null =>
@@ -171,6 +192,40 @@ export function abundanceOnScale(
   return out
 }
 
+/** A contrast facet's value-axis title when it shows a feature other than the sides' own value
+ *  (that one keeps its usual title — log₂FC, or abundance on the plots' scale); null otherwise. */
+export function contrastFeatureLabel(rows: ContrastResultRow[]): string | null {
+  const r = rows.find((x) => x.featureId)
+  return r && r.featureId !== 'value' ? (r.feature ?? null) : null
+}
+
+const byFeature = new WeakMap<ContrastResultRow[], Map<string, ContrastResultRow[]>>()
+/** A contrast's rows of the feature `like` shows (all of them when it offers one) — what a plot
+ *  scales over, so a global range never mixes features. Cached per row array, so it's stable. */
+export function rowsOfFeature(
+  rows: ContrastResultRow[],
+  like: ContrastResultRow | undefined
+): ContrastResultRow[] {
+  const f = like?.featureId
+  if (!f) return rows
+  let m = byFeature.get(rows)
+  if (!m) byFeature.set(rows, (m = new Map()))
+  let hit = m.get(f)
+  if (!hit) m.set(f, (hit = rows.filter((r) => r.featureId === f)))
+  return hit
+}
+
+/** A contrast's rows of the feature named `label` — the switcher's pick, else its first (the
+ *  sides' own value) — for a view that isn't faceted (the tables); all of them when it offers one.
+ *  Cached as rowsOfFeature. */
+export function rowsOfFeatureNamed(
+  rows: ContrastResultRow[],
+  label: string | undefined
+): ContrastResultRow[] {
+  const like = (label != null && rows.find((r) => r.feature === label)) || rows[0]
+  return rowsOfFeature(rows, like)
+}
+
 /** One per-gene value on one side of a PAIRED contrast: a scalar keyed by uniqID + condition
  *  context. From a Compare it is the log2FC (with its significance); from a Standardize it is a
  *  per-sample log10 abundance (runContrastPair averages replicates + unmatched dims to the matched
@@ -199,12 +254,15 @@ export interface ContrastSideRow {
 /** A paired contrast: two independent value series (two datasets), joined side-by-side by
  *  uniqID + the matched context, then scored for divergence by the same band/outlier model as the
  *  single-input condition-split contrast. */
-/** Per side, the one value each UNMATCHED condition is pinned to. Nothing is ever pooled across a
- *  condition: a condition is either matched like-for-like or fixed to one slice per side (a side
- *  with a single value needs no pin). Replicates are the only thing averaged. */
+/** Per side, the values each condition is narrowed to. A list is the side's explicit pick — on a
+ *  matched condition the values it pairs on, on an unmatched one its slice, which must come to one
+ *  value: nothing is ever pooled across a condition (a side with a single value needs no pin).
+ *  Replicates are the only thing averaged. A bare string is a saved pin from before lists, which
+ *  only ever fixed an UNMATCHED condition. */
+export type PairPins = Partial<Record<ConditionKey, string | string[]>>
 export interface PairFix {
-  a: Partial<Record<ConditionKey, string>>
-  b: Partial<Record<ConditionKey, string>>
+  a: PairPins
+  b: PairPins
 }
 
 export interface ContrastPairInput {
@@ -356,8 +414,13 @@ export function runContrast(input: ContrastInput): ContrastResult {
     })
   }
 
-  addGaussianOutliers(records, ctxConds, method, input.driverMask ?? true, input.stat)
-  return { rows: records, comparisons: records.length ? [comparison] : [] }
+  const driverMask = input.driverMask ?? true
+  addGaussianOutliers(records, ctxConds, method, driverMask, input.stat)
+  return {
+    rows: records,
+    comparisons: records.length ? [comparison] : [],
+    classify: { ctxConds, driverMask }
+  }
 }
 
 /** Read a condition value off a side row (numbers for dose/time), '' / null when absent. */
@@ -494,8 +557,13 @@ export function runContrastPair(input: ContrastPairInput): ContrastResult {
     })
   }
 
-  addGaussianOutliers(records, ctxConds, method, input.driverMask ?? true, input.stat)
-  return { rows: records, comparisons: records.length ? [comparison] : [] }
+  const driverMask = input.driverMask ?? true
+  addGaussianOutliers(records, ctxConds, method, driverMask, input.stat)
+  return {
+    rows: records,
+    comparisons: records.length ? [comparison] : [],
+    classify: { ctxConds, driverMask }
+  }
 }
 
 /** How one condition's values line up across the two sides of a PAIRED contrast (drives the
@@ -558,19 +626,23 @@ export function sliceSuffix(
   return parts.length ? ` (${parts.join(' · ')})` : ''
 }
 
-/** Keep only the rows at each fixed condition's chosen value. Pins on a MATCHED condition are
- *  ignored: a stale pin (fixed earlier, then switched back to matched) would otherwise filter the
- *  two sides to different values and leave nothing to pair. */
+/** Keep only the rows at each condition's picked values. A saved single-value pin on a MATCHED
+ *  condition is ignored: it dates from before picks were lists, when a pin only ever fixed an
+ *  unmatched condition — a stale one (fixed, then switched back to matched) would filter the two
+ *  sides to different values and leave nothing to pair. A list applies either way. */
 export function applyFix(
   rows: ContrastSideRow[],
-  fix: Partial<Record<ConditionKey, string>>,
+  fix: PairPins,
   matched: ConditionKey[] = []
 ): ContrastSideRow[] {
-  const pins = (Object.entries(fix) as [ConditionKey, string | undefined][]).filter(
-    (e): e is [ConditionKey, string] => e[1] != null && e[1] !== '' && !matched.includes(e[0])
-  )
+  const pins: [ConditionKey, Set<string>][] = []
+  for (const [c, v] of Object.entries(fix) as [ConditionKey, string | string[] | undefined][]) {
+    if (Array.isArray(v)) {
+      if (v.length > 0) pins.push([c, new Set(v.map(String))])
+    } else if (v != null && v !== '' && !matched.includes(c)) pins.push([c, new Set([v])])
+  }
   if (pins.length === 0) return rows
-  return rows.filter((r) => pins.every(([c, v]) => String(csval(r, c) ?? '') === v))
+  return rows.filter((r) => pins.every(([c, vs]) => vs.has(String(csval(r, c) ?? ''))))
 }
 
 /** Conditions that would still be pooled: more than one value on a side, and neither matched nor
@@ -696,9 +768,10 @@ function addGaussianOutliers(
   const qSame = AXIS_TAILS.every((t) => q[t] === q.aUp)
   // The label carries the cutoffs (per tail when they differ): the scatter guide parses it to
   // draw the matching boundary.
+  const identity = method === 'ols' && stat.model === 'identity'
   const label =
     method === 'ols'
-      ? `ols prediction, ${pct(confUp)}${confDown !== confUp ? `/${pct(confDown)}` : ''}`
+      ? `${identity ? 'identity' : 'ols'} prediction, ${pct(confUp)}${confDown !== confUp ? `/${pct(confDown)}` : ''}`
       : qSame
         ? `marginal gaussian (robust), per-axis q < ${q.aUp}`
         : `marginal gaussian (robust), per-axis q < A ${q.aUp}/${q.aDown}, B ${q.bUp}/${q.bDown}`
@@ -726,7 +799,20 @@ function addGaussianOutliers(
     const fc1 = valid.map((r) => r.FC1 as number)
     const fc2 = valid.map((r) => r.FC2 as number)
 
-    if (method === 'ols') {
+    if (identity) {
+      // Identity: FC1 = FC2 + ε — the band centred on y = x, nothing fitted, so each gene's
+      // residual is FC1 − FC2 and the spread their RMS about the line (n degrees of freedom).
+      const resid = fc1.map((v, i) => v - fc2[i])
+      const s = Math.sqrt(resid.reduce((acc, e) => acc + e * e, 0) / n)
+      if (s === 0) continue
+      const tUp = studentTppf(1 - confUp, n)
+      const tDown = studentTppf(1 - confDown, n)
+      valid.forEach((r, i) => {
+        const signf = resid[i] > 0 ? resid[i] > tUp * s : -resid[i] > tDown * s
+        r.signf = signf
+        r.effect = signf ? (resid[i] > 0 ? 'up' : 'down') : 'none'
+      })
+    } else if (method === 'ols') {
       // OLS: FC1 = β0 + β1·FC2 + ε  (x = FC2, y = FC1); 99% prediction band.
       const x = fc2
       const y = fc1
@@ -746,9 +832,12 @@ function addGaussianOutliers(
       valid.forEach((r, i) => {
         const lever = s * Math.sqrt(1 + 1 / n + (x[i] - xMean) ** 2 / Sxx)
         const signf = resid[i] > 0 ? resid[i] > tUp * lever : -resid[i] > tDown * lever
-        const d = (r.FC1 as number) - (r.FC2 as number)
         r.signf = signf
-        r.effect = signf && d > 0 ? 'up' : signf && d < 0 ? 'down' : 'none'
+        // The direction follows the model: above the fitted line (A higher than the fit predicts
+        // from B) is up, below it down — the side of the band the gene broke out of. (omicViz
+        // takes the sign of FC1 − FC2, the side of y = x, which disagrees with the band wherever
+        // the fit runs off the diagonal.)
+        r.effect = signf ? (resid[i] > 0 ? 'up' : 'down') : 'none'
       })
     } else {
       // marginal: robust per-axis 1-D normal tests (median + MAD), BH-corrected.
@@ -788,6 +877,55 @@ function addGaussianOutliers(
       if (!r.signf) r.effect = 'none'
     }
   }
+}
+
+/** Redo a Contrast's divergence calls under new cutoffs, from its stored rows — the per-side values
+ *  and calls don't depend on them, so no re-run (as a Compare re-classifies on a threshold drag).
+ *  Each feature's rows are called apart, as the run calls them. Null for a result that didn't keep
+ *  how it was called (`classify`): that one needs a re-run. */
+export function reclassifyContrast(
+  ctr: ContrastResult,
+  relationship: 'correlated' | 'independent' | undefined,
+  stat: ContrastStat
+): ContrastResult | null {
+  if (!ctr.classify) return null
+  const { ctxConds, driverMask } = ctr.classify
+  const method = relationship === 'independent' ? 'marginal' : 'ols'
+  const rows = ctr.rows.map((r) => ({ ...r, signf: false, effect: 'none' }))
+  const byFeature = new Map<string, ContrastResultRow[]>()
+  for (const r of rows) {
+    const k = r.featureId ?? ''
+    let arr = byFeature.get(k)
+    if (!arr) byFeature.set(k, (arr = []))
+    arr.push(r)
+  }
+  for (const part of byFeature.values())
+    addGaussianOutliers(part, ctxConds, method, driverMask, stat)
+  return { ...ctr, rows }
+}
+
+/** A dragged scatter guide as a stat patch, written the way the Statistic panel writes it: the
+ *  primary level (the band's top edge, A's up line) sets both models' fields, so switching model
+ *  keeps it; under `asymmetric`, any other edge sets its own tail. Not asymmetric, every edge sets
+ *  the primary (the edges mirror). `value` is a band confidence or an axis q. */
+export function contrastStatDrag(
+  stat: ContrastStat | undefined,
+  edge: 'bandUp' | 'bandDown' | AxisTail,
+  value: number
+): Partial<ContrastStat> {
+  const asym = stat?.asymmetric ?? false
+  const round3 = (v: number): number => Math.round(v * 1000) / 1000
+  const conf = (c: number): number => round3(Math.min(0.999, Math.max(0.5, c)))
+  // up, not to nearest: a q just above the passing genes' must stay above them once stored
+  const q = (v: number): number => Math.min(0.5, Math.max(0.001, Math.ceil(v * 1000 - 1e-9) / 1000))
+  if (edge === 'bandUp' || edge === 'bandDown') {
+    const c = conf(value)
+    if (edge === 'bandDown' && asym) return { bandConfidenceDown: c }
+    return { bandConfidence: c, cutoffQ: round3(1 - c) }
+  }
+  const v = q(value)
+  if (edge === 'aUp' || !asym) return { cutoffQ: v, bandConfidence: round3(1 - v) }
+  return { cutoffQTails: { ...stat?.cutoffQTails, [edge]: v } }
 }
 
 function mean(a: number[]): number {

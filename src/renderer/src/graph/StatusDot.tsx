@@ -96,6 +96,16 @@ export function useStepStatus(id: string, data: NodeData): StatusInfo {
     : { color: '#3fae5a', label: 'Ready', pulse: false, ok: true }
 }
 
+/** Whether the step `upId` is running (or queued behind its own input) — a run downstream can
+ *  start now and wait for it. */
+// eslint-disable-next-line react-refresh/only-export-components
+export function useUpstreamRunning(upId: string | undefined): boolean {
+  return useGraph((s) => {
+    const n = upId ? s.nodes.find((x) => x.id === upId) : undefined
+    return !!n && n.type === 'step' && n.data.status === 'running'
+  })
+}
+
 /** Why a plot (or a group's plots) can't run yet — no upstream, its step not run, a requirement
  *  the data doesn't meet — or null when it can. Gates its Run control. */
 // eslint-disable-next-line react-refresh/only-export-components
@@ -103,8 +113,12 @@ export function usePlotGate(id: string, data: NodeData): string | null {
   const isPlot = NODE_SPECS[data.kind].category === 'plotting'
   const upId = useGraph((s) => (isPlot ? s.upstreamId(id) : undefined))
   const facts = useUpstreamFacts(upId)
+  const upRunning = useUpstreamRunning(upId)
   if (!isPlot) return null
-  if (!upId || !facts.result) return 'Run the step it reads from first'
+  // The step it reads still running: its run can start now — it waits for that step (the store's
+  // waitForInputs), then draws from its result.
+  if (!upId || (!facts.result && !upRunning)) return 'Run the step it reads from first'
+  if (!facts.result) return null
   const kinds =
     data.kind === 'plotGroup'
       ? (data.config as PlotGroupConfig).children.map((c) => ({ kind: c.kind, config: c.config }))

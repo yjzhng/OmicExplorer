@@ -18,7 +18,7 @@ export function Chevron({
       width={size}
       height={size}
       viewBox="0 0 10 10"
-      style={{ flex: '0 0 auto', color, transform: `rotate(${deg}deg)` }}
+      style={{ flex: '0 0 auto', color, transform: `rotate(${deg}deg)`, transition: 'transform 160ms ease' }}
     >
       <polyline
         points="3.5,1.5 7,5 3.5,8.5"

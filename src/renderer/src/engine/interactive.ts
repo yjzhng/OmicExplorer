@@ -4,7 +4,7 @@
  * existing Load + Standardize pipeline consumes it unchanged. The user classifies columns
  * and assigns conditions in the wizard; the constants below are only default guesses (tuned
  * for a DIA-NN protein-group table) that the user can override. Emits:
- *   • data        — wide CSV (uniqID + one column per sample); ingest melts it
+ *   • data        — wide CSV (UniProtIDs + one column per sample); ingest melts it
  *   • samplesheet — sample -> conditions (assigned by the user; there is no reliable
  *                   automatic rule for condition naming)
  *   • db          — uniqID -> gene / product (drives gene-name display labels)
@@ -47,7 +47,6 @@ export interface InteractiveSampleCond {
 
 export interface InteractiveAdapted {
   dataText: string
-  /** stem ends with `_wide` so ingest detects the wide format */
   dataFilename: string
   samplesheetText: string
   dbText: string
@@ -436,6 +435,8 @@ export function buildStandardInputs(
     annotations?: { fields: string[]; byId: Record<string, Record<string, string>>; taxon?: number }
     /** custom condition names the user defined, in display order */
     customConditions?: string[]
+    /** conditions switched off: their values are kept in the spec but not written */
+    hiddenConditions?: string[]
   }
 ): InteractiveAdapted {
   const { columns, rows: allRows } = parseMatrix(matrixText)
@@ -458,13 +459,14 @@ export function buildStandardInputs(
   const rows =
     activeFilters.length > 0 ? allRows.filter((r) => rowPasses(r, activeFilters)) : allRows
 
-  // data (wide): uniqID + one column per sample (raw header names).
+  // data (wide): UniProtIDs (the ID column as exported — groups, isoforms, headers and all) + one
+  // column per sample (raw header names). Ingest matches it to the db's one-per-protein `uniqID`.
   const dataRows = rows.map((r) => {
-    const out: Row = { uniqID: (r[idCol] ?? '').trim() }
+    const out: Row = { UniProtIDs: (r[idCol] ?? '').trim() }
     for (const sc of sampleCols) out[sc] = r[sc] ?? ''
     return out
   })
-  const dataText = Papa.unparse(dataRows, { columns: ['uniqID', ...sampleCols] })
+  const dataText = Papa.unparse(dataRows, { columns: ['UniProtIDs', ...sampleCols] })
 
   // db: uniqID + gene (from the label column) + the other metadata columns + fetched annotations,
   // ONE ROW PER PROTEIN, keyed by its canonical accession — a protein group's ID names several
@@ -483,7 +485,7 @@ export function buildStandardInputs(
     const id = (r[idCol] ?? '').trim()
     // Display name (DB `gene`) priority: the user's Name column value, else — when no Name column
     // was assigned, or the cell is blank — the protein's UniProt-fetched gene name (`geneName`).
-    // Still empty ⇒ ingest falls back to locus_tag, then the ID.
+    // Still empty ⇒ ingest falls back to locus, then the ID.
     const labelVal = labelCol ? (r[labelCol] ?? '').trim() : ''
     const members = groupMembers(id)
     for (const uniqID of members.length ? members : [id]) {
@@ -502,16 +504,19 @@ export function buildStandardInputs(
   // samplesheet: sample (raw header) + conditions.
   // Custom conditions get one samplesheet column each, named after the condition — that name is
   // how ingest recognises them (see `customConditions` / detectCustomConditions).
-  const customConds = spec.customConditions ?? []
+  // A switched-off condition writes nothing: a preset's column stays blank, a custom's is left out.
+  const hidden = new Set(spec.hiddenConditions ?? [])
+  const customConds = (spec.customConditions ?? []).filter((n) => !hidden.has(n))
+  const preset = (v: string | undefined, f: string): string => (hidden.has(f) ? '' : (v ?? ''))
   const ssRows = sampleCols.map((sc) => {
     const c = conditions[sc]
     return {
       sample: sc,
-      cell: c?.cell ?? '',
-      cmpd: c?.cmpd ?? '',
-      dose: c?.dose ?? '',
-      time: c?.time ?? '',
-      rep: c?.rep ?? '',
+      cell: preset(c?.cell, 'cell'),
+      cmpd: preset(c?.cmpd, 'cmpd'),
+      dose: preset(c?.dose, 'dose'),
+      time: preset(c?.time, 'time'),
+      rep: preset(c?.rep, 'rep'),
       ...Object.fromEntries(customConds.map((n) => [n, c?.extra?.[n] ?? '']))
     }
   })
@@ -519,5 +524,5 @@ export function buildStandardInputs(
     columns: ['sample', 'cell', 'cmpd', 'dose', 'time', 'rep', ...customConds]
   })
 
-  return { dataText, dataFilename: 'interactive_wide.csv', samplesheetText, dbText }
+  return { dataText, dataFilename: 'interactive_datamatrix.csv', samplesheetText, dbText }
 }

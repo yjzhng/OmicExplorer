@@ -1,6 +1,13 @@
 import { useMemo } from 'react'
 
-import type { ScatterData, ScatterPoint } from '../engine'
+import {
+  bandConfAt,
+  bandEdgePath,
+  marginalQAt,
+  type AxisTail,
+  type ScatterData,
+  type ScatterPoint
+} from '../engine'
 import {
   DEFAULT_EFFECT_LABELS,
   type EffectColors,
@@ -8,7 +15,8 @@ import {
   type PointStyle
 } from '../graph/types'
 import { useGraph } from '../graph/store'
-import { PlotlyChart } from './PlotlyChart'
+import { tooltip } from './condTooltip'
+import { PlotlyChart, type GuideDrag } from './PlotlyChart'
 import {
   legendOn,
   QUAD_ORDER,
@@ -27,7 +35,8 @@ const EFF_ORDER: Eff[] = ['none', 'down', 'up']
  * Contrast scatter: FC1 (y) vs FC2 (x). The significance boundary follows the contrast's
  * relationship — an OLS fit + prediction band when correlated, a 9-zone per-axis box when
  * independent (see ScatterGuide). Divergent genes are highlighted; the top few by |FCdiff|
- * are labelled.
+ * are labelled. With `onStatDrag`, the boundary is draggable — the band's edges, the axis lines —
+ * and a release reports the cutoff it now stands for (a band confidence, an axis q).
  */
 export function ScatterView({
   scatter,
@@ -35,7 +44,9 @@ export function ScatterView({
   labelTop = 0,
   effectLabels = DEFAULT_EFFECT_LABELS,
   effectColors,
-  style
+  style,
+  onStatDrag,
+  asymmetric = false
 }: {
   scatter: ScatterData
   title?: string
@@ -46,6 +57,12 @@ export function ScatterView({
   effectLabels?: EffectLabels
   /** the upstream Compare's effect colours — what each group's automatic colour follows */
   effectColors?: EffectColors
+  /** a dragged edge's new cutoff, on release: the band's top / bottom edge → its confidence; an
+   *  axis line (A = y, B = x; up / down of its centre) → its q. Unset = the guides stay put. */
+  onStatDrag?: (edge: 'bandUp' | 'bandDown' | AxisTail, value: number) => void
+  /** the contrast's cutoffs are per tail: the edges move apart (otherwise a band edge drags its
+   *  partner with it, mirrored) */
+  asymmetric?: boolean
 }) {
   const mode = useUiTheme((s) => s.mode)
   // The selected saved genesets (each its own trace: legend entry, and its colour if set). An
@@ -54,9 +71,9 @@ export function ScatterView({
   // elsewhere doesn't rebuild this plot (a full redraw).
   const geneSets = useGraph((s) => s.geneSets)
   const selSets = useSelectedGeneSets(geneSets)
-  // Point groups depend on the relationship. A correlated (OLS) contrast colours genes by
-  // whether they sit above/below the line of identity — up (red) / down (blue) / none (grey),
-  // matching volcano/MA. An independent (marginal) contrast instead colours by QUADRANT: the
+  // Point groups depend on the relationship. A correlated (OLS) contrast colours called genes by
+  // the side of the fitted line they broke out on — up (red, above) / down (blue, below) / none
+  // (grey), matching volcano/MA. An independent (marginal) contrast instead colours by QUADRANT: the
   // composite "<FC1 dir>, <FC2 dir>" effect, so each significant corner reads as its own group.
   const marginal = scatter.guide?.kind === 'marginal'
   // Resolved once per config change (stable objects, so PlotlyChart doesn't re-render per hover).
@@ -80,11 +97,21 @@ export function ScatterView({
   const emphasis = useMemo(() => resolveHighlight(style), [style])
   const showLegend = legendOn(style)
 
-  const { data, layout, labels } = useMemo(() => {
+  const editable = !!onStatDrag
+  const { data, layout, labels, guides } = useMemo(() => {
     const p = PALETTES[mode]
 
-    // The tooltip names the gene only when the highlight's own label is off (else it's a duplicate).
-    const hover = `${emphasis.label ? '' : '%{text}<br>'}${scatter.xLabel}=%{x:.3f}<br>${scatter.yLabel}=%{y:.3f}<extra></extra>`
+    const hover = tooltip(
+      {
+        title: '%{text}',
+        values: [
+          [scatter.xLabel, '%{x:.3f}'],
+          [scatter.yLabel, '%{y:.3f}']
+        ]
+      },
+      p.textMuted,
+      { template: true }
+    )
     const trace = (pts: ScatterPoint[], g: ResolvedGroup) => ({
       type: 'scatter',
       mode: 'markers',
@@ -164,7 +191,7 @@ export function ScatterView({
     // 0 there would only push the cloud into a corner. A little padding keeps extreme points
     // off the border.
     const all = scatter.points
-    const fc = scatter.valueKind !== 'abundance'
+    const fc = (scatter.valueKind ?? 'fc') === 'fc'
     let lo0 = fc ? 0 : Infinity
     let hi0 = fc ? 0 : -Infinity
     for (const pt of all) {
@@ -191,11 +218,41 @@ export function ScatterView({
       line: { color: p.textMuted, width: 1.5, dash: dashed ? 'dash' : 'solid' },
       opacity: dashed ? 0.7 : 0.55
     })
-    // Curves must be traces (shapes can't follow a band); drawn first so points sit above.
+    // The band's edges are path SHAPES (a guide is a shape, so they can be dragged), drawn at the
+    // cutoffs in force, centred on the fitted line the calls are measured from (a solid trace,
+    // drawn first so points sit above it); y = x stays as a faint dotted reference — "the same
+    // response on both sides". Without the band's parameters (too few points to fit), the
+    // sampled edges as traces instead.
+    const band = g?.kind === 'ols' ? g.band : undefined
+    const conf = g?.cutoffs ?? {
+      confUp: 0.99,
+      confDown: 0.99,
+      q: { aUp: 0.01, aDown: 0.01, bUp: 0.01, bDown: 0.01 }
+    }
     const guideTraces =
       g?.kind === 'ols' && g.fit && g.upper && g.lower
-        ? [curve(g.fit, false), curve(g.upper, true), curve(g.lower, true)]
+        ? band
+          ? [
+              // the y = x reference — unless the model's line IS y = x (identity)
+              ...(band.fixed
+                ? []
+                : [
+                    {
+                      ...curve({ x: [lo, hi], y: [lo, hi] }, false),
+                      line: { color: p.textMuted, width: 1, dash: 'dot' },
+                      opacity: 0.45
+                    }
+                  ]),
+              curve(g.fit, false)
+            ]
+          : [curve(g.fit, false), curve(g.upper, true), curve(g.lower, true)]
         : []
+    const edge = (side: 1 | -1) => ({
+      type: 'path',
+      path: bandEdgePath(band!, side > 0 ? conf.confUp : conf.confDown, side),
+      line: { color: p.textMuted, width: 1.5, dash: 'dash' },
+      opacity: 0.7
+    })
     const hLine = (y: number) => ({
       type: 'line',
       xref: 'paper',
@@ -224,17 +281,74 @@ export function ScatterView({
             vLine(g.xHi as number)
           ]
         : g?.kind === 'ols'
-          ? []
+          ? band
+            ? [edge(1), edge(-1)]
+            : []
           : [identity] // no guide (e.g. too few points) — fall back to the line of identity
+
+    // Draggable guides (only when editing is wired), indexed into `guideShapes` above. A band edge
+    // is grabbed anywhere and passes through the cursor (its confidence solved from the point); an
+    // axis line slides along its axis, its q read off where it lands.
+    const pctOf = (c: number): string => `${Math.round(Math.max(0, 1 - c) * 1000) / 10}%`
+    const qShown = (q: number): string =>
+      String(Math.min(0.5, Math.max(0.001, Math.ceil(q * 1000 - 1e-9) / 1000)))
+    const bandGuide = (i: 0 | 1): GuideDrag => {
+      const side = i === 0 ? 1 : -1
+      return {
+        shapeIndex: i,
+        axis: 'y',
+        kind: 'curve',
+        // across the band (along y = −x): its edges run with y = x, on axes of one scale
+        cursor: 'nwse-resize',
+        key: i === 0 ? 'bandUp' : 'bandDown',
+        value: i === 0 ? conf.confUp : conf.confDown,
+        solve: (mx, my) => Math.min(0.999, Math.max(0.5, bandConfAt(band!, mx, my))),
+        render: (c) => bandEdgePath(band!, c, side),
+        // symmetric: the other edge mirrors it live
+        ...(asymmetric
+          ? null
+          : {
+              syncShapeIndex: i === 0 ? 1 : 0,
+              syncRender: (c: number) => bandEdgePath(band!, c, -side as 1 | -1)
+            }),
+        format: (c) => `${i === 0 ? 'top' : 'bottom'} ${pctOf(c)} outside the band`
+      }
+    }
+    const lineGuide = (i: number, axis: 'x' | 'y', key: AxisTail): GuideDrag => ({
+      shapeIndex: i,
+      axis,
+      kind: 'line',
+      cursor: axis === 'x' ? 'ew-resize' : 'ns-resize',
+      key,
+      value: ({ 0: g?.yLo, 1: g?.yHi, 2: g?.xLo, 3: g?.xHi } as Record<number, number | undefined>)[
+        i
+      ] as number,
+      format: (v) => `${axis === 'y' ? 'A' : 'B'} q < ${qShown(marginalQAt(g!, axis, v))}`
+    })
+    const guides: GuideDrag[] | undefined = !editable
+      ? undefined
+      : g?.kind === 'ols' && band
+        ? [bandGuide(0), bandGuide(1)]
+        : g?.kind === 'marginal' && g.axes
+          ? [
+              lineGuide(0, 'y', 'aDown'),
+              lineGuide(1, 'y', 'aUp'),
+              lineGuide(2, 'x', 'bDown'),
+              lineGuide(3, 'x', 'bUp')
+            ]
+          : undefined
 
     // Collision-managed labels for the genes of every group whose label switch is on (by default
     // the significant / divergent ones), ranked by Manhattan distance from what the mode measures
-    // against: the line of identity for a correlated contrast (|y − x|, the distance to y = x along
-    // either axis), the centre for an independent one (|x| + |y|). Both axes share units, so no
-    // scaling. The ranking runs before PlotlyChart's crowding gate and placement, and decides what
+    // against: the fitted line for a correlated contrast (|y − ŷ(x)|, the residual the calls are
+    // made on; y = x without a fit), the centre for an independent one (|x| + |y|). Both axes share
+    // units, so no scaling. The ranking runs before PlotlyChart's crowding gate and placement, and decides what
     // labelTop keeps; 0 (the default) offers them all, and more appear as you zoom in.
+    const fitB = g?.kind === 'ols' ? g.band : undefined
     const distance = (pt: ScatterPoint): number =>
-      marginal ? Math.abs(pt.x) + Math.abs(pt.y) : Math.abs(pt.y - pt.x)
+      marginal
+        ? Math.abs(pt.x) + Math.abs(pt.y)
+        : Math.abs(pt.y - (fitB ? fitB.beta0 + fitB.beta1 * pt.x : pt.x))
     const ranked = scatter.points
       .filter((pt) => look(keyOf(pt)).label)
       .map((pt) => ({ pt, d: distance(pt) }))
@@ -296,8 +410,19 @@ export function ScatterView({
         }
       ]
     })
-    return { data: [...guideTraces, ...pointTraces, ...selTrace], layout: lay, labels }
-  }, [scatter, title, labelTop, mode, marginal, groups, showLegend, emphasis.label, selSets])
+    return { data: [...guideTraces, ...pointTraces, ...selTrace], layout: lay, labels, guides }
+  }, [scatter, title, labelTop, mode, marginal, groups, showLegend, selSets, editable, asymmetric])
+
+  // A released guide → its cutoff: a band edge reports its solved confidence; an axis line, the q
+  // its new position stands for.
+  const onGuide = (key: string, value: number): void => {
+    if (!onStatDrag) return
+    if (key === 'bandUp' || key === 'bandDown') onStatDrag(key, value)
+    else {
+      const axis = key === 'aUp' || key === 'aDown' ? 'y' : 'x'
+      if (scatter.guide) onStatDrag(key as AxisTail, marginalQAt(scatter.guide, axis, value))
+    }
+  }
 
   return (
     <PlotlyChart
@@ -306,6 +431,8 @@ export function ScatterView({
       labels={labels}
       labelColor={PALETTES[mode].text}
       emphasis={emphasis}
+      guides={guides}
+      onGuide={onGuide}
     />
   )
 }

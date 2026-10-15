@@ -2,7 +2,16 @@
  * Public surface of the analysis engine. Pure TypeScript, framework-free — safe
  * to call directly or from a Web Worker (see worker.ts / client.ts).
  */
-export { previewScale, standardize, type ScalePreview } from './ingest'
+export {
+  manualSheetIssues,
+  previewScale,
+  samplesheetIssues,
+  sheetIssueLines,
+  sheetIssueText,
+  standardize,
+  type ScalePreview,
+  type SheetIssue
+} from './ingest'
 export {
   canonicalAccession,
   groupMembers,
@@ -12,6 +21,8 @@ export {
   unionValues
 } from './accession'
 export { combineStandardize } from './combine'
+export { conditionLevels, keptBy, subsetStandardize } from './subset'
+export { jointPredict } from './surfaceJoint'
 export {
   parseMatrix,
   guessRoles,
@@ -32,7 +43,17 @@ export {
   type FieldRule
 } from './interactive'
 export { runVehNorm } from './compare'
-export { runDirect, runCompare, runCurveFit, previewCompare, classifyConditions } from './direct'
+export {
+  runDirect,
+  runCompare,
+  runCurveFit,
+  previewCompare,
+  compareSlices,
+  baselineText,
+  classifyConditions,
+  controlIsBaseline,
+  curveControlIsBaseline
+} from './direct'
 export {
   applyCurveFdr,
   classifyCompareRow,
@@ -43,10 +64,17 @@ export {
   curveCuratorWall,
   curveGroupKey,
   curveMetrics,
+  curveHasLof,
+  curveLackOfFit,
+  ccTestOf,
   CURVE_METRICS,
   curveResidualMad,
+  curveResidualPoints,
+  curvesReplicated,
+  type ResidualPoint,
   type DoseMad,
   logistic,
+  curveSampleX,
   relevanceScore,
   type CurveFit
 } from './curveFit'
@@ -62,7 +90,12 @@ export {
   abundanceOnScale,
   CONTRAST_STAT_DEFAULTS,
   AXIS_TAILS,
-  statTails
+  statTails,
+  reclassifyContrast,
+  contrastStatDrag,
+  contrastFeatureLabel,
+  rowsOfFeature,
+  rowsOfFeatureNamed
 } from './contrast'
 export type {
   ContrastSideRow,
@@ -71,7 +104,8 @@ export type {
   ContrastStat,
   AxisTail,
   PairFix,
-  PairValueAlignment
+  PairValueAlignment,
+  ContrastFeatureId
 } from './contrast'
 export {
   BUBBLE_DUMBBELL_CAP,
@@ -92,15 +126,25 @@ export {
   resolveEnrichSource,
   buildVolcano,
   buildHeatmap,
+  buildHeatmapSteps,
   buildFcHeatmap,
   buildScatter,
+  bandEdgePath,
+  bandConfAt,
+  marginalQAt,
   buildIntensityScatter,
   buildMA,
   buildDR,
+  responseCurve,
   comparisonOf,
+  fcName,
   fcMeasure,
   buildBubble,
   buildDumbbell,
+  thinPoints,
+  RESIDUAL_DOT_CAP,
+  DUMBBELL_ORDERS,
+  dumbbellOrderLabel,
   buildTdr,
   buildGeneBar,
   buildCluster,
@@ -117,6 +161,7 @@ export {
   ctxValue,
   metaValue,
   facetKeyLabel,
+  sortSamples,
   CLUSTER_COLOR
 } from './plotData'
 export type { ClusterMethod } from './embed'
@@ -162,7 +207,8 @@ export {
   CC_Q_MIN,
   SAM_PERMUTATIONS,
   SAM_S0,
-  snapStatMin
+  snapStatMin,
+  normalPpf
 } from './stats'
 export type {
   ConditionKey,
@@ -203,6 +249,7 @@ export type {
   DumbbellData,
   DumbbellRow,
   DumbbellOptions,
+  DumbbellOrder,
   TdrData,
   TdrSeries,
   GeneBarData,
@@ -214,6 +261,8 @@ export type {
   QcData,
   QcGroup,
   QcMetric,
+  SampleOrder,
+  SampleOrdering,
   EnrichData,
   EnrichTerm,
   EnrichOptions,
@@ -227,6 +276,8 @@ export type {
 } from './plotData'
 export type { Analysis, PlotOption } from './plotChoice'
 export { IMPUTE_DEFAULTS, IMPUTE_LABEL } from './impute'
+export { MIN_SHARED_GENES, NORMALIZE_REFERENCE_LABEL } from './normalize'
+export type { NormalizeOptions, NormalizeReference, NormalizeSummary } from './normalize'
 export type { ImputeMethod, ImputeOptions, ImputeSummary } from './impute'
 export {
   defaultTransform,
@@ -247,3 +298,13 @@ export {
   type ValueHistogram,
   type ValueScale
 } from './scale'
+export { clusterRowGroups } from './cluster'
+export type { DendroLink, Linkage, LeafOrder } from './cluster'
+export {
+  DESCRIBE_Q,
+  RESPONSE_METRICS,
+  RESPONSE_THRESHOLD,
+  responseMetrics,
+  runResponseSurface
+} from './responseSurface'
+export type { ResponseInput } from './responseSurface'

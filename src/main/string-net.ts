@@ -64,7 +64,7 @@ const infoPath = (taxon: number, ver: string): string => join(orgDir(taxon), `in
 const namesPath = (taxon: number, ver: string): string => join(orgDir(taxon), `names.v${ver}.tsv`)
 
 /** The current STRING version (e.g. "12.0"), or '' if it can't be determined. */
-async function stringVersion(): Promise<string> {
+export async function stringVersion(): Promise<string> {
   try {
     const res = await fetch(VERSION_URL)
     if (!res.ok) return ''
@@ -86,6 +86,10 @@ async function cachedVersion(taxon: number): Promise<string> {
 }
 
 const namesCache = new Map<string, Map<string, string>>()
+/** Drop an organism's memoised names, after its files are deleted (Settings › Database). */
+export function forgetStringOrg(taxon: number): void {
+  for (const k of namesCache.keys()) if (k.startsWith(`${taxon}:`)) namesCache.delete(k)
+}
 /** Canonical gene names (STRING id → UniProt gene name) built at import, memoised per session.
  *  Null when the names file isn't present (older cache) — callers fall back to STRING preferred_name. */
 async function loadCanonicalNames(taxon: number, ver: string): Promise<Map<string, string> | null> {

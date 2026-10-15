@@ -16,10 +16,14 @@ import Plotly from 'plotly.js-dist-min'
 import { PanelBody } from '../dashboard/PanelBody'
 import { useGraph } from '../graph/store'
 import type { NodeResult } from '../graph/types'
+import { hasGeneTitle, revealGeneTitle } from '../ui/geneTitle'
+import { hasGlTraces, toSvgTraces } from '../ui/glTraces'
 import { PALETTES } from '../ui/theme'
 import { useSelection } from '../ui/useSelection'
 import { useUiTheme } from '../ui/useUiTheme'
 import { planPlotJobs } from './facets'
+import { deriveTabs, tabTitles } from '../graph/groups'
+import { pathSeg } from '../graph/diskNames'
 import { exportPath } from './paths'
 import { collectSpecs, type ExportSpec } from './specs'
 import { collectTableExports } from './tables'
@@ -154,20 +158,29 @@ function recolor<T>(v: T, sub: Map<string, string>): T {
   return v
 }
 
-/** The graph div a capture should read: the live one in light mode, or — in dark mode — a hidden
- *  clone re-plotted with the light palette, at the same size, ranges and white paper. Returns the
- *  div plus a cleanup to run once the capture is done. */
+/** The graph div a capture should read: the live one when it's light and all-SVG, else a hidden
+ *  clone re-plotted at the same size, ranges and white paper — in the light palette (dark mode),
+ *  with any WebGL cloud drawn back as SVG (see toSvgTraces) and a gene title shown (geneTitle). Returns the div plus a cleanup to run
+ *  once the capture is done. */
 async function lightCapture(gd: Element): Promise<{ el: Element; done: () => void }> {
-  if (useUiTheme.getState().mode === 'light') return { el: gd, done: () => {} }
-  const { w, h } = liveSize(gd)
   const live = gd as unknown as {
     data?: unknown[]
     layout?: Record<string, unknown>
     _fullLayout?: Record<string, unknown>
   }
-  const sub = lightSubstitutions()
-  const data = recolor(live.data ?? [], sub)
-  const layout = recolor({ ...(live.layout ?? {}) }, sub) as Record<string, unknown>
+  const dark = useUiTheme.getState().mode !== 'light'
+  const gl = hasGlTraces(live.data ?? [])
+  // A single-gene plot's title is hidden under its picker on screen; the capture shows it.
+  const geneTitle = hasGeneTitle(live.layout)
+  if (!dark && !gl && !geneTitle) return { el: gd, done: () => {} }
+  const { w, h } = liveSize(gd)
+  const sub = dark ? lightSubstitutions() : new Map<string, string>()
+  // Back to SVG first: recolor drops our private keys, which toSvgTraces still reads.
+  const data = recolor(toSvgTraces(live.data ?? []), sub)
+  const layout = revealGeneTitle(
+    recolor({ ...(live.layout ?? {}) }, sub) as Record<string, unknown>,
+    PALETTES.light.text
+  )
   // Pin what the live plot actually shows: its size and each axis's drawn range (an autoranged
   // axis would otherwise re-fit, and any zoom would be lost), on white paper.
   for (const key of ['xaxis', 'yaxis'] as const) {
@@ -181,8 +194,11 @@ async function lightCapture(gd: Element): Promise<{ el: Element; done: () => voi
   layout.width = w
   layout.height = h
   layout.autosize = false
-  layout.paper_bgcolor = EXPORT_GROUND
-  layout.plot_bgcolor = EXPORT_GROUND
+  // Dark mode prints on white paper; a light clone (WebGL → SVG only) keeps the live colours.
+  if (dark) {
+    layout.paper_bgcolor = EXPORT_GROUND
+    layout.plot_bgcolor = EXPORT_GROUND
+  }
   const container = document.createElement('div')
   container.style.cssText = `position:fixed;left:-100000px;top:0;width:${w}px;height:${h}px;pointer-events:none;`
   document.body.appendChild(container)
@@ -443,6 +459,18 @@ export async function runExport(
   const rootIds = [...new Set([...specs.map((s) => s.rootId), ...tables.map((t) => t.key)])]
   const names = useGraph.getState().outputLayoutFor(rootIds)?.names ?? {}
   const folder = new Map(rootIds.map((id) => [id, names[id] ?? id]))
+  // A plot goes one level deeper: its plot group's folder in its step's, named as its results tab
+  // is (tabTitles) — `<step>/<plot group>`, or `<step>__<plot group>` when the export is flat.
+  const tabs = deriveTabs(nodes, edges)
+  const tabName = tabTitles(tabs, nodes)
+  const plotFolder = (spec: ExportSpec): string => {
+    const step = folder.get(spec.rootId) ?? 'export'
+    const group = tabName.get(spec.node.id)
+    if (!group) return step
+    return opts.structure === 'subfolder'
+      ? `${step}/${pathSeg(group)}`
+      : `${step}__${pathSeg(group)}`
+  }
 
   const errors: string[] = []
   let written = 0
@@ -454,7 +482,7 @@ export async function runExport(
   // under a `selected` subfolder; each facet tuple gets its own file (suffix names the facet).
   const plotItems: ExportItem[] = []
   for (const job of jobs) {
-    const fold = folder.get(job.spec.rootId) ?? 'export'
+    const fold = plotFolder(job.spec)
     const fileBase = `${job.spec.plot}_${job.spec.key}${job.suffix ? `__${job.suffix}` : ''}`
     onProgress(done, total)
     const base64 = await renderSpecToPng(

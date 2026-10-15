@@ -10,11 +10,14 @@ import { create } from 'zustand'
 import type { GeneSet } from '../graph/types'
 
 interface SelectionState {
-  /** transient hover (one feature) */
+  /** transient hover (one feature — or a group's own id: an enrichment term, a STRING cluster) */
   hoverId: string | null
+  /** the genes a hovered GROUP stands for (its members), every one of them in focus in every view
+   *  as the hovered gene is; empty for a single feature's hover. Set with it, cleared with it. */
+  hoverMembers: readonly string[]
   /** sticky selection (click to pin/unpin) */
   pinnedIds: Set<string>
-  setHover: (id: string | null) => void
+  setHover: (id: string | null, members?: readonly string[]) => void
   clearHover: () => void
   togglePin: (id: string) => void
   /** Toggle a whole group at once (e.g. a legend group): if every id is already pinned, unpin
@@ -27,11 +30,22 @@ interface SelectionState {
   clearPins: () => void
 }
 
+const NO_MEMBERS: readonly string[] = []
+
+/** Every id the hover puts in focus: the hovered id and, for a group, its members. */
+export const hoveredIds = (s: Pick<SelectionState, 'hoverId' | 'hoverMembers'>): string[] =>
+  s.hoverId ? [s.hoverId, ...s.hoverMembers] : []
+
 export const useSelection = create<SelectionState>((set) => ({
   hoverId: null,
+  hoverMembers: [],
   pinnedIds: new Set(),
-  setHover: (id) => set((s) => (s.hoverId === id ? s : { hoverId: id })),
-  clearHover: () => set((s) => (s.hoverId === null ? s : { hoverId: null })),
+  setHover: (id, members = NO_MEMBERS) =>
+    set((s) =>
+      s.hoverId === id && s.hoverMembers === members ? s : { hoverId: id, hoverMembers: members }
+    ),
+  clearHover: () =>
+    set((s) => (s.hoverId === null ? s : { hoverId: null, hoverMembers: NO_MEMBERS })),
   togglePin: (id) =>
     set((s) => {
       const next = new Set(s.pinnedIds)

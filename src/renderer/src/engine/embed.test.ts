@@ -12,6 +12,7 @@
 import { describe, expect, it } from 'vitest'
 
 import { embed2D, type ClusterMethod } from './embed'
+import { jacobiEigenSymmetric } from './stats'
 
 /** Three well-separated blobs: identical but for an offset along the first feature. */
 function blobs(perBlob: number, dim: number): { X: number[][]; label: number[] } {
@@ -110,5 +111,47 @@ describe('embed2D', () => {
     expect(embed2D(X, 'pca').varExplained[0]).toBeGreaterThan(0)
     expect(embed2D(X, 'umap').varExplained).toEqual([0, 0])
     expect(embed2D(X, 'tsne').varExplained).toEqual([0, 0])
+  })
+})
+
+describe('embed2D PCA — many samples (leading components only)', () => {
+  it('matches the exact decomposition on the leading components', () => {
+    // 520 samples (past PCA_EXACT_MAX) × 60 features: three groups along two directions + noise.
+    let seed = 3
+    const rnd = (): number => {
+      seed = (seed * 1103515245 + 12345) % 2147483648
+      return seed / 2147483648 - 0.5
+    }
+    const n = 520
+    const p = 60
+    const X: number[][] = Array.from({ length: n }, (_, i) => {
+      const g = i % 3
+      return Array.from(
+        { length: p },
+        (_, f) =>
+          (g === 0 ? 3 : g === 1 ? -3 : 0) * (f < 20 ? 1 : 0) +
+          (g === 2 ? 2 : 0) * (f >= 40 ? 1 : 0) +
+          rnd()
+      )
+    })
+    // centre each feature, as embedMatrix does
+    for (let f = 0; f < p; f++) {
+      const m = X.reduce((s, r) => s + r[f], 0) / n
+      for (const r of X) r[f] -= m
+    }
+    const e = embed2D(X, 'pca')
+    // exact: eigenvalues of the p × p scatter matrix (same non-zero spectrum as the Gram matrix)
+    const C = Array.from({ length: p }, (_, a) =>
+      Array.from({ length: p }, (_, b) => X.reduce((s, r) => s + r[a] * r[b], 0))
+    )
+    const exact = jacobiEigenSymmetric(C).values.sort((a, b) => b - a)
+    const total = exact.reduce((s, v) => s + v, 0)
+    expect(e.varExplained[0]).toBeCloseTo(exact[0] / total, 6)
+    expect(e.varExplained[1]).toBeCloseTo(exact[1] / total, 6)
+    expect(e.scree).toHaveLength(20)
+    for (let k = 0; k < 20; k++) expect(e.scree![k]).toBeCloseTo(exact[k] / total, 6)
+    // the scores carry each component's variance: Σ score² = λ
+    const ss = e.coords.reduce((s, c) => s + c[0] * c[0], 0)
+    expect(ss / exact[0]).toBeCloseTo(1, 6)
   })
 })

@@ -1,5 +1,13 @@
 import { type CSSProperties } from 'react'
 
+import {
+  CATEGORICAL_SCHEMES,
+  DEFAULT_CATEGORICAL,
+  ROLE_DEFAULTS,
+  paletteEffectColors,
+  type CategoricalId
+} from './palettes'
+
 /** A concrete color palette for one theme mode. */
 export interface Palette {
   mode: 'dark' | 'light'
@@ -162,21 +170,21 @@ export function cssVars(
   } as CSSProperties
 }
 
-/** Effect colors — colorblind-safe red/blue with a neutral grey (theme-independent). */
-export const EFFECT_COLOR: Record<'up' | 'down' | 'none', string> = {
-  up: '#e15759',
-  down: '#4e79a7',
-  none: '#8a8f98'
-}
+/** Effect colours when nothing else is set: sampled from the default fold-change palette (down its
+ *  low end, none its middle, up its high end — see palettes.ts). Plots resolve theirs from the
+ *  global / their own palette (plotEffectColors); this is the last fallback. */
+export const EFFECT_COLOR: Record<'up' | 'down' | 'none', string> = paletteEffectColors(
+  ROLE_DEFAULTS.fcObject
+)
 
 /** Linked-selection highlight — a vivid hue kept OUT of CATEGORICAL so a hovered/pinned
  *  gene reads as "selected" over both the grey background and the top-N series colors. */
 export const HIGHLIGHT = '#ff2d95'
 
 /** Categorical series colors (Tableau-10, colorblind-tolerant) for lines/groups. */
-/** QC colour — a calm steel blue (matches the app's `data` category), distinct from the
+/** QC colour — the logo's blue (sampled from build-resources/icon.png), distinct from the
  *  greyscale accent so the violins/boxes/bars read clearly in both themes. */
-export const QC_FILL = '#6ea8fe'
+export const QC_FILL = '#7780fc'
 
 /** A hex (#rgb / #rrggbb) or rgb() colour at an opacity, as rgba — for the Plotly parts that take
  *  no opacity of their own (error bars, fills). Any other colour string passes through unchanged. */
@@ -190,31 +198,13 @@ export function withAlpha(color: string, alpha: number): string {
   return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${alpha})`
 }
 
-export const CATEGORICAL: string[] = [
-  '#4e79a7',
-  '#f28e2b',
-  '#59a14f',
-  '#e15759',
-  '#b07aa1',
-  '#76b7b2',
-  '#edc948',
-  '#ff9da7',
-  '#9c755f',
-  '#bab0ac'
-]
-
-/** A second categorical palette (ColorBrewer Dark2) for a condition track that must read
- *  distinct from CATEGORICAL — e.g. cmpd colours must not be confused with cell colours. */
-export const CATEGORICAL_ALT: string[] = [
-  '#1b9e77',
-  '#d95f02',
-  '#7570b3',
-  '#e7298a',
-  '#66a61e',
-  '#e6ab02',
-  '#a6761d',
-  '#666666'
-]
+export const CATEGORICAL: string[] = [...CATEGORICAL_SCHEMES[DEFAULT_CATEGORICAL]]
+/** Point CATEGORICAL at another categorical palette (app settings → categorical), in place: every
+ *  module holding the array sees the change. Plot tiles remount when it changes (PanelTile keys
+ *  its body on it), so memoised plots redraw in the new colours. */
+export function setCategorical(id: CategoricalId): void {
+  CATEGORICAL.splice(0, CATEGORICAL.length, ...CATEGORICAL_SCHEMES[id])
+}
 
 /** Base Plotly layout for the active palette (Plotly needs concrete colors). */
 export function plotBase(p: Palette): Record<string, unknown> {

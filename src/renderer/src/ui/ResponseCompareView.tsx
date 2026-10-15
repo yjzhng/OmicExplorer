@@ -3,6 +3,7 @@ import { useMemo, type ReactNode } from 'react'
 import type { ContrastResultRow } from '../engine'
 import { drLook, type DRLook } from '../graph/types'
 import { AUTO } from './ColorPicker'
+import { tooltip } from './condTooltip'
 import { PlotlyChart } from './PlotlyChart'
 import { axisBase, CATEGORICAL, PALETTES, plotBase, withAlpha } from './theme'
 import { useUiTheme } from './useUiTheme'
@@ -198,7 +199,11 @@ export function ResponseCompareView({
       connectgaps: true,
       line: { color, width: look.lineWidth },
       opacity: look.lineOpacity,
-      hovertemplate: `${name}<br>${axis}=%{x}<br>${yLabel}=%{y:.3f}<extra></extra>`
+      hovertemplate: tooltip(
+        { title: name, conds: [[axis, '%{x}']], values: [[yLabel, '%{y:.3f}']] },
+        p.textMuted,
+        { template: true }
+      )
     })
     // The replicates behind each side's means, as points of their own (so their look is theirs).
     const points = (
@@ -219,7 +224,11 @@ export function ResponseCompareView({
         opacity: look.pointOpacity,
         line: { color: p.panel, width: 1 }
       },
-      hovertemplate: `${name}<br>${axis}=%{x}<br>replicate ${yLabel}=%{y:.3f}<extra></extra>`
+      hovertemplate: tooltip(
+        { title: name, conds: [[axis, '%{x}']], values: [[`replicate ${yLabel}`, '%{y:.3f}']] },
+        p.textMuted,
+        { template: true }
+      )
     })
     // Whiskers: an error_y on a trace of its own, so their opacity is theirs, not the line's.
     const whiskers = (

@@ -1,17 +1,16 @@
 /**
- * Interactive comparison builder. One row per condition with a "compare on" switch: the switched-on
- * condition is compared (numerator values vs denominator values; two switches for 2-way ANOVA), and
- * every other condition is like-for-like context with its values as inclusion filters. Only as
- * many switches as the analysis allows can be on, so the structure is always a valid comparison.
- * A live preview (the comparisons that will run + any warnings) sits beneath. Mirrors the engine's
- * `previewCompare` / `classifyConditions`.
+ * Interactive comparison builder — Compare (t-test / 2-way ANOVA), Curve fit and Contrast share one
+ * way of defining what's compared: every condition is a row with its values picked explicitly on
+ * BOTH sides (SideRows). Where the sides' picks differ, the condition is compared (one for a t-test
+ * or a curve, two for 2-way ANOVA, any for a contrast); where they're the same it's context, matched
+ * like-for-like or pooled by the row's switch. A live preview (the comparisons that will run + any
+ * warnings) sits beneath. Mirrors the engine's `previewCompare`.
  */
 import { useMemo, useState, type CSSProperties, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 
 import {
   crossPairs,
-  classifyConditions,
   previewCompare,
   previewContrastPair,
   previewTwoWay,
@@ -30,10 +29,20 @@ import {
 } from '../engine'
 import { DOCKED_CARD, DOCKED_WRAP, useDialogDock } from './dialogDock'
 import { useGraph } from './store'
-import { thresholdForAnalysis, type ContrastConfig } from './types'
+import { thresholdForAnalysis, thresholdForDetection, type ContrastConfig } from './types'
+import {
+  CURVE_MODEL_OPTIONS,
+  SURFACE_FIT_OPTIONS,
+  curveAxisOptions,
+  type CurveModel,
+  type SurfaceFit
+} from './curveSettings'
 import { cssVars, PALETTES, UI } from '../ui/theme'
 import { OnOffSwitch, ToggleSwitch } from '../ui/ToggleSwitch'
 import { StatusNote } from '../ui/StatusNote'
+import type { ChipItem } from './ChipSet'
+import { SideRows, type RowRole, type SideRow } from './SideRows'
+import { picksOf, readSides, type Picks, type SideKey } from './sides'
 import { PreviewTable, selectorStyles } from './selectorParts'
 import { pairSides, selectorRowsOf, toContrastSide } from './contrastPair'
 import { DatasetPick, PairContrastBody, type PairInput } from './PairContrastDialog'
@@ -44,6 +53,8 @@ export type SelectVariant = 'compare' | 'contrast'
 export type ContrastSource = 'select' | 'pair'
 
 type Analysis = 'compare' | 'two_way_anova' | 'curve_fit'
+/** The curve-axis switch's dose × time entry (not a condition key). */
+const SURFACE = '\u0000surface'
 
 type Side = 'num' | 'den'
 
@@ -195,6 +206,8 @@ export function ComparisonDialog({
   shape,
   initial,
   pair,
+  curve: curveTile = false,
+  detection: initialDetection = '4pl',
   onClose
 }: {
   id: string
@@ -212,6 +225,13 @@ export function ComparisonDialog({
     analysis?: Analysis
     /** curve fit only: the numeric condition the curve runs over */
     curveAxis?: ConditionKey
+    /** curve fit only: the control is a confirmed background treatment (see controlIsBaseline) */
+    controlBackground?: boolean
+    /** curve fit, spline detection only: one dose × time surface (absent = the default: a surface
+     *  whenever the data have both) */
+    surface?: boolean
+    /** curve fit, dose × time surface only: how each surface is described */
+    surfaceDescription?: SurfaceFit
     /** contrast only: intra-dataset (select; one input) or inter-dataset (pair; two inputs).
      *  Fixed by the tile's wiring; the other pill option shows disabled. */
     source?: ContrastSource
@@ -228,6 +248,11 @@ export function ComparisonDialog({
   }
   /** contrast only: every wired input (in edge order), for the inter-dataset mode's pickers */
   pair?: PairInput[]
+  /** opened from a Curve fit tile: always a curve fit (no analysis switch), its sides named
+   *  treatments and control */
+  curve?: boolean
+  /** a Curve fit's detection model (picked again here, with its axis and surface fit) */
+  detection?: CurveModel
   onClose: () => void
 }): ReactNode {
   const update = useGraph((s) => s.updateConfig)
@@ -236,14 +261,19 @@ export function ComparisonDialog({
   const dock = useDialogDock()
   const contrast = variant === 'contrast'
   const [analysis, setAnalysis] = useState<Analysis>(
-    initial.analysis === 'two_way_anova' || initial.analysis === 'curve_fit'
-      ? initial.analysis
-      : 'compare'
+    curveTile ? 'curve_fit' : initial.analysis === 'two_way_anova' ? 'two_way_anova' : 'compare'
   )
   const twoWay = !contrast && analysis === 'two_way_anova'
   // Curve fit: the num/den model of a t-test, with one numeric condition (dose) as the curve's
-  // x-axis instead of a matched context — each numerator group pools its levels into one curve.
+  // x-axis instead of a matched context — each numerator group (treatment) pools its levels into
+  // one curve, against the denominator (the control, the curve's starting point).
   const curve = !contrast && analysis === 'curve_fit'
+  // A Curve fit's model and surface fit — the tile panel's settings, local until Apply.
+  const [detection, setDetection] = useState<CurveModel>(initialDetection)
+  const [surfaceFit, setSurfaceFit] = useState<SurfaceFit>(initial.surfaceDescription ?? 'slices')
+  // A control that is itself treated (another compound at a dose) is valid only as a background
+  // treatment the curve's compound is added on top of — the user confirms that here.
+  const [background, setBackground] = useState(!!initial.controlBackground)
   // Contrast: intra-dataset (select two groups from one input) vs inter-dataset (pair two
   // inputs). One input wired ⇒ intra only; several ⇒ chosen here, local until Apply.
   const inputCount = pair?.length ?? 0
@@ -278,22 +308,39 @@ export function ComparisonDialog({
     const B = toContrastSide(pair?.find((i) => i.id === s[1])?.result)
     return previewContrastPair(A, B, []).candidates
   })
-  const [pairFix, setPairFix] = useState<PairFix>(initial.pairFix ?? { a: {}, b: {} })
+  // Inter-dataset picks: per dataset, the values each condition is narrowed to (absent = all of
+  // that dataset's). A saved single-value pin reads as a one-value pick.
+  const [pairPicks, setPairPicks] = useState<Record<SideKey, Picks>>(() => {
+    const read = (pins: PairFix['a'] | undefined): Picks => {
+      const out: Picks = {}
+      for (const [c, v] of Object.entries(pins ?? {}) as [ConditionKey, string | string[]][])
+        if (v != null && v !== '') out[c] = Array.isArray(v) ? v.map(String) : [v]
+      return out
+    }
+    return { a: read(initial.pairFix?.a), b: read(initial.pairFix?.b) }
+  })
+  const pairFix: PairFix = { a: { ...pairPicks.a }, b: { ...pairPicks.b } }
   const pairReady = (() => {
     const A = pair?.find((i) => i.id === pairPick.a)?.result
     const B = pair?.find((i) => i.id === pairPick.b)?.result
     if (!A || !B || !(A.kind === 'compare' || A.kind === 'standardize') || B.kind !== A.kind)
       return false
-    // …and nothing left to pool: every unmatched condition fixed to one slice per dataset.
-    return (
-      previewContrastPair(
-        toContrastSide(A),
-        toContrastSide(B),
-        pairMatch,
-        { a: 'A', b: 'B' },
-        pairFix
-      ).unpinned.length === 0
+    // Nothing left to pool (every unmatched condition one slice per dataset), and no side emptied.
+    const p = previewContrastPair(
+      toContrastSide(A),
+      toContrastSide(B),
+      pairMatch,
+      { a: 'A', b: 'B' },
+      pairFix
     )
+    const emptied = (['a', 'b'] as const).some((s) =>
+      (Object.keys(pairPicks[s]) as ConditionKey[]).some(
+        (c) =>
+          (p.values[c]?.[s].length ?? 0) > 0 &&
+          !(p.values[c]?.[s] ?? []).some((v) => pairPicks[s][c]!.includes(v))
+      )
+    )
+    return p.unpinned.length === 0 && !emptied
   })()
 
   const combos = useMemo(() => combosOf(rows), [rows])
@@ -310,86 +357,103 @@ export function ComparisonDialog({
     }
     return out
   }, [combos])
-
-  // ── roles ──────────────────────────────────────────────────────────────────────
-  // Every active condition is either COMPARED (its switch on: numerator values vs denominator
-  // values) or MATCHED (context: one comparison per combination of its included values). A t-test
-  // compares exactly one condition, so once a switch is on the others are disabled; 2-way ANOVA
-  // allows two (the factors, in switch-on order).
-  const [compared, setCompared] = useState<ConditionKey[]>(() => {
-    const ax = contrast
-      ? active.filter(
-          (c) =>
-            pinnedOn(initial.num, c) &&
-            pinnedOn(initial.den, c) &&
-            !sameSetOf(initial.num[c], initial.den[c])
-        )
-      : classifyConditions(rows, initial.num, initial.den, active).axis
-    return orderConds(ax)
-  })
+  const valsOf = (c: ConditionKey): string[] => allValues[c] ?? []
   const ordered = useMemo(() => orderConds(active), [active])
-  // The numeric conditions a curve can run over (not the one being compared).
-  const curveAxes = useMemo(
-    () => ordered.filter((c) => isNumericCond(c) && !compared.includes(c)),
-    [ordered, compared]
-  )
-  const [curvePick, setCurvePick] = useState<ConditionKey | undefined>(initial.curveAxis)
-  const curveAxis = useMemo((): ConditionKey | undefined => {
-    if (!curve) return undefined
-    // Compared on a numeric condition itself (dose > 0 vs dose 0, matched per compound): that
-    // condition is the curve's axis, its 0 the control.
-    if (compared.length === 1 && isNumericCond(compared[0])) return compared[0]
-    if (curvePick && curveAxes.includes(curvePick)) return curvePick
-    return curveAxes.find((c) => c === 'dose') ?? curveAxes[0]
-  }, [curve, compared, curvePick, curveAxes])
-  const matched = useMemo(
-    () => ordered.filter((c) => !compared.includes(c) && c !== curveAxis),
-    [ordered, compared, curveAxis]
-  )
-  // Compared values per side; matched values to INCLUDE (absent = every value).
-  const [numVals, setNumVals] = useState<CondSelector>(() => {
-    const out: CondSelector = {}
-    for (const c of compared)
-      if (pinnedOn(initial.num, c)) out[c] = [...(initial.num[c] as string[])]
-    return out
-  })
-  const [denVals, setDenVals] = useState<CondSelector>(() => {
-    const out: CondSelector = {}
-    for (const c of compared)
-      if (pinnedOn(initial.den, c)) out[c] = [...(initial.den[c] as string[])]
-    return out
-  })
-  const [include, setInclude] = useState<CondSelector>(() => {
-    // A matched condition pinned to the same subset on both sides was an inclusion filter.
-    const out: CondSelector = {}
-    for (const c of matched)
-      if (pinnedOn(initial.num, c) && sameSetOf(initial.num[c], initial.den[c]))
-        out[c] = [...(initial.num[c] as string[])]
-    return out
-  })
-  const includedOf = (c: ConditionKey): string[] => include[c] ?? allValues[c]
 
-  // The engine's num/den selectors, assembled from the roles: compared → each side's values;
-  // matched with a subset → that subset pinned on BOTH sides (context, to the engine).
-  const { num, den } = useMemo(() => {
-    const num: CondSelector = {}
-    const den: CondSelector = {}
-    for (const c of compared) {
-      if (numVals[c]?.length) num[c] = numVals[c]
-      if (denVals[c]?.length) den[c] = denVals[c]
-    }
-    for (const c of matched) {
-      const inc = include[c]
-      if (inc && inc.length > 0 && inc.length < allValues[c].length) {
-        num[c] = inc
-        den[c] = inc
+  // ── the curve's axis (curve fit only) ────────────────────────────────────────────
+  // A curve runs over a numeric condition (or dose × time, one surface per gene × compound): that
+  // condition's row is the AXIS — the treatment side's levels make up the curve, the control side's
+  // are its starting point (one level, or every level of a control compound).
+  const numericConds = useMemo(() => ordered.filter((c) => isNumericCond(c)), [ordered])
+  // Either model can fit dose and time together when the data have both: the Spline model's
+  // default; under 4PL (the 4PL surface) the user's choice.
+  const surfaceOk = curve && numericConds.includes('dose') && numericConds.includes('time')
+  const cmpdVals = useMemo(() => allValues.cmpd ?? [], [allValues])
+  // The vehicle, from the data alone: the one compound never given a dose above 0.
+  const vehicle = useMemo(() => {
+    if (!active.includes('dose')) return undefined
+    const v = cmpdVals.filter((c) => combos.every((m) => m.cmpd !== c || !(Number(m.dose) > 0)))
+    return v.length === 1 ? v[0] : undefined
+  }, [active, cmpdVals, combos])
+  // The levels of a condition among the rows of some compounds (every row when there's no cmpd).
+  const levelsOf = (c: ConditionKey, cmpds?: string[]): string[] => {
+    const seen = new Set<string>()
+    for (const m of combos)
+      if (m[c] !== '' && (!cmpds || !cmpdVals.length || cmpds.includes(m.cmpd))) seen.add(m[c])
+    return valsOf(c).filter((v) => seen.has(v))
+  }
+  const [axisSel, setAxisSel] = useState<string>(() =>
+    surfaceOk && (initial.surface ?? initialDetection === 'spline')
+      ? SURFACE
+      : initial.curveAxis && numericConds.includes(initial.curveAxis)
+        ? initial.curveAxis
+        : numericConds.includes('dose')
+          ? 'dose'
+          : (numericConds[0] ?? 'dose')
+  )
+  const surface = surfaceOk && axisSel === SURFACE
+  // The axis whose levels the curve and control are picked on (a surface's: dose, at every time).
+  const refAxis: ConditionKey = axisSel === SURFACE ? 'dose' : (axisSel as ConditionKey)
+  const curveAxis: ConditionKey | undefined = curve ? refAxis : undefined
+  const axisConds = useMemo<ConditionKey[]>(
+    () => (!curve ? [] : surface ? ['dose', 'time'] : [refAxis]),
+    [curve, surface, refAxis]
+  )
+
+  // ── the two sides' picks ─────────────────────────────────────────────────────────
+  // Per side, the values each condition is narrowed to; absent = every value. Read straight off the
+  // saved selectors (a pinned condition is its pick), so a saved setup opens as it was.
+  const configured = Object.keys(initial.num).length > 0 || Object.keys(initial.den).length > 0
+  const [picks, setPicks] = useState<Record<SideKey, Picks>>(() => {
+    if (curve && !configured) {
+      // A fresh curve fit: every dosed compound against the vehicle (or, without one, each against
+      // its own lowest level) over the levels above 0.
+      const ax = refAxis
+      const curveCmpds = cmpdVals.filter(
+        (v) => v !== vehicle && levelsOf(ax, [v]).some((x) => Number(x) > 0)
+      )
+      const cmpd: Picks = cmpdVals.length ? { cmpd: curveCmpds } : {}
+      return {
+        a: { ...cmpd, [ax]: valsOf(ax).filter((v) => Number(v) > 0) },
+        b: vehicle
+          ? { cmpd: [vehicle] }
+          : {
+              ...cmpd,
+              [ax]: valsOf(ax)
+                .filter((v) => !(Number(v) > 0))
+                .slice(0, 1)
+            }
       }
     }
-    return { num, den }
-  }, [compared, matched, numVals, denVals, include, allValues])
+    return { a: picksOf(initial.num), b: picksOf(initial.den) }
+  })
+  // Every context condition starts matched like-for-like (nothing pooled) until the user says
+  // otherwise; a saved setup keeps its own.
+  const [matchOn, setMatchOn] = useState<ConditionKey[]>(() =>
+    configured ? initial.match : [...active]
+  )
+  const pickOf = (s: SideKey, c: ConditionKey): string[] => {
+    const p = picks[s][c]
+    return p ? valsOf(c).filter((v) => p.includes(v)) : valsOf(c)
+  }
 
-  // Values a compared condition can take on a side, given that side's OTHER pins (the other
-  // compared conditions' values on that side + the matched inclusions).
+  // The comparison, read off the picks: a condition whose sides differ is compared (for a curve,
+  // the axis aside — unless nothing else differs, then the axis is: each compound against its own
+  // level); every other condition is context, matched or pooled by its switch.
+  const derived = useMemo(
+    () =>
+      readSides({
+        picks,
+        values: allValues,
+        ordered,
+        matchOn,
+        curve: curve ? { axes: axisConds, ref: refAxis, surface } : undefined
+      }),
+    [picks, allValues, ordered, matchOn, curve, axisConds, refAxis, surface]
+  )
+  const { compared, match, num, den } = derived
+
+  // Values a condition can take on a side, given that side's OTHER picks.
   const availableFor = (side: Side, c: ConditionKey): Set<string> => {
     const sel = side === 'num' ? num : den
     const seen = new Set<string>()
@@ -409,47 +473,45 @@ export function ComparisonDialog({
     return seen
   }
 
-  // Numerator: multi-select (each level is its own comparison). Denominator: exactly ONE
-  // reference level — the other chips grey out while one is chosen (see sideChips).
-  const toggleCompared = (side: Side, c: ConditionKey, v: string): void => {
-    const setter = side === 'num' ? setNumVals : setDenVals
-    setter((prev) => {
-      const cur = prev[c] ?? []
-      const next = cur.includes(v) ? cur.filter((x) => x !== v) : [...cur, v]
-      return { ...prev, [c]: next }
-    })
-  }
-  const toggleIncluded = (c: ConditionKey, v: string): void => {
-    setInclude((prev) => {
-      const cur = prev[c] ?? allValues[c]
-      const next = cur.includes(v) ? cur.filter((x) => x !== v) : [...cur, v]
-      if (next.length === 0) return prev // at least one value stays included
-      const out = { ...prev }
-      if (next.length === allValues[c].length) delete out[c]
-      else out[c] = next
-      return out
-    })
+  // A side's name, as the rows' column heads and the warnings say it.
+  const sideLabel = (s: Side): string =>
+    s === 'num'
+      ? contrast
+        ? 'group A'
+        : curve
+          ? 'treatment'
+          : 'numerator'
+      : contrast
+        ? 'group B'
+        : curve
+          ? 'control'
+          : 'denominator'
+
+  // The curve's axis switch: the new axis takes its default picks (the levels above 0 for the
+  // curve; the control's own lowest level, or every level of a control compound), the old one
+  // goes back to context with every value.
+  const pickAxis = (a: string): void => {
+    const ax: ConditionKey = a === SURFACE ? 'dose' : (a as ConditionKey)
+    if (ax !== refAxis)
+      setPicks((p) => {
+        const controlCmpd =
+          !!cmpdVals.length && !sameSetOf(pickOf('a', 'cmpd'), pickOf('b', 'cmpd'))
+        const na: Picks = { ...p.a, [ax]: valsOf(ax).filter((v) => Number(v) > 0) }
+        const nb: Picks = { ...p.b }
+        delete na[refAxis]
+        delete nb[refAxis]
+        if (controlCmpd) delete nb[ax]
+        else
+          nb[ax] = valsOf(ax)
+            .filter((v) => !(Number(v) > 0))
+            .slice(0, 1)
+        return { a: na, b: nb }
+      })
+    setAxisSel(a)
   }
 
-  const maxCompared = twoWay ? 2 : 1
-  const setComparedOn = (c: ConditionKey, on: boolean): void => {
-    setCompared((prev) => {
-      if (on) return prev.includes(c) || prev.length >= maxCompared ? prev : [...prev, c]
-      return prev.filter((x) => x !== c)
-    })
-    // Reset the condition's values for its new role.
-    for (const set of [setNumVals, setDenVals, setInclude])
-      set((p) => {
-        const n = { ...p }
-        delete n[c]
-        return n
-      })
-  }
-  // ── derived: axis, match set, preview ──────────────────────────────────────────
-  // The compared conditions ARE the axis; every matched condition is matched like-for-like (the engine
-  // drops those the denominator is invariant on). No pooling.
+  // ── derived: axis, preview ─────────────────────────────────────────────────────
   const axis = compared
-  const match = matched
   const preview = useMemo(
     () =>
       contrast
@@ -459,15 +521,57 @@ export function ComparisonDialog({
   )
   // Role-level problems the engine can't see (it only gets selectors).
   const roleWarnings: string[] = []
-  if (!twoWay && axis.length === 0) roleWarnings.push('Switch on the condition to be compared.')
-  if (curve && !curveAxis)
-    roleWarnings.push('A curve fit needs a numeric condition (dose or time) to run over.')
-  for (const c of axis) {
-    if (!(numVals[c]?.length ?? 0))
-      roleWarnings.push(`${condLabel(c)}: pick the numerator value(s).`)
-    if (!(denVals[c]?.length ?? 0))
-      roleWarnings.push(`${condLabel(c)}: pick the denominator value(s).`)
+  const list = (cs: ConditionKey[]): string => cs.map(condLabel).join(' and ')
+  for (const c of ordered) {
+    if ((surface && c === 'time') || valsOf(c).length === 0) continue
+    for (const s of ['a', 'b'] as const)
+      if (pickOf(s, c).length === 0)
+        roleWarnings.push(
+          `${condLabel(c)}: pick at least one value for the ${sideLabel(s === 'a' ? 'num' : 'den')}.`
+        )
   }
+  if (curve) {
+    if (numericConds.length === 0)
+      roleWarnings.push('A curve fit needs a numeric condition (dose or time) to run over.')
+    else if (derived.nonAxis.length > 1)
+      roleWarnings.push(
+        `The treatment and the control differ on ${list(derived.nonAxis)} — a curve’s control differs on one condition (usually the compound). Make the others the same on both sides.`
+      )
+    else if (compared.length === 0)
+      roleWarnings.push(
+        `Pick the control: another compound, or one ${condLabel(refAxis)} level of the treatments’ own.`
+      )
+  } else if (contrast) {
+    if (compared.length === 0)
+      roleWarnings.push('Make the two groups differ on at least one condition.')
+  } else if (!twoWay) {
+    if (compared.length === 0)
+      roleWarnings.push(
+        'Make the two sides differ on the condition to compare — narrow the numerator or the denominator.'
+      )
+    else if (compared.length > 1)
+      roleWarnings.push(
+        `A t-test compares one condition — the sides differ on ${list(compared)}. Make all but one the same on both sides.`
+      )
+  }
+  // One reference value: a t-test's denominator, a curve's control, per compared condition.
+  if (!contrast && !twoWay)
+    for (const c of compared)
+      if (pickOf('b', c).length > 1)
+        roleWarnings.push(`${condLabel(c)}: pick one ${sideLabel('den')} value.`)
+  // A value can't be compared against itself.
+  for (const c of compared) {
+    const both = pickOf('a', c).filter((v) => pickOf('b', c).includes(v))
+    if (both.length && pickOf('b', c).length > 0)
+      roleWarnings.push(
+        `${condLabel(c)}: ${both.join(', ')} ${both.length === 1 ? 'is' : 'are'} on both sides — a value can’t be compared against itself.`
+      )
+  }
+  const controlTreated = curve && 'controlTreated' in preview && !!preview.controlTreated
+  if (controlTreated && !background)
+    roleWarnings.push(
+      'The control is a treated sample, not the vehicle. A curve starts from its control, so this is only valid as a background treatment (the treatments added on top of it) — confirm below, or pick the vehicle.'
+    )
 
   // Two-way ANOVA needs exactly two compared conditions (two factors). Each factor may carry
   // MULTIPLE numerator and/or denominator levels — every numerator × denominator level pair runs
@@ -475,7 +579,9 @@ export function ComparisonDialog({
   const twoWayCheck = ((): { warnings: string[]; ok: boolean } => {
     const warnings: string[] = []
     if (axis.length !== 2)
-      warnings.push('2-way ANOVA needs two conditions switched on (the two factors).')
+      warnings.push(
+        `2-way ANOVA needs the sides to differ on two conditions (the two factors)${axis.length ? ` — they differ on ${list(axis)}` : ''}.`
+      )
     for (const c of axis) {
       if (crossPairs(num[c] ?? [], den[c] ?? []).length === 0)
         warnings.push(
@@ -506,14 +612,18 @@ export function ComparisonDialog({
   // Apply is gated on a clean preview: any warning in the active mode blocks it. Pair mode only
   // needs its two inputs ready.
   const activeWarnings = twoWay
-    ? [...twoWayCheck.warnings, ...(twoWayView?.warnings ?? [])]
+    ? [
+        ...roleWarnings.filter((w) => !w.startsWith('Make')),
+        ...twoWayCheck.warnings,
+        ...(twoWayView?.warnings ?? [])
+      ]
     : [...roleWarnings, ...preview.warnings]
   const canApply = pairMode ? pairReady : activeWarnings.length === 0
 
   const apply = (): void => {
     if (contrast) {
-      // Contrast: inter-dataset → just the match context (A/B are the edges); intra → group A = num
-      // selection, group B = den selection, aligned on the matched context.
+      // Contrast: inter-dataset → the match context and each dataset's picks (A/B are the
+      // edges); intra → group A = num selection, group B = den selection, aligned on the match.
       if (source === 'pair')
         update(id, {
           source,
@@ -531,12 +641,15 @@ export function ComparisonDialog({
       useGraph.getState().nodes.find((n) => n.id === id)?.data.config as
         { threshold?: ThresholdConfig } | undefined
     )?.threshold
+    // A Curve fit's follows its model and whether it fits a surface (see thresholdForDetection).
     const next = cur
-      ? thresholdForAnalysis(
-          initial.analysis ?? 'compare',
-          twoWay ? 'two_way_anova' : curve ? 'curve_fit' : 'compare',
-          cur
-        )
+      ? curveTile
+        ? thresholdForDetection(detection, cur, surface)
+        : thresholdForAnalysis(
+            initial.analysis ?? 'compare',
+            twoWay ? 'two_way_anova' : curve ? 'curve_fit' : 'compare',
+            cur
+          )
       : null
     const threshold: { threshold?: ThresholdConfig } = next ? { threshold: next } : {}
     if (twoWay) {
@@ -560,7 +673,18 @@ export function ComparisonDialog({
           : {})
       })
     } else if (curve) {
-      update(id, { analysis: 'curve_fit', num, den, match, curveAxis, ...threshold })
+      update(id, {
+        analysis: 'curve_fit',
+        num,
+        den,
+        match,
+        curveAxis,
+        surface: surfaceOk ? surface : undefined,
+        detection,
+        ...(surface ? { surfaceDescription: surfaceFit } : {}),
+        controlBackground: controlTreated ? background : undefined,
+        ...threshold
+      })
     } else {
       update(id, { analysis: 'compare', num, den, match, ...threshold })
     }
@@ -578,10 +702,10 @@ export function ComparisonDialog({
     c: ConditionKey
   ): { byValue: Map<string, Set<string>>; contexts: Set<string> } => {
     const sel = side === 'num' ? num : den
-    // Context = the other matched conditions the engine actually matches on — not those it has
-    // found invariant on a side (dose on a vehicle), which never take part in matching.
+    // Context = the other conditions the engine actually matches on — not pooled ones, nor those
+    // it has found invariant on a side (dose on a vehicle), which never take part in matching.
     const invariant = new Set('invariant' in preview ? preview.invariant : [])
-    const others = matched.filter((k) => k !== c && !invariant.has(k))
+    const others = match.filter((k) => k !== c && !invariant.has(k))
     const byValue = new Map<string, Set<string>>()
     const contexts = new Set<string>()
     for (const combo of combos) {
@@ -606,200 +730,162 @@ export function ComparisonDialog({
   }
 
   // ── rendering ──────────────────────────────────────────────────────────────────
-  const condSwitch = (c: ConditionKey): ReactNode => {
-    const on = axis.includes(c)
-    const isCurveAxis = !on && c === curveAxis
-    const disabled = !on && axis.length >= maxCompared
-    return (
-      <OnOffSwitch
-        on={on}
-        onChange={(v) => setComparedOn(c, v)}
-        label={`Compare on ${condLabel(c)}`}
-        disabled={disabled}
-        title={
-          isCurveAxis && !disabled
-            ? 'The curve runs over this condition — switch on to fit its levels against its 0 (the control) instead of a control compound'
-            : on
-              ? `${contrast ? 'Contrasted' : 'Compared'} — switch off to use as context`
-              : disabled
-                ? twoWay
-                  ? 'Two factors are already chosen'
-                  : `A ${contrast ? 'contrast' : 'comparison'} is on one condition — switch the other off first`
-                : `Switch on to ${contrast ? 'contrast' : 'compare'} on this condition`
+  // One row per condition, both sides picked explicitly (SideRows).
+  const rowSpecs = (): SideRow[] => {
+    const live = axis.length > 0
+    return ordered.map((c): SideRow => {
+      if (surface && c === 'time')
+        return {
+          cond: c,
+          role: 'axis',
+          values: { a: [], b: [] },
+          picked: { a: [], b: [] },
+          fixedText: 'every time point — each against the control at the same time'
         }
-      />
-    )
+      const isAxis = axisConds.includes(c)
+      const isCompared = compared.includes(c)
+      const role: RowRole = isAxis
+        ? 'axis'
+        : isCompared
+          ? 'compared'
+          : matchOn.includes(c)
+            ? 'matched'
+            : 'pooled'
+      const a = pickOf('a', c)
+      const b = pickOf('b', c)
+      // Context chips show how each value pairs across the sides (as the matched line reads).
+      const N = role === 'matched' && live ? contextsOf('num', c) : null
+      const D = role === 'matched' && live ? contextsOf('den', c) : null
+      const shared = N && D ? [...N.contexts].filter((x) => D.contexts.has(x)) : []
+      const availA = availableFor('num', c)
+      const availB = availableFor('den', c)
+      const chip = (s: SideKey, v: string, on: boolean): Partial<ChipItem> => {
+        const avail = (s === 'a' ? availA : availB).has(v)
+        if (!on)
+          return avail
+            ? { title: `Add ${condLabel(c)} ${v} to the ${sideLabel(s === 'a' ? 'num' : 'den')}` }
+            : {
+                disabled: true,
+                title: `Not present with the ${sideLabel(s === 'a' ? 'num' : 'den')}’s other picks`
+              }
+        if (role === 'pooled')
+          return {
+            look: styles.valChipIdle,
+            title: 'Kept, pooled with the rest — click to leave out'
+          }
+        if (role === 'matched') {
+          if (!N || !D) return { look: styles.valChipIdle, title: 'Kept — click to leave out' }
+          const nC = N.byValue.get(v) ?? new Set<string>()
+          const dC = D.byValue.get(v) ?? new Set<string>()
+          const paired = shared.filter((x) => nC.has(x) && dC.has(x))
+          if (paired.length === 0)
+            return {
+              look: styles.valChipIdle,
+              title: `No matching sample pair at ${condLabel(c)} = ${v} in any context — skipped`
+            }
+          if (paired.length < shared.length)
+            return {
+              look: styles.valChipPartial,
+              title: `${condLabel(c)} = ${v} is compared in ${paired.length} of ${shared.length} contexts — missing on a side in the rest`
+            }
+          return {
+            look: styles.valChipIncluded,
+            title: 'Matched like-for-like — click to leave out'
+          }
+        }
+        // Compared / axis: the accent pick; a value on both sides of a compared condition warns.
+        const twice = isCompared && a.includes(v) && b.includes(v)
+        return twice
+          ? { title: 'On both sides — a value can’t be compared against itself' }
+          : { title: 'Picked — click to leave out' }
+      }
+      const note: Partial<Record<SideKey, string>> = {}
+      if (a.length === 0) note.a = 'pick at least one'
+      if (b.length === 0) note.b = 'pick at least one'
+      else if (isCompared && !contrast && !twoWay && b.length > 1)
+        note.b = 'pick one reference value'
+      return {
+        cond: c,
+        role,
+        values: { a: valsOf(c), b: valsOf(c) },
+        picked: { a, b },
+        match: isAxis
+          ? undefined
+          : isCompared
+            ? {
+                on: false,
+                disabled: true,
+                title: 'Compared — the sides differ here. Make them the same to use it as context.'
+              }
+            : {
+                on: role === 'matched',
+                title:
+                  role === 'matched'
+                    ? 'Matched like-for-like — switch off to pool its values'
+                    : 'Pooled — switch on to match like-for-like'
+              },
+        chip,
+        note
+      }
+    })
   }
-  const sideChips = (side: Side, c: ConditionKey): ReactNode => {
-    const chosen = (side === 'num' ? numVals : denVals)[c] ?? []
-    const other = (side === 'num' ? denVals : numVals)[c] ?? []
-    const avail = availableFor(side, c)
+
+  // A curve fit's own settings, above its rows: the model, the axis, and a surface's fit.
+  const curveSettings = (): ReactNode => {
+    const head = (name: string): ReactNode => (
+      <div style={styles.condHead}>
+        <span style={{ ...styles.condName, ...styles.condNameOn }}>{name}</span>
+      </div>
+    )
     return (
       <>
-        <div style={styles.chips}>
-          {allValues[c].map((v) => {
-            const on = chosen.includes(v)
-            // Greyed (not hidden): a value on the other side (a value can't be compared against
-            // itself), or one that doesn't co-occur with this side's other selections.
-            let disabled = false
-            let reason: string | undefined
-            if (!on) {
-              if (other.includes(v)) {
-                disabled = true
-                reason = 'Already on the other side — a value can’t be compared against itself'
-              } else if (!avail.has(v)) {
-                disabled = true
-                reason = 'Not present with this side’s current selection'
-              } else if (side === 'num' && chosen.length + 1 >= allValues[c].length) {
-                // Taking the last free value would leave nothing for the denominator.
-                disabled = true
-                reason = 'Leave at least one value for the denominator'
-              } else if (side === 'den' && chosen.length >= 1) {
-                // One reference only: the rest wait until it's deselected.
-                disabled = true
-                reason = 'One reference value only — deselect the current one first'
-              }
-            }
-            return (
-              <button
-                key={v}
-                className="oe-chip"
-                disabled={disabled}
-                title={reason}
-                onClick={() => toggleCompared(side, c, v)}
-                style={{
-                  ...styles.valChip,
-                  ...(on ? styles.valChipOn : null),
-                  ...(disabled ? styles.valChipDisabled : null)
-                }}
-              >
-                {v}
-              </button>
-            )
-          })}
+        <div style={{ ...styles.condRow, borderTop: 'none' }}>
+          {head('model')}
+          <ToggleSwitch
+            label="Model"
+            value={detection}
+            options={CURVE_MODEL_OPTIONS}
+            onChange={(d) => {
+              setDetection(d)
+              // As on the tile: the surface is the Spline model's default wherever dose and time
+              // both vary (unless the tile already chose).
+              if (d === 'spline' && initial.surface == null && surfaceOk) pickAxis(SURFACE)
+            }}
+          />
         </div>
-        {/* The side's own problem, right where it's fixed. */}
-        {chosen.length === 0 && (
-          <StatusNote kind="info" style={{ marginTop: 2 }}>
-            {side === 'num' ? 'pick the value(s) to compare' : 'pick the one reference value'}
-          </StatusNote>
+        <div style={styles.condRow}>
+          {head('axis')}
+          <ToggleSwitch
+            label="Axis"
+            value={axisSel === SURFACE ? 'surface' : axisSel}
+            options={curveAxisOptions(shape, detection).map((o) => {
+              // Also greyed: an axis the wired data doesn't carry at all.
+              const absent =
+                o.value === 'surface' ? !surfaceOk : !numericConds.includes(o.value as ConditionKey)
+              return {
+                ...o,
+                value: o.value as string,
+                disabled: o.disabled || absent,
+                title: absent && !o.disabled ? `No ${o.label} in the data` : o.title
+              }
+            })}
+            onChange={(a) => pickAxis(a === 'surface' ? SURFACE : a)}
+          />
+        </div>
+        {surface && (
+          <div style={styles.condRow}>
+            {head('fit')}
+            <ToggleSwitch
+              label="Fit"
+              value={surfaceFit}
+              options={SURFACE_FIT_OPTIONS}
+              onChange={setSurfaceFit}
+            />
+          </div>
         )}
       </>
     )
   }
-  const condRow = (c: ConditionKey): ReactNode => {
-    const on = axis.includes(c)
-    const inc = includedOf(c)
-    return (
-      <div key={c} style={styles.condRow}>
-        <div style={styles.condHead}>
-          {condSwitch(c)}
-          <span style={{ ...styles.condName, ...(on ? styles.condNameOn : null) }}>
-            {condLabel(c)}
-          </span>
-        </div>
-        {c === curveAxis && !on ? (
-          // The curve's x-axis: every level above 0 is a dose on it; the control is its baseline.
-          <div style={styles.chips}>
-            <span style={styles.curveTag}>curve axis</span>
-            {curveAxes.length > 1 && (
-              <ToggleSwitch
-                label="Curve axis"
-                value={c}
-                options={curveAxes.map((a) => ({ value: a, label: condLabel(a) }))}
-                onChange={(a) => setCurvePick(a)}
-              />
-            )}
-          </div>
-        ) : on ? (
-          <div style={styles.sidePair}>
-            <div style={styles.sideCol}>
-              <span style={styles.sideLabel}>
-                {contrast ? 'group A (y-axis)' : curve ? 'treatment' : 'numerator'}
-              </span>
-              {sideChips('num', c)}
-            </div>
-            <span style={styles.vsRule} />
-            <div style={styles.sideCol}>
-              <span style={styles.sideLabel}>
-                {contrast ? 'group B (x-axis)' : curve ? 'control' : 'denominator'}
-              </span>
-              {sideChips('den', c)}
-            </div>
-          </div>
-        ) : (
-          // Matched context: which values to include (all by default; at least one stays).
-          (() => {
-            const live = axis.length > 0
-            const N = live ? contextsOf('num', c) : null
-            const D = live ? contextsOf('den', c) : null
-            // Invariant on a side: that side has ≤1 value → not matched, its slice is fixed.
-            const nCount = N?.byValue.size ?? 0
-            const dCount = D?.byValue.size ?? 0
-            const fixedOn: Side | null = !live
-              ? null
-              : dCount <= 1 && nCount > 1
-                ? 'den'
-                : nCount <= 1 && dCount > 1
-                  ? 'num'
-                  : null
-            const fixedLabel =
-              fixedOn === 'den'
-                ? contrast
-                  ? 'group B'
-                  : 'denominator'
-                : contrast
-                  ? 'group A'
-                  : 'numerator'
-            // The contexts actually compared: those present on both sides.
-            const shared = N && D ? [...N.contexts].filter((x) => D.contexts.has(x)) : []
-            return (
-              <div style={styles.chips}>
-                {allValues[c].length === 0 && <span style={styles.anyTag}>—</span>}
-                {allValues[c].map((v) => {
-                  const vOn = inc.includes(v)
-                  let look: CSSProperties | null = null
-                  let title = vOn ? 'Included — click to leave out' : 'Left out — click to include'
-                  if (vOn && live && N && D) {
-                    if (fixedOn) {
-                      // Fan out on the varying side against the fixed side's single slice —
-                      // a partial match by nature, so it takes the partial look.
-                      look = styles.valChipPartial
-                      title = `Runs against the ${fixedLabel}'s single slice (${condLabel(c)} is fixed there) — click to leave out`
-                    } else {
-                      const nC = N.byValue.get(v) ?? new Set<string>()
-                      const dC = D.byValue.get(v) ?? new Set<string>()
-                      const paired = shared.filter((x) => nC.has(x) && dC.has(x))
-                      if (paired.length === 0) {
-                        // No sample pair anywhere → stays plain grey (nothing to match).
-                        look = styles.valChipIdle
-                        title = `No matching sample pair at ${condLabel(c)} = ${v} in any context — skipped`
-                      } else if (paired.length < shared.length) {
-                        look = styles.valChipPartial
-                        title = `${condLabel(c)} = ${v} is compared in ${paired.length} of ${shared.length} contexts — missing on a side in the rest`
-                      } else look = styles.valChipIncluded
-                    }
-                  } else if (vOn) look = styles.valChipIdle
-                  return (
-                    <button
-                      key={v}
-                      className="oe-chip"
-                      onClick={() => toggleIncluded(c, v)}
-                      title={title}
-                      style={{ ...styles.valChip, ...look }}
-                    >
-                      {v}
-                    </button>
-                  )
-                })}
-              </div>
-            )
-          })()
-        )}
-      </div>
-    )
-  }
-
   return createPortal(
     // Re-establish the theme CSS variables inside the portal (document.body is outside the app
     // root where they're defined), otherwise UI.* (var(--panel) …) resolve to transparent.
@@ -811,11 +897,21 @@ export function ComparisonDialog({
       <div
         style={dock ? { ...styles.modal, ...DOCKED_CARD } : styles.modal}
         role="dialog"
-        aria-label={contrast ? 'Configure contrast' : 'Configure comparison'}
+        aria-label={
+          contrast
+            ? 'Configure contrast'
+            : curveTile
+              ? 'Configure curve fit'
+              : 'Configure comparison'
+        }
       >
         <div style={styles.head}>
           <span style={styles.title}>
-            {contrast ? 'Configure contrast' : 'Configure comparison'}
+            {contrast
+              ? 'Configure contrast'
+              : curveTile
+                ? 'Configure curve fit'
+                : 'Configure comparison'}
           </span>
           {/* Mode toggle: Compare picks the analysis (plain two-level vs 2×2 interaction); Contrast
               picks its inputs (two groups from one upstream vs two upstreams). */}
@@ -838,15 +934,14 @@ export function ComparisonDialog({
                 })}
                 onChange={(v) => setSource(v)}
               />
-            ) : (
+            ) : curveTile ? null : (
               <ToggleSwitch
                 label="Analysis"
                 value={analysis}
                 options={(
                   [
                     ['compare', 't-test'],
-                    ['two_way_anova', '2-way ANOVA'],
-                    ['curve_fit', 'Curve fit']
+                    ['two_way_anova', '2-way ANOVA']
                   ] as const
                 ).map(([value, label]) => {
                   // An analysis the data's shape can't support is offered greyed, with why.
@@ -858,12 +953,7 @@ export function ComparisonDialog({
                     title: why ?? undefined
                   }
                 })}
-                onChange={(a) => {
-                  setAnalysis(a)
-                  // A t-test or curve compares one condition: drop any second factor left from
-                  // 2-way.
-                  if (a !== 'two_way_anova') setCompared((p) => p.slice(0, 1))
-                }}
+                onChange={setAnalysis}
               />
             )}
           </span>
@@ -879,12 +969,14 @@ export function ComparisonDialog({
             b={pairPick.b}
             onPick={(side, id) => setPairPick((p) => ({ ...p, [side]: id }))}
             match={pairMatch}
-            onToggle={(c) =>
-              setPairMatch((m) => (m.includes(c) ? m.filter((x) => x !== c) : [...m, c]))
+            onMatch={(c, on) =>
+              setPairMatch((m) =>
+                on ? [...m.filter((x) => x !== c), c] : m.filter((x) => x !== c)
+              )
             }
-            fix={pairFix}
-            onFix={(side, c, value) =>
-              setPairFix((f) => ({ ...f, [side]: { ...f[side], [c]: value } }))
+            picks={pairPicks}
+            onPickValue={(side, c, next) =>
+              setPairPicks((p) => ({ ...p, [side]: { ...p[side], [c]: next } }))
             }
           />
         ) : (
@@ -907,19 +999,22 @@ export function ComparisonDialog({
             ) : (
               <>
                 <div style={styles.conds}>
-                  <div style={styles.condsHead}>
-                    <span style={styles.condsHeadSwitch}>
-                      {contrast ? 'contrast on' : 'compare on'}
-                    </span>
-                    {axis.length < maxCompared && (
-                      <StatusNote kind="info" inline>
-                        {twoWay
-                          ? 'switch on the two factors'
-                          : 'switch on the condition to be compared'}
-                      </StatusNote>
-                    )}
-                  </div>
-                  {ordered.map(condRow)}
+                  {curve && curveSettings()}
+                  <SideRows
+                    labels={{
+                      a: contrast ? 'group A (y-axis)' : sideLabel('num'),
+                      b: contrast ? 'group B (x-axis)' : sideLabel('den')
+                    }}
+                    rows={rowSpecs()}
+                    onPick={(side, c, next) =>
+                      setPicks((p) => ({ ...p, [side]: { ...p[side], [c]: next } }))
+                    }
+                    onMatch={(c, on) =>
+                      setMatchOn((m) =>
+                        on ? [...m.filter((x) => x !== c), c] : m.filter((x) => x !== c)
+                      )
+                    }
+                  />
                   {(() => {
                     // A result line only once the contrast/comparison is fully defined (the
                     // preview has no warnings) — before that there's nothing to report.
@@ -937,10 +1032,14 @@ export function ComparisonDialog({
                       s === 'num'
                         ? contrast
                           ? 'group A'
-                          : 'numerator'
+                          : curve
+                            ? 'treatments'
+                            : 'numerator'
                         : contrast
                           ? 'group B'
-                          : 'denominator'
+                          : curve
+                            ? 'control'
+                            : 'denominator'
                     // Nothing to match (the compared condition is the only one that varies, or the
                     // rest are fixed): say nothing about matching rather than "matched on —".
                     const parts: string[] = matchedOn.length
@@ -1008,10 +1107,11 @@ export function ComparisonDialog({
                 ) : (
                   <div style={styles.preview}>
                     <div style={styles.previewHead}>
-                      {contrast ? 'Contrast' : curve ? 'Curves' : 'Comparisons'} ({preview.groups}{' '}
-                      in total)
+                      {surface
+                        ? 'Surfaces'
+                        : `${contrast ? 'Contrast' : curve ? 'Curves' : 'Comparisons'} (${preview.groups} in total)`}
                     </div>
-                    {curve && axis.length === 1 && curveAxis && (
+                    {curve && axis.length === 1 && curveAxis && detection === '4pl' && !surface && (
                       <div style={styles.previewItem}>
                         <div>ratio to control ~ log-logistic(log₁₀ {condLabel(curveAxis)})</div>
                         <div style={styles.previewItemNote}>
@@ -1023,6 +1123,41 @@ export function ComparisonDialog({
                         </div>
                       </div>
                     )}
+                    {curve &&
+                      axis.length === 1 &&
+                      curveAxis &&
+                      (detection === 'spline' || surface) && (
+                        <div style={styles.previewItem}>
+                          <div>
+                            {!surface
+                              ? `log₂ effect vs control ~ spline(${condLabel(curveAxis)})`
+                              : detection === 'spline'
+                                ? 'log₂ effect vs control ~ spline surface(log₁₀ dose, log time)'
+                                : 'log₂ effect vs control ~ 4PL(log₁₀ dose), top and midpoint over log time'}
+                          </div>
+                          <div style={styles.previewItemNote}>
+                            {!surface
+                              ? 'smooth curve vs a flat line, moderated F (Hybrid model), per gene'
+                              : detection === 'spline'
+                                ? 'one dose × time surface per gene × compound vs a flat surface, moderated F (Hybrid model)'
+                                : 'one 4PL surface per gene × compound vs a flat surface, adjusted F (simulated null)'}
+                            {!surface && preview.matched.length
+                              ? `, for each ${preview.matched.map(condLabel).join(' × ')}`
+                              : ''}
+                          </div>
+                          {/* How each surface is then described — the fit picked above. */}
+                          {surface &&
+                            (() => {
+                              const fit = SURFACE_FIT_OPTIONS.find((o) => o.value === surfaceFit)
+                              return fit ? (
+                                <div style={styles.previewItemNote}>
+                                  described by {fit.label}: {fit.title.charAt(0).toLowerCase()}
+                                  {fit.title.slice(1)}
+                                </div>
+                              ) : null
+                            })()}
+                        </div>
+                      )}
                     {!contrast && !curve && axis.length === 1 && (
                       <div style={styles.previewItem}>
                         <div>log₂ abundance ~ {condLabel(axis[0])}</div>
@@ -1035,7 +1170,7 @@ export function ComparisonDialog({
                       </div>
                     )}
                     {/* One row per context combination actually compared. */}
-                    {preview.rows.length > 0 && (
+                    {preview.rows.length > 0 && !surface && (
                       <PreviewTable columns={preview.columns} rows={preview.rows} />
                     )}
                     {'notes' in preview &&
@@ -1049,6 +1184,26 @@ export function ComparisonDialog({
                         {w}
                       </StatusNote>
                     ))}
+                    {controlTreated && (
+                      <div style={styles.backgroundRow}>
+                        <OnOffSwitch
+                          on={background}
+                          onChange={setBackground}
+                          label="Control is a background treatment"
+                          title="On: the treatments are titrated on top of the control (e.g. drug A added to drug B), so the control alone is the curve's starting point"
+                        />
+                        <span>
+                          Control is a background treatment — the treatments are added on top of it
+                        </span>
+                      </div>
+                    )}
+                    {controlTreated && !background && (
+                      <StatusNote kind="warn">
+                        The control is a treated sample, not the vehicle. A curve starts from its
+                        control, so this is only valid as a background treatment — confirm above, or
+                        pick the vehicle.
+                      </StatusNote>
+                    )}
                   </div>
                 )}
               </>
@@ -1140,6 +1295,7 @@ const styles: Record<string, CSSProperties> = {
   // Bottom fade cue: sits inside the table's border, hinting there are more rows below.
   previewMeta: { fontSize: 11, color: UI.textMuted, marginTop: 8 },
   note: { fontSize: 11, color: UI.textMuted, marginTop: 6 },
+  backgroundRow: { display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, marginTop: 8 },
   foot: {
     display: 'flex',
     justifyContent: 'flex-end',

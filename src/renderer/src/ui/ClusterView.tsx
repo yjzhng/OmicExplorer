@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useMemo, type CSSProperties } from 'react'
 
 import {
   condLabel,
@@ -11,24 +11,31 @@ import {
 import { clusterStyle, type ClusterStyle } from '../graph/types'
 import { AUTO } from './ColorPicker'
 import { condsOf, planAesthetics, type PlanOverrides } from './clusterPlan'
+import { condTooltip, valueLine } from './condTooltip'
+import { bindSampleLink, sampleKey, sampleMeta } from './sampleLink'
 import { territoryRing, type TerritoryShape } from './territory'
-import { blues, hslHex, reds, rgbHex, shadeHex } from './colormap'
+import { hslHex } from './colormap'
+import { shade } from './condColor'
 import { PlotlyChart } from './PlotlyChart'
-import { axisBase, CATEGORICAL, PALETTES, plotBase } from './theme'
+import { axisBase, CATEGORICAL, PALETTES, plotBase, UI, withAlpha } from './theme'
 import { useUiTheme } from './useUiTheme'
+import { sectionKey, SECTIONED_LEGEND } from './legendSections'
+import { groupMeta } from './traceFocus'
 
 /** What marks the data: every replicate, or one centroid per condition. */
 type Mode = 'replicate' | 'centroid'
 /** The region drawn under each condition's markers, or none. */
 type Territory = TerritoryShape | 'none'
 type Legend = 'simple' | 'complex'
-/** `#rrggbb` → `rgba(r,g,b,a)` for translucent territory fills. */
-function rgba(hex: string, a: number): string {
-  const h = hex.replace('#', '')
-  const r = parseInt(h.slice(0, 2), 16)
-  const g = parseInt(h.slice(2, 4), 16)
-  const b = parseInt(h.slice(4, 6), 16)
-  return `rgba(${r},${g},${b},${a})`
+/** The neutral the complex legend's shade and arrow keys are drawn in. */
+const SHADE_KEY_GREY = '#808080'
+/** A dose/time level's place on the shade, by RANK among its levels — 0 the lowest (palest), 1 the
+ *  highest (the full colour), evenly apart, so 0.1 / 1 / 10 / 100 nM each read as a step rather
+ *  than all pale beside 1000 (as QC and the gene bar shade); one level is the full colour. */
+function rankT(levels: number[], v: number | null): number {
+  if (v == null || levels.length < 2) return 1
+  const i = levels.indexOf(v)
+  return i < 0 ? 1 : i / (levels.length - 1)
 }
 
 /** Sample/condition embedding (PCA / UMAP / t-SNE). Two independent settings: `display` is what
@@ -43,8 +50,12 @@ export function ClusterView({
   territory = 'none',
   legend = 'simple',
   look = DEFAULT_STYLE,
-  scheme = NO_SCHEME
+  scheme = NO_SCHEME,
+  categorical = CATEGORICAL,
+  condTitle = condLabel
 }: {
+  /** a condition's legend heading — with its unit for dose / time (default: its name) */
+  condTitle?: (c: ConditionKey) => string
   cluster: ClusterData
   title?: string
   display?: Mode
@@ -55,6 +66,8 @@ export function ClusterView({
   look?: ClusterStyle
   /** complex legend: the user's colour / shade / arrow choices (unset = automatic) */
   scheme?: PlanOverrides
+  /** the categorical palette its groups cycle (the plot's own, else the global one) */
+  categorical?: readonly string[]
 }) {
   const mode = useUiTheme((s) => s.mode)
 
@@ -74,11 +87,21 @@ export function ClusterView({
       xaxis: { ...axisBase(p), title: xLabel, zeroline: false },
       yaxis: { ...axisBase(p), title: yLabel, zeroline: false }
     }
-    const hover = `%{text}<br>${xLabel}=%{x:.2f}<br>${yLabel}=%{y:.2f}<extra></extra>`
+    const hover = `%{text}<br>${valueLine(xLabel, '%{x:.3~g}')}<br>${valueLine(yLabel, '%{y:.3~g}')}<extra></extra>`
 
     // ── Complex legend: aesthetics driven by every varying condition ──────────────
     if (legend === 'complex') {
-      const complex = buildComplex(cluster, display, p, hover, territory, look, scheme)
+      const complex = buildComplex(
+        cluster,
+        display,
+        p,
+        hover,
+        territory,
+        look,
+        scheme,
+        categorical,
+        condTitle
+      )
       if (complex) {
         lay.legend = complex.legend
         if (complex.annotations.length) lay.annotations = complex.annotations
@@ -97,42 +120,101 @@ export function ClusterView({
       }
       arr.push(pt)
     }
-    // Dose/time are quantitative: colour their groups on a sequential ramp (time→Reds, dose→Blues),
-    // dark = high value, light = low — instead of unordered categorical colours. Groups are then
-    // ordered by value so the legend reads low→high.
+    // Dose/time are quantitative: colour their groups in shades of the palette's primary colour,
+    // dark = high value, light = low (as the shade channel and QC / the gene bar do) — instead of
+    // unordered categorical colours. Groups are then ordered by value so the legend reads low→high.
     const quant =
       (cluster.colorBy === 'dose' || cluster.colorBy === 'time') &&
       [...groups.keys()].every((g) => g === '' || Number.isFinite(Number(g)))
-    const ramp = cluster.colorBy === 'time' ? reds : blues
-    const nums = [...groups.keys()].map(Number).filter(Number.isFinite)
-    const lo = nums.length ? Math.min(...nums) : 0
-    const hi = nums.length ? Math.max(...nums) : 1
+    const nums = [...new Set([...groups.keys()].map(Number).filter(Number.isFinite))].sort(
+      (a, b) => a - b
+    )
     const colorOf = (g: string, idx: number): string => {
-      if (quant && Number.isFinite(Number(g))) {
-        const t = hi > lo ? (Number(g) - lo) / (hi - lo) : 0.5
-        // Start above 0 so the lowest value isn't near-white.
-        return rgbHex(ramp(0.2 + 0.8 * t))
-      }
-      return CATEGORICAL[idx % CATEGORICAL.length]
+      if (quant && Number.isFinite(Number(g))) return shade(categorical[0], rankT(nums, Number(g)))
+      return categorical[idx % categorical.length]
     }
     const groupEntries = quant
       ? [...groups.entries()].sort((a, b) => Number(a[0]) - Number(b[0]))
       : [...groups.entries()]
 
     const traces: Array<Record<string, unknown>> = []
+    const groupColor = new Map<string, string>()
     let i = 0
     for (const [g, pts] of groupEntries) {
       const color = colorOf(g, i)
-      const name = g || '(none)'
-      traces.push(
-        ...condGroupTraces(pts, color, name, display, p, hover, look, true, true, territory)
-      )
+      groupColor.set(g, color)
+      traces.push(...condGroupTraces(pts, color, g || '(none)', display, p, hover, look))
       i++
     }
+    // A territory per condition, around ALL its replicates — even when the colouring splits them
+    // (a computed cluster can) — in the colour of the group most of them are in.
+    if (territory !== 'none') {
+      const byCond = new Map<string, ClusterPoint[]>()
+      for (const pt of cluster.points) byCond.set(pt.cond, [...(byCond.get(pt.cond) ?? []), pt])
+      for (const reps of byCond.values()) {
+        const count = new Map<string, number>()
+        for (const r of reps) count.set(r.group, (count.get(r.group) ?? 0) + 1)
+        const g = [...count].reduce((a, b) => (b[1] > a[1] ? b : a))[0]
+        traces.push(...territoryTrace(reps, territory, groupColor.get(g)!, g || '(none)'))
+      }
+    }
+    // the legend headed by what the colours are: the condition (dose / time with its unit)
+    if (cluster.colorBy !== 'cluster')
+      lay.legend = { title: { text: condTitle(cluster.colorBy as ConditionKey) } }
     return { data: territoriesBehind(traces), layout: lay }
-  }, [cluster, title, display, territory, legend, mode, look, scheme])
+  }, [cluster, title, display, territory, legend, mode, look, scheme, categorical, condTitle])
 
-  return <PlotlyChart data={data} layout={layout} />
+  const diag = cluster.diag
+  // Nothing to embed: say why rather than draw an empty plot.
+  if (!cluster.points.length)
+    return (
+      <div style={styles.empty}>
+        {diag && diag.items < 2
+          ? 'Needs at least two samples to embed.'
+          : 'No genes left to embed — every gene was filtered out (missing values or the top-variance cap).'}
+      </div>
+    )
+  return (
+    <div style={styles.wrap}>
+      <PlotlyChart data={data} layout={layout} onGraphMount={bindSampleLink} />
+      {/* 'complete' kept too few genes (a gap somewhere in nearly every one): embedded on every
+          gene, gaps imputed — said here so the setting isn't silently overridden. */}
+      {diag?.completeFallback != null && (
+        <div
+          style={styles.note}
+          title={`Missing values is set to “complete”, but only ${diag.completeFallback} gene${diag.completeFallback === 1 ? ' is' : 's are'} quantified in every sample — embedded on all ${diag.features.toLocaleString()} genes with gaps imputed instead.`}
+        >
+          {diag.completeFallback} complete gene{diag.completeFallback === 1 ? '' : 's'} — gaps
+          imputed
+        </div>
+      )}
+    </div>
+  )
+}
+
+const styles: Record<string, CSSProperties> = {
+  wrap: { position: 'relative', height: '100%', minHeight: 0 },
+  empty: {
+    height: '100%',
+    display: 'grid',
+    placeItems: 'center',
+    padding: 16,
+    fontSize: 12,
+    color: UI.textMuted,
+    textAlign: 'center'
+  },
+  note: {
+    position: 'absolute',
+    left: 8,
+    bottom: 4,
+    fontSize: 10,
+    color: UI.textMuted,
+    background: UI.panel,
+    borderRadius: 3,
+    padding: '1px 5px',
+    opacity: 0.9,
+    cursor: 'help'
+  }
 }
 
 /** Territory fills are pushed per group, so without this one group's fill can be drawn over
@@ -142,9 +224,46 @@ function territoriesBehind(traces: Array<Record<string, unknown>>): Array<Record
   return [...traces.filter((t) => t.fill != null), ...traces.filter((t) => t.fill == null)]
 }
 
-/** One legend group's traces — a territory outline per condition (unless 'none'), under either
- *  the replicate markers or the condition centroids — all colour `color` and tied to the legend
- *  entry `name`. Shared by simple and complex modes. */
+/** A condition's territory: one region around its replicates, in `color` (the colour-by's for that
+ *  condition), tied to the legend entry `name`. Empty when they enclose no area — averaged
+ *  replicates (one point per condition) draw none. */
+function territoryTrace(
+  pts: ClusterPoint[],
+  territory: TerritoryShape,
+  color: string,
+  name: string
+): Array<Record<string, unknown>> {
+  const ring = territoryRing(pts, territory)
+  // A closed ring needs 3 corners + the repeat to enclose anything. Shorter than that (a
+  // 2-replicate hull is a bare segment) there is no area, and with no stroke there would be nothing to
+  // see — so skip it rather than push an invisible trace.
+  if (!ring || ring.length < 4) return []
+  return [
+    {
+      type: 'scatter',
+      mode: 'lines',
+      name,
+      legendgroup: name,
+      showlegend: false,
+      // `toself` closes and fills the ring. No stroke: the region reads as a soft wash in the
+      // group's colour, so width must be 0 — a scatter trace draws a line by default.
+      fill: 'toself',
+      fillcolor: withAlpha(color, 0.14),
+      line: { width: 0 },
+      x: ring.map((q) => q.x),
+      y: ring.map((q) => q.y),
+      // The fill must not answer hovers meant for the markers sitting on it.
+      hoverinfo: 'skip',
+      text: pts[0].cond,
+      // dims with its condition when another sample is hovered (see sampleLink)
+      meta: sampleMeta(sampleKey(pts[0].meta))
+    }
+  ]
+}
+
+/** One legend group's markers — the replicates or the condition centroids — all colour `color`
+ *  and tied to the legend entry `name`. Shared by simple and complex modes; territories are drawn
+ *  apart, per condition (territoryTrace). */
 function condGroupTraces(
   pts: ClusterPoint[],
   color: string,
@@ -154,10 +273,11 @@ function condGroupTraces(
   hover: string,
   look: ClusterStyle,
   showlegend = true,
-  showMarkers = true,
-  territory: Territory = 'none'
+  showMarkers = true
 ): Array<Record<string, unknown>> {
   const out: Array<Record<string, unknown>> = []
+  // The conditions the tooltips list, in hierarchy order.
+  const conds = condsOf(pts.map((pt) => pt.meta))
   const byCond = new Map<string, ClusterPoint[]>()
   for (const pt of pts) {
     let arr = byCond.get(pt.cond)
@@ -167,41 +287,16 @@ function condGroupTraces(
     }
     arr.push(pt)
   }
-  // Territories go in FIRST so the centroid markers sit on top of their own fills. They are drawn
-  // even in arrow mode (below): the arrows stand in for the MARKERS, not for the region, and a
-  // territory the user explicitly asked for shouldn't vanish because a dose series is connected.
-  if (territory !== 'none') {
-    for (const [cond, reps] of byCond) {
-      const ring = territoryRing(reps, territory)
-      // A closed ring needs 3 corners + the repeat to enclose anything. Shorter than that (a
-      // 2-replicate hull is a bare segment) there is no area, and with no stroke there would be
-      // nothing to see — so skip it rather than push an invisible trace.
-      if (!ring || ring.length < 4) continue
-      out.push({
-        type: 'scatter',
-        mode: 'lines',
-        name,
-        legendgroup: name,
-        showlegend: false,
-        // `toself` closes and fills the ring. No stroke: the region reads as a soft wash in the
-        // group's colour, so width must be 0 — a scatter trace draws a line by default.
-        fill: 'toself',
-        fillcolor: rgba(color, 0.14),
-        line: { width: 0 },
-        x: ring.map((q) => q.x),
-        y: ring.map((q) => q.y),
-        // The fill must not answer hovers meant for the centroid marker sitting on it.
-        hoverinfo: 'skip',
-        text: cond
-      })
-    }
-  }
   // In arrow mode the connecting arrows replace the markers.
   if (!showMarkers) return out
   if (display === 'centroid') {
     const cx = [...byCond.values()].map((reps) => reps.reduce((s, r) => s + r.x, 0) / reps.length)
     const cy = [...byCond.values()].map((reps) => reps.reduce((s, r) => s + r.y, 0) / reps.length)
-    const labels = [...byCond.entries()].map(([cond, reps]) => `${cond} (n=${reps.length})`)
+    // The condition's identity (without a replicate — the centroid stands for them all), and n.
+    const labels = [...byCond.entries()].map(([cond, reps]) => {
+      const ident = condTooltip(reps[0].meta, conds, p.textMuted, { rep: false })
+      return `${ident || cond}<br>${valueLine('n', reps.length)}`
+    })
     out.push({
       type: 'scatter',
       mode: 'markers',
@@ -212,6 +307,8 @@ function condGroupTraces(
       y: cy,
       text: labels,
       hovertemplate: hover,
+      // a centroid stands for every replicate of its condition (see sampleLink)
+      meta: sampleMeta([...byCond.values()].map((reps) => sampleKey(reps[0].meta))),
       marker: {
         color,
         size: look.centroidSize,
@@ -230,8 +327,9 @@ function condGroupTraces(
     showlegend,
     x: pts.map((pt) => pt.x),
     y: pts.map((pt) => pt.y),
-    text: pts.map((pt) => pt.sample),
+    text: pts.map((pt) => condTooltip(pt.meta, conds, p.textMuted) || pt.sample),
     hovertemplate: hover,
+    meta: sampleMeta(pts.map((pt) => sampleKey(pt.meta, pt.meta.rep))),
     marker: {
       color,
       size: look.markerSize,
@@ -263,7 +361,9 @@ function buildComplex(
   hover: string,
   territory: Territory,
   look: ClusterStyle,
-  scheme: PlanOverrides
+  scheme: PlanOverrides,
+  categorical: readonly string[],
+  condTitle: (c: ConditionKey) => string
 ): ComplexBuild | null {
   // Distinct conditions (replicates of a condition share meta), in first-seen order.
   const condOrder: string[] = []
@@ -331,38 +431,36 @@ function buildComplex(
   const qualVals = plan.colorKey && !plan.colorRamp ? sortedVals(plan.colorKey, false) : []
   const qualIdx = new Map(qualVals.map((v, i) => [v, i]))
 
-  // Quantitative colour ramp (only when there is no qualitative to colour by).
+  // Quantitative colour ramp (only when there is no qualitative to colour by): shades of the
+  // palette's primary colour, light = low → dark = high.
   const rampKey = plan.colorRamp ? (plan.colorKey as ConditionKey) : null
-  const rampFn = rampKey === 'time' ? reds : blues
   const rampNums = rampKey ? sortedVals(rampKey, true).map(Number) : []
-  const rlo = rampNums.length ? Math.min(...rampNums) : 0
-  const rhi = rampNums.length ? Math.max(...rampNums) : 1
 
   // Shade range (light→dark by a quantitative condition within each colour group).
   const shadeKey = plan.shadeKey
   const shadeNums = shadeKey ? sortedVals(shadeKey, true).map(Number) : []
-  const slo = shadeNums.length ? Math.min(...shadeNums) : 0
-  const shi = shadeNums.length ? Math.max(...shadeNums) : 1
-  const tShade = (v: number | null): number =>
-    v == null || shi <= slo ? 0.5 : (v - slo) / (shi - slo)
+  const tShade = (v: number | null): number => rankT(shadeNums, v)
 
   const baseColor = (m: ClusterMeta): string => {
     if (plan.grouped) return hslHex(groupedHue(outerOf(m), innerOf(m)), 0.62, 0.5)
     if (plan.colorKey && !plan.colorRamp) {
       const i = qualIdx.get(String(metaValue(m, plan.colorKey))) ?? 0
-      return CATEGORICAL[i % CATEGORICAL.length]
+      return categorical[i % categorical.length]
     }
     if (rampKey) {
-      const v = Number(metaValue(m, rampKey))
-      const t = rhi > rlo ? (v - rlo) / (rhi - rlo) : 0.5
-      return rgbHex(rampFn(0.2 + 0.8 * t))
+      return shade(categorical[0], rankT(rampNums, Number(metaValue(m, rampKey))))
     }
-    return CATEGORICAL[0]
+    return categorical[0]
+  }
+  // A condition's shade group (`cond=value`, as the shade's legend entries select), if shaded.
+  const shadeGroupOf = (m: ClusterMeta): string[] => {
+    const v = shadeKey ? metaValue(m, shadeKey) : null
+    return shadeKey && v != null && v !== '' ? [`${shadeKey}=${v}`] : []
   }
   const finalColor = (m: ClusterMeta): string => {
     if (!shadeKey) return baseColor(m)
     const v = metaValue(m, shadeKey) // planAesthetics only ever picks a numeric shade key
-    return shadeHex(baseColor(m), tShade(typeof v === 'number' ? v : null))
+    return shade(baseColor(m), tShade(typeof v === 'number' ? v : null))
   }
 
   const groupName = (m: ClusterMeta): string => {
@@ -394,37 +492,38 @@ function buildComplex(
     const m = pts[0].meta
     const gname = groupName(m)
     if (!legendReps.has(gname)) legendReps.set(gname, { color: baseColor(m), sort: groupSort(m) })
+    // Each condition's marks are in its colour group (their legendgroup) AND its shade value's
+    // group, so the shade's legend entries highlight a dose across every colour (traceFocus).
+    const shadeGroups = shadeGroupOf(m)
     dataTraces.push(
-      ...condGroupTraces(
-        pts,
-        finalColor(m),
-        gname,
-        display,
-        p,
-        hover,
-        look,
-        false,
-        !arrowMode,
-        territory
+      ...[
+        // its territory around its replicates, in its colour — drawn even in arrow mode: the
+        // arrows stand in for the markers, not the region
+        ...(territory !== 'none' ? territoryTrace(pts, territory, finalColor(m), gname) : []),
+        ...condGroupTraces(pts, finalColor(m), gname, display, p, hover, look, false, !arrowMode)
+      ].map((t) =>
+        shadeGroups.length
+          ? { ...t, meta: { ...(t.meta as object), ...groupMeta({ groups: shadeGroups }) } }
+          : t
       )
     )
   }
   // Territories behind the markers; the legend swatches and arrows below go on top of both.
   const traces: Array<Record<string, unknown>> = territoriesBehind(dataTraces)
-  // One legend swatch per colour group (base, un-shaded colour), ordered by the group hierarchy.
-  for (const [name, info] of [...legendReps.entries()].sort((a, b) => a[1].sort - b[1].sort)) {
-    traces.push({
-      type: 'scatter',
-      mode: 'markers',
-      name,
-      legendgroup: name,
-      showlegend: true,
-      x: [null],
-      y: [null],
-      hoverinfo: 'skip',
-      marker: { color: info.color, size: 11 }
-    })
-  }
+  // The legend, a section per channel under its condition (legendSections): one swatch per colour
+  // group (base, un-shaded colour), ordered by the group hierarchy — each selects its group.
+  const colorSection = plan.grouped
+    ? plan.quals.map(condTitle).join(' × ')
+    : condTitle(plan.colorKey as ConditionKey)
+  for (const [name, info] of [...legendReps.entries()].sort((a, b) => a[1].sort - b[1].sort))
+    traces.push(
+      sectionKey({
+        name,
+        section: colorSection,
+        group: name,
+        marker: { color: info.color, size: 11 }
+      })
+    )
 
   // Arrows: within each series (points identical except the arrow condition), connect the
   // centroids in ascending arrow-value order, low → high.
@@ -459,14 +558,18 @@ function buildComplex(
       const col = finalColor(metaOf(sorted[sorted.length - 1]))
       // A continuous polyline through the series' centroids — this is the actual connection,
       // with no gaps. Arrow annotations sit on top only to mark direction (low → high).
+      // The trail fades with its series' groups — its colour group and, shaded, its shade value
+      // (a series varies only along the arrow).
+      const sm = metaOf(sorted[0])
       traces.push({
         type: 'scatter',
         mode: 'lines',
         showlegend: false,
         hoverinfo: 'skip',
+        meta: groupMeta({ groups: [groupName(sm), ...shadeGroupOf(sm)] }),
         x: line.map((q) => q[0]),
         y: line.map((q) => q[1]),
-        line: { color: rgba(col, look.trailOpacity), width: look.trailWidth }
+        line: { color: withAlpha(col, look.trailOpacity), width: look.trailWidth }
       })
       for (let k = 0; k < sorted.length - 1; k++) {
         const [ax, ay] = centroid(sorted[k])
@@ -488,7 +591,7 @@ function buildComplex(
           arrowhead: 2, // simple solid (filled) triangle
           arrowsize: look.arrowSize,
           arrowwidth: look.trailWidth,
-          arrowcolor: rgba(col, look.trailOpacity),
+          arrowcolor: withAlpha(col, look.trailOpacity),
           standoff: 0,
           startstandoff: 0
         })
@@ -496,16 +599,30 @@ function buildComplex(
     }
   }
 
-  // Legend title summarises the encoding so the reader can decode colour/shade/arrow.
-  const enc: string[] = []
-  enc.push(
-    plan.grouped
-      ? `colour: ${plan.quals.map(condLabel).join(' × ')}`
-      : `colour: ${condLabel(plan.colorKey as ConditionKey)}`
-  )
-  if (shadeKey) enc.push(`shade: ${condLabel(shadeKey)} (light→dark)`)
-  if (plan.arrowKey) enc.push(`arrow: ${condLabel(plan.arrowKey)} (low→high)`)
-  const legendCfg = { title: { text: enc.join('  ·  '), font: { size: 10 } } }
+  // The shade's section: its values light → dark, on a neutral grey (each colour group takes the
+  // same steps) — each selects its value across every colour; and the arrows' section: the
+  // direction they run, a key only (it selects nothing).
+  if (shadeKey)
+    for (const v of shadeNums)
+      traces.push(
+        sectionKey({
+          name: String(v),
+          section: condTitle(shadeKey),
+          group: `${shadeKey}=${v}`,
+          marker: { color: shade(SHADE_KEY_GREY, tShade(v)), size: 11 }
+        })
+      )
+  if (plan.arrowKey) {
+    const vals = sortedVals(plan.arrowKey, true)
+    traces.push(
+      sectionKey({
+        name: `${vals[0]} → ${vals[vals.length - 1]}`,
+        section: condTitle(plan.arrowKey),
+        group: '',
+        marker: { symbol: 'triangle-right', color: SHADE_KEY_GREY, size: 11 }
+      })
+    )
+  }
 
-  return { traces, annotations, legend: legendCfg }
+  return { traces, annotations, legend: { ...SECTIONED_LEGEND } }
 }

@@ -256,6 +256,29 @@ describe('the interactive import writes a column per custom condition', () => {
     expect(r.activeConditions).toEqual(['@medium'])
     expect(new Set(r.rows.map((x) => x.extra?.medium))).toEqual(new Set(['rich', 'poor']))
   })
+
+  it('writes nothing for a switched-off condition, though its values are kept', () => {
+    const matrix = ['uniqID,s1', 'g1,1'].join('\n')
+    const out = buildStandardInputs(matrix, {
+      roles: { uniqID: 'id', s1: 'sample' },
+      conditions: {
+        s1: {
+          sample: 's1',
+          cell: 'WT',
+          cmpd: 'A',
+          dose: '',
+          time: '',
+          rep: '1',
+          extra: { genotype: 'parent', medium: 'rich' }
+        }
+      },
+      customConditions: ['genotype', 'medium'],
+      hiddenConditions: ['cmpd', 'genotype']
+    })
+    const [header, r1] = out.samplesheetText.trim().split(/\r?\n/)
+    expect(header).toBe('sample,cell,cmpd,dose,time,rep,medium')
+    expect(r1).toBe('s1,WT,,,,1,rich')
+  })
 })
 
 describe('the intensity heatmap treats a custom condition as its own annotation track', () => {

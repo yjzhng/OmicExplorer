@@ -14,12 +14,19 @@ describe('drLook', () => {
       points: true,
       pointSize: 7,
       pointColor: 'auto',
-      pointOpacity: 0.7,
+      pointOpacity: 0.5,
       errors: true,
       errorStyle: 'band',
       errorColor: 'auto',
-      errorOpacity: 0.2
+      errorOpacity: 0.2,
+      ec50Line: false
     })
+  })
+
+  it('hides a Curve fit’s error (its confidence band) by default, but keeps one that was set', () => {
+    expect(drLook({ ...base }, true).errors).toBe(false)
+    expect(drLook({ ...base, errors: true }, true).errors).toBe(true)
+    expect(drLook({ ...base, ec50Line: true }, true).ec50Line).toBe(true)
   })
 
   it('defaults a band to a light fill and whiskers to solid, but keeps an opacity that was set', () => {

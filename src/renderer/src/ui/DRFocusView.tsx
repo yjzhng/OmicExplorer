@@ -1,30 +1,38 @@
 /**
- * One gene's dose (or time) response from a Compare — the dose-response tile's focused view.
+ * One gene's dose (or time) response from a Compare — the dose-response tile's focused view — or
+ * several genes' at once, each in its own colour (its detailed view).
  *
  *  - A t-test's per-dose rows: its log₂FC at each level (error bars = the fold change's SE), one
  *    line per comparison, the levels evenly spaced as in the overview — with each replicate as a
  *    point (its value over the control's mean, log₂), from the Clean data the Compare ran on.
  *  - A curve fit: the fitted curve (log₂ ratio to the control) over log dose, the measured points
  *    it was fitted to, its 95% confidence band (the error), and its EC50 — one per comparison.
+ *  - A response surface method curve fit: its description 4PL or its spline (`model`), the level
+ *    means it was fitted to, and the 4PL's midpoint — no band (none is estimated yet).
  */
 import { useMemo } from 'react'
 
 import {
+  comparisonOf,
   curveBand,
   curvePointsFromStd,
+  curveSampleX,
   logistic,
   replicateLog2FCs,
+  responseCurve,
   stdByGene,
   type CompareResultRow,
   type StandardRow
 } from '../engine'
 import { drLook, type DRLook, type EffectColors } from '../graph/types'
 import { AUTO } from './ColorPicker'
+import { tooltip } from './condTooltip'
+import { errorTraces } from './errorTraces'
 import { PlotlyChart } from './PlotlyChart'
 import { axisBase, CATEGORICAL, EFFECT_COLOR, PALETTES, plotBase, withAlpha } from './theme'
 import { useUiTheme } from './useUiTheme'
 
-/** Points along a fitted curve. */
+/** Evenly spaced points along a fitted curve (more are added at its turns — curveSampleX). */
 const SAMPLES = 60
 const DEFAULT_LOOK = drLook({})
 
@@ -43,9 +51,7 @@ function fitError(
   cap: [number, number]
 ): { x: number[]; mid: number[]; lo: number[]; hi: number[]; unbounded: boolean } | null {
   const at =
-    style === 'band'
-      ? Array.from({ length: SAMPLES }, (_, i) => c.xMin + ((c.xMax - c.xMin) * i) / (SAMPLES - 1))
-      : [...new Set(got.x ?? [])].sort((a, b) => a - b)
+    style === 'band' ? curveSampleX(c, SAMPLES) : [...new Set(got.x ?? [])].sort((a, b) => a - b)
   const mid = at.map((lx) => Math.log2(logistic(lx, c)))
   if (!mid.every(Number.isFinite)) return null
   const band = curveBand(c, got.x ?? [], got.y ?? [], at)
@@ -62,43 +68,15 @@ function fitError(
   return { x: at.map((lx) => 10 ** lx), mid, lo, hi, unbounded }
 }
 
-/** The error around a series' values, from `lo` to `hi`: whiskers (an error_y on a trace of its
- *  own, so their opacity is theirs, not the line's) or a shaded band between them — drawn under
- *  the line. */
-function errorTraces(
-  x: Array<string | number>,
-  y: number[],
-  lo: number[],
-  hi: number[],
-  ink: string,
-  style: DRLook['errorStyle']
-): Record<string, unknown>[] {
-  if (style === 'whisker')
-    return [
-      {
-        type: 'scatter',
-        mode: 'markers',
-        x,
-        y,
-        marker: { size: 0, opacity: 0 },
-        error_y: {
-          type: 'data',
-          symmetric: false,
-          array: hi.map((h, i) => h - y[i]),
-          arrayminus: lo.map((l, i) => y[i] - l),
-          visible: true,
-          color: ink,
-          thickness: 1
-        },
-        showlegend: false,
-        hoverinfo: 'skip'
-      }
-    ]
-  const common = { type: 'scatter', mode: 'lines', x, showlegend: false, hoverinfo: 'skip' }
-  return [
-    { ...common, y: hi, line: { width: 0, color: ink } },
-    { ...common, y: lo, line: { width: 0, color: ink }, fill: 'tonexty', fillcolor: ink }
-  ]
+/** A curve fit's measured points: those kept with the fit — exactly what it was fitted to — else,
+ *  for results run before they were kept, rebuilt from the Clean data (curvePointsFromStd). */
+function curvePoints(
+  r: CompareResultRow,
+  geneStd: StandardRow[],
+  axis: 'dose' | 'time'
+): { x?: number[]; y?: number[] } {
+  const c = r.curve!
+  return c.x && c.rep ? c : (curvePointsFromStd(r, geneStd, axis) ?? c)
 }
 
 /** A gene's effect group in one comparison: a curve fit's own call; for a t-test, the direction
@@ -119,12 +97,23 @@ function widenExtent(
   rows: CompareResultRow[],
   geneStd: StandardRow[],
   axis: 'dose' | 'time',
-  look: DRLook
+  look: DRLook,
+  model: 'spline' | 'curve'
 ): void {
   const add = (v: number | null | undefined): void => {
     if (v == null || !Number.isFinite(v)) return
     if (v < acc[0]) acc[0] = v
     if (v > acc[1]) acc[1] = v
+  }
+  const responses = rows.filter((r) => r.rs?.axis === axis)
+  if (responses.length) {
+    for (const r of responses) {
+      const c = responseCurve(r, model)
+      if (!c) continue
+      for (const y of c.y) add(y)
+      if (look.points) for (const q of c.points) add(q.y)
+    }
+    return
   }
   const curves = rows.filter((r) => r.curve && r.curve.axis === axis)
   if (curves.length) {
@@ -136,7 +125,7 @@ function widenExtent(
       // The band is an overlay on the data, not data: it never sets the scale (a fit the data
       // don't pin down would stretch the axis without bound) — it's clipped at the axis instead.
       if (!look.points) continue
-      const got = curvePointsFromStd(r, geneStd, axis) ?? c
+      const got = curvePoints(r, geneStd, axis)
       for (const y of got.y ?? []) if (y > 0) add(Math.log2(y))
     }
     return
@@ -155,19 +144,28 @@ export function DRFocusView({
   axis,
   axisLabel,
   gene,
+  genes,
+  displayMap,
   std,
   title,
   look = DEFAULT_LOOK,
   scaleRows,
-  effectColors
+  effectColors,
+  model = 'curve'
 }: {
-  /** the gene's rows in the facet on show (one comparison or several) */
+  /** the gene's rows in the facet on show (one comparison or several) — or, with `genes`, those
+   *  genes' rows */
   rows: CompareResultRow[]
   axis: 'dose' | 'time'
   /** the dose/time axis's title, with its unit (absent = the bare axis name) */
   axisLabel?: string
   /** the gene (for its replicates in `std`) */
   gene?: string
+  /** several genes at once (the detailed view), in colour order: each drawn as one gene is, in its
+   *  own colour (the global view's for it), named in the legend */
+  genes?: string[]
+  /** uniqID → display name, for the legend / hover with several genes */
+  displayMap?: Record<string, string>
   /** the Clean data rows the Compare ran on — a t-test's replicates are drawn from them */
   std?: StandardRow[]
   title?: string
@@ -178,16 +176,25 @@ export function DRFocusView({
   scaleRows?: CompareResultRow[]
   /** the upstream Compare's effect colours — a lone line's automatic colour */
   effectColors?: EffectColors
+  /** a response surface method curve fit: draw the description 4PL ('curve') or the spline */
+  model?: 'spline' | 'curve'
 }) {
   const mode = useUiTheme((s) => s.mode)
   // Memo inputs kept primitive: the parent hands a fresh colours object per render.
   const upColor = effectColors?.up ?? EFFECT_COLOR.up
   const downColor = effectColors?.down ?? EFFECT_COLOR.down
   const noneColor = effectColors?.none ?? EFFECT_COLOR.none
-  const geneStd = useMemo(
-    () => (std && gene ? std.filter((s) => s.uniqID === gene) : []),
-    [std, gene]
+  // The genes drawn, in colour order, and each one's Clean data rows (for its replicates).
+  const ids = useMemo(
+    () => genes ?? (gene ? [gene] : [...new Set(rows.map((r) => r.uniqID))]),
+    [genes, gene, rows]
   )
+  const stdOf = useMemo(() => stdByGene(std ?? []), [std])
+  const rowsOf = useMemo(() => {
+    const m = new Map<string, CompareResultRow[]>(ids.map((id) => [id, []]))
+    for (const r of rows) m.get(r.uniqID)?.push(r)
+    return m
+  }, [rows, ids])
   // One shared y range across the whole Compare: every gene's extent as drawn (see widenExtent).
   // Memoized on the row array — stable until the Compare re-runs — not recomputed per gene.
   const yRange = useMemo((): [number, number] | null => {
@@ -198,23 +205,26 @@ export function DRFocusView({
       if (g) g.push(r)
       else byGene.set(r.uniqID, [r])
     }
-    const stdOf = stdByGene(std ?? [])
     const acc: [number, number] = [Infinity, -Infinity]
-    for (const [id, rs] of byGene) widenExtent(acc, rs, stdOf.get(id) ?? [], axis, look)
+    for (const [id, rs] of byGene) widenExtent(acc, rs, stdOf.get(id) ?? [], axis, look, model)
     if (!(acc[0] <= acc[1])) return null
     const pad = (acc[1] - acc[0] || 1) * 0.05
     return [acc[0] - pad, acc[1] + pad]
-  }, [scaleRows, std, axis, look])
+  }, [scaleRows, stdOf, axis, look, model])
   // Per gene, Plotly's autorange would take in a curve's band too; while one can be drawn, the range
-  // is set the same way the global one is, from what the gene draws less the band.
+  // is set the same way the global one is, from what the genes draw less the band.
   const geneRange = useMemo((): [number, number] | null => {
-    if (!look.errors || !rows.some((r) => r.curve && r.curve.axis === axis)) return null
+    if (
+      !look.errors ||
+      !rows.some((r) => (r.curve && r.curve.axis === axis) || r.rs?.axis === axis)
+    )
+      return null
     const acc: [number, number] = [Infinity, -Infinity]
-    widenExtent(acc, rows, geneStd, axis, look)
+    for (const [id, rs] of rowsOf) widenExtent(acc, rs, stdOf.get(id) ?? [], axis, look, model)
     if (!(acc[0] <= acc[1])) return null
     const pad = (acc[1] - acc[0] || 1) * 0.05
     return [acc[0] - pad, acc[1] + pad]
-  }, [rows, geneStd, axis, look])
+  }, [rows, rowsOf, stdOf, axis, look, model])
   const { data, layout } = useMemo(() => {
     const p = PALETTES[mode]
     // The y range, when set (global, or per gene while a curve's band can be drawn), and the cap a
@@ -225,166 +235,304 @@ export function DRFocusView({
       return [r[0] - w / 2, r[1] + w / 2]
     }
     const comparisons = [...new Set(rows.map((r) => r.comparison))]
-    // A comparison's line colour, unless one colour is set for every line: with one line, the
-    // gene's effect group (up / down / none, as the volcano colours it); with several, one palette
-    // colour per comparison. Points and error follow it unless they have a colour of their own.
-    const color = (c: string): string =>
+    const multi = ids.length > 1
+    const label = (id: string): string => displayMap?.[id] ?? id
+    // A series' line colour, unless one colour is set for every line: with several genes, the
+    // gene's (the global view's palette, by its place); else, with one line, the gene's effect
+    // group (up / down / none, as the volcano colours it); with several, one palette colour per
+    // comparison. Points and error follow it unless they have a colour of their own.
+    const color = (id: string, gRows: CompareResultRow[], c: string): string =>
       look.lineColor !== AUTO
         ? look.lineColor
-        : comparisons.length === 1
-          ? { up: upColor, down: downColor, none: noneColor }[
-              geneEffect(rows.filter((r) => r.comparison === c))
-            ]
-          : CATEGORICAL[comparisons.indexOf(c) % CATEGORICAL.length]
+        : multi
+          ? CATEGORICAL[ids.indexOf(id) % CATEGORICAL.length]
+          : comparisons.length === 1
+            ? { up: upColor, down: downColor, none: noneColor }[
+                geneEffect(gRows.filter((r) => r.comparison === c))
+              ]
+            : CATEGORICAL[comparisons.indexOf(c) % CATEGORICAL.length]
+    // Several genes over several comparisons: the gene sets the colour, the comparison the dash.
+    const dash = (c: string): string | undefined =>
+      multi && comparisons.length > 1 ? DASHES[comparisons.indexOf(c) % DASHES.length] : undefined
+    // A series' legend name: its comparison, or with several genes the gene (and comparison).
+    const nameOf = (id: string, c: string): string =>
+      multi ? (comparisons.length > 1 ? `${label(id)} · ${c}` : label(id)) : c
     const pointColor = (line: string): string => (look.pointColor !== AUTO ? look.pointColor : line)
     const errorColor = (line: string): string => (look.errorColor !== AUTO ? look.errorColor : line)
     const traces: Record<string, unknown>[] = []
     const shapes: Record<string, unknown>[] = []
     const curves = rows.filter((r) => r.curve && r.curve.axis === axis)
+    const responses = rows.filter((r) => r.rs?.axis === axis)
 
-    if (curves.length) {
-      for (const r of curves) {
-        const c = r.curve!
-        const col = color(r.comparison)
-        const xs: number[] = []
-        const ys: number[] = []
-        for (let i = 0; i < SAMPLES; i++) {
-          const lx = c.xMin + ((c.xMax - c.xMin) * i) / (SAMPLES - 1)
-          xs.push(10 ** lx)
-          ys.push(Math.log2(logistic(lx, c)))
+    for (const id of ids) {
+      const gRows = rowsOf.get(id) ?? []
+      const geneStd = stdOf.get(id) ?? []
+      // The gene's name in the hover. (No gene identity on the traces: these are lines and their
+      // points, not gene points — linked selection mustn't emphasise them as a volcano's.)
+      const who = multi ? { title: label(id) } : {}
+      if (responses.length) {
+        // The response surface method: the chosen line, the level means it was fitted to, and (when
+        // shown) the 4PL's midpoint (no band — none is estimated for it yet).
+        for (const r of gRows.filter((r) => r.rs?.axis === axis)) {
+          const c = responseCurve(r, model)
+          if (!c) continue
+          const col = color(id, gRows, r.comparison)
+          const what = c.drawn === 'curve' ? '4PL' : 'spline'
+          traces.push({
+            type: 'scatter',
+            mode: 'lines',
+            name: nameOf(id, r.comparison),
+            x: c.x,
+            y: c.y,
+            line: { color: col, width: look.lineWidth, dash: dash(r.comparison) },
+            opacity: look.lineOpacity,
+            hovertemplate:
+              tooltip(
+                {
+                  ...who,
+                  conds: [
+                    ['comparison', r.comparison],
+                    [axis, '%{x:.3g}']
+                  ],
+                  values: [[`${what} log₂ vs control`, '%{y:.3f}']]
+                },
+                p.textMuted
+              ) + `<extra></extra>`
+          })
+          if (look.points && c.points.length)
+            traces.push({
+              type: 'scatter',
+              mode: 'markers',
+              name: `${nameOf(id, r.comparison)} (level means)`,
+              showlegend: false,
+              x: c.points.map((q) => q.x),
+              y: c.points.map((q) => q.y),
+              marker: {
+                color: pointColor(col),
+                size: look.pointSize,
+                opacity: look.pointOpacity,
+                line: { color: p.panel, width: 1 }
+              },
+              hovertemplate:
+                tooltip(
+                  {
+                    ...who,
+                    conds: [
+                      ['comparison', r.comparison],
+                      [axis, '%{x:.3g}']
+                    ],
+                    values: [['mean log₂ vs control', '%{y:.3f}']]
+                  },
+                  p.textMuted
+                ) + `<extra></extra>`
+            })
+          if (look.ec50Line && c.mid != null)
+            shapes.push({
+              type: 'line',
+              x0: c.mid,
+              x1: c.mid,
+              yref: 'paper',
+              y0: 0,
+              y1: 1,
+              line: { color: col, width: 1, dash: 'dot' }
+            })
         }
-        // The measured points — every replicate — from the Clean data the fit ran on (any result),
-        // else from those kept with the fit (newer runs).
-        const got = curvePointsFromStd(r, geneStd, axis) ?? c
-        const pts = (got.x ?? []).map((x, i) => ({ x: 10 ** x, ratio: got.y?.[i] ?? NaN }))
-        // The 4PL's 95% confidence band, under the curve: a shaded band along it, or whiskers on it
-        // at the tested doses, capped (fitError); an unbounded stretch is said in the hover.
-        const e = look.errors && range ? fitError(c, got, look.errorStyle, cap(range)) : null
-        const noBand = e?.unbounded
-          ? "<br><i>band unbounded — the data don't constrain this fit</i>"
-          : ''
-        // Every curve is drawn as its 4PL (the volcano's estimate); one whose F-test doesn't reject
-        // flat says so — its final model (CompareResultRow.model) is M0.
-        const modelNote = r.model === 'M0' ? "<br><i>F-test doesn't reject flat (model M0)</i>" : ''
-        traces.push({
-          type: 'scatter',
-          mode: 'lines',
-          name: r.comparison,
-          x: xs,
-          y: ys,
-          line: { color: col, width: look.lineWidth },
-          opacity: look.lineOpacity,
-          hovertemplate: `${axis}=%{x:.3g}<br>fit log₂ ratio=%{y:.3f}${modelNote}${noBand}<extra>${r.comparison}</extra>`
-        })
-        if (e)
-          traces.unshift(
-            ...errorTraces(
-              e.x,
-              e.mid,
-              e.lo,
-              e.hi,
-              withAlpha(errorColor(col), look.errorOpacity),
-              look.errorStyle
-            )
-          )
-        if (look.points && pts.length)
+      } else if (curves.length) {
+        for (const r of gRows.filter((r) => r.curve && r.curve.axis === axis)) {
+          const c = r.curve!
+          const col = color(id, gRows, r.comparison)
+          const at = curveSampleX(c, SAMPLES)
+          const xs = at.map((lx) => 10 ** lx)
+          const ys = at.map((lx) => Math.log2(logistic(lx, c)))
+          // The measured points — every replicate — the fit was made on (see curvePoints).
+          const got = curvePoints(r, geneStd, axis)
+          const pts = (got.x ?? []).map((x, i) => ({ x: 10 ** x, ratio: got.y?.[i] ?? NaN }))
+          // The 4PL's 95% confidence band, under the curve: a shaded band along it, or whiskers on
+          // it at the tested doses, capped (fitError); an unbounded stretch is said in the hover.
+          const e = look.errors && range ? fitError(c, got, look.errorStyle, cap(range)) : null
+          const noBand = e?.unbounded
+            ? "<br><i>band unbounded — the data don't constrain this fit</i>"
+            : ''
+          // Every curve is drawn as its 4PL (the volcano's estimate); one whose F-test doesn't
+          // reject flat says so — its final model (CompareResultRow.model) is M0.
+          const modelNote =
+            r.model === 'M0' ? "<br><i>F-test doesn't reject flat (model M0)</i>" : ''
           traces.push({
             type: 'scatter',
-            mode: 'markers',
-            name: `${r.comparison} (measured)`,
-            showlegend: false,
-            x: pts.map((q) => q.x),
-            y: pts.map((q) => (q.ratio > 0 ? Math.log2(q.ratio) : null)),
-            marker: {
-              color: pointColor(col),
-              size: look.pointSize,
-              opacity: look.pointOpacity,
-              line: { color: p.panel, width: 1 }
-            },
-            hovertemplate: `${axis}=%{x:.3g}<br>log₂ ratio=%{y:.3f}<extra>${r.comparison}</extra>`
+            mode: 'lines',
+            name: nameOf(id, r.comparison),
+            x: xs,
+            y: ys,
+            line: { color: col, width: look.lineWidth, dash: dash(r.comparison) },
+            opacity: look.lineOpacity,
+            hovertemplate:
+              tooltip(
+                {
+                  ...who,
+                  conds: [
+                    ['comparison', r.comparison],
+                    [axis, '%{x:.3g}']
+                  ],
+                  values: [['fit log₂ ratio', '%{y:.3f}']]
+                },
+                p.textMuted
+              ) + `${modelNote}${noBand}<extra></extra>`
           })
-        // EC50, where it falls within the tested doses — a 4PL's only (M0 has none).
-        const ec50 = -c.pec50
-        if (ec50 >= c.xMin && ec50 <= c.xMax)
-          shapes.push({
-            type: 'line',
-            x0: 10 ** ec50,
-            x1: 10 ** ec50,
-            yref: 'paper',
-            y0: 0,
-            y1: 1,
-            line: { color: col, width: 1, dash: 'dot' }
-          })
-      }
-    } else {
-      // A t-test: its fold change at each level, joined, with the fold change's SE as its error.
-      for (const c of comparisons) {
-        const pts = rows
-          .filter((r) => r.comparison === c && r[axis] != null && r.log2FC != null)
-          .sort((a, b) => (a[axis] as number) - (b[axis] as number))
-        if (!pts.length) continue
-        const col = color(c)
-        const xs = pts.map((r) => String(r[axis]))
-        // The fold change's SE, under the line.
-        if (look.errors && pts.some((r) => r.fcSE != null))
-          traces.push(
-            ...errorTraces(
-              xs,
-              pts.map((r) => r.log2FC as number),
-              pts.map((r) => (r.log2FC as number) - (r.fcSE ?? 0)),
-              pts.map((r) => (r.log2FC as number) + (r.fcSE ?? 0)),
-              withAlpha(errorColor(col), look.errorOpacity),
-              look.errorStyle
+          if (e)
+            traces.unshift(
+              ...errorTraces(
+                e.x,
+                e.mid,
+                e.lo,
+                e.hi,
+                withAlpha(errorColor(col), look.errorOpacity),
+                look.errorStyle
+              )
             )
-          )
-        traces.push({
-          type: 'scatter',
-          mode: 'lines',
-          name: c,
-          x: xs,
-          y: pts.map((r) => r.log2FC),
-          line: { color: col, width: look.lineWidth },
-          opacity: look.lineOpacity,
-          hovertemplate: `${axis}=%{x}<br>log₂FC=%{y:.3f}<extra>${c}</extra>`
-        })
-        // The replicates behind each mean, on the same log₂ scale as the line.
-        const rx: string[] = []
-        const ry: number[] = []
-        for (const r of pts)
-          for (const y of replicateLog2FCs(r, geneStd)) {
-            rx.push(String(r[axis]))
-            ry.push(y)
-          }
-        if (look.points && rx.length)
+          if (look.points && pts.length)
+            traces.push({
+              type: 'scatter',
+              mode: 'markers',
+              name: `${nameOf(id, r.comparison)} (measured)`,
+              showlegend: false,
+              x: pts.map((q) => q.x),
+              y: pts.map((q) => (q.ratio > 0 ? Math.log2(q.ratio) : null)),
+              marker: {
+                color: pointColor(col),
+                size: look.pointSize,
+                opacity: look.pointOpacity,
+                line: { color: p.panel, width: 1 }
+              },
+              hovertemplate:
+                tooltip(
+                  {
+                    ...who,
+                    conds: [
+                      ['comparison', r.comparison],
+                      [axis, '%{x:.3g}']
+                    ],
+                    values: [['log₂ ratio', '%{y:.3f}']]
+                  },
+                  p.textMuted
+                ) + `<extra></extra>`
+            })
+          // EC50 (when shown), where it falls within the tested doses — a 4PL's only (M0 has none).
+          const ec50 = -c.pec50
+          if (look.ec50Line && ec50 >= c.xMin && ec50 <= c.xMax)
+            shapes.push({
+              type: 'line',
+              x0: 10 ** ec50,
+              x1: 10 ** ec50,
+              yref: 'paper',
+              y0: 0,
+              y1: 1,
+              line: { color: col, width: 1, dash: 'dot' }
+            })
+        }
+      } else {
+        // A t-test: its fold change at each level, joined, with the fold change's SE as its error.
+        for (const c of comparisons) {
+          const pts = gRows
+            .filter((r) => r.comparison === c && r[axis] != null && r.log2FC != null)
+            .sort((a, b) => (a[axis] as number) - (b[axis] as number))
+          if (!pts.length) continue
+          const col = color(id, gRows, c)
+          const xs = pts.map((r) => String(r[axis]))
+          // The fold change's SE, under the line.
+          if (look.errors && pts.some((r) => r.fcSE != null))
+            traces.push(
+              ...errorTraces(
+                xs,
+                pts.map((r) => r.log2FC as number),
+                pts.map((r) => (r.log2FC as number) - (r.fcSE ?? 0)),
+                pts.map((r) => (r.log2FC as number) + (r.fcSE ?? 0)),
+                withAlpha(errorColor(col), look.errorOpacity),
+                look.errorStyle
+              )
+            )
           traces.push({
             type: 'scatter',
-            mode: 'markers',
-            name: `${c} (replicates)`,
-            showlegend: false,
-            x: rx,
-            y: ry,
-            marker: {
-              color: pointColor(col),
-              size: look.pointSize,
-              opacity: look.pointOpacity,
-              line: { color: p.panel, width: 1 }
-            },
-            hovertemplate: `${axis}=%{x}<br>replicate log₂FC=%{y:.3f}<extra>${c}</extra>`
+            mode: 'lines',
+            name: nameOf(id, c),
+            x: xs,
+            y: pts.map((r) => r.log2FC),
+            line: { color: col, width: look.lineWidth, dash: dash(c) },
+            opacity: look.lineOpacity,
+            hovertemplate:
+              tooltip(
+                {
+                  ...who,
+                  conds: [
+                    ['comparison', c],
+                    [axis, '%{x}']
+                  ],
+                  values: [['log₂FC', '%{y:.3f}']]
+                },
+                p.textMuted
+              ) + `<extra></extra>`
           })
+          // The replicates behind each mean, on the same log₂ scale as the line.
+          const rx: string[] = []
+          const ry: number[] = []
+          for (const r of pts)
+            for (const y of replicateLog2FCs(r, geneStd)) {
+              rx.push(String(r[axis]))
+              ry.push(y)
+            }
+          if (look.points && rx.length)
+            traces.push({
+              type: 'scatter',
+              mode: 'markers',
+              name: `${nameOf(id, c)} (replicates)`,
+              showlegend: false,
+              x: rx,
+              y: ry,
+              marker: {
+                color: pointColor(col),
+                size: look.pointSize,
+                opacity: look.pointOpacity,
+                line: { color: p.panel, width: 1 }
+              },
+              hovertemplate:
+                tooltip(
+                  {
+                    ...who,
+                    conds: [
+                      ['comparison', c],
+                      [axis, '%{x}']
+                    ],
+                    values: [['replicate log₂FC', '%{y:.3f}']]
+                  },
+                  p.textMuted
+                ) + `<extra></extra>`
+            })
+        }
       }
     }
+    // A t-test's levels as categories, numerically ordered across every gene drawn.
+    const cats = [...new Set(rows.map((r) => r[axis]).filter((v): v is number => v != null))]
+      .sort((a, b) => a - b)
+      .map(String)
     const lay: Record<string, unknown> = {
       ...plotBase(p),
       showlegend: traces.filter((t) => t.showlegend !== false).length > 1,
       legend: { yanchor: 'middle', y: 0.5 },
       title: title ? { text: title, font: { size: 13 } } : undefined,
       // Log dose: one tick per decade (Plotly would otherwise label 2s and 5s in between).
-      xaxis: curves.length
-        ? { ...axisBase(p), title: axisLabel ?? axis, type: 'log', dtick: 1 }
-        : { ...axisBase(p), title: axisLabel ?? axis, type: 'category' },
+      xaxis:
+        curves.length || responses.length
+          ? { ...axisBase(p), title: axisLabel ?? axis, type: 'log', dtick: 1 }
+          : {
+              ...axisBase(p),
+              title: axisLabel ?? axis,
+              type: 'category',
+              categoryorder: 'array',
+              categoryarray: cats
+            },
+      // Titled as the global view's: the fold change, naming its comparison when the rows share one.
       yaxis: {
         ...axisBase(p),
-        title: curves.length ? 'log₂ ratio to control' : 'log₂FC',
+        title: comparisonOf(rows) ? `log₂FC · ${comparisonOf(rows)}` : 'log₂FC',
         zeroline: true,
         // Fixed to the Compare-wide range when one is given (see yRange); otherwise autorange.
         ...(range ? { range, autorange: false } : null)
@@ -394,24 +542,31 @@ export function DRFocusView({
     return { data: traces, layout: lay }
   }, [
     rows,
+    ids,
+    rowsOf,
+    stdOf,
+    displayMap,
     axis,
     axisLabel,
     title,
     mode,
-    geneStd,
     look,
     yRange,
     geneRange,
     upColor,
     downColor,
-    noneColor
+    noneColor,
+    model
   ])
 
   if (!data.length)
     return (
       <div style={{ padding: 16, fontSize: 12, color: 'var(--text-muted, #888)' }}>
-        No response for this gene here.
+        {ids.length > 1 ? 'No response for these genes here.' : 'No response for this gene here.'}
       </div>
     )
   return <PlotlyChart data={data} layout={layout} />
 }
+
+/** Line dashes telling comparisons apart when several genes share the colours. */
+const DASHES = ['solid', 'dash', 'dot', 'dashdot', 'longdash']

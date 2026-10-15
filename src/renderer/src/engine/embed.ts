@@ -207,8 +207,18 @@ function tsne2D(X: number[][], perplexity: number): Array<[number, number]> {
   return Y.map((y) => [y[0], y[1]] as [number, number])
 }
 
-/** Classical PCA via the sample Gram matrix (nS×nS) — exact for the few samples here. */
+/** Past this many samples, PCA finds only its leading components (embedPCALarge) — the exact
+ *  decomposition of the samples × samples matrix grows with the cube of the sample count. */
+export const PCA_EXACT_MAX = 500
+/** The components the large-sample PCA resolves (the scree's bars), and its extra search
+ *  directions (oversampling — they make the leading ones converge in fewer passes). */
+const PCA_TOP = 20
+const PCA_OVERSAMPLE = 10
+
+/** Classical PCA via the sample Gram matrix (nS×nS) — exact for the few samples here; with more
+ *  than PCA_EXACT_MAX, the leading components only (embedPCALarge). */
 function embedPCA(matrix: number[][]): Embedding {
+  if (matrix.length > PCA_EXACT_MAX) return embedPCALarge(matrix)
   const nS = matrix.length
   const G: number[][] = Array.from({ length: nS }, () => new Array(nS).fill(0))
   for (let i = 0; i < nS; i++) {
@@ -232,6 +242,123 @@ function embedPCA(matrix: number[][]): Embedding {
     varExplained: [Math.max(values[k1], 0) / total, Math.max(values[k2], 0) / total],
     scree,
     loadings: pcaLoadings(matrix, vectors, values, k1, k2)
+  }
+}
+
+/**
+ * PCA for many samples: the leading PCA_TOP components by subspace iteration on the centred data
+ * (randomized SVD with power passes, Halko et al. 2011), never forming the samples × samples
+ * matrix. Each pass multiplies the data through once each way — cost grows with samples ×
+ * features, not with the cube of the samples. Iterates until the leading eigenvalues settle.
+ *
+ * The scree's fractions are exact for the components it shows: each over the TOTAL variance (the
+ * sum of squares of the centred data), so they don't sum to 1 — the rest is in the components
+ * past the first PCA_TOP.
+ */
+function embedPCALarge(matrix: number[][]): Embedding {
+  const n = matrix.length
+  const p = matrix[0].length
+  const l = Math.min(PCA_TOP + PCA_OVERSAMPLE, n, p)
+  const rand = mulberry32(7)
+  // Q (n × l, column-major as l columns): orthonormal basis of the current subspace.
+  const orth = (cols: Float64Array[]): Float64Array[] => {
+    // modified Gram–Schmidt; a column that collapses is replaced by a fresh random one
+    for (let j = 0; j < cols.length; j++) {
+      const c = cols[j]
+      for (let pass = 0; pass < 2; pass++)
+        for (let k = 0; k < j; k++) {
+          const q = cols[k]
+          let d = 0
+          for (let i = 0; i < n; i++) d += q[i] * c[i]
+          for (let i = 0; i < n; i++) c[i] -= d * q[i]
+        }
+      let norm = 0
+      for (let i = 0; i < n; i++) norm += c[i] * c[i]
+      norm = Math.sqrt(norm)
+      if (norm < 1e-12) {
+        for (let i = 0; i < n; i++) c[i] = rand() - 0.5
+        j-- // redo this column
+        continue
+      }
+      for (let i = 0; i < n; i++) c[i] /= norm
+    }
+    return cols
+  }
+  // W = Xᵀ Q (p × l, as l columns of length p), and Y = X W (n × l).
+  const xtq = (Q: Float64Array[]): Float64Array[] =>
+    Q.map((q) => {
+      const w = new Float64Array(p)
+      for (let i = 0; i < n; i++) {
+        const qi = q[i]
+        if (qi === 0) continue
+        const row = matrix[i]
+        for (let f = 0; f < p; f++) w[f] += qi * row[f]
+      }
+      return w
+    })
+  const xw = (W: Float64Array[]): Float64Array[] =>
+    W.map((w) => {
+      const y = new Float64Array(n)
+      for (let i = 0; i < n; i++) {
+        const row = matrix[i]
+        let acc = 0
+        for (let f = 0; f < p; f++) acc += row[f] * w[f]
+        y[i] = acc
+      }
+      return y
+    })
+  // Start: Q = orth(X Ω), Ω a seeded random p × l.
+  const omega = Array.from({ length: l }, () => {
+    const w = new Float64Array(p)
+    for (let f = 0; f < p; f++) w[f] = rand() - 0.5
+    return w
+  })
+  let Q = orth(xw(omega))
+  let values: number[] = []
+  let V: number[][] = []
+  const top = Math.min(PCA_TOP, l)
+  for (let pass = 0; pass < 40; pass++) {
+    const W = xtq(Q)
+    // Rayleigh–Ritz: T = Qᵀ X Xᵀ Q = Wᵀ W (l × l), its eigenpairs the subspace's best estimates.
+    const T: number[][] = W.map((a) =>
+      W.map((b) => {
+        let acc = 0
+        for (let f = 0; f < p; f++) acc += a[f] * b[f]
+        return acc
+      })
+    )
+    const eig = jacobiEigenSymmetric(T)
+    const order = eig.values.map((_, i) => i).sort((a, b) => eig.values[b] - eig.values[a])
+    const next = order.map((k) => eig.values[k])
+    const settled =
+      values.length > 0 &&
+      next
+        .slice(0, top)
+        .every((v, k) => Math.abs(v - values[k]) <= 1e-9 * Math.max(next[0], 1e-300))
+    values = next
+    V = eig.vectors.map((row) => order.map((k) => row[k]))
+    if (settled) break
+    Q = orth(xw(W))
+  }
+  // Sample-space eigenvectors U = Q V (n × l), as rows per sample (what pcaLoadings reads).
+  const U: number[][] = Array.from({ length: n }, (_, i) =>
+    values.map((_, k) => {
+      let acc = 0
+      for (let j = 0; j < l; j++) acc += Q[j][i] * V[j][k]
+      return acc
+    })
+  )
+  let total = 0
+  for (const row of matrix) for (let f = 0; f < p; f++) total += row[f] * row[f]
+  total = total || 1
+  const lam = (k: number): number => Math.max(values[k] ?? 0, 0)
+  const score = (i: number, k: number): number => U[i][k] * Math.sqrt(lam(k))
+  const k2 = l > 1 ? 1 : 0
+  return {
+    coords: U.map((_, i) => [score(i, 0), score(i, k2)]),
+    varExplained: [lam(0) / total, lam(k2) / total],
+    scree: values.slice(0, top).map((_, k) => lam(k) / total),
+    loadings: pcaLoadings(matrix, U, values, 0, k2)
   }
 }
 

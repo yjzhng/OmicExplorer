@@ -42,9 +42,12 @@ export interface UpstreamFacts {
   kind?: NodeKind
   result?: NodeResult
   axes: AxisAvail
-  /** the upstream is a Compare set to curve fit: one fitted curve per gene, no group means and
-   *  no per-dose rows */
+  /** the upstream is a Curve fit: one fitted curve per gene, no group means and no per-dose rows */
   curve?: boolean
+  /** a Curve fit's method: 'spline' = the response surface method (no CurveCurator 4PL / decoys),
+   *  and whether it fits dose × time surfaces (one row per gene × compound, no single axis) */
+  detection?: '4pl' | 'spline'
+  surface?: boolean
 }
 /** No upstream wired: nothing can be ruled out. */
 export const UNWIRED: UpstreamFacts = { axes: { dose: true, time: true } }
@@ -67,41 +70,33 @@ export function dominantTaxon(ann: Record<string, Record<string, string>>): numb
   return best
 }
 
-/** A plot built from per-dose rows can't take a curve fit's whole curves. */
-const PER_DOSE =
-  'Needs one result per dose — a curve fit gives one fitted curve per gene (see Dose-response)'
-/** A plot built from the two groups' means can't take a curve fit, which has none. */
-const GROUP_MEANS =
-  'Needs the two groups’ means — a curve fit gives one fitted curve per gene instead'
-
-/** Potency and the fit residuals are a fitted curve's: a t-test or ANOVA has none. */
-const CURVE_ONLY = 'Needs a curve fit — set the Compare’s analysis to Curve fit'
+// Which plots take a Curve fit is their `acceptsFrom` (a fitted curve has no per-dose rows or group
+// means, so MA, Scatter, Bubble and Time & Dose-response don't; Potency and the residual plots take
+// nothing else).
+/** The residual plots are CurveCurator's QC of its 4PL fits. */
+const CC_ONLY =
+  'Needs the CurveCurator method’s curves — set the Curve fit’s model to 4PL, over dose or time'
+/** Dose × time surfaces are drawn by the Response plot, not as single curves. */
+const SURFACES =
+  'A dose × time surface isn’t one curve — show it in a Dose & Time response plot (or fit curves over one axis)'
 
 const REQUIREMENTS: Partial<Record<NodeKind, Requirement>> = {
-  potency: (u) => (u.kind === 'compare' && u.curve === false ? CURVE_ONLY : null),
-  curveMad: (u) => (u.kind === 'compare' && u.curve === false ? CURVE_ONLY : null),
-  ma: (u) => (u.curve ? GROUP_MEANS : null),
-  // From a Compare it plots mean1 vs mean2; from a Contrast, FC1 vs FC2.
-  scatter: (u) => (u.kind === 'compare' && u.curve ? GROUP_MEANS : null),
   dr: (u, cfg) => {
+    if (u.surface) return SURFACES
     const axis = (cfg as { axis?: 'dose' | 'time' })?.axis === 'time' ? 'time' : 'dose'
     // A curve fit's rows are whole curves over the axis (no per-level rows), each naming it.
-    if (u.result?.kind === 'compare' && u.result.cmp.rows.some((r) => r.curve?.axis === axis))
+    if (
+      u.result?.kind === 'compare' &&
+      u.result.cmp.rows.some((r) => (r.curve?.axis ?? r.rs?.axis) === axis)
+    )
       return null
     return needAxis(u, axis)
   },
+  curveMad: (u) => (u.detection === 'spline' || u.surface ? CC_ONLY : null),
+  response: (u) => (u.surface ? null : 'Needs dose × time surfaces — a Curve fit over dose × time'),
   tdr: (u) =>
-    u.curve
-      ? PER_DOSE
-      : u.axes.dose && u.axes.time
-        ? null
-        : 'Needs both dose and time conditions in the data',
-  bubble: (u) =>
-    u.curve
-      ? PER_DOSE
-      : u.axes.dose || u.axes.time
-        ? null
-        : 'Needs a dose or time condition in the data',
+    u.axes.dose && u.axes.time ? null : 'Needs both dose and time conditions in the data',
+  bubble: (u) => (u.axes.dose || u.axes.time ? null : 'Needs a dose or time condition in the data'),
   // Met by ANY term set the genes carry, not just the saved one: the plot falls back through
   // ENRICH_FALLBACK to one they have (resolveEnrichSource), so only no annotations at all blocks it.
   enrich: (u, cfg) => {
@@ -109,7 +104,7 @@ const REQUIREMENTS: Partial<Record<NodeKind, Requirement>> = {
     const present = enrichSourcesPresent(u.result.annotationMap ?? {}, u.result.keggCategories)
     if (resolveEnrichSource((cfg as EnrichConfig)?.source, present)) return null
     const names = ENRICH_FALLBACK.map((s) => ENRICH_SOURCE_LABEL[s]).join(', ')
-    return `No enrichment annotations on these genes (${names}) — fetch them in the interactive import (Metadata step), then re-run Clean data and Compare.`
+    return `No enrichment annotations on these genes (${names}) — fetch them in the interactive import (Metadata step), then re-run Clean data and the Compare / Curve fit.`
   },
   string: (u, cfg) => {
     if (u.result?.kind !== 'compare') return null
@@ -117,7 +112,7 @@ const REQUIREMENTS: Partial<Record<NodeKind, Requirement>> = {
     if (species && species > 0) return null
     return dominantTaxon(u.result.annotationMap ?? {}) > 0
       ? null
-      : 'No species detected — fetch annotations in the interactive import (Metadata step), which reads the organism, then re-run Standardize and Compare.'
+      : 'No species detected — fetch annotations in the interactive import (Metadata step), which reads the organism, then re-run Standardize and the Compare / Curve fit.'
   }
 }
 
@@ -135,34 +130,41 @@ export function unmetRequirement(kind: NodeKind, config: unknown, u: UpstreamFac
 export function upstreamFacts(g: AxisGraph, upstreamId: string | undefined): UpstreamFacts {
   if (!upstreamId) return UNWIRED
   const n = g.nodes.find((x) => x.id === upstreamId)
+  const curve = isCurveFit(n)
+  const cfg = curve && n && isStep(n) ? (n.data.config as CompareConfig) : undefined
+  const spline = cfg?.detection === 'spline'
   return {
     kind: n && isStep(n) ? n.data.kind : undefined,
     result: g.results[upstreamId],
     axes: axisAvailFor(g, upstreamId),
-    curve: isCurveFit(n)
+    curve,
+    ...(cfg ? { detection: spline ? 'spline' : '4pl', surface: !!cfg.surface } : null)
   }
 }
 
 /** Facts from a result alone (no graph walk) — for the results panel, where the result is in hand. */
 export function factsOf(result: NodeResult | undefined): UpstreamFacts {
-  // A curve fit's rows all carry their curve, so the first row tells.
-  const curve = result?.kind === 'compare' && result.cmp.rows[0]?.curve != null
+  // A curve fit's rows all carry their curve, so the first row tells; its result is a comparison
+  // table like a Compare's, but it came from a Curve fit tile.
+  const first = result?.kind === 'compare' ? result.cmp.rows[0] : undefined
+  const curve = first?.curve != null || first?.rs != null
   return {
-    kind: isDataResult(result) ? result.kind : undefined,
+    kind: curve ? 'curveFit' : isDataResult(result) ? result.kind : undefined,
     result,
     axes: axisAvailFromResult(result),
-    curve
+    curve,
+    ...(first?.rs
+      ? {
+          detection: first.rs.detector === '4pl' ? ('4pl' as const) : ('spline' as const),
+          surface: first.rs.axis === 'surface'
+        }
+      : null)
   }
 }
 
-/** Whether a node is a Compare set to curve fit (by its config, so known before it has run). */
+/** Whether a node is a Curve fit (by its kind, so known before it has run). */
 export function isCurveFit(n: GraphNode | undefined): boolean {
-  return (
-    !!n &&
-    isStep(n) &&
-    n.data.kind === 'compare' &&
-    (n.data.config as CompareConfig).analysis === 'curve_fit'
-  )
+  return !!n && isStep(n) && n.data.kind === 'curveFit'
 }
 
 /** Drop plot-menu entries whose requirement the upstream can't meet (each entry checked with its

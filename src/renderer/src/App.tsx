@@ -34,7 +34,8 @@ import { menuParts, useGeneMenuTabs } from './dashboard/useGeneMenuTabs'
 import { GeneSelectMenu } from './ui/GeneSelectMenu'
 import { FormWorkflow } from './form/FormWorkflow'
 import { UserGuide } from './ui/UserGuide'
-import { RELEASES_URL, REPO_URL, useUpdateCheck, type UpdateInfo } from './ui/useUpdateCheck'
+import { SaveAsMenu } from './ui/SaveAsMenu'
+import { REPO_URL, useUpdateCheck, type UpdateInfo } from './ui/useUpdateCheck'
 import { edgeTypes } from './graph/GraphEdge'
 import { FRAME_LABEL_H, FRAME_PAD, type FrameData } from './graph/FrameNode'
 import { frameDepths, frameTiles, outermostFrame, topFullFrames } from './graph/frames'
@@ -67,9 +68,15 @@ import { ToggleSwitch } from './ui/ToggleSwitch'
 import { FreezeNotice } from './ui/FreezeNotice'
 import { useAppView, type AppView } from './ui/useAppView'
 import { DPI_CHOICES, useAppSettings } from './ui/useAppSettings'
+import { CategoricalLabel, PaletteSelect } from './ui/PaletteSelect'
+import { Select } from './ui/Select'
+import { InfoTip } from './ui/InfoTip'
+import { CategoryBuilder, SpectrumBuilder } from './ui/PaletteBuilder'
+import { categoricalIds, PALETTE_ROLES, type CategoricalId } from './ui/palettes'
 import { useUiTheme } from './ui/useUiTheme'
 import appLogo from './assets/logo-256.png'
 import { ProjectFolderViewer } from './ui/ProjectFolderViewer'
+import { AnnotationCache } from './ui/AnnotationCache'
 
 /** Bottom-center "New step" button; toggles placement mode (becomes "Cancel" while placing). */
 function NewStep({
@@ -886,11 +893,98 @@ function Canvas() {
 }
 
 /**
- * Settings → Plots → Defaults: the settings a NEW tile of a plot kind starts with. It's the same
+ * Settings → Customisation → Defaults: the settings a NEW tile of a plot kind starts with. It's the same
  * config panel a tile shows, bound to the stored defaults instead of a node — so anything a tile
  * can be set to can be a default. Kept in app settings (not the project), so it holds across
  * projects and updates; existing tiles are never touched.
  */
+function PaletteSettings(): ReactNode {
+  const palettes = useAppSettings((s) => s.palettes)
+  const categorical = useAppSettings((s) => s.categorical)
+  const customSpectrum = useAppSettings((s) => s.customSpectrum)
+  const customCategorical = useAppSettings((s) => s.customCategorical)
+  const update = useAppSettings((s) => s.update)
+  // One row per role: its name (what it's about behind an (i)), then its selector.
+  const row = (key: string, label: string, info: string, control: ReactNode): ReactNode => (
+    <div key={key} style={styles.paletteRow}>
+      <span style={styles.paletteRowLabel}>
+        {label}
+        <span style={{ marginLeft: 4, verticalAlign: 'middle' }}>
+          <InfoTip label={`About ${label}`}>{info}</InfoTip>
+        </span>
+      </span>
+      <div style={{ flex: '1 1 auto', minWidth: 0, maxWidth: 360 }}>{control}</div>
+    </div>
+  )
+  return (
+    <div style={{ marginBottom: 24 }}>
+      <div style={styles.settingsSubTitle}>
+        Default palettes
+        <span style={{ marginLeft: 4, verticalAlign: 'middle' }}>
+          <InfoTip label="About default palettes">
+            Each plot’s Automatic palette, by what it colours. A plot can still pick its own.
+          </InfoTip>
+        </span>
+      </div>
+      {PALETTE_ROLES.map(({ role, label, hint }) =>
+        row(
+          role,
+          label,
+          hint,
+          <PaletteSelect
+            value={palettes[role]}
+            onChange={(v) => v && update({ palettes: { ...palettes, [role]: v } })}
+          />
+        )
+      )}
+      {row(
+        'categorical',
+        'Categories',
+        'Groups and conditions: QC, bar plots, the heatmap’s category tracks, legends.',
+        <Select
+          value={categorical}
+          onChange={(v) => update({ categorical: v as CategoricalId })}
+          options={categoricalIds().map((id) => ({
+            value: id,
+            label: id,
+            render: <CategoricalLabel id={id} />
+          }))}
+        />
+      )}
+      <div style={{ ...styles.settingsSubTitle, marginTop: 20 }}>
+        Custom palettes
+        <span style={{ marginLeft: 4, verticalAlign: 'middle' }}>
+          <InfoTip label="About custom palettes">
+            Build your own spectrum and category palette. Once made, each is offered as “custom” in
+            every palette selector — here and in each plot’s settings.
+          </InfoTip>
+        </span>
+      </div>
+      {row(
+        'customSpectrum',
+        'Spectrum',
+        'Up to 5 colours, evenly spaced from the low end to the high end. Drag the marker between two colours to move where they blend half-way; double-click it to reset.',
+        // keyed on the applied palette: an Apply or Delete starts the draft afresh
+        <SpectrumBuilder
+          key={JSON.stringify(customSpectrum ?? null)}
+          value={customSpectrum}
+          onChange={(v) => update({ customSpectrum: v })}
+        />
+      )}
+      {row(
+        'customCategorical',
+        'Categories',
+        'Up to 20 colours, used in order for groups and conditions.',
+        <CategoryBuilder
+          key={JSON.stringify(customCategorical ?? null)}
+          value={customCategorical}
+          onChange={(v) => update({ customCategorical: v })}
+        />
+      )}
+    </div>
+  )
+}
+
 function PlotDefaults(): ReactNode {
   const KINDS = ALL_OPS.filter((k) => PLOT_CONFIG_KINDS.has(k))
   const [kind, setKind] = useState<NodeKind>(KINDS[0])
@@ -969,7 +1063,9 @@ function SettingsPopover({
   const uiStyle = useAppSettings((s) => s.uiStyle)
   const updateSettings = useAppSettings((s) => s.update)
   const DPI_OPTS = DPI_CHOICES.map((d) => ({ v: String(d), label: `${d} dpi` }))
-  const [active, setActive] = useState<'appearance' | 'plots' | 'export' | 'about'>('appearance')
+  const [active, setActive] = useState<'appearance' | 'plots' | 'export' | 'database' | 'about'>(
+    'appearance'
+  )
   const showDot = update.updateAvailable && !silenced
   const APPEARANCE = [
     { v: 'light', label: '☀ Light' },
@@ -978,8 +1074,9 @@ function SettingsPopover({
   ] as const
   const SECTIONS = [
     { id: 'appearance', title: 'Appearance', dot: false },
-    { id: 'plots', title: 'Plots', dot: false },
+    { id: 'plots', title: 'Customisation', dot: false },
     { id: 'export', title: 'Export', dot: false },
+    { id: 'database', title: 'Database', dot: false },
     { id: 'about', title: 'About', dot: showDot }
   ] as const
   /** A settings choice: the app's ToggleSwitch. */
@@ -1052,14 +1149,12 @@ function SettingsPopover({
                       </button>
                     )
                   })}
-                  {/* Custom: the label selects it (with its saved colour); the dot opens the app's
-                      colour picker — a pick also switches to it. */}
-                  <div
-                    style={{
-                      ...styles.accentSwatch,
-                      cursor: 'default',
-                      outline: accent === 'custom' ? `2px solid ${customAccent}` : 'none'
-                    }}
+                  {/* Custom: the whole chip opens the app's colour picker and selects it (with its
+                      saved colour) — a pick also switches to it. */}
+                  <span
+                    role="radio"
+                    aria-checked={accent === 'custom'}
+                    onClick={() => setAccent('custom')}
                   >
                     <ColorPicker
                       value={customAccent}
@@ -1067,28 +1162,25 @@ function SettingsPopover({
                       label="Custom accent colour"
                       title="Pick the custom colour"
                       triggerStyle={{
-                        ...styles.accentDot,
-                        background: customAccent,
-                        border: 'none',
-                        padding: 0,
-                        cursor: 'pointer',
-                        boxShadow: `0 0 0 1px ${UI.border}`
+                        ...styles.accentSwatch,
+                        outline: accent === 'custom' ? `2px solid ${customAccent}` : 'none'
                       }}
                     >
-                      {null}
+                      <span
+                        style={{
+                          ...styles.accentDot,
+                          background: customAccent,
+                          boxShadow: `0 0 0 1px ${UI.border}`
+                        }}
+                      />
+                      <span style={styles.accentLabel}>{ACCENT_LABELS.custom}</span>
                     </ColorPicker>
-                    <button
-                      role="radio"
-                      aria-checked={accent === 'custom'}
-                      onClick={() => setAccent('custom')}
-                      style={styles.accentLabelBtn}
-                    >
-                      {ACCENT_LABELS.custom}
-                    </button>
-                  </div>
+                  </span>
                 </div>
-                <div style={{ ...styles.settingsSubTitle, marginTop: 24 }}>Layout</div>
-                <div style={styles.layoutTiles} role="radiogroup" aria-label="Layout">
+                <div style={{ ...styles.settingsSubTitle, marginTop: 24 }}>
+                  Workflow editor mode
+                </div>
+                <div style={styles.layoutTiles} role="radiogroup" aria-label="Workflow editor mode">
                   {LAYOUTS.map((o) => {
                     const on = uiStyle === o.v
                     return (
@@ -1116,7 +1208,8 @@ function SettingsPopover({
               </>
             ) : active === 'plots' ? (
               <>
-                <h2 style={styles.settingsContentTitle}>Plots</h2>
+                <h2 style={styles.settingsContentTitle}>Customisation</h2>
+                <PaletteSettings />
                 <PlotDefaults />
               </>
             ) : active === 'export' ? (
@@ -1125,40 +1218,46 @@ function SettingsPopover({
                 {/* A tile's Copy and Download buttons act straight away (no window of their own):
                     Copy in this format/DPI; Download opens the OS save window for this format. */}
                 <div style={styles.settingsSubTitle}>Copy to clipboard</div>
-                <div style={styles.settingsFieldLabel}>Format</div>
-                {seg(
-                  copyFormat,
-                  [
-                    { v: 'png', label: 'PNG' },
-                    { v: 'svg', label: 'SVG' }
-                  ] as const,
-                  (v) => updateSettings({ copyFormat: v })
-                )}
-                <div style={styles.settingsHint}>
-                  {copyFormat === 'svg'
-                    ? 'SVG is copied as markup text — paste into a vector editor.'
-                    : 'PNG is copied as an image — paste into slides, documents or chat.'}
+                {/* format, then resolution in line to its right */}
+                <div style={styles.settingsInline}>
+                  <div>
+                    <div style={styles.settingsFieldLabel}>Format</div>
+                    {seg(
+                      copyFormat,
+                      [
+                        { v: 'png', label: 'PNG' },
+                        { v: 'svg', label: 'SVG' }
+                      ] as const,
+                      (v) => updateSettings({ copyFormat: v })
+                    )}
+                  </div>
+                  <div>
+                    <div style={styles.settingsFieldLabel}>Resolution</div>
+                    {seg(String(copyDpi), DPI_OPTS, (v) => updateSettings({ copyDpi: Number(v) }))}
+                  </div>
                 </div>
-                <div style={{ ...styles.settingsFieldLabel, marginTop: 16 }}>Resolution</div>
-                {seg(String(copyDpi), DPI_OPTS, (v) => updateSettings({ copyDpi: Number(v) }))}
-                <div style={styles.settingsHint}>PNG only — SVG is vector.</div>
 
                 <div style={{ ...styles.settingsSubTitle, marginTop: 24 }}>Download</div>
-                <div style={styles.settingsFieldLabel}>Plot format</div>
-                {seg(
-                  downloadFormat,
-                  [
-                    { v: 'svg', label: 'SVG' },
-                    { v: 'png', label: 'PNG' },
-                    { v: 'pdf', label: 'PDF' }
-                  ] as const,
-                  (v) => updateSettings({ downloadFormat: v })
-                )}
-                <div style={{ ...styles.settingsFieldLabel, marginTop: 16 }}>Resolution</div>
-                {seg(String(downloadDpi), DPI_OPTS, (v) =>
-                  updateSettings({ downloadDpi: Number(v) })
-                )}
-                <div style={styles.settingsHint}>PNG and PDF — SVG is vector.</div>
+                <div style={styles.settingsInline}>
+                  <div>
+                    <div style={styles.settingsFieldLabel}>Plot format</div>
+                    {seg(
+                      downloadFormat,
+                      [
+                        { v: 'svg', label: 'SVG' },
+                        { v: 'png', label: 'PNG' },
+                        { v: 'pdf', label: 'PDF' }
+                      ] as const,
+                      (v) => updateSettings({ downloadFormat: v })
+                    )}
+                  </div>
+                  <div>
+                    <div style={styles.settingsFieldLabel}>Resolution</div>
+                    {seg(String(downloadDpi), DPI_OPTS, (v) =>
+                      updateSettings({ downloadDpi: Number(v) })
+                    )}
+                  </div>
+                </div>
                 <div style={{ ...styles.settingsFieldLabel, marginTop: 16 }}>Table format</div>
                 {seg(
                   tableFormat,
@@ -1168,48 +1267,51 @@ function SettingsPopover({
                   ] as const,
                   (v) => updateSettings({ tableFormat: v })
                 )}
-                <div style={styles.settingsHint}>
-                  The download button opens the system save window in the folder you last saved to
-                  in this project (else the project&apos;s output folder).
-                </div>
+              </>
+            ) : active === 'database' ? (
+              <>
+                <h2 style={styles.settingsContentTitle}>Database</h2>
+                <AnnotationCache />
               </>
             ) : (
               <>
                 <h2 style={styles.settingsContentTitle}>About</h2>
                 {/* The namecard; the update status follows in full, so no tag on it here. */}
                 <AppCard update={update} showUpdate={false} />
-                <div style={styles.aboutStatus}>
-                  {update.updateAvailable ? (
-                    <>
-                      <div style={styles.aboutUpdate}>
-                        <span style={styles.aboutDot} /> Update available — v{update.latest}
-                      </div>
+                {/* Updates: check again, and what the check found. */}
+                <div style={{ ...styles.settingsSubTitle, marginTop: 24 }}>Updates</div>
+                <div style={styles.updateActions}>
+                  <button
+                    style={styles.updateButton}
+                    onClick={update.check}
+                    disabled={update.checking}
+                  >
+                    Check now
+                  </button>
+                  {update.checking ? (
+                    <span style={styles.aboutMuted}>Checking…</span>
+                  ) : update.updateAvailable ? (
+                    <span style={styles.aboutUpdate}>
+                      <span style={styles.aboutDot} /> v{update.latest} is available —{' '}
                       <a
                         href={update.releaseUrl}
                         target="_blank"
                         rel="noreferrer"
                         style={styles.aboutLink}
                       >
-                        Download the latest release →
+                        download
                       </a>
-                    </>
-                  ) : update.latest ? (
-                    <div style={styles.aboutMuted}>You&apos;re on the latest version.</div>
+                    </span>
+                  ) : update.failed ? (
+                    <span style={styles.aboutMuted}>Couldn’t check — try again later.</span>
                   ) : (
-                    <a
-                      href={RELEASES_URL}
-                      target="_blank"
-                      rel="noreferrer"
-                      style={styles.aboutLink}
-                    >
-                      Releases on GitHub →
-                    </a>
+                    <span style={styles.aboutMuted}>You’re on the latest version.</span>
                   )}
-                  <label style={styles.silenceRow}>
-                    <span>Silence update dot</span>
-                    <input type="checkbox" checked={silenced} onChange={onToggleSilence} />
-                  </label>
                 </div>
+                <label style={{ ...styles.silenceRow, marginTop: 14 }}>
+                  <span>Silence update dot</span>
+                  <input type="checkbox" checked={silenced} onChange={onToggleSilence} />
+                </label>
               </>
             )}
           </div>
@@ -1223,7 +1325,7 @@ function SettingsPopover({
 const LAYOUTS = [
   {
     v: 'flow' as const,
-    label: 'Flow',
+    label: 'Flowchart',
     hint: 'Workflow as a node canvas; results as a drag-and-drop dashboard.'
   },
   {
@@ -1233,7 +1335,7 @@ const LAYOUTS = [
   }
 ]
 
-/** Flow / Form, in the main nav after the workflow selector: the same setting as the Settings
+/** Flowchart / Form, in the main nav after the workflow selector: the same setting as the Settings
  *  tiles. */
 /** A nav dropdown's menu: drops open under its chip and lifts away on close (.oe-menu-in / -out,
  *  as the gene selector's) — staying mounted through its exit, then unmounting. */
@@ -1286,7 +1388,7 @@ function LayoutToggle() {
   // folder / workflow chip beside it.
   return (
     <ToggleSwitch
-      label="Layout"
+      label="Workflow editor mode"
       size="lg"
       tone="subtle"
       value={uiStyle}
@@ -1392,6 +1494,7 @@ function FolderChip() {
   const addFolder = useGraph((s) => s.addFolder)
   const deleteFolder = useGraph((s) => s.deleteFolder)
   const repathFolder = useGraph((s) => s.repathFolder)
+  const moveFolder = useGraph((s) => s.moveFolder)
   const [open, setOpen] = useState(false)
   const active = folders.find((f) => f.id === activeFolderId) ?? null
   const label = active ? (active.path ? active.name : 'Select folder…') : 'no folder'
@@ -1461,6 +1564,19 @@ function FolderChip() {
                   </>
                 )}
               </button>
+              {!noPath && !missing && (
+                <button
+                  style={styles.rowIconBtn}
+                  title="Change location… (moves the project data; copies the input files used)"
+                  aria-label="Change folder location"
+                  onClick={() => {
+                    void moveFolder(f.id)
+                    setOpen(false)
+                  }}
+                >
+                  <IconEdit />
+                </button>
+              )}
               {!noPath && (
                 <button
                   style={{ ...styles.rowIconBtn, color: '#e15759' }}
@@ -1700,6 +1816,7 @@ function ProjectMenu() {
   const recents = useGraph((s) => s.recentProjects)
   const openProject = useGraph((s) => s.openProject)
   const newProject = useGraph((s) => s.newProject)
+  const newFromTemplate = useGraph((s) => s.newFromTemplate)
   const forgetRecent = useGraph((s) => s.forgetRecent)
   const [open, setOpen] = useState(false)
 
@@ -1782,6 +1899,15 @@ function ProjectMenu() {
           }}
         >
           New project
+        </button>
+        <button
+          style={styles.menuAction}
+          onClick={() => {
+            void newFromTemplate()
+            setOpen(false)
+          }}
+        >
+          New project from template…
         </button>
       </NavMenu>
     </div>
@@ -1985,7 +2111,7 @@ function IconEdit() {
 function ControlChip() {
   const dirty = useGraph((s) => s.dirty)
   const saveProject = useGraph((s) => s.saveProject)
-  const saveProjectAs = useGraph((s) => s.saveProjectAs)
+  const [saveAsOpen, setSaveAsOpen] = useState(false)
   const canUndo = useGraph((s) => s.past.length > 0)
   const canRedo = useGraph((s) => s.future.length > 0)
   const undo = useGraph((s) => s.undo)
@@ -1993,6 +2119,20 @@ function ControlChip() {
   const saveError = useGraph((s) => s.saveError)
   const saveWarning = useGraph((s) => s.saveWarning)
   const clearSaveError = useGraph((s) => s.clearSaveError)
+  // Cmd/Ctrl+S saves, as the save button does (nothing to save, or a save running → no-op);
+  // with Shift it saves as a new project file (the save-as menu's first entry).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent): void => {
+      if (!(e.metaKey || e.ctrlKey) || e.altKey || e.key.toLowerCase() !== 's') return
+      e.preventDefault()
+      const s = useGraph.getState()
+      if (s.saving) return
+      if (e.shiftKey) void s.saveProjectAs()
+      else if (s.dirty) void s.saveProject()
+    }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [])
   return (
     <div style={{ ...styles.ctrlChip, position: 'relative' }}>
       {/* A failed save says why, just under the controls — as does a save whose folders couldn't
@@ -2017,14 +2157,25 @@ function ControlChip() {
       >
         <IconSave />
       </button>
-      <button style={styles.ctrlBtn} title="Save project as…" onClick={() => void saveProjectAs()}>
-        <span style={styles.saveAsWrap}>
-          <IconSave />
-          <span style={styles.pencilBadge}>
-            <IconPencil />
+      {/* Save as: a dropdown — a new project file, or a template (its sections expand in place). */}
+      <div style={{ position: 'relative', display: 'flex' }}>
+        <button
+          style={styles.ctrlBtn}
+          title="Save as project or template…"
+          onClick={() => setSaveAsOpen((o) => !o)}
+        >
+          <span style={styles.saveAsWrap}>
+            <IconSave />
+            <span style={styles.pencilBadge}>
+              <IconPencil />
+            </span>
           </span>
-        </span>
-      </button>
+        </button>
+        {saveAsOpen && <div style={styles.scrim} onClick={() => setSaveAsOpen(false)} />}
+        <NavMenu open={saveAsOpen} style={styles.saveAsMenu}>
+          <SaveAsMenu onClose={() => setSaveAsOpen(false)} />
+        </NavMenu>
+      </div>
       <button
         style={{ ...styles.ctrlBtn, opacity: canUndo ? 1 : 0.4 }}
         title="Undo"
@@ -2218,6 +2369,7 @@ function Home({
   onGuide: () => void
 }) {
   const newProject = useGraph((s) => s.newProject)
+  const newFromTemplate = useGraph((s) => s.newFromTemplate)
   const openProject = useGraph((s) => s.openProject)
   const resumeProject = useGraph((s) => s.resumeProject)
   const recents = useGraph((s) => s.recentProjects)
@@ -2255,6 +2407,9 @@ function Home({
             </button>
             <button style={styles.homeSecondary} onClick={() => void openProject()}>
               Open project…
+            </button>
+            <button style={styles.homeSecondary} onClick={() => void newFromTemplate()}>
+              From template…
             </button>
           </div>
           {openError && (
@@ -2866,6 +3021,22 @@ const styles: Record<string, CSSProperties> = {
   projectChipName: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
   statusDot: { width: 8, height: 8, borderRadius: '50%', flex: '0 0 auto' },
   savingIcon: { display: 'inline-flex', flex: '0 0 auto', color: UI.textMuted },
+  saveAsMenu: {
+    position: 'absolute',
+    top: '100%',
+    left: 0,
+    marginTop: 6,
+    minWidth: 180,
+    whiteSpace: 'nowrap',
+    maxHeight: '80vh',
+    overflowY: 'auto',
+    background: UI.panel,
+    border: `1px solid ${UI.border}`,
+    borderRadius: 8,
+    boxShadow: '0 8px 30px rgba(0,0,0,0.4)',
+    zIndex: 50,
+    padding: 4
+  },
   projectMenu: {
     position: 'absolute',
     top: '100%',
@@ -3127,7 +3298,19 @@ const styles: Record<string, CSSProperties> = {
     fontWeight: 700
   },
   settingsHint: { marginTop: 8, fontSize: 11, color: UI.textMuted },
+  // two fields side by side (Export: format, then resolution), wrapping when narrow
+  settingsInline: { display: 'flex', flexWrap: 'wrap', alignItems: 'flex-end', gap: 24 },
   settingsSubTitle: { fontSize: 12, fontWeight: 700, color: UI.text, marginBottom: 10 },
+  // Settings › Customisation › Palettes: a role's name (and its (i)) left of its selector.
+  // Top-aligned (a builder runs several lines), the label nudged down to a selector's text line.
+  paletteRow: { display: 'flex', alignItems: 'flex-start', gap: 10, marginBottom: 8 },
+  paletteRowLabel: {
+    fontSize: 12,
+    color: UI.textMuted,
+    width: 160,
+    flex: '0 0 160px',
+    paddingTop: 5
+  },
   // Settings › Appearance › Accent colour: a swatch per choice, the chosen one ringed in its colour.
   accentRow: { display: 'flex', flexWrap: 'wrap', gap: 8 },
   accentSwatch: {
@@ -3144,14 +3327,6 @@ const styles: Record<string, CSSProperties> = {
   },
   accentDot: { width: 14, height: 14, borderRadius: '50%', flex: 'none' },
   accentLabel: { fontSize: 12 },
-  accentLabelBtn: {
-    fontSize: 12,
-    color: UI.text,
-    background: 'transparent',
-    border: 'none',
-    padding: 0,
-    cursor: 'pointer'
-  },
   // Settings › Appearance › Layout: two large side-by-side choices, glyph over name over description.
   layoutTiles: { display: 'flex', gap: 12, flexWrap: 'wrap' },
   layoutTile: {
@@ -3200,7 +3375,17 @@ const styles: Record<string, CSSProperties> = {
     color: UI.textMuted,
     marginBottom: 6
   },
-  aboutStatus: { marginTop: 20 },
+  // Settings › About › Updates: the Check now button and what it found, in a line
+  updateActions: { display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 12 },
+  updateButton: {
+    background: UI.panelAlt,
+    border: `1px solid ${UI.border}`,
+    borderRadius: 4,
+    padding: '4px 12px',
+    fontSize: 12,
+    color: UI.text,
+    cursor: 'pointer'
+  },
   aboutMuted: { fontSize: 12, color: UI.textMuted },
   aboutUpdate: {
     display: 'flex',

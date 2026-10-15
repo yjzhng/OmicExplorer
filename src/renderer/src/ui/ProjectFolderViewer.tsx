@@ -1,44 +1,26 @@
 /** Project-folder viewer: a modal file tree of the active data folder (input/ and the
  *  project data folder with its workflows). Folders expand lazily, one level per click; a file can be opened
- *  in its default app or shown in the OS file manager (Finder / File Explorer). Read-only — nothing here writes to disk. */
+ *  in its default app or shown in the OS file manager (Finder / File Explorer). Nothing here writes
+ *  to disk, except Clean up — and that only after its confirmation lists what it deletes. */
 import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type CSSProperties,
   type ReactNode
 } from 'react'
 
 import { dataRootOf, workflowDirOf } from '../graph/diskNames'
-import { pendingRenames, useGraph } from '../graph/store'
+import { pendingRenames, useGraph, type CleanupPlan } from '../graph/store'
 import { Chevron } from './Chevron'
+import { formatSize, REVEAL } from './fileLabels'
 import { UI } from './theme'
 
 type DirEntry = Awaited<ReturnType<Window['api']['listDir']>>[number]
 /** A folder's loaded children, or the error that listing it hit. */
 type Listing = { entries: DirEntry[] } | { error: string }
-
-function formatSize(n: number): string {
-  if (n < 1024) return `${n} B`
-  const units = ['KB', 'MB', 'GB']
-  let v = n / 1024
-  let i = 0
-  while (v >= 1024 && i < units.length - 1) {
-    v /= 1024
-    i++
-  }
-  return `${v < 10 ? v.toFixed(1) : Math.round(v)} ${units[i]}`
-}
-
-/** The reveal buttons' labels, in the OS file manager's own name: Finder on macOS, File Explorer
- *  on Windows; elsewhere (Linux file managers vary) just "folder". */
-const REVEAL =
-  window.api.platform === 'darwin'
-    ? { item: 'Show in Finder', folder: 'Open in Finder' }
-    : window.api.platform === 'win32'
-      ? { item: 'Show in File Explorer', folder: 'Open in File Explorer' }
-      : { item: 'Show in folder', folder: 'Open folder' }
 
 /** A path in one spelling for comparing: `/` separators, no trailing one (and, on Windows, whose
  *  paths ignore case, lower-cased). */
@@ -51,9 +33,12 @@ const dateFmt = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeSt
 
 export function ProjectFolderViewer({
   root,
+  reveal,
   onClose
 }: {
   root: string
+  /** a folder under `root` to open on: its parents unfolded, it selected, open and scrolled to */
+  reveal?: string
   onClose: () => void
 }): ReactNode {
   // The current project's own places in this folder: its data folder (`<root>/<project>`), each of
@@ -112,13 +97,65 @@ export function ProjectFolderViewer({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [root, load])
 
+  // Open on `reveal`: walk down from the root, listing each folder on the way and taking the entry
+  // that leads to it (matched by normPath, so separators and Windows case don't matter); then unfold
+  // the way, select it and bring it into view.
+  const revealRow = useRef<string | null>(null)
+  useEffect(() => {
+    if (!reveal) return
+    const target = normPath(reveal)
+    if (!target.startsWith(normPath(root) + '/')) return
+    let live = true
+    void (async () => {
+      const way: string[] = []
+      let dir = root
+      while (normPath(dir) !== target) {
+        let entries: DirEntry[]
+        try {
+          entries = await window.api.listDir(dir)
+        } catch {
+          return
+        }
+        if (!live) return
+        const at = dir
+        setListings((m) => ({ ...m, [at]: { entries } }))
+        way.push(dir)
+        const next = entries.find(
+          (e) => e.dir && (normPath(e.path) === target || target.startsWith(normPath(e.path) + '/'))
+        )
+        if (!next) return
+        dir = next.path
+      }
+      await load(dir)
+      if (!live) return
+      revealRow.current = dir
+      setExpanded((prev) => new Set([...prev, ...way, dir]))
+      setSelected(dir)
+    })()
+    return () => {
+      live = false
+    }
+    // Only on opening.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  // Clean up: the plan its confirmation shows, while it's open; and how the last one went.
+  const [plan, setPlan] = useState<CleanupPlan | null>(null)
+  const [cleaning, setCleaning] = useState(false)
+  const [cleanNote, setCleanNote] = useState<{ ok: boolean; text: string } | null>(null)
+  const ownFolder = folders.find((f) => f.path && normPath(f.path) === normPath(root))
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
-      if (e.key === 'Escape') onClose()
+      if (e.key !== 'Escape') return
+      // The confirmation first, then the viewer.
+      if (plan) {
+        if (!cleaning) setPlan(null)
+      } else onClose()
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [onClose])
+  }, [onClose, plan, cleaning])
 
   const toggle = (dir: string): void => {
     const next = new Set(expanded)
@@ -148,6 +185,33 @@ export function ProjectFolderViewer({
     ])
     setRefreshing(false)
     setFlush((n) => n + 1)
+  }
+
+  // Clean up: work out what the project no longer uses, then ask before deleting it.
+  const startCleanup = async (): Promise<void> => {
+    if (!ownFolder) return
+    setCleanNote(null)
+    const p = await useGraph.getState().planCleanup(ownFolder.id)
+    if (!p) setCleanNote({ ok: false, text: 'This project has no data folder here yet.' })
+    else if (p.remove.length === 0)
+      setCleanNote({ ok: true, text: 'Already clean — nothing here the project doesn’t use.' })
+    else setPlan(p)
+  }
+  const confirmCleanup = async (): Promise<void> => {
+    if (!plan) return
+    setCleaning(true)
+    const errors = await useGraph.getState().applyCleanup(plan)
+    setCleaning(false)
+    setPlan(null)
+    setCleanNote(
+      errors.length
+        ? { ok: false, text: `Couldn’t remove ${errors.length}: ${errors[0]}` }
+        : {
+            ok: true,
+            text: `Removed ${plan.remove.length} item${plan.remove.length === 1 ? '' : 's'}.`
+          }
+    )
+    await refresh()
   }
 
   const open = async (p: string): Promise<void> => {
@@ -180,6 +244,16 @@ export function ProjectFolderViewer({
               ...(isSel ? styles.rowSel : null)
             }}
             title={e.path}
+            ref={
+              revealRow.current === e.path
+                ? (el) => {
+                    if (!el) return
+                    revealRow.current = null
+                    // After the folds it sits in have slid open.
+                    window.setTimeout(() => el.scrollIntoView({ block: 'center' }), 220)
+                  }
+                : undefined
+            }
             onClick={() => {
               setSelected(e.path)
               if (e.dir) toggle(e.path)
@@ -242,6 +316,15 @@ export function ProjectFolderViewer({
             <span style={styles.refreshIcon}>↻</span>
             Refresh
           </button>
+          {ownFolder && (
+            <button
+              style={styles.headBtn}
+              onClick={() => void startCleanup()}
+              title="Remove what the project no longer uses from its data folder — asks first"
+            >
+              Clean up
+            </button>
+          )}
           <button style={styles.headBtn} onClick={() => void window.api.revealFolder(root)}>
             {REVEAL.folder}
           </button>
@@ -264,11 +347,57 @@ export function ProjectFolderViewer({
         <div style={styles.foot}>
           {openError ? (
             <span style={{ color: UI.err }}>Couldn’t open: {openError}</span>
+          ) : cleanNote ? (
+            <span style={{ color: cleanNote.ok ? UI.text : UI.err }}>{cleanNote.text}</span>
           ) : (
             'Double-click a file to open it in its default app.'
           )}
         </div>
       </div>
+      {plan && (
+        <>
+          <div style={styles.confirmScrim} onClick={() => !cleaning && setPlan(null)} />
+          <div style={styles.confirm} role="alertdialog" aria-label="Clean up the project folder">
+            <div style={styles.confirmTitle}>Clean up the project folder?</div>
+            <div style={styles.confirmText}>
+              These {plan.remove.length} item{plan.remove.length === 1 ? '' : 's'} in the project’s
+              data folder aren’t used by the project as it is now (unsaved changes included):
+              folders of removed workflows and steps, and input files no Load tile reads. They will
+              be <b>permanently deleted</b> — not moved to the Trash. If you want to keep any, copy
+              them somewhere else first.
+            </div>
+            <div className="oe-scroll" style={styles.confirmList}>
+              {plan.remove.map((p) => (
+                <div key={p} style={styles.confirmItem} title={p}>
+                  {p.slice(plan.root.length).replace(/^[/\\]/, '')}
+                </div>
+              ))}
+            </div>
+            <div style={styles.confirmFoot}>
+              <button
+                style={styles.headBtn}
+                onClick={() => void window.api.revealFolder(plan.root)}
+                disabled={cleaning}
+              >
+                {REVEAL.folder}
+              </button>
+              <span style={{ flex: 1 }} />
+              <button style={styles.headBtn} onClick={() => setPlan(null)} disabled={cleaning}>
+                Cancel
+              </button>
+              <button
+                style={{ ...styles.headBtn, ...styles.dangerBtn }}
+                onClick={() => void confirmCleanup()}
+                disabled={cleaning}
+              >
+                {cleaning
+                  ? 'Deleting…'
+                  : `Delete ${plan.remove.length} item${plan.remove.length === 1 ? '' : 's'}`}
+              </button>
+            </div>
+          </div>
+        </>
+      )}
     </>
   )
 }
@@ -517,6 +646,46 @@ const styles: Record<string, CSSProperties> = {
   size: { width: 80, flex: '0 0 auto', textAlign: 'right', color: UI.textMuted, fontSize: 13 },
   date: { width: 170, flex: '0 0 auto', textAlign: 'right', color: UI.textMuted, fontSize: 13 },
   note: { fontSize: 13, color: UI.textMuted, paddingTop: 6, paddingBottom: 6, paddingRight: 16 },
+  // Clean up's confirmation, over the viewer.
+  confirmScrim: { position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.35)', zIndex: 62 },
+  confirm: {
+    position: 'fixed',
+    top: '50%',
+    left: '50%',
+    transform: 'translate(-50%, -50%)',
+    width: 560,
+    maxWidth: '90vw',
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 10,
+    padding: 18,
+    background: UI.panel,
+    border: `1px solid ${UI.border}`,
+    borderRadius: 10,
+    boxShadow: '0 12px 40px rgba(0,0,0,0.45)',
+    zIndex: 63
+  },
+  confirmTitle: { fontSize: 15, fontWeight: 700, color: UI.text },
+  confirmText: { fontSize: 13, color: UI.text, lineHeight: 1.45 },
+  confirmList: {
+    maxHeight: 240,
+    overflowY: 'auto',
+    border: `1px solid ${UI.border}`,
+    borderRadius: 6,
+    padding: '6px 8px',
+    background: UI.panelAlt,
+    fontFamily: 'ui-monospace, monospace',
+    fontSize: 12
+  },
+  confirmItem: {
+    color: UI.text,
+    whiteSpace: 'nowrap',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    padding: '1px 0'
+  },
+  confirmFoot: { display: 'flex', alignItems: 'center', gap: 8, marginTop: 4 },
+  dangerBtn: { background: UI.err, borderColor: UI.err, color: '#fff', fontWeight: 600 },
   foot: {
     flex: '0 0 auto',
     padding: '8px 16px',

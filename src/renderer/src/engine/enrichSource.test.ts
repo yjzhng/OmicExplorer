@@ -3,7 +3,9 @@
  *  can tell which sources the data can actually be tested against. */
 import { describe, expect, it } from 'vitest'
 
+import type { CompareResultRow } from './types'
 import {
+  buildEnrichment,
   goAspectsOf,
   cogAreasOf,
   ENRICH_COLS,
@@ -185,5 +187,31 @@ describe('GO aspects', () => {
       'DNA binding': 'Molecular function',
       nucleus: 'Cellular component'
     })
+  })
+})
+
+describe('ORA term genes', () => {
+  it("keeps each term's gene uniqIDs aligned with its names (a click selects them)", () => {
+    const row = (uniqID: string, effect: 'up' | 'down' | 'none'): CompareResultRow =>
+      ({ uniqID, effect, signf: effect !== 'none' }) as CompareResultRow
+    const annotation = {
+      u1: { KEGG: 'Pathway A' },
+      u2: { KEGG: 'Pathway A' },
+      u3: { KEGG: 'Pathway A' },
+      u4: { KEGG: 'Pathway B' }
+    }
+    const e = buildEnrichment(
+      [row('u1', 'up'), row('u2', 'up'), row('u3', 'none'), row('u4', 'none')],
+      {
+        method: 'ora',
+        source: 'kegg',
+        topTerms: 10,
+        annotationMap: annotation,
+        displayMap: { u1: 'zeta', u2: 'alpha' }
+      }
+    )
+    const a = e.up.find((t) => t.term === 'Pathway A')!
+    expect(a.genes).toEqual(['alpha', 'zeta'])
+    expect(a.geneIds).toEqual(['u2', 'u1'])
   })
 })

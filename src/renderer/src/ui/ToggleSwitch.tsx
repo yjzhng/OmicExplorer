@@ -320,7 +320,8 @@ const styles: Record<string, CSSProperties> = {
     padding: 2,
     background: UI.panel,
     flex: '0 0 auto',
-    maxWidth: '100%'
+    maxWidth: '100%',
+    transition: `opacity ${MOTION}`
   },
   trackFill: { display: 'flex', flex: 1 },
   trackDisabled: { opacity: 0.5 },

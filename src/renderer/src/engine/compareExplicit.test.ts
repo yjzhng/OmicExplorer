@@ -7,7 +7,13 @@
  */
 import { describe, expect, it } from 'vitest'
 
-import { classifyConditions, previewCompare, runCompare, runDirect } from './direct'
+import {
+  classifyConditions,
+  controlIsBaseline,
+  previewCompare,
+  runCompare,
+  runDirect
+} from './direct'
 import { runVehNorm } from './compare'
 import type { CompareResultRow, StandardRow } from './types'
 
@@ -358,5 +364,44 @@ describe('denominator is a single reference (never pooled; the dialog allows one
       activeConditions: ['cmpd']
     })
     expect(ok.groups).toBe(2)
+  })
+})
+
+describe('curve fit control: a baseline or a background treatment', () => {
+  const r = (cmpd: string, dose: number | null, time: number | null, rep: number): StandardRow => ({
+    uniqID: 'g1',
+    cell: '',
+    cmpd,
+    dose,
+    time,
+    rep,
+    value: 10 + rep
+  })
+  const rows: StandardRow[] = [
+    ...[0, 1].flatMap((rep) => [r('DMSO', 0, 60, rep), r('B', 100, 60, rep)]),
+    ...[1, 10, 100, 1000].flatMap((d) => [0, 1].map((rep) => r('A', d, 60, rep)))
+  ]
+  const preview = (den: string): ReturnType<typeof previewCompare> =>
+    previewCompare({
+      rows,
+      num: { cmpd: ['A'] },
+      den: { cmpd: [den] },
+      match: [],
+      activeConditions: ['cmpd', 'dose'],
+      curveAxis: 'dose'
+    })
+
+  it('accepts the vehicle (no dose) as the control', () => {
+    expect(controlIsBaseline(rows.filter((x) => x.cmpd === 'DMSO'), 'dose')).toBe(true)
+    expect(preview('DMSO').controlTreated).toBeUndefined()
+  })
+  it('flags another compound at a dose as a treated control', () => {
+    expect(controlIsBaseline(rows.filter((x) => x.cmpd === 'B'), 'dose')).toBe(false)
+    expect(preview('B').controlTreated).toBe(true)
+  })
+  it('a time curve may start from t₀ of the same treatment', () => {
+    const t0 = [r('A', 100, 0, 1), r('A', 100, 0, 2)]
+    expect(controlIsBaseline(t0, 'time')).toBe(true)
+    expect(controlIsBaseline(t0, 'dose')).toBe(false)
   })
 })

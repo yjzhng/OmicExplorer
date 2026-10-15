@@ -1,5 +1,14 @@
 import { createReadStream, createWriteStream } from 'node:fs'
-import { mkdir, readdir, readFile, rename, stat, writeFile } from 'node:fs/promises'
+import {
+  copyFile,
+  constants,
+  mkdir,
+  readdir,
+  readFile,
+  rename,
+  stat,
+  writeFile
+} from 'node:fs/promises'
 import { Readable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 import { promisify } from 'node:util'
@@ -210,6 +219,21 @@ export function registerFileIo(): void {
     return { path, content: await readProjectText(path) }
   })
 
+  // A template is a project file without its data (renderer graph/template.ts), read the same way.
+  ipcMain.handle('tpl:open', async (): Promise<{ path: string; content: string } | null> => {
+    const res = await dialog.showOpenDialog({
+      title: 'New project from template',
+      properties: ['openFile'],
+      filters: [
+        { name: 'OmicExplorer template', extensions: ['omicexplorer-template'] },
+        { name: 'All Files', extensions: ['*'] }
+      ]
+    })
+    if (res.canceled || res.filePaths.length === 0) return null
+    const path = res.filePaths[0]
+    return { path, content: await readProjectText(path) }
+  })
+
   ipcMain.handle('proj:read', async (_evt, path: string): Promise<string> => {
     return readProjectText(path)
   })
@@ -401,6 +425,56 @@ export function registerFileIo(): void {
         }
       }
       return null
+    }
+  )
+
+  // A data folder changing location (the store's moveFolder): copy the input files its workflows
+  // read by name from the old folder's own locations — the same places data:read looks outside
+  // the project data folder, which moves on its own — to the same place under the new folder, so
+  // they're found there just the same. The originals stay; a file the new folder already has at
+  // that place is left as it is. Names not found there (in a workflow's own folder, or gone) are
+  // skipped.
+  ipcMain.handle(
+    'data:copyInputs',
+    async (
+      _evt,
+      from: string,
+      to: string,
+      files: Array<{ name: string; legacy?: string }>
+    ): Promise<{ copied: string[]; errors: string[] }> => {
+      const copied: string[] = []
+      const errors: string[] = []
+      for (const { name, legacy } of files) {
+        if (!name || isAbsolute(name) || name !== basename(name)) continue
+        const seg = safeSeg(legacy)
+        let found: string | null = null
+        for (const root of seg ? [join(from, seg), from] : [from]) {
+          for (const sub of DATA_SUBDIRS) {
+            const p = join(root, sub, name)
+            if (
+              await stat(p).then(
+                (st) => st.isFile(),
+                () => false
+              )
+            ) {
+              found = p
+              break
+            }
+          }
+          if (found) break
+        }
+        if (!found) continue
+        const target = join(to, relative(from, found))
+        try {
+          await mkdir(dirname(target), { recursive: true })
+          await copyFile(found, target, constants.COPYFILE_EXCL)
+          copied.push(name)
+        } catch (e) {
+          if ((e as NodeJS.ErrnoException).code === 'EEXIST') continue
+          errors.push(`${name}: ${e instanceof Error ? e.message : String(e)}`)
+        }
+      }
+      return { copied, errors }
     }
   )
 

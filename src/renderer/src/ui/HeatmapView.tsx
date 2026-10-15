@@ -1,35 +1,31 @@
 import { useLayoutEffect, useMemo, useRef, useState } from 'react'
 
 import { condLabel, isNumericCond, metaValue, type ConditionKey, type HeatmapData } from '../engine'
+import { ROLE_DEFAULTS, paletteScale, paletteSeries, type PaletteRef } from './palettes'
+import { condTooltip, geneLine, valueLine } from './condTooltip'
 import { PlotlyChart } from './PlotlyChart'
 import { truncatedTicks } from './plotAxes'
-import { axisBase, CATEGORICAL, CATEGORICAL_ALT, PALETTES, plotBase } from './theme'
+import { bindHeatmapFocus, GENE_TICK_PX, LINK_DELAY } from './heatmapFocus'
+import { sampleKey } from './sampleLink'
+import { axisBase, CATEGORICAL, PALETTES, plotBase, withAlpha } from './theme'
+import { useRolePalette } from './useAppSettings'
 import { useUiTheme } from './useUiTheme'
 
 /** Pixel gap between adjacent condition tracks (along the condition axis). */
-const TRACK_GAP = 3
+const TRACK_GAP = 1
 
-/** Monochrome [light, dark] endpoints for the numeric conditions — low value → light,
- *  high value → dark. Both dose and time use the same neutral grey ramp. */
-const MONO_RAMP: readonly [string, string] = ['#eeeeee', '#222222']
-/** The ramp for a condition, or null when it's categorical. Only dose and time are numeric —
- *  a custom condition is always categorical, so it never gets the ordered grey ramp. */
-const seqRamp = (c: ConditionKey): readonly [string, string] | null =>
-  isNumericCond(c) ? MONO_RAMP : null
-/** Keep the ramp off its extremes so the lightest/darkest steps stay visible on the panel. */
-const SEQ_LO = 0.2
-const SEQ_HI = 0.8
+/** The numeric conditions' track palettes — dose and time levels in order along their palette
+ *  roles (Blues / Greens by default; app settings → palettes). A custom condition is always
+ *  categorical. */
+type LevelPalettes = { dose: PaletteRef; time: PaletteRef }
+const levelPalette = (c: ConditionKey, lp: LevelPalettes): PaletteRef | null =>
+  isNumericCond(c) ? (c === 'time' ? lp.time : lp.dose) : null
+/** A categorical track's start along the categorical palette, per track: far enough along that the
+ *  next track's first levels don't repeat this one's. */
+const TRACK_ROTATE = 5
 
-/** Linear interpolate between two #rrggbb hex colours, t clamped to [0,1]. */
-function lerpHex(a: string, b: string, t: number): string {
-  const u = t < 0 ? 0 : t > 1 ? 1 : t
-  const ch = (h: string, i: number): number => parseInt(h.slice(1 + i * 2, 3 + i * 2), 16)
-  const mix = (i: number): string =>
-    Math.round(ch(a, i) + (ch(b, i) - ch(a, i)) * u)
-      .toString(16)
-      .padStart(2, '0')
-  return `#${mix(0)}${mix(1)}${mix(2)}`
-}
+/** How strongly a hovered heatmap veils the cells outside the hovered row and column. */
+const HOVER_VEIL = 0.65
 
 /** m[i][j] → m[j][i] (generic; preserves cell values incl. null). */
 function transpose<T>(m: T[][]): T[][] {
@@ -40,18 +36,17 @@ function transpose<T>(m: T[][]): T[][] {
   return out
 }
 
-/** Distinct values of a condition → track colour. Numeric conditions (dose, time) use a
- *  monochrome grey ramp keyed to the sorted value (low = light, high = dark), kept off its
- *  extremes; categorical ones cycle a palette. `catIndex` is the condition's position among the
- *  categorical tracks: even takes CATEGORICAL, odd CATEGORICAL_ALT, and each further pair rotates
- *  the palette one step, so no two tracks (cell, cmpd, or any custom condition) read as the same
- *  colour scheme. */
+/** Distinct values of a condition → track colour. Numeric conditions (dose, time) run along their
+ *  level palette by sorted value (low → high, its pale end skipped — see paletteSeries);
+ *  categorical ones cycle the categorical palette, each further track (`catIndex`) starting
+ *  TRACK_ROTATE colours on, so no two tracks (cell, cmpd, a custom condition) read alike. */
 function condColours(
   samples: HeatmapData['samples'],
   c: ConditionKey,
-  catIndex: number
+  catIndex: number,
+  levels: LevelPalettes
 ): Map<string, string> {
-  const ramp = seqRamp(c)
+  const ramp = levelPalette(c, levels)
   const seen = new Set<string>()
   const vals: string[] = []
   for (const m of samples) {
@@ -66,15 +61,10 @@ function condColours(
   vals.sort((a, b) => (ramp ? Number(a) - Number(b) : a < b ? -1 : a > b ? 1 : 0))
   const map = new Map<string, string>()
   if (ramp) {
-    const n = vals.length
-    const span = SEQ_HI - SEQ_LO
-    vals.forEach((v, i) =>
-      map.set(v, lerpHex(ramp[0], ramp[1], SEQ_LO + span * (n <= 1 ? 0.5 : i / (n - 1))))
-    )
+    vals.forEach((v, i) => map.set(v, paletteSeries(ramp, i, vals.length)))
   } else {
-    const base = catIndex % 2 === 0 ? CATEGORICAL : CATEGORICAL_ALT
-    const rot = Math.floor(catIndex / 2)
-    vals.forEach((v, i) => map.set(v, base[(i + rot) % base.length]))
+    const rot = catIndex * TRACK_ROTATE
+    vals.forEach((v, i) => map.set(v, CATEGORICAL[(i + rot) % CATEGORICAL.length]))
   }
   return map
 }
@@ -85,7 +75,10 @@ function condColours(
 function buildTracks(
   heatmap: HeatmapData,
   landscape: boolean,
-  bg: string
+  bg: string,
+  /** each sample's tooltip identity (condTooltip), aligned with `heatmap.x` */
+  idents: string[],
+  levels: LevelPalettes
 ): { trace: Record<string, unknown>; shapes: Record<string, unknown>[] } | null {
   // Portrait stacks the tracks on the y-axis, where Plotly draws row 0 at the BOTTOM — so reverse
   // the order there to read cell→cmpd→dose→time top-to-bottom. Landscape lays them left-to-right
@@ -109,8 +102,9 @@ function buildTracks(
   // landscape heatmap of the same data give each track the same palette.
   let catIndex = 0
   for (const c of heatmap.conds)
-    valColour.set(c, condColours(heatmap.samples, c, seqRamp(c) ? 0 : catIndex++))
-  // cond-major matrices: z = palette index (+0.5 to land mid-block), customdata = "cond: value",
+    valColour.set(c, condColours(heatmap.samples, c, isNumericCond(c) ? 0 : catIndex++, levels))
+  // cond-major matrices: z = palette index (+0.5 to land mid-block), cd = the sample's
+  // identity (the same block every Clean data plot's tooltip opens with),
   // keys = the raw value string per cell ('' = missing), used to find group boundaries.
   const z: Array<Array<number | null>> = []
   const cd: string[][] = []
@@ -121,14 +115,13 @@ function buildTracks(
     const kr: string[] = []
     for (let s = 0; s < nS; s++) {
       const raw = metaValue(heatmap.samples[s], c)
+      cr.push(idents[s])
       if (raw == null || raw === '') {
         zr.push(null)
-        cr.push('')
         kr.push('')
       } else {
         const key = String(raw)
         zr.push(colourIndex(valColour.get(c)!.get(key)!) + 0.5)
-        cr.push(`${condLabel(c)}: ${key}`)
         kr.push(key)
       }
     }
@@ -143,6 +136,19 @@ function buildTracks(
   }
   // Small gap between adjacent groups: a background-coloured separator at each value change
   // within a track (same value stays joined; a change or a run edge draws a thin gap).
+  // Each track's group per sample for the hover focus: its value with every outer track's (in the
+  // data's condition order — cell, cmpd, dose, time), so a hover lights the sample's nested group in
+  // each track — all of its cmpd, then that cmpd at its dose, … — not every sample sharing a value.
+  const group = new Map<ConditionKey, string[]>()
+  heatmap.conds.forEach((c, d) => {
+    const outer = d > 0 ? group.get(heatmap.conds[d - 1])! : null
+    const own = keys[conds.indexOf(c)]
+    group.set(
+      c,
+      own.map((k, s) => (outer ? `${outer[s]}\u0001${k}` : k))
+    )
+  })
+  const focusKeys = conds.map((c) => group.get(c)!)
   const shapes: Record<string, unknown>[] = []
   for (let t = 0; t < conds.length; t++) {
     for (let s = 0; s < nS - 1; s++) {
@@ -179,8 +185,11 @@ function buildTracks(
     z: landscape ? transpose(z) : z,
     x: landscape ? conds.map(condLabel) : heatmap.x,
     y: landscape ? heatmap.x : conds.map(condLabel),
-    customdata: landscape ? transpose(cd) : cd,
-    hovertemplate: '%{customdata}<extra></extra>',
+    // the identity as text, not customdata: a string customdata reads as a gene id (PlotlyChart)
+    text: landscape ? transpose(cd) : cd,
+    hovertemplate: '%{text}<extra></extra>',
+    // each cell's nested group, so a hover lights the sample's group per track (heatmapFocus)
+    meta: { focusKeys: landscape ? transpose(focusKeys) : focusKeys },
     colorscale,
     zmin: 0,
     zmax: K,
@@ -204,7 +213,8 @@ export function HeatmapView({
   title,
   orient = 'portrait',
   valueLabel = 'log abundance',
-  condBar = true
+  condBar = true,
+  palette = ROLE_DEFAULTS.data
 }: {
   heatmap: HeatmapData
   title?: string
@@ -213,8 +223,13 @@ export function HeatmapView({
   valueLabel?: string
   /** draw the condition tracks along the samples (off: the heatmap takes their room) */
   condBar?: boolean
+  /** the value palette (the plot's own, else viridis) */
+  palette?: PaletteRef
 }) {
   const mode = useUiTheme((s) => s.mode)
+  // The dose / time tracks' palettes: their roles' global defaults.
+  const dosePalette = useRolePalette('dose')
+  const timePalette = useRolePalette('time')
   // Measure the tile so the condition-track band can be JUST tall enough for its row labels: each
   // track needs about one label's height or Plotly drops overlapping tick labels.
   const wrapRef = useRef<HTMLDivElement>(null)
@@ -237,7 +252,12 @@ export function HeatmapView({
   const { data, layout } = useMemo(() => {
     const p = PALETTES[mode]
     const landscape = orient === 'landscape'
-    const tracks = condBar ? buildTracks(heatmap, landscape, p.panel) : null
+    // Each sample's identity for the tooltips (cells and tracks alike), its label when it has none.
+    const idents = heatmap.samples.map(
+      (m, s) => condTooltip(m, heatmap.conds, p.textMuted) || heatmap.x[s]
+    )
+    const levels = { dose: dosePalette, time: timePalette }
+    const tracks = condBar ? buildTracks(heatmap, landscape, p.panel, idents, levels) : null
     // Reserve a band for the condition tracks. In portrait the tracks stack vertically, so size the
     // band to ~one label height per track (measured from the tile) — just tall enough that Plotly
     // doesn't drop overlapping row labels, no taller. Landscape lays them out horizontally where
@@ -267,14 +287,19 @@ export function HeatmapView({
         z: landscape ? transpose(heatmap.z) : heatmap.z,
         x: landscape ? heatmap.y : heatmap.x,
         y: landscape ? heatmap.x : heatmap.y,
-        colorscale: 'Viridis',
+        colorscale: paletteScale(palette),
         colorbar: {
           title: { text: valueLabel, side: 'right' },
           thickness: 12
         },
-        hovertemplate: landscape
-          ? `gene=%{x}<br>sample=%{y}<br>${valueKey}=%{z:.${zDigits}}<extra></extra>`
-          : `gene=%{y}<br>sample=%{x}<br>${valueKey}=%{z:.${zDigits}}<extra></extra>`
+        // The gene, the sample's identity, the value — as every Clean data plot's tooltip. One
+        // shared identity row per gene (portrait) costs nothing; landscape needs a row per sample.
+        text: landscape ? idents.map((id) => heatmap.y.map(() => id)) : heatmap.y.map(() => idents),
+        // each cell's gene uniqID: PlotlyChart's linked hover and click-to-pin read it
+        customdata: landscape
+          ? heatmap.x.map(() => heatmap.geneIds)
+          : heatmap.geneIds.map((id) => heatmap.x.map(() => id)),
+        hovertemplate: `${geneLine(landscape ? '%{x}' : '%{y}')}<br>%{text}<br>${valueLine(valueKey, `%{z:.${zDigits}}`)}<extra></extra>`
       }
     ]
     if (tracks) traces.push(tracks.trace)
@@ -284,8 +309,13 @@ export function HeatmapView({
       automargin: true,
       tickfont: { size: 9 },
       // Gene names cut short like every plot's (the full name is in the hover) — as many as fit
-      // along the axis.
-      ...truncatedTicks(heatmap.y, landscape ? plotW : plotH),
+      // along the axis: a first guess at its length (its share of the tile, less the margins),
+      // which heatmapFocus redraws to the axis as laid out.
+      ...truncatedTicks(
+        heatmap.y,
+        landscape ? (plotW - 140) * mainEnd : areaH * mainEnd,
+        GENE_TICK_PX
+      ),
       // Angle the gene ticks only when they sit on the x axis (landscape).
       ...(landscape ? { tickangle: -45 } : {})
     }
@@ -327,11 +357,46 @@ export function HeatmapView({
       if (tracks) lay.yaxis2 = { ...trackAxis, domain: [mainEnd + gap, 1], anchor: 'x' }
     }
     return { data: traces, layout: lay }
-  }, [heatmap, title, orient, mode, plotH, plotW, valueLabel, condBar])
+  }, [
+    heatmap,
+    title,
+    orient,
+    mode,
+    plotH,
+    plotW,
+    valueLabel,
+    condBar,
+    palette,
+    dosePalette,
+    timePalette
+  ])
+
+  // each sample's link key, for the sample link with the other plots
+  const sampleKeys = useMemo(
+    () => heatmap.samples.map((m) => sampleKey(m, m.rep)),
+    [heatmap.samples]
+  )
 
   return (
     <div ref={wrapRef} style={{ width: '100%', height: '100%' }}>
-      <PlotlyChart data={data} layout={layout} />
+      <PlotlyChart
+        data={data}
+        layout={layout}
+        // the other plots follow a hover once it rests (a sweep down the rows redraws none)
+        linkDelay={LINK_DELAY}
+        // the lit genes and samples (hovered here or elsewhere, pinned) — see heatmapFocus
+        onGraphMount={(el) =>
+          bindHeatmapFocus(el, withAlpha(PALETTES[mode].panel, HOVER_VEIL), {
+            landscape: orient === 'landscape',
+            geneLabels: heatmap.y,
+            tickPx: GENE_TICK_PX,
+            labelInk: PALETTES[mode].text,
+            labelBg: PALETTES[mode].panel,
+            geneIds: heatmap.geneIds,
+            sampleKeys
+          })
+        }
+      />
     </div>
   )
 }

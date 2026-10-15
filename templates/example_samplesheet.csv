@@ -1,0 +1,12 @@
+sample,cmpd,dose,time,rep
+Intensity_DMSO_0nM_60min_r1,DMSO,0,60,1
+Intensity_CmpdA_0.1nM_60min_r1,CmpdA,0.1,60,1
+Intensity_CmpdB_0.1nM_60min_r1,CmpdB,0.1,60,1
+Intensity_CmpdA_1nM_60min_r1,CmpdA,1,60,1
+Intensity_CmpdB_1nM_60min_r1,CmpdB,1,60,1
+Intensity_CmpdA_10nM_60min_r1,CmpdA,10,60,1
+Intensity_CmpdB_10nM_60min_r1,CmpdB,10,60,1
+Intensity_CmpdA_100nM_60min_r1,CmpdA,100,60,1
+Intensity_CmpdB_100nM_60min_r1,CmpdB,100,60,1
+Intensity_CmpdA_1000nM_60min_r1,CmpdA,1000,60,1
+Intensity_CmpdB_1000nM_60min_r1,CmpdB,1000,60,1

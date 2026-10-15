@@ -132,6 +132,8 @@ export const selectorStyles: Record<string, CSSProperties> = {
     cursor: 'pointer'
   },
   valChipOn: { background: UI.accent, color: UI.accentText, borderColor: UI.accent },
+  // a chip that can't be picked now (its reason in the title): faded, with a not-allowed cursor
+  valChipDisabled: { opacity: 0.55, cursor: 'not-allowed' },
   valChipIncluded: { background: 'rgba(63,174,90,0.22)', color: UI.text, borderColor: UI.ok },
   valChipIdle: { background: UI.panelAlt, color: UI.text, borderColor: UI.panelAlt },
   valChipPartial: {

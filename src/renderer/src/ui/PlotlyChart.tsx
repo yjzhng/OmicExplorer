@@ -2,6 +2,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -19,8 +20,12 @@ import {
   type AxisDefaults
 } from './plotAxes'
 import { DEFAULT_HIGHLIGHT, type ResolvedHighlight } from './pointStyle'
+import { glSlot, type GlSlot } from './glBudget'
+import { hasGlTraces, toGlOverlay, toGlTraces } from './glTraces'
 import { Spinner } from './Spinner'
+import { GENE_TITLE_BAND, GeneTitleContext, geneTitleLayout } from './geneTitle'
 import { PALETTES } from './theme'
+import { applyFocus, hoverFocus, legendClear, legendSelect } from './traceFocus'
 import { useSelection } from './useSelection'
 import { useUiTheme } from './useUiTheme'
 
@@ -57,6 +62,11 @@ interface PlotlyChartProps {
   /** Restrict collision-managed labels to positions ABOVE the marker (centred / up-left / up-right)
    *  — labels slide sideways but never drop below or beside the dot. Used by the enrichment ridge. */
   labelsAbove?: boolean
+  /** An active (hovered/pinned) gene keeps its own collision-managed label where it sits, in bold,
+   *  instead of the overlay naming it — for a view that draws its own highlight and opts out of the
+   *  overlay (the STRING network). The other labels still hide while anything is active, and a
+   *  pinned gene stays a candidate, so the labels sit exactly where they do with nothing active. */
+  labelsInPlace?: boolean
   /** y-axis tick labels to bold when a linked-selected (hovered/pinned) gene belongs to that tick.
    *  `genesByTick[i]` are the genes associated with tick i; `ticktext[i]` is its (possibly rich-text)
    *  label. Applied imperatively on hover so it doesn't reset zoom. Optionally also re-texts the
@@ -73,6 +83,10 @@ interface PlotlyChartProps {
     categoryByTick?: (string | undefined)[]
     /** one legend item's text for the same state, so the active category's entry stands out. */
     legendItemText?: (category: string, active: boolean, anyActive: boolean) => string
+    /** the id a tick's LABEL stands for (an enrichment term's): hovering the label hovers it — the
+     *  same focus as hovering its mark — and a click selects it (its genes, through pinIdsOf).
+     *  Unset, or null for a tick, = the label is inert. */
+    idByTick?: (string | null)[]
   }
   /** Escape hatch for bespoke imperative interactions (e.g. the STRING network's neighbour
    *  highlight): called with the live graph div after each render; return a cleanup run before the
@@ -81,9 +95,22 @@ interface PlotlyChartProps {
   /** A click on an annotation drawn with `captureevents: true` (e.g. a clickable legend chip),
    *  given that annotation's `name`. */
   onAnnotationClick?: (name: string) => void
+  /** For a point whose id is its own (an `__oeOwnIds` trace — an enrichment term), the genes it
+   *  stands for: a click pins (or unpins) them all, so the selection reaches every plot (an empty
+   *  list pins nothing). Unset, or null for an id, = the id itself is pinned. */
+  pinIdsOf?: (id: string) => string[] | null | undefined
   /** show Plotly's control bar (zoom/pan/download) on hover — default on; off where it would cover
    *  the view's own controls (the enrichment plot's category chips) */
   modeBar?: boolean
+  /** ms a hovered gene must stay under the cursor before the OTHER plots light it (the shared
+   *  hover). Each one rebuilds and redraws its highlight on a change, so a sweep across a dense
+   *  view (a heatmap's thousands of rows) would redraw every open plot per row crossed; held
+   *  back, a sweep costs them nothing and a pause still links. This chart's own focus is the
+   *  view's (heatmapFocus), immediate. Unset = at once. */
+  linkDelay?: number
+  /** a 3-D scene's camera, each time the user turns or zooms it (Plotly saves it on mouse-up and
+   *  wheel) — so a view that unmounts the chart can put it back as it was */
+  onCamera?: (scene: string, camera: Record<string, unknown>) => void
   /** Draggable threshold guides drawn as `layout.shapes`. A custom drag (not Plotly's built-in
    *  shape editing) constrains each guide to ONE axis so a line never slants, shows a resize
    *  cursor on hover, follows the cursor smoothly, and commits the new value via `onGuide`. */
@@ -111,6 +138,9 @@ export interface GuideDrag {
   solve?: (mouseX: number, mouseY: number) => number
   /** 'curve' only: rebuild the full path for a given value, for the live drag preview. */
   render?: (value: number) => string
+  /** 'curve' only, with `syncShapeIndex`: rebuild that partner's path for the same value (a
+   *  symmetric band's other edge), so both track together live. */
+  syncRender?: (value: number) => string
   /** 'corner' only: a 2-D handle grabbed at the shape's (x0,y0) that adjusts TWO fields at once.
    *  `cornerVisual` returns the relayout updates to move every affected shape live; `cornerCommit`
    *  applies the threshold change on release; `cornerLabel` is the drag tooltip. */
@@ -315,6 +345,7 @@ type Trace = Record<string, unknown> & {
     size?: number | number[]
     color?: string | number | (string | number)[]
     line?: { width?: number | number[]; color?: string | string[] }
+    symbol?: string | string[]
     // Diverging/continuous colour map (e.g. the bubble's log2FC scale).
     colorscale?: unknown
     cmid?: number
@@ -391,9 +422,12 @@ interface BaseOpacity {
 const at = <T,>(v: T | T[] | undefined, k: number, fallback: T): T =>
   Array.isArray(v) ? ((v[k] ?? fallback) as T) : (v ?? fallback)
 
-/** A trace is highlightable if it carries a per-point uniqID array in `customdata`. */
+/** A trace is highlightable if it carries a per-point uniqID array in `customdata` — ids are strings.
+ *  A trace whose customdata holds anything else (a QC bar's counts, its hover bar's quartiles)
+ *  carries no genes, and must not fade when a gene is selected. */
 function traceIds(t: Trace): string[] | null {
-  return Array.isArray(t.customdata) ? (t.customdata as string[]) : null
+  const cd = t.customdata
+  return Array.isArray(cd) && cd.length > 0 && typeof cd[0] === 'string' ? (cd as string[]) : null
 }
 // A trace that draws a line is one series per feature → dim it wholesale (line +
 // its markers together). Pure marker traces dim per point.
@@ -418,6 +452,79 @@ function snapshotBases(data: unknown[]): BaseOpacity[] {
   })
 }
 
+/** What a highlight needs from a plot's traces, built ONCE per data (pointIndex) so a hover only
+ *  touches the lit genes' own points instead of scanning every point of every trace. */
+interface PointIndex {
+  /** uniqID → its points as flat [trace, k, trace, k, …] pairs, in trace-then-point order */
+  byId: Map<string, number[]>
+  /** per trace: its ids (null = carries no genes) */
+  ids: (string[] | null)[]
+  /** per trace: the overlay's view of it — null when it gets no overlay (see buildOverlay) */
+  overlay: ({
+    numeric: boolean
+    colorer: ((v: number) => string) | null
+  } | null)[]
+  /** the first numeric-scaled overlay trace's scale (colorScaleOf), carried by the overlay */
+  cmap: Record<string, unknown> | null
+}
+
+// Keyed by the data array itself: a new plot is a new array, and a restyle only mutates opacity
+// (never ids, positions or colours), so an entry stays valid for as long as its array is drawn.
+const pointIndexCache = new WeakMap<unknown[], PointIndex>()
+
+function pointIndex(data: unknown[]): PointIndex {
+  const hit = pointIndexCache.get(data)
+  if (hit) return hit
+  const byId = new Map<string, number[]>()
+  const ids: (string[] | null)[] = []
+  const overlay: PointIndex['overlay'] = []
+  let cmap: Record<string, unknown> | null = null
+  data.forEach((raw, i) => {
+    const t = raw as Trace
+    const tIds = traceIds(t)
+    ids.push(tIds)
+    overlay.push(null)
+    if (!tIds) return
+    tIds.forEach((id, k) => {
+      const pts = byId.get(id)
+      if (pts) pts.push(i, k)
+      else byId.set(id, [i, k])
+    })
+    if (
+      isLine(t) ||
+      // A bar is its own emphasis (it dims/brightens in place); a dot drawn over it reads as a
+      // stray marker.
+      isBar(t) ||
+      (t as { __oeNoOverlay?: boolean }).__oeNoOverlay ||
+      !Array.isArray(t.x) ||
+      !Array.isArray(t.y)
+    )
+      return
+    const mk = t.marker
+    const scaled = Array.isArray(mk?.color) && typeof (mk.color as unknown[])[0] === 'number'
+    // A scale of explicit stops → each point's own colour, resolved on ITS trace's scale; only a
+    // named scale falls back to carrying the (first such trace's) scale on the overlay.
+    const colorer = scaled && mk ? scaleColorer(mk) : null
+    const numeric = scaled && !colorer
+    if (numeric && mk && !cmap) cmap = colorScaleOf(mk)
+    overlay[i] = { numeric, colorer }
+  })
+  const idx = { byId, ids, overlay, cmap }
+  pointIndexCache.set(data, idx)
+  return idx
+}
+
+/** The active genes' points, as [trace, k] pairs in trace-then-point order (the order a scan of
+ *  every trace would meet them in). */
+function activePoints(idx: PointIndex, active: Set<string>): Array<[number, number]> {
+  const out: Array<[number, number]> = []
+  for (const id of active) {
+    const pts = idx.byId.get(id)
+    if (pts) for (let j = 0; j < pts.length; j += 2) out.push([pts[j], pts[j + 1]])
+  }
+  return out.sort((a, b) => a[0] - b[0] || a[1] - b[1])
+}
+
 /**
  * Redraw the active points as one extra trace appended after all the others.
  * Plotly paints traces in array order, so this is what puts the selection *above*
@@ -437,6 +544,9 @@ function buildOverlay(data: unknown[], active: Set<string>, emph: ResolvedHighli
   const ringW: number[] = []
   const ringC: string[] = []
   const fontSize: number[] = []
+  // each point's own symbol, so an emphasised point keeps its shape (a bubble's hollow, not
+  // significant circle stays hollow — an open symbol strokes in the marker colour)
+  const symbol: string[] = []
   // uniqID per overlay point, so a click on the (larger, on-top) emphasis marker can toggle the right
   // gene (see the click handler; the base dot underneath is smaller so its hit area misses the edge).
   const cd: string[] = []
@@ -446,78 +556,63 @@ function buildOverlay(data: unknown[], active: Set<string>, emph: ResolvedHighli
   // MULTIPLE spots — e.g. the same leading-edge gene across several GSEA ridges — at each of them.
   // posKey → index in the arrays: a point drawn by several traces is emphasised once.
   const seen = new Map<string, number>()
+  const idx = pointIndex(data)
   // When the emphasised points come from a colorscale trace (the bubble's diverging
   // log2FC map), reuse that scale + range so the enlarged point keeps the SAME colour.
-  let cmap: Record<string, unknown> | null = null
-  for (const raw of data) {
-    const t = raw as Trace
-    const ids = traceIds(t)
-    if (
-      !ids ||
-      isLine(t) ||
-      // A bar is its own emphasis (it dims/brightens in place); a dot drawn over it reads as a
-      // stray marker.
-      (t as { type?: string }).type === 'bar' ||
-      (t as { __oeNoOverlay?: boolean }).__oeNoOverlay ||
-      !Array.isArray(t.x) ||
-      !Array.isArray(t.y)
-    )
-      continue
+  const cmap = idx.cmap
+  // Only the active genes' own points (via the index), in the order a scan of every trace meets them.
+  for (const [i, k] of active.size ? activePoints(idx, active) : []) {
+    const info = idx.overlay[i]
+    if (!info) continue
+    const t = data[i] as Trace
+    const id = (idx.ids[i] as string[])[k]
     const mk = t.marker
-    const scaled = Array.isArray(mk?.color) && typeof (mk.color as unknown[])[0] === 'number'
-    // A scale of explicit stops → each point's own colour, resolved on ITS trace's scale; only a
-    // named scale falls back to carrying the (first such trace's) scale on the overlay.
-    const colorer = scaled && mk ? scaleColorer(mk) : null
-    const numeric = scaled && !colorer
-    if (numeric && mk && !cmap) cmap = colorScaleOf(mk)
+    const { colorer, numeric } = info
     const em = emphOf(t, emph)
-    ids.forEach((id, k) => {
-      if (!active.has(id)) return
-      const xk = (t.x as unknown[])[k]
-      const yk = (t.y as unknown[])[k]
-      const posKey = `${id}|${String(xk)}|${String(yk)}`
-      // An explicit emphasis size wins; otherwise size from the SMALLEST marker drawn at this spot
-      // — the cloud's own dot — plus the bump, so emphasis is the same size on every plot
-      // regardless of any larger view-level marker.
-      const sz = em.size ?? renderedSize(t.marker, k) + em.bump
-      const prev = seen.get(posKey)
-      if (prev != null) {
-        size[prev] = Math.min(size[prev], sz)
-        // …but COLOURED from the LAST trace drawn there: Plotly paints later traces on top, so
-        // that is the colour the eye sees (e.g. a view's pinned-genes trace in a geneset's colour
-        // over the effect-coloured cloud).
-        if (colorer) color[prev] = colorer(at(mk?.color as number[], k, 0))
-        else if (!numeric)
-          color[prev] = at(mk?.color as string | string[], k, color[prev] as string)
-        return
-      }
-      seen.set(posKey, x.length)
-      x.push(xk)
-      y.push(yk)
-      cd.push(id)
-      size.push(sz)
-      ringW.push(em.ring)
-      ringC.push(em.ringColor ?? ink)
-      fontSize.push(em.labelSize)
-      // Numeric → keep the raw value so the overlay's colorscale maps it; else the
-      // point's own colour string.
-      color.push(
-        colorer
-          ? colorer(at(mk?.color as number[], k, 0))
-          : numeric
-            ? at(mk?.color as number[], k, 0)
-            : at(mk?.color as string | string[], k, '#888')
-      )
-      // Carry the point's own label so the emphasised gene is named in place — this is
-      // what surfaces a name on hover in the scatter/etc. A trace can opt out (bubble,
-      // whose gene names already sit on the axis) via __oeNoLabel, and a tile's highlight
-      // config can switch the names off altogether.
-      text.push(
-        !em.label || (t as { __oeNoLabel?: boolean }).__oeNoLabel
-          ? ''
-          : truncateLabel(at(t.text as string | string[] | undefined, k, ''))
-      )
-    })
+    const xk = (t.x as unknown[])[k]
+    const yk = (t.y as unknown[])[k]
+    const posKey = `${id}|${String(xk)}|${String(yk)}`
+    // An explicit emphasis size wins; otherwise size from the SMALLEST marker drawn at this spot
+    // — the cloud's own dot — plus the bump, so emphasis is the same size on every plot
+    // regardless of any larger view-level marker.
+    const sz = em.size ?? renderedSize(t.marker, k) + em.bump
+    const prev = seen.get(posKey)
+    if (prev != null) {
+      size[prev] = Math.min(size[prev], sz)
+      // …but COLOURED from the LAST trace drawn there: Plotly paints later traces on top, so
+      // that is the colour the eye sees (e.g. a view's pinned-genes trace in a geneset's colour
+      // over the effect-coloured cloud).
+      if (colorer) color[prev] = colorer(at(mk?.color as number[], k, 0))
+      else if (!numeric) color[prev] = at(mk?.color as string | string[], k, color[prev] as string)
+      continue
+    }
+    seen.set(posKey, x.length)
+    x.push(xk)
+    y.push(yk)
+    cd.push(id)
+    size.push(sz)
+    ringW.push(em.ring)
+    ringC.push(em.ringColor ?? ink)
+    fontSize.push(em.labelSize)
+    symbol.push(at(mk?.symbol, k, 'circle'))
+    // Numeric → keep the raw value so the overlay's colorscale maps it; else the
+    // point's own colour string.
+    color.push(
+      colorer
+        ? colorer(at(mk?.color as number[], k, 0))
+        : numeric
+          ? at(mk?.color as number[], k, 0)
+          : at(mk?.color as string | string[], k, '#888')
+    )
+    // Carry the point's own label so the emphasised gene is named in place — this is
+    // what surfaces a name on hover in the scatter/etc. A trace can opt out (bubble,
+    // whose gene names already sit on the axis) via __oeNoLabel, and a tile's highlight
+    // config can switch the names off altogether.
+    text.push(
+      !em.label || (t as { __oeNoLabel?: boolean }).__oeNoLabel
+        ? ''
+        : truncateLabel(at(t.text as string | string[] | undefined, k, ''))
+    )
   }
   return {
     [OVERLAY_FLAG]: true,
@@ -544,6 +639,7 @@ function buildOverlay(data: unknown[], active: Set<string>, emph: ResolvedHighli
       color,
       opacity: 1,
       line: { width: ringW, color: ringC },
+      symbol,
       ...(cmap ?? {})
     }
   }
@@ -571,25 +667,28 @@ function renderedSize(marker: Trace['marker'] | undefined, k: number): number {
  *  opaque by the overlay on top, so a trace's state depends only on WHETHER something is selected —
  *  moving the hover from one gene to the next changes nothing but the overlay. */
 function traceSigs(data: unknown[], active: Set<string>, dimAll: boolean): string[] {
+  const idx = pointIndex(data)
+  // Each trace's active points (via the index — only the active genes' own points are visited).
+  const lit: number[][] = data.map(() => [])
+  if (!dimAll) for (const [i, k] of activePoints(idx, active)) lit[i].push(k)
   // Traces flagged __oeOwnIds carry ids of their own (an enrichment plot's terms, not genes): they
   // react only when the active set holds one of THEIRS — a gene selected elsewhere, which none of
   // them can match, would otherwise dim the whole plot.
-  const ownTouched = data.some((raw) => {
-    const t = raw as Trace & { __oeOwnIds?: boolean }
-    return t.__oeOwnIds && (traceIds(t) ?? []).some((id) => active.has(id))
-  })
-  return data.map((raw) => {
+  const ownTouched = data.some(
+    (raw, i) => (raw as { __oeOwnIds?: boolean }).__oeOwnIds && lit[i].length > 0
+  )
+  return data.map((raw, i) => {
     const t = raw as Trace
-    const ids = traceIds(t)
+    const ids = idx.ids[i]
     if (!ids || (t as { __oeNoOverlay?: boolean }).__oeNoOverlay) return ''
     if (dimAll) return 'gdim'
     if (active.size === 0) return 'off'
     if ((t as { __oeOwnIds?: boolean }).__oeOwnIds && !ownTouched) return 'off'
-    if (isLine(t)) return ids.some((id) => active.has(id)) ? 'on' : 'dim'
+    if (isLine(t)) return lit[i].length ? 'on' : 'dim'
     // A bar trace's state is which of its bars are active (see isBar), so a hover moving from one
     // bar to the next restyles it.
-    if (isBar(t)) return `bar:${ids.flatMap((id, k) => (active.has(id) ? [k] : [])).join(',')}`
-    return ids.length && ids.every((id) => active.has(id)) ? 'on' : 'dim'
+    if (isBar(t)) return `bar:${lit[i].join(',')}`
+    return lit[i].length === ids.length ? 'on' : 'dim'
   })
 }
 
@@ -647,9 +746,12 @@ function sameOverlay(a: Trace | undefined, b: Trace): boolean {
   const by = b.y as unknown[]
   const as = (a.marker as { size?: number[] })?.size ?? []
   const bs = (b.marker as { size?: number[] })?.size ?? []
+  // the names too: which are culled moves with the zoom and the hovered gene (cullOverlayNames)
+  const aText = (a.text ?? []) as string[]
+  const bText = (b.text ?? []) as string[]
   if (ax.length !== bx.length) return false
   for (let i = 0; i < ax.length; i++)
-    if (ax[i] !== bx[i] || ay[i] !== by[i] || as[i] !== bs[i]) return false
+    if (ax[i] !== bx[i] || ay[i] !== by[i] || as[i] !== bs[i] || aText[i] !== bText[i]) return false
   return true
 }
 
@@ -667,6 +769,7 @@ function overlayRestyle(top: Trace): Record<string, unknown[]> {
     'marker.color': [mk.color],
     'marker.line.color': [mk.line?.color],
     'marker.line.width': [mk.line?.width],
+    'marker.symbol': [mk.symbol ?? 'circle'],
     'textfont.size': [(top.textfont as { size?: unknown } | undefined)?.size]
   }
   // A colorscale (bubble) travels with the points so numeric colours map the same way.
@@ -688,10 +791,11 @@ function decorateData(
   active: Set<string>,
   bases: BaseOpacity[],
   dimAll: boolean,
-  emph: ResolvedHighlight
+  emph: ResolvedHighlight,
+  gl: boolean
 ): { traces: unknown[]; sigs: string[] } {
   const sigs = traceSigs(data, active, dimAll)
-  const traces = data.map((raw, i) => {
+  const traces = (gl ? toGlTraces(data) : data).map((raw, i) => {
     const t = raw as Trace
     if (!sigs[i]) return raw
     const op = traceOpacity(
@@ -705,7 +809,9 @@ function decorateData(
       ? { ...t, opacity: op }
       : { ...t, marker: { ...(t.marker ?? {}), opacity: op } }
   })
-  traces.push(buildOverlay(data, dimAll ? new Set() : active, emph))
+  const overlay = buildOverlay(data, dimAll ? new Set() : active, emph)
+  // Over a WebGL cloud the overlay must be WebGL too, or it draws underneath (see toGlOverlay).
+  traces.push(hasGlTraces(traces) ? toGlOverlay(overlay) : overlay)
   return { traces, sigs }
 }
 
@@ -731,6 +837,60 @@ function repaintPoints(el: PlotlyGraphDiv): void {
   })
 }
 
+/** Which lit genes the overlay names first: the hovered one, then the view's label priority. */
+interface OverlayNames {
+  /** gene id → its label priority (PlotLabel.priority; higher first) */
+  priority: Map<string, number>
+  /** the hovered gene, always named */
+  first: string | null
+}
+
+/** Cull the overlay's names by the label crowding rule: in order (the hovered gene, then by the
+ *  view's label priority — most differentiated first), a name is kept only if its box clears every
+ *  name already kept. One name or a few in open space all show; a highlighted group of hundreds
+ *  is named where there's room, not in a pile. */
+function cullOverlayNames(el: PlotlyGraphDiv, top: Trace, names: OverlayNames): void {
+  const text = top.text as string[] | undefined
+  if (!Array.isArray(text) || text.filter(Boolean).length < 2) return
+  const fl = (el as unknown as { _fullLayout?: Record<string, unknown> })._fullLayout
+  type Ax = { _offset: number; d2p?: (v: unknown) => number; l2p: (v: number) => number }
+  const xa = fl?.xaxis as Ax | undefined
+  const ya = fl?.yaxis as Ax | undefined
+  if (!xa || !ya) return
+  const toPx = (a: Ax, v: unknown): number =>
+    a._offset + (a.d2p ? a.d2p(v) : typeof v === 'number' ? a.l2p(v) : NaN)
+  const ids = (top.customdata ?? []) as string[]
+  const xs = top.x as unknown[]
+  const ys = top.y as unknown[]
+  const sizes = (top.marker?.size ?? []) as number[]
+  const fonts = ((top.textfont as { size?: number[] } | undefined)?.size ?? []) as number[]
+  const rank = (i: number): number =>
+    ids[i] === names.first ? Infinity : (names.priority.get(ids[i]) ?? -Infinity)
+  const order = text
+    .map((_, i) => i)
+    .filter((i) => text[i])
+    .sort((a, b) => rank(b) - rank(a) || a - b)
+  const kept: Array<[number, number, number, number]> = []
+  for (const i of order) {
+    const px = toPx(xa, xs[i])
+    const py = toPx(ya, ys[i])
+    if (!Number.isFinite(px) || !Number.isFinite(py)) continue
+    // 'top center': centred over the marker, its baseline just above it
+    const fs = fonts[i] ?? 9
+    const w = text[i].length * fs * 0.62
+    const bottom = py - (sizes[i] ?? 6) / 2 - 1
+    const box: [number, number, number, number] = [
+      px - w / 2,
+      px + w / 2,
+      bottom - fs * 1.2,
+      bottom
+    ]
+    if (kept.some((k) => box[0] < k[1] && box[1] > k[0] && box[2] < k[3] && box[3] > k[2]))
+      text[i] = ''
+    else kept.push(box)
+  }
+}
+
 /**
  * Apply the active feature selection to a rendered plot in place (never a full re-render): move
  * the overlay to the selected points FIRST — so there is never a frame with the cloud dimmed and
@@ -744,7 +904,8 @@ function applyHighlight(
   bases: BaseOpacity[],
   applied: { current: string[] },
   dimAll: boolean,
-  emph: ResolvedHighlight
+  emph: ResolvedHighlight,
+  names?: OverlayNames
 ): void {
   // A chart in a hidden tab is still mounted and still subscribed to the selection.
   // Restyling it would cost as much as a visible one for nothing, so skip — and leave
@@ -757,6 +918,7 @@ function applyHighlight(
     const live = (el as unknown as { data?: Trace[] }).data ?? []
     const idx = live.findIndex((t) => t && (t as Record<string, unknown>)[OVERLAY_FLAG])
     const top = buildOverlay(data, dimAll ? new Set() : active, emph)
+    if (names) cullOverlayNames(el, top, names)
     if (idx < 0) Plotly.addTraces(el, top)
     else if (!sameOverlay(live[idx], top)) void Plotly.restyle(el, overlayRestyle(top), [idx])
   } catch {
@@ -867,10 +1029,16 @@ const ABOVE_SIDES: Side[] = [SIDES[0], SIDES[4], SIDES[5]]
  *   - while anything is active (pinned OR hovered), every other gene's label is hidden too, so
  *     only the selection stays named and the tooltip sits on a clear cloud. Nothing active →
  *     everything shows. */
-function labelOpacity(id: string | undefined, active: Set<string>): number {
+function labelOpacity(id: string | undefined, active: Set<string>, inPlace = false): number {
   if (!id) return 1
+  if (inPlace && active.has(id)) return 1
   return active.size > 0 ? 0 : 1
 }
+
+/** A collision-managed label's text in its state: bold while its gene is active in place
+ *  (labelsInPlace), else as given. */
+const labelText = (text: string, id: string | undefined, active: Set<string>, inPlace: boolean) =>
+  inPlace && id && active.has(id) ? `<b>${text}</b>` : text
 
 function placeLabelAnnotations(
   el: PlotlyGraphDiv,
@@ -879,14 +1047,15 @@ function placeLabelAnnotations(
   base: unknown[],
   sides: Side[] = SIDES,
   active: Set<string> = new Set(),
-  pinned: Set<string> = new Set()
+  pinned: Set<string> = new Set(),
+  inPlace = false
 ): unknown[] | null {
   const fl = (el as unknown as { _fullLayout?: Record<string, unknown> })._fullLayout
   if (!fl) return null
   // A pinned gene is never a candidate: the overlay names it, and leaving it out frees its spot
   // for a neighbour. (A merely hovered gene keeps its slot — hidden via labelOpacity — so labels
   // don't re-place on every mouse move.)
-  if (pinned.size) labels = labels.filter((lab) => !lab.id || !pinned.has(lab.id))
+  if (pinned.size && !inPlace) labels = labels.filter((lab) => !lab.id || !pinned.has(lab.id))
   const size = fl._size as { l: number; t: number; w: number; h: number } | undefined
   const xa = fl.xaxis as { range?: [number, number] } | undefined
   const ya = fl.yaxis as { range?: [number, number] } | undefined
@@ -957,7 +1126,11 @@ function placeLabelAnnotations(
     `${Math.floor(px / CELL)},${Math.floor(py / CELL)}`
   const live = (el as unknown as { data?: Trace[] }).data ?? []
   for (const t of live) {
+    // the highlight overlays (this layer's, and a view's own — the STRING network's) redraw marks
+    // already counted: counted again, a lit gene's neighbourhood reads twice as dense and its
+    // label is dropped at the next placement (a zoom, a resize)
     if (!t || (t as Record<string, unknown>)[OVERLAY_FLAG]) continue
+    if ((t as Record<string, unknown>).__oeHoverOverlay) continue
     if (typeof t.mode !== 'string' || !t.mode.includes('markers')) continue
     const xs = t.x as unknown[]
     const ys = t.y as unknown[]
@@ -1124,13 +1297,14 @@ function placeLabelAnnotations(
     out.push({
       x: it.lab.x,
       y: it.lab.y,
-      text: it.lab.text,
+      text: labelText(it.lab.text, it.lab.id, active, inPlace),
       xref: 'x',
       yref: 'y',
       ...pos,
       font: { size: it.fs, color },
-      opacity: labelOpacity(it.lab.id, active),
+      opacity: labelOpacity(it.lab.id, active, inPlace),
       __oeLabelId: it.lab.id,
+      __oeLabelText: it.lab.text,
       captureevents: false
     })
   }
@@ -1194,6 +1368,26 @@ function bindLegendHover(el: PlotlyGraphDiv): () => void {
   }
 }
 
+/** The distinct 3-D scenes a plot's traces draw into. */
+const SCENE_TYPES = new Set([
+  'scatter3d',
+  'surface',
+  'mesh3d',
+  'isosurface',
+  'volume',
+  'cone',
+  'streamtube'
+])
+function sceneCount(data: unknown[]): number {
+  const ids = new Set<string>()
+  for (const t of data as Array<{ type?: string; scene?: string }>)
+    if (t && SCENE_TYPES.has(t.type ?? '')) ids.add(t.scene ?? 'scene')
+  return ids.size
+}
+
+/** How much faster a trackpad pinch zooms a 3-D scene than Plotly would (see the wheel listener). */
+const PINCH_ZOOM_SPEED = 8
+
 /** Thin React wrapper over plotly.js-dist-min (bundled locally — CSP-safe, no CDN). */
 export function PlotlyChart({
   data,
@@ -1203,18 +1397,33 @@ export function PlotlyChart({
   labelColor,
   emphasis = DEFAULT_HIGHLIGHT,
   labelsAbove,
+  labelsInPlace,
   boldTicks,
   onGraphMount,
   guides,
   onGuide,
   onAnnotationClick,
-  modeBar = true
+  pinIdsOf,
+  modeBar = true,
+  linkDelay,
+  onCamera
 }: PlotlyChartProps) {
   const ref = useRef<HTMLDivElement>(null)
+  // The latest camera callback, for the once-bound relayout handler.
+  const onCameraRef = useRef(onCamera)
+  useEffect(() => {
+    onCameraRef.current = onCamera
+  }, [onCamera])
   // The tile's per-axis overrides (title, fonts, range, ticks, …), merged over the view's layout
   // at render (see plotAxes.ts). Provided by the tile so no view has to thread it.
   const axesCtx = useContext(PlotAxesContext)
   const axes = axesCtx?.axes
+  // A single-gene plot's gene: its name as the figure's title, the live picker laid over it.
+  const geneTitle = useContext(GeneTitleContext)
+  const geneTitleText = geneTitle?.text
+  const claimGeneTitle = geneTitle?.claim
+  // Before paint, so the pager's own fallback copy never flashes.
+  useLayoutEffect(() => claimGeneTitle?.(), [claimGeneTitle])
   // Report what each axis shows WITHOUT an override — the view's own title and the range actually
   // drawn — so the tile's settings can use them as placeholders. The tile only supplies the
   // callback while its settings window is open, so a plot nobody is configuring never pays for it;
@@ -1292,6 +1501,10 @@ export function PlotlyChart({
   const boldSigRef = useRef('')
   // The annotation-click handler, read by the once-bound Plotly listener.
   const annotationClickRef = useRef(onAnnotationClick)
+  // A clicked point's genes (pinIdsOf), read by the once-bound click listeners.
+  const pinIdsOfRef = useRef(pinIdsOf)
+  // The shared-hover delay (linkDelay), read by the once-bound hover listener.
+  const linkDelayRef = useRef(linkDelay)
   // Bespoke imperative interaction (network neighbour highlight): kept in a ref so re-mounts see the
   // latest; `mountCleanup` runs the previous mount's teardown before re-mounting / on unmount.
   const onGraphMountRef = useRef(onGraphMount)
@@ -1312,6 +1525,13 @@ export function PlotlyChart({
   const labelsRef = useRef(sortedLabels)
   const labelColorRef = useRef(labelColor)
   const labelsAboveRef = useRef(labelsAbove)
+  const labelsInPlaceRef = useRef(!!labelsInPlace)
+  // Each labelled gene's priority, for the overlay's name culling (see cullOverlayNames).
+  const namePriorityRef = useRef(new Map<string, number>())
+  const namesNow = (): OverlayNames => ({
+    priority: namePriorityRef.current,
+    first: useSelection.getState().hoverId
+  })
   // Annotations the VIEW put in `layout` (e.g. cluster arrows) — labels are appended to these,
   // never replacing them.
   const baseAnnotsRef = useRef<unknown[]>([])
@@ -1341,7 +1561,8 @@ export function PlotlyChart({
       baseAnnotsRef.current,
       labelsAboveRef.current ? ABOVE_SIDES : SIDES,
       activeRef.current,
-      pinnedRef.current
+      pinnedRef.current,
+      labelsInPlaceRef.current
     )
     if (merged) {
       // Only annotations change here (never the axis range), so this can't recurse into the
@@ -1433,6 +1654,42 @@ export function PlotlyChart({
     layoutRef.current = layout
   }, [layout])
 
+  // WebGL rationing (glBudget.ts): this plot's slot, registered before its first render so that
+  // render is already in the right mode; a change of permission re-renders it in place (glTick).
+  const glSlotRef = useRef<GlSlot | null>(null)
+  const [glTick, setGlTick] = useState(0)
+  const dense = useMemo(() => toGlTraces(data) !== data, [data])
+  // The 3-D scenes it draws: each holds a WebGL context however the budget goes (no SVG for them).
+  const scenes = useMemo(() => sceneCount(data), [data])
+  useLayoutEffect(() => {
+    const el = ref.current
+    const slot = glSlot({ dense, shown: !!el && el.offsetParent !== null, scenes }, () =>
+      setGlTick((n) => n + 1)
+    )
+    glSlotRef.current = slot
+    // A dropped context (Chromium's per-page cap) → SVG from now on, never a blank plot. The event
+    // doesn't bubble, so listen in the capture phase.
+    const onLost = (): void => slot.lost()
+    el?.addEventListener('webglcontextlost', onLost, true)
+    // On screen or not: a hidden dashboard tab is display:none, so the box goes to 0×0.
+    const ro =
+      el && typeof ResizeObserver !== 'undefined'
+        ? new ResizeObserver(() => slot.update({ shown: el.offsetParent !== null }))
+        : null
+    if (el) ro?.observe(el)
+    return () => {
+      ro?.disconnect()
+      el?.removeEventListener('webglcontextlost', onLost, true)
+      slot.release()
+      glSlotRef.current = null
+    }
+    // Registered once per mount; density changes go through update below.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+  useLayoutEffect(() => {
+    glSlotRef.current?.update({ dense, scenes })
+  }, [dense, scenes])
+
   useEffect(() => {
     const el = ref.current as PlotlyGraphDiv | null
     if (!el) return
@@ -1449,7 +1706,8 @@ export function PlotlyChart({
       activeRef.current,
       basesRef.current,
       guideDimRef.current,
-      emphasis
+      emphasis,
+      glSlotRef.current?.allowed() ?? false
     )
     appliedRef.current = baked.sigs
     // Remember any view-owned annotations so the label pass appends to (not replaces) them. Clone
@@ -1465,8 +1723,16 @@ export function PlotlyChart({
       baked.traces,
       {
         autosize: true,
-        margin: { l: 55, r: 20, t: 30, b: 45 },
+        margin: BASE_MARGIN,
         ...strictCategoryAxes(applyPlotAxes(layout ?? {}, axes, data)),
+        // Over the margin in effect (the view's, else the base) — not a bare top margin, which
+        // would leave Plotly's own wide defaults on the other sides.
+        ...(geneTitleText != null
+          ? geneTitleLayout(geneTitleText, {
+              ...layout,
+              margin: (layout?.margin as object | undefined) ?? BASE_MARGIN
+            })
+          : null),
         // If a guide is under the cursor when this render fires (e.g. a drag's commit), keep hover
         // disabled so the re-render doesn't reset hovermode and let a point tooltip flash back.
         ...(hoverSuppressedRef.current ? { hovermode: false } : {})
@@ -1479,15 +1745,44 @@ export function PlotlyChart({
         const div = el as PlotlyGraphDiv & { __oeBound?: boolean }
         if (!div.__oeBound) {
           div.__oeBound = true
+          // A trackpad pinch reaches a 3-D scene as wheel events with ctrlKey set and a far
+          // smaller deltaY than a mouse wheel's, and Plotly zooms in proportion to it — so pinching
+          // barely moved. Before the scene's own listener (this one captures), pinch zooms at
+          // PINCH_ZOOM_SPEED; the mouse wheel keeps Plotly's speed.
+          div.addEventListener(
+            'wheel',
+            (e) => {
+              const full = (div as unknown as { _fullLayout?: Record<string, unknown> })._fullLayout
+              if (!full) return
+              for (const key of Object.keys(full)) {
+                if (!/^scene\d*$/.test(key)) continue
+                const camera = (full[key] as { _scene?: { camera?: { zoomSpeed?: number } } })
+                  ._scene?.camera
+                if (camera) camera.zoomSpeed = e.ctrlKey ? PINCH_ZOOM_SPEED : 1
+              }
+            },
+            { capture: true, passive: true }
+          )
           // Set while a threshold-guide drag is in progress (and until the trailing click), so the
           // gene-select handlers don't treat the drag's mouseup/click as a point selection.
           let guideDragging = false
           // Set while the cursor is over a threshold guide, so hovering it doesn't highlight the gene
           // point beneath (plotly_hover still fires for the point under the line).
           let overGuide = false
-          const idAt = (e: { points?: Array<{ customdata?: unknown }> }): string | null => {
-            const cd = e.points?.[0]?.customdata
-            return typeof cd === 'string' ? cd : null
+          const idAt = (e: {
+            points?: Array<{ customdata?: unknown; curveNumber?: number }>
+          }): string | null => {
+            const pt = e.points?.[0]
+            const cd = pt?.customdata
+            if (typeof cd === 'string') return cd
+            // A mark hovered as a whole (a filled ridge, hovered on its fill) carries no per-point
+            // data: its trace's own id (`__oeId`), if it has one.
+            const t =
+              pt?.curveNumber != null
+                ? (el as unknown as { data?: Trace[] }).data?.[pt.curveNumber]
+                : undefined
+            const own = (t as { __oeId?: unknown } | undefined)?.__oeId
+            return typeof own === 'string' ? own : null
           }
           // Show a pointer cursor over a clickable gene point (any point carrying a uniqID), so it
           // reads as "click to select". Applied to Plotly's drag layers (inline style beats their
@@ -1503,6 +1798,8 @@ export function PlotlyChart({
           // the rest of the plot stayed dimmed. A native mousemove checks Plotly's hover state after
           // its own handling and clears an orphaned hover.
           let ownHover: string | null = null
+          // a hover held back from the other plots (linkDelay), until it fires or is replaced
+          let linkTimer: ReturnType<typeof setTimeout> | undefined
           let moveRaf = 0
           el.addEventListener('mousemove', () => {
             if (!ownHover) return
@@ -1510,6 +1807,7 @@ export function PlotlyChart({
             moveRaf = requestAnimationFrame(() => {
               const hd = (el as unknown as { _hoverdata?: unknown[] })._hoverdata
               if (!ownHover || (hd && hd.length)) return
+              clearTimeout(linkTimer)
               if (useSelection.getState().hoverId === ownHover) useSelection.getState().clearHover()
               ownHover = null
               setDragCursor('')
@@ -1517,17 +1815,76 @@ export function PlotlyChart({
           })
           el.on('plotly_hover', (e) => {
             if (overGuide) return // over a threshold line — don't highlight the point beneath it
+            // A mark that's neither a gene's nor a sample's highlights its group (traceFocus).
+            hoverFocus(el, e.points?.[0]?.curveNumber ?? null)
             const id = idAt(e)
             if (id) {
               ownHover = id
-              useSelection.getState().setHover(id)
+              // a group's own id (a term, a cluster) carries its genes, in focus everywhere
+              const share = (): void =>
+                useSelection.getState().setHover(id, pinIdsOfRef.current?.(id) ?? undefined)
+              clearTimeout(linkTimer)
+              const delay = linkDelayRef.current
+              if (delay) linkTimer = setTimeout(() => ownHover === id && share(), delay)
+              else share()
               setDragCursor('pointer')
             }
           })
           el.on('plotly_unhover', () => {
+            hoverFocus(el, null)
+            clearTimeout(linkTimer)
             ownHover = null
             useSelection.getState().clearHover()
             setDragCursor('')
+          })
+          // Hovering a tick LABEL that stands for an id (boldTicks.idByTick — an enrichment term's)
+          // hovers that id, as hovering its mark does; the click fallback below then selects it.
+          // Plotly's SVG takes no pointer events, so the labels are hit-tested from the div's own
+          // mousemove: the tick under the cursor, mapped back to its index through its datum.
+          let labelHover: string | null = null
+          let labelRaf = 0
+          const tickIdAt = (clientX: number, clientY: number): string | null => {
+            const bt = boldTicksRef.current
+            const ids = bt?.idByTick
+            if (!ids) return null
+            const ax = bt.axis ?? 'y'
+            const axis = (el as unknown as { _fullLayout?: Record<string, unknown> })._fullLayout?.[
+              `${ax}axis`
+            ] as { tickvals?: unknown[]; _categories?: unknown[]; type?: string } | undefined
+            if (!axis?.tickvals) return null
+            for (const node of el.querySelectorAll(`.${ax}tick text`)) {
+              const r = node.getBoundingClientRect()
+              if (clientX < r.left - 2 || clientX > r.right + 2) continue
+              if (clientY < r.top - 1 || clientY > r.bottom + 1) continue
+              // the tick's linear position → its value (a category's name) → its index in tickvals
+              const x = (node as unknown as { __data__?: { x?: number } }).__data__?.x
+              if (x == null) return null
+              const v = axis.type === 'category' ? axis._categories?.[x] : x
+              const i = axis.tickvals.indexOf(v)
+              return i >= 0 ? (ids[i] ?? null) : null
+            }
+            return null
+          }
+          el.addEventListener('mousemove', (ev) => {
+            if (!boldTicksRef.current?.idByTick) return
+            const { clientX, clientY } = ev
+            cancelAnimationFrame(labelRaf)
+            labelRaf = requestAnimationFrame(() => {
+              const id = tickIdAt(clientX, clientY)
+              if (id === labelHover) return
+              const sel = useSelection.getState()
+              if (labelHover && sel.hoverId === labelHover) sel.clearHover()
+              labelHover = id
+              if (id) sel.setHover(id, pinIdsOfRef.current?.(id) ?? undefined)
+              ;(el as unknown as HTMLElement).style.cursor = id ? 'pointer' : ''
+            })
+          })
+          el.addEventListener('mouseleave', () => {
+            cancelAnimationFrame(labelRaf)
+            if (!labelHover) return
+            if (useSelection.getState().hoverId === labelHover) useSelection.getState().clearHover()
+            labelHover = null
+            ;(el as unknown as HTMLElement).style.cursor = ''
           })
           // One selection toggle per click, whichever path finds the gene. plotly_click is exact, but
           // it only fires while Plotly still holds the hovered point — and the plots that change on
@@ -1537,12 +1894,20 @@ export function PlotlyChart({
           // hover state. `plotlyClickAt` marks a click plotly_click already handled (a timestamp,
           // not a flag, so a stale value can't swallow a later click).
           let plotlyClickAt = -Infinity
+          // Pin a clicked point: the genes it stands for (pinIdsOf — an enrichment term's; none
+          // known = nothing, never the term's own id as if it were a gene), else the point's own id
+          // (a gene).
+          const pinPoint = (id: string): void => {
+            const genes = pinIdsOfRef.current?.(id)
+            if (genes) useSelection.getState().togglePins(genes)
+            else useSelection.getState().togglePin(id)
+          }
           el.on('plotly_click', (e) => {
             if (guideDragging) return // a guide drag, not a gene click
             const id = idAt(e)
             if (id) {
               plotlyClickAt = performance.now()
-              useSelection.getState().togglePin(id)
+              pinPoint(id)
             }
           })
           // The gene point under a click, from the live figure: the nearest point of any trace that
@@ -1598,6 +1963,47 @@ export function PlotlyChart({
             }
             return best
           }
+          // The own-id region under a click (a filled mark hovered as a whole — a STRING cluster's
+          // hull, carrying `__oeId`): the topmost whose filled outline contains the point. By
+          // position, not hover state — a view that redraws on hover (STRING's highlight) drops
+          // Plotly's hovered fill before the click lands.
+          const regionAt = (clientX: number, clientY: number): string | null => {
+            const gdx = el as unknown as {
+              data?: Trace[]
+              _fullLayout?: Record<string, unknown>
+              getBoundingClientRect: () => DOMRect
+            }
+            const fl = gdx._fullLayout
+            if (!fl) return null
+            const box = gdx.getBoundingClientRect()
+            type Ax = { _offset: number; l2p: (v: number) => number }
+            const xa = fl.xaxis as Ax | undefined
+            const ya = fl.yaxis as Ax | undefined
+            if (!xa || !ya) return null
+            const px = clientX - box.left
+            const py = clientY - box.top
+            const data = gdx.data ?? []
+            for (let t = data.length - 1; t >= 0; t--) {
+              const tr = data[t] as Trace & { __oeId?: unknown; fill?: unknown; visible?: unknown }
+              if (typeof tr.__oeId !== 'string' || tr.fill !== 'toself' || tr.visible === false)
+                continue
+              const xs = tr.x as number[] | undefined
+              const ys = tr.y as number[] | undefined
+              if (!Array.isArray(xs) || !Array.isArray(ys)) continue
+              // even-odd ray cast over the outline in pixels
+              let inside = false
+              for (let i = 0, j = xs.length - 1; i < xs.length; j = i++) {
+                const xi = xa._offset + xa.l2p(xs[i])
+                const yi = ya._offset + ya.l2p(ys[i])
+                const xj = xa._offset + xa.l2p(xs[j])
+                const yj = ya._offset + ya.l2p(ys[j])
+                if (yi > py !== yj > py && px < ((xj - xi) * (py - yi)) / (yj - yi) + xi)
+                  inside = !inside
+              }
+              if (inside) return tr.__oeId
+            }
+            return null
+          }
           el.addEventListener(
             'click',
             (ev) => {
@@ -1610,14 +2016,15 @@ export function PlotlyChart({
               // Snapshot NOW — the deferred check might run after hover cleared. The hovered gene is
               // the last resort: for pure LINE traces (DR/TR curves) Plotly often fires no
               // plotly_click and there is no marker to hit-test.
-              const hoverAtClick = useSelection.getState().hoverId
+              // (this chart's own hover first: one held back by linkDelay isn't shared yet)
+              const hoverAtClick = ownHover ?? useSelection.getState().hoverId
               const clickedAt = performance.now()
               const { clientX, clientY } = ev
               // Defer so a (bubble-phase) plotly_click, if any, is recorded first.
               setTimeout(() => {
                 if (plotlyClickAt >= clickedAt - 500) return // plotly_click handled this click
-                const id = pointAt(clientX, clientY) ?? hoverAtClick
-                if (id) useSelection.getState().togglePin(id)
+                const id = pointAt(clientX, clientY) ?? regionAt(clientX, clientY) ?? hoverAtClick
+                if (id) pinPoint(id)
               }, 0)
             },
             true // capture phase: fires even if Plotly's drag layer stops the bubbling click
@@ -1652,13 +2059,17 @@ export function PlotlyChart({
           })
           legendEvents.on('plotly_legendclick', (e) => {
             const ids = groupIds(e.curveNumber)
-            if (!ids) return true // non-gene legend → default (show/hide)
+            // Any other legend selects its group too (traceFocus) — never Plotly's show/hide.
+            if (!ids) return !legendSelect(el, e.curveNumber)
             useSelection.getState().togglePins(ids)
             return false
           })
           legendEvents.on('plotly_legenddoubleclick', (e) => {
             const ids = groupIds(e.curveNumber)
-            if (!ids) return true
+            if (!ids) {
+              legendClear(el)
+              return false
+            }
             useSelection.getState().clearPins()
             return false
           })
@@ -1670,6 +2081,12 @@ export function PlotlyChart({
           ;(
             el as unknown as { on: (ev: string, cb: (ed: Record<string, unknown>) => void) => void }
           ).on('plotly_relayout', (ed) => {
+            // A 3-D scene's camera (turned or zoomed) — handed to the view that keeps it.
+            for (const [k, v] of Object.entries(ed ?? {})) {
+              const m = /^(scene\d*)\.camera$/.exec(k)
+              if (m && v && typeof v === 'object')
+                onCameraRef.current?.(m[1], v as Record<string, unknown>)
+            }
             if (Object.keys(ed ?? {}).some((k) => k.includes('range'))) {
               // A zoom box (or the reset button) can start with the cursor on a point, and Plotly
               // then never sends that point's unhover — the hover stuck, every other gene stayed
@@ -1677,6 +2094,17 @@ export function PlotlyChart({
               // always ends any hover.
               if (useSelection.getState().hoverId) useSelection.getState().clearHover()
               repaintPoints(el)
+              // the overlay's names are culled in pixels: a new range re-culls them
+              applyHighlight(
+                el,
+                dataRef.current,
+                activeRef.current,
+                basesRef.current,
+                appliedRef,
+                guideDimRef.current,
+                emphRef.current,
+                namesNow()
+              )
               scheduleLabels()
               rebindDom() // ticks (and legend) re-render on zoom/pan → reattach hover listeners
               publishRef.current()
@@ -1685,8 +2113,8 @@ export function PlotlyChart({
 
           // ── draggable threshold guides (custom drag; see `guides`/`onGuide`) ───────────────
           // Constrained to one axis so a line never slants, follows the cursor smoothly via a cheap
-          // per-shape relayout, and commits the new value throttled to ~300ms so the plot
-          // re-classifies live without a full rebuild on every mouse move.
+          // per-shape relayout (a tooltip previews the value), and commits the new value ONCE, on
+          // release — one re-classification and one undo step per drag, not one per mouse move.
           const HIT_TOL = 6 // px proximity that counts as "over" a guide
           type Geom = {
             rect: DOMRect
@@ -1731,17 +2159,23 @@ export function PlotlyChart({
                 // Constrain the grab zone to the line's actual SEGMENT extent (its endpoints), not the
                 // whole axis — so the hidden parts of a cropped line (e.g. the volcano's bracket segments)
                 // aren't draggable.
+                // A full-span line's cross-axis extent may be paper-referenced (0–1 across the plot,
+                // e.g. the contrast scatter's axis cutoffs): read it as paper, not data.
+                const px = (v: number): number =>
+                  sh.xref === 'paper' ? g.l + v * g.w : g.xa._offset + g.xa.l2p(v)
+                const py = (v: number): number =>
+                  sh.yref === 'paper' ? g.t + (1 - v) * g.h : g.ya._offset + g.ya.l2p(v)
                 if (gd.axis === 'x') {
                   const lx = g.xa._offset + g.xa.l2p(sh.x0 as number)
-                  const ey0 = g.ya._offset + g.ya.l2p(sh.y0 as number)
-                  const ey1 = g.ya._offset + g.ya.l2p(sh.y1 as number)
+                  const ey0 = py(sh.y0 as number)
+                  const ey1 = py(sh.y1 as number)
                   const yMin = Math.min(ey0, ey1) - HIT_TOL
                   const yMax = Math.max(ey0, ey1) + HIT_TOL
                   if (Math.abs(sx - lx) <= HIT_TOL && sy >= yMin && sy <= yMax) return gd
                 } else {
                   const ly = g.ya._offset + g.ya.l2p(sh.y0 as number)
-                  const ex0 = g.xa._offset + g.xa.l2p(sh.x0 as number)
-                  const ex1 = g.xa._offset + g.xa.l2p(sh.x1 as number)
+                  const ex0 = px(sh.x0 as number)
+                  const ex1 = px(sh.x1 as number)
                   const xMin = Math.min(ex0, ex1) - HIT_TOL
                   const xMax = Math.max(ex0, ex1) + HIT_TOL
                   if (Math.abs(sy - ly) <= HIT_TOL && sx >= xMin && sx <= xMax) return gd
@@ -1805,7 +2239,8 @@ export function PlotlyChart({
               basesRef.current,
               appliedRef,
               on,
-              emphRef.current
+              emphRef.current,
+              namesNow()
             )
           }
           const relayoutSafe = (u: Record<string, unknown>): void => {
@@ -1926,6 +2361,8 @@ export function PlotlyChart({
               // Rebuild the whole curve for the new value — re-sampled, so the preview extends toward
               // the asymptote exactly like the committed shape (a captured-path scale would crop flat).
               upd[`shapes[${i}].path`] = p.guide.render(p.value)
+              if (p.guide.syncShapeIndex != null && p.guide.syncRender)
+                upd[`shapes[${p.guide.syncShapeIndex}].path`] = p.guide.syncRender(p.value)
             } else if (p.origPath != null) {
               // Translate the captured curve by the vertical delta (uniform y translate).
               const pts = parseShapePath(p.origPath)
@@ -2089,7 +2526,8 @@ export function PlotlyChart({
           basesRef.current,
           appliedRef,
           guideDimRef.current,
-          emphRef.current
+          emphRef.current,
+          namesNow()
         )
         scheduleLabels()
         // Rebind legend-hover (the legend DOM was just (re)built).
@@ -2097,6 +2535,8 @@ export function PlotlyChart({
         // (Re)run any bespoke imperative mount (network neighbour highlight), tearing down the prior.
         mountCleanupRef.current?.()
         mountCleanupRef.current = onGraphMountRef.current?.(el) ?? null
+        // A redraw brings fresh traces: put a legend selection back on them.
+        applyFocus(el)
         setReady(true)
         publishRef.current()
       })
@@ -2107,7 +2547,18 @@ export function PlotlyChart({
     return () => {
       cancelled = true
     }
-  }, [data, layout, axes, emphasis, scheduleLabels, rebindDom, reserveBoldMargin, modeBar])
+  }, [
+    data,
+    layout,
+    axes,
+    geneTitleText,
+    emphasis,
+    scheduleLabels,
+    rebindDom,
+    reserveBoldMargin,
+    modeBar,
+    glTick
+  ])
 
   // Drive the highlight from the selection store imperatively: subscribe once, restyle the
   // affected traces on change (rAF-coalesced so a mouse sweep is one redraw), WITHOUT
@@ -2116,28 +2567,55 @@ export function PlotlyChart({
     const el = ref.current as PlotlyGraphDiv | null
     if (!el) return
     let raf = 0
+    // A chart scrolled out of view skips the restyle (it is a redraw nobody sees) and catches up
+    // once it scrolls back in — as applyHighlight skips one in a hidden tab.
+    let visible = true
+    let stale = false
+    const io = new IntersectionObserver((entries) => {
+      visible = entries.some((e) => e.isIntersecting)
+      if (visible && stale) {
+        stale = false
+        apply()
+      }
+    })
+    io.observe(el)
     const apply = (): void => {
-      const { hoverId, pinnedIds } = useSelection.getState()
+      const { hoverId, hoverMembers, pinnedIds } = useSelection.getState()
       const active = new Set(pinnedIds)
       if (hoverId) active.add(hoverId)
-      activeRef.current = active
+      // A hovered group (an enrichment term, a STRING cluster — in this view or another) lights
+      // its member genes here as a hovered gene is lit. The bold labels keep to the group itself,
+      // so other terms sharing a gene don't bold with it.
+      const lit = new Set(active)
+      for (const g of hoverMembers) lit.add(g)
+      // Bold ticks: a group hovered in ANOTHER view bolds its members' ticks here, as a hovered
+      // gene does; one this view owns (its own term) bolds only itself.
+      const ownGroup = !!hoverId && pinIdsOfRef.current?.(hoverId) != null
+      const bold = ownGroup ? active : lit
+      // the overlay (enlarged, named points) and labels take the members too
+      activeRef.current = lit
       pinnedRef.current = new Set(pinnedIds)
       cancelAnimationFrame(raf)
+      if (!visible) {
+        stale = true
+        return
+      }
       raf = requestAnimationFrame(() => {
         applyHighlight(
           el,
           dataRef.current,
-          active,
+          lit,
           basesRef.current,
           appliedRef,
           guideDimRef.current,
-          emphRef.current
+          emphRef.current,
+          namesNow()
         )
         // Bold the y-tick label of any pathway containing an active (hovered/pinned) gene, and (when
         // provided) rebuild the category legend so the active pathways' categories bold too.
         const bt = boldTicksRef.current
         if (bt) {
-          const boldRow = bt.genesByTick.map((g) => g.some((x) => active.has(x)))
+          const boldRow = bt.genesByTick.map((g) => g.some((x) => bold.has(x)))
           const anyActive = boldRow.some(Boolean)
           const sig = boldRow.map((b) => (b ? '1' : '0')).join('')
           if (sig !== boldSigRef.current) {
@@ -2183,12 +2661,21 @@ export function PlotlyChart({
           liveAnns.forEach((a, i) => {
             const lid = (a as { __oeLabelId?: string }).__oeLabelId
             if (typeof lid !== 'string') return
-            const op = labelOpacity(lid, active)
+            const inPlace = labelsInPlaceRef.current
+            // in place, a hovered group's members keep (and bold) their labels as its genes do
+            const on = inPlace ? lit : active
+            const op = labelOpacity(lid, on, inPlace)
             // Also write the value onto the live object so a placement that lands between this
             // read and the relayout can't leave the two out of step.
             if ((a as { opacity?: number }).opacity !== op) {
               ;(a as { opacity?: number }).opacity = op
               upd[`annotations[${i}].opacity`] = op
+            }
+            const base = (a as { __oeLabelText?: string }).__oeLabelText
+            const text = base != null ? labelText(base, lid, on, inPlace) : undefined
+            if (text != null && (a as { text?: string }).text !== text) {
+              ;(a as { text?: string }).text = text
+              upd[`annotations[${i}].text`] = text
             }
           })
           if (Object.keys(upd).length) {
@@ -2209,6 +2696,7 @@ export function PlotlyChart({
     const unsub = useSelection.subscribe(apply)
     return () => {
       cancelAnimationFrame(raf)
+      io.disconnect()
       unsub()
     }
   }, [])
@@ -2244,7 +2732,8 @@ export function PlotlyChart({
           basesRef.current,
           appliedRef,
           guideDimRef.current,
-          emphRef.current
+          emphRef.current,
+          namesNow()
         )
         // The plot area changed size — labels must be re-placed against the new geometry, and the
         // legend/tick DOM re-rendered, so reattach their hover listeners.
@@ -2266,14 +2755,24 @@ export function PlotlyChart({
     labelsRef.current = sortedLabels
     labelColorRef.current = labelColor
     labelsAboveRef.current = labelsAbove
+    labelsInPlaceRef.current = !!labelsInPlace
+    namePriorityRef.current = new Map(
+      (sortedLabels ?? []).flatMap((l) => (l.id ? [[l.id, l.priority] as [string, number]] : []))
+    )
     // New candidates usually arrive together with new data: that render places them when it
     // completes (see the react effect). Placing now too would measure the outgoing plot.
     if (!reactPendingRef.current) scheduleLabels()
-  }, [sortedLabels, labelColor, labelsAbove, scheduleLabels])
+  }, [sortedLabels, labelColor, labelsAbove, labelsInPlace, scheduleLabels])
 
   useEffect(() => {
     annotationClickRef.current = onAnnotationClick
   }, [onAnnotationClick])
+  useEffect(() => {
+    pinIdsOfRef.current = pinIdsOf
+  }, [pinIdsOf])
+  useEffect(() => {
+    linkDelayRef.current = linkDelay
+  }, [linkDelay])
   // Keep the (once-bound) selection handler's view of the bold-tick config current.
   useEffect(() => {
     boldTicksRef.current = boldTicks
@@ -2312,12 +2811,32 @@ export function PlotlyChart({
   return (
     <div style={{ position: 'relative', width: '100%', height: '100%' }}>
       <div ref={ref} style={{ width: '100%', height: '100%', ...style }} />
+      {geneTitle && (
+        <div style={{ ...geneTitleStyle, height: GENE_TITLE_BAND }}>
+          <span style={{ pointerEvents: 'auto', display: 'flex' }}>{geneTitle.picker}</span>
+        </div>
+      )}
       {!ready && <Spinner />}
       {/* Drag preview: portaled to <body> so the tile's overflow can't crop it. Positioned
           imperatively (viewport coords) while a guide is being dragged. */}
       {createPortal(<div ref={tipRef} hidden style={tipStyle} />, document.body)}
     </div>
   )
+}
+
+/** The chart's margin where a view sets none. */
+const BASE_MARGIN = { l: 55, r: 20, t: 30, b: 45 }
+
+/** The gene picker over the figure's title band: top-centre; only the picker itself takes clicks. */
+const geneTitleStyle: CSSProperties = {
+  position: 'absolute',
+  top: 0,
+  left: 0,
+  right: 0,
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  pointerEvents: 'none'
 }
 
 /** Floating tooltip for the guide-drag value preview (positioned imperatively during a drag). */

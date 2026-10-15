@@ -33,6 +33,7 @@ declare module 'plotly.js-dist-min' {
       update: Record<string, unknown>,
       traceIndices?: number[]
     ): Promise<void>
+    relayout(root: HTMLElement, update: Record<string, unknown>): Promise<void>
     addTraces(root: HTMLElement, traces: unknown | unknown[]): Promise<void>
     deleteTraces(root: HTMLElement, traceIndices: number | number[]): Promise<void>
     purge(root: HTMLElement): void

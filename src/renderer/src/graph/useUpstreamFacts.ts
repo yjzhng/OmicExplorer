@@ -5,7 +5,14 @@ import { useMemo } from 'react'
 import { axisAvailFor } from './registry'
 import { isCurveFit, type UpstreamFacts } from './requirements'
 import { useGraph } from './store'
-import { condUnitsFor, isStep, type CondUnits, type DoseUnit, type TimeUnit } from './types'
+import {
+  condUnitsFor,
+  isStep,
+  type CompareConfig,
+  type CondUnits,
+  type DoseUnit,
+  type TimeUnit
+} from './types'
 
 /** Live facts for the tile whose incoming edge lands on `nodeId` (a plot, group, or placeholder's
  *  source). Selects primitives/stable refs so Zustand's equality check holds. */
@@ -16,6 +23,14 @@ export function useUpstreamFacts(upstreamId: string | undefined): UpstreamFacts 
   })
   const result = useGraph((s) => (upstreamId ? s.results[upstreamId] : undefined))
   const curve = useGraph((s) => isCurveFit(s.nodes.find((x) => x.id === upstreamId)))
+  // A Curve fit's model and whether it fits dose × time surfaces (as upstreamFacts) — the Response
+  // plot needs surfaces, the residual plots CurveCurator's curves.
+  const fitKey = useGraph((s) => {
+    const n = s.nodes.find((x) => x.id === upstreamId)
+    if (!isCurveFit(n) || !n || !isStep(n)) return ''
+    const cfg = n.data.config as CompareConfig
+    return `${cfg.detection === 'spline' ? 'spline' : '4pl'}|${cfg.surface ? 1 : 0}`
+  })
   const axesKey = useGraph((s) => {
     const a = axisAvailFor(s, upstreamId)
     return `${a.dose}:${a.time}`
@@ -25,9 +40,15 @@ export function useUpstreamFacts(upstreamId: string | undefined): UpstreamFacts 
       kind,
       result,
       axes: { dose: axesKey.startsWith('true'), time: axesKey.endsWith('true') },
-      curve
+      curve,
+      ...(fitKey
+        ? {
+            detection: fitKey.startsWith('spline') ? ('spline' as const) : ('4pl' as const),
+            surface: fitKey.endsWith('1')
+          }
+        : null)
     }),
-    [kind, result, axesKey, curve]
+    [kind, result, axesKey, curve, fitKey]
   )
 }
 

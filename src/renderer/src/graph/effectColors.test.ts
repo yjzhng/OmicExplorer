@@ -4,6 +4,7 @@
  */
 import { describe, expect, it } from 'vitest'
 
+import { paletteAt, paletteEffectColors } from '../ui/palettes'
 import { resolveGroups } from '../ui/pointStyle'
 import { EFFECT_COLOR } from '../ui/theme'
 import { effectColorsOf, plotEffectColors } from './types'
@@ -42,5 +43,29 @@ describe('effect colours', () => {
     )
     const names = { up: 'gain', down: 'loss', none: 'unchanged' }
     expect(resolveGroups(undefined, 'volcano', names, colors).get('none')!.name).toBe('unchanged')
+  })
+
+  it('samples the automatic colours from the palette: down its low end, none its middle, up its high end', () => {
+    const rdbu = { id: 'RdBu' as const, reverse: true }
+    expect(effectColorsOf(undefined, rdbu)).toEqual(paletteEffectColors(rdbu))
+    expect(effectColorsOf(undefined, rdbu).down).toBe(paletteAt(rdbu, 0))
+    // the Compare's own colours still win over the global palette…
+    expect(effectColorsOf(compare, rdbu).up).toBe('#ff8800')
+    expect(effectColorsOf(compare, rdbu).down).toBe(paletteAt(rdbu, 0))
+  })
+
+  it("resolves a plot's colours: its own → its palette → the Compare's → the global palette", () => {
+    const global = { id: 'coolwarm' as const }
+    const own = { id: 'PuOr' as const }
+    // a plot palette outranks the Compare's colours…
+    expect(plotEffectColors(undefined, compare, global, own)).toEqual(paletteEffectColors(own))
+    // …and the plot's own group colour outranks its palette
+    expect(plotEffectColors({ down: '#00aa00' }, compare, global, own).down).toBe('#00aa00')
+    // no plot palette: the Compare's, then the global palette's
+    expect(plotEffectColors(undefined, compare, global)).toEqual({
+      up: '#ff8800',
+      down: paletteAt(global, 0),
+      none: '#cccccc'
+    })
   })
 })

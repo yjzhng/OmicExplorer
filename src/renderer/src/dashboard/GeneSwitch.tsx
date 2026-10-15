@@ -1,16 +1,27 @@
-/** One-gene pager shared by the single-gene tiles (TDR, gene bar, DR/TR). The navigable set is
- *  `genes` present in the data (the selected genes, or every gene for a DR), plus any pins not
- *  in it; a header
- *  shows "‹ n/m › gene_name", the arrows step through the set, and the gene-name button opens a
- *  searchable dropdown to jump straight to any gene. A gene hovered in another plot/table
+/** One-gene pager shared by the single-gene tiles (TDR, gene bar, DR/TR, Response). The navigable
+ *  set is `genes` present in the data (the selected genes, or every gene for a DR), plus any pins
+ *  not in it; a header
+ *  shows "‹ [n/m gene_name ▾] ›" (PagerTrigger), the arrows step through the set, and the gene-name button opens a
+ *  searchable dropdown to jump straight to any gene. The picker sits at the top centre of the plot
+ *  itself, over the gene's name drawn as the figure's title (GeneTitleContext → PlotlyChart), so a
+ *  copied / downloaded plot is named; the tile's quick switches keep the strip above. A gene hovered in another plot/table
  *  transiently drives the figure (linked selection) without moving the pager. Renders
  *  `children(gene)` for the currently-shown gene. */
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type ReactNode
+} from 'react'
 import { createPortal } from 'react-dom'
 
-import { Chevron } from '../ui/Chevron'
+import { GeneTitleContext } from '../ui/geneTitle'
 import { IconSearch } from '../ui/GeneSelectMenu'
 import { GENE_LIST_STYLES } from '../ui/geneListStyles'
+import { PagerTrigger } from '../ui/PagerTrigger'
 import { PALETTES, UI } from '../ui/theme'
 import { useSelection } from '../ui/useSelection'
 import { useUiTheme } from '../ui/useUiTheme'
@@ -20,14 +31,11 @@ export function GeneSwitch({
   genes,
   present,
   displayMap,
-  aside,
-  lead,
+  controls,
   children
 }: {
-  /** a control at the LEFT of the switcher's row, before the gene (e.g. the tile's view switch) */
-  lead?: ReactNode
-  /** a control at the right end of the switcher's row (e.g. the tile's axis-scale switch) */
-  aside?: ReactNode
+  /** the tile's quick switches (inline SwitchBars), in one strip above the plot */
+  controls?: ReactNode
   genes: string[]
   /** uniqIDs that actually have data — a hovered/pinned gene only shows if present */
   present: Set<string>
@@ -44,18 +52,25 @@ export function GeneSwitch({
     return [...genes.filter((id) => present.has(id)), ...extra]
   }, [genes, pinnedIds, present])
 
+  // How many charts hold the picker (see GeneTitleCtx.claim); none → it's drawn here instead.
+  const [claims, setClaims] = useState(0)
+  const claim = useCallback(() => {
+    setClaims((c) => c + 1)
+    return () => setClaims((c) => c - 1)
+  }, [])
+
   const safePos = set.length ? Math.min(pos, set.length - 1) : 0
   // A hovered gene (even one outside the set) transiently drives the figure; otherwise the paged
   // gene, else the first.
   const hoverActive = hoverId && present.has(hoverId) ? hoverId : null
   const displayed = hoverActive ?? set[safePos] ?? null
 
-  // No gene yet: still show the lead control (a view switch must stay reachable).
+  // No gene yet: still show the controls (a view switch must stay reachable).
   if (!displayed)
-    return lead ? (
+    return controls ? (
       <div style={styles.root}>
         <div className="oe-switch-strip" style={styles.bar}>
-          {lead}
+          {controls}
         </div>
         <div style={styles.placeholder}>Hover or select a gene to display.</div>
       </div>
@@ -71,47 +86,37 @@ export function GeneSwitch({
       setPos(((((idx >= 0 ? idx : safePos) + d) % set.length) + set.length) % set.length)
   }
 
+  const picker = (
+    <GenePicker
+      set={set}
+      current={displayed}
+      displayMap={displayMap}
+      pos={{ index: idx, total: set.length }}
+      onStep={go}
+      canStep={many}
+      onPick={(id) => {
+        const i = set.indexOf(id)
+        if (i >= 0) setPos(i)
+      }}
+    />
+  )
+
   return (
     <div style={styles.root}>
-      <div className="oe-switch-strip" style={styles.bar}>
-        {lead && <span style={{ display: 'flex', marginRight: 6 }}>{lead}</span>}
-        <button
-          onClick={() => go(-1)}
-          disabled={!many}
-          title="Previous gene"
-          style={{
-            ...styles.arrow,
-            opacity: many ? 1 : 0.35,
-            cursor: many ? 'pointer' : 'default'
-          }}
-        >
-          <Chevron deg={180} size={11} color={UI.text} />
-        </button>
-        <span style={styles.pos}>{idx >= 0 ? `${idx + 1}/${set.length}` : `–/${set.length}`}</span>
-        <button
-          onClick={() => go(1)}
-          disabled={!many}
-          title="Next gene"
-          style={{
-            ...styles.arrow,
-            opacity: many ? 1 : 0.35,
-            cursor: many ? 'pointer' : 'default'
-          }}
-        >
-          <Chevron deg={0} size={11} color={UI.text} />
-        </button>
-        <GenePicker
-          set={set}
-          current={displayed}
-          displayMap={displayMap}
-          onPick={(id) => {
-            const i = set.indexOf(id)
-            if (i >= 0) setPos(i)
-          }}
-        />
-        {aside && <span style={{ marginLeft: 'auto', display: 'flex' }}>{aside}</span>}
+      {/* The tile's quick switches, in its order (the master ones — view, show — lead, as they
+          shape the rest): one strip, wrapping only as the tile's width needs (hidden when empty). */}
+      <div className="oe-switch-strip oe-gene-controls" style={styles.bar}>
+        {controls}
       </div>
-      <div style={styles.body}>{children(displayed)}</div>
+      {/* The picker sits at the top centre of the plot, over the gene's name as its title. */}
+      <GeneTitleContext.Provider
+        value={{ text: displayMap[displayed] ?? displayed, picker, claim }}
+      >
+        <div style={styles.body}>
+          {children(displayed)}
+          {claims === 0 && <div style={styles.fallback}>{picker}</div>}
+        </div>
+      </GeneTitleContext.Provider>
     </div>
   )
 }
@@ -122,11 +127,18 @@ function GenePicker({
   set,
   current,
   displayMap,
+  pos,
+  onStep,
+  canStep,
   onPick
 }: {
   set: string[]
   current: string
   displayMap: Record<string, string>
+  /** the pager's "n/m" readout */
+  pos: { index: number; total: number }
+  onStep: (d: -1 | 1) => void
+  canStep: boolean
   onPick: (id: string) => void
 }): ReactNode {
   const mode = useUiTheme((s) => s.mode)
@@ -176,16 +188,17 @@ function GenePicker({
   const L = GENE_LIST_STYLES
   return (
     <>
-      <button
-        ref={btnRef}
-        onClick={toggle}
+      <PagerTrigger
+        name={displayMap[current] ?? current}
+        pos={pos}
+        open={open}
+        onToggle={toggle}
+        btnRef={btnRef}
+        onStep={onStep}
+        canStep={canStep}
+        noun="gene"
         title="Jump to a gene"
-        aria-expanded={open}
-        style={{ ...styles.nameBtn, color: UI.text, borderColor: open ? UI.accent : UI.border }}
-      >
-        <span style={styles.name}>{displayMap[current] ?? current}</span>
-        <Chevron deg={open ? -90 : 90} />
-      </button>
+      />
       {open &&
         rect &&
         createPortal(
@@ -277,52 +290,19 @@ const LIST_CAP = 300
 
 const styles: Record<string, CSSProperties> = {
   root: { height: '100%', display: 'flex', flexDirection: 'column', minHeight: 0 },
+  // As a SwitchStrip's: switches sit apart by its columnGap, wrapping lines by its rowGap.
   bar: {
     display: 'flex',
+    flexWrap: 'wrap',
     alignItems: 'center',
-    gap: 6,
+    rowGap: 4,
+    columnGap: 14,
     padding: '5px 10px',
     flex: '0 0 auto'
   },
-  // A bare chevron (no chip): the pager reads "‹ n/m ›".
-  arrow: {
-    background: 'transparent',
-    border: 'none',
-    width: 16,
-    height: 20,
-    display: 'inline-flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    flex: '0 0 auto',
-    padding: 0
-  },
-  pos: {
-    fontSize: 10,
-    fontWeight: 600,
-    color: UI.textMuted,
-    flex: '0 0 auto',
-    fontVariantNumeric: 'tabular-nums'
-  },
-  nameBtn: {
-    display: 'inline-flex',
-    alignItems: 'center',
-    gap: 6,
-    minWidth: 0,
-    background: 'transparent',
-    border: `1px solid ${UI.border}`,
-    borderRadius: 5,
-    padding: '3px 8px',
-    cursor: 'pointer',
-    marginLeft: 2
-  },
-  name: {
-    fontSize: 12,
-    fontWeight: 600,
-    overflow: 'hidden',
-    textOverflow: 'ellipsis',
-    whiteSpace: 'nowrap'
-  },
-  body: { flex: 1, minHeight: 0 },
+  body: { flex: 1, minHeight: 0, position: 'relative' },
+  // The picker where no chart holds it (an empty state): at the body's top centre, as on a chart.
+  fallback: { position: 'absolute', top: 4, left: '50%', transform: 'translateX(-50%)' },
   placeholder: {
     height: '100%',
     display: 'grid',
