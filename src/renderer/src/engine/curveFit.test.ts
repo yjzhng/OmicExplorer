@@ -14,6 +14,7 @@ import {
   curveSampleX,
   curveResidualPoints,
   curveMetrics,
+  curveDescribed,
   curveLackOfFit,
   curveResidualMad,
   curveDofs,
@@ -347,6 +348,34 @@ describe('runCurveFit layouts', () => {
     const flatB = res.rows.find((r) => r.uniqID === 'flat' && r.cmpd === 'B')!
     for (const y of flatB.curve!.y!) expect(y).toBeGreaterThan(0.95)
     for (const y of flatB.curve!.y!) expect(y).toBeLessThan(1.1)
+  })
+
+  it('describes responders only on request: the rest keep their test, not their EC50', () => {
+    const rows = genes.flatMap((g) => [...treated(g), row(g, 'DMSO', 0, 100)])
+    const run = (describeAll?: boolean): ReturnType<typeof runCurveFit> =>
+      runCurveFit({
+        rows,
+        num: { cmpd: ['A', 'B'] },
+        den: { cmpd: ['DMSO'] },
+        match: [],
+        activeConditions: ['cmpd', 'dose'],
+        curveAxis: 'dose',
+        describeAll
+      })
+    // by default (and explicitly) every 4PL curve is described
+    for (const all of [undefined, true])
+      expect(run(all).rows.every((r) => curveDescribed(r.curve!))).toBe(true)
+    const some = run(false)
+    const g1A = some.rows.find((r) => r.uniqID === 'g1' && r.cmpd === 'A')!
+    const flatB = some.rows.find((r) => r.uniqID === 'flat' && r.cmpd === 'B')!
+    expect(curveDescribed(g1A.curve!)).toBe(true)
+    expect(curveDescribed(flatB.curve!)).toBe(false)
+    // its test stands; its description isn't read
+    expect(Number.isFinite(flatB.curve!.f)).toBe(true)
+    const m = curveMetrics(flatB.log2FC, flatB.curve!, undefined)
+    expect(m.pEC50).toBeUndefined()
+    expect(m.F).toBe(flatB.curve!.f)
+    expect(curveMetrics(g1A.log2FC, g1A.curve!, undefined).pEC50).toBeCloseTo(-2, 1)
   })
 
   it('skips a drug with no dose 0 of its own instead of borrowing another drug’s', () => {

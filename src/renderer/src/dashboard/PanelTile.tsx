@@ -67,6 +67,20 @@ function IconCheck(): ReactNode {
   )
 }
 
+/** Copying: a faint ring with a turning arc, as StatusNote's progress glyph — turned as an HTML
+ *  box round the SVG (app.css `oe-spin`), which the compositor keeps turning while the copy holds
+ *  the main thread. */
+function IconSpin(): ReactNode {
+  return (
+    <span className="oe-spin" style={{ display: 'inline-flex' }}>
+      <svg {...glyph}>
+        <circle cx="12" cy="12" r="9" opacity="0.3" />
+        <path d="M12 3a9 9 0 0 1 9 9" />
+      </svg>
+    </span>
+  )
+}
+
 /** Download: tray with a downward arrow (matches the top-nav export glyph). */
 /** Data (a file: folded corner, lines of text) — saving a table: a Data table tile's download, and
  *  the Enrichment / STRING tiles' Export data button. */
@@ -216,6 +230,8 @@ export const PanelTile = memo(function PanelTile({
       : { top: r.top, bottom: r.bottom, left: r.left, right: r.right }
   }
   const [busy, setBusy] = useState(false)
+  // A copy takes seconds (a 3-D scene's vector overlay, the PDF): its button spins meanwhile.
+  const [copying, setCopying] = useState(false)
   // Button feedback for 1 s: accent fill + a tick on success, red fill (reason in the tooltip) on
   // failure — for Copy and for Download (whose only UI is the OS save window).
   type Feedback = { ok: true } | { ok: false; why: string } | null
@@ -241,6 +257,8 @@ export const PanelTile = memo(function PanelTile({
   const customKey = useAppSettings((s) =>
     JSON.stringify([s.customSpectrum ?? null, s.customCategorical ?? null])
   )
+  // …and the plot font (theme.plotFontCss, read the same way).
+  const plotFont = useAppSettings((s) => s.plotFont)
   const downloadDpi = useAppSettings((s) => s.downloadDpi)
   const tableFormat = useAppSettings((s) => s.tableFormat)
   const copyFormat = useAppSettings((s) => s.copyFormat)
@@ -252,9 +270,12 @@ export const PanelTile = memo(function PanelTile({
     if (busy) return
     const gd = liveGd()
     setBusy(true)
+    setCopying(true)
     let outcome: NonNullable<typeof copied> = { ok: false, why: 'the plot has not drawn yet' }
     try {
       if (gd) {
+        // Paint the spinner before the copy's synchronous work takes the main thread.
+        await new Promise((r) => requestAnimationFrame(() => setTimeout(r, 0)))
         await copyGd(gd, copyFormat, copyDpi)
         outcome = { ok: true }
       }
@@ -263,6 +284,7 @@ export const PanelTile = memo(function PanelTile({
       console.error('copy plot failed:', e)
     } finally {
       setBusy(false)
+      setCopying(false)
       setCopied(outcome)
       window.clearTimeout(copiedTimer.current)
       copiedTimer.current = window.setTimeout(() => setCopied(null), 1000)
@@ -475,11 +497,13 @@ export const PanelTile = memo(function PanelTile({
               onClick={() => void runCopy()}
               disabled={busy}
               title={
-                copied
-                  ? copied.ok
-                    ? 'Copied'
-                    : `Copy failed — ${copied.why}`
-                  : `Copy plot (${copyFormat.toUpperCase()}${copyFormat === 'png' ? `, ${copyDpi} dpi` : ''})`
+                copying
+                  ? 'Copying…'
+                  : copied
+                    ? copied.ok
+                      ? 'Copied'
+                      : `Copy failed — ${copied.why}`
+                    : `Copy plot (${copyFormat.toUpperCase()}${copyFormat === 'png' ? `, ${copyDpi} dpi` : ''})`
               }
               aria-label="Copy plot"
               className="oe-tilebtn"
@@ -490,7 +514,7 @@ export const PanelTile = memo(function PanelTile({
                 ...(copied ? (copied.ok ? styles.btnOk : styles.btnFail) : null)
               }}
             >
-              {copied?.ok ? <IconCheck /> : <IconCopy />}
+              {copying ? <IconSpin /> : copied?.ok ? <IconCheck /> : <IconCopy />}
             </button>
           )}
           {canDownload && (
@@ -584,7 +608,7 @@ export const PanelTile = memo(function PanelTile({
             {/* The tile's axis overrides reach every PlotlyChart inside (faceted plots too). */}
             <PlotAxesContext.Provider value={axesCtx}>
               <PanelBody
-                key={`${categorical}|${customKey}`}
+                key={`${categorical}|${customKey}|${plotFont}`}
                 node={node}
                 edges={edges}
                 results={applied.results}

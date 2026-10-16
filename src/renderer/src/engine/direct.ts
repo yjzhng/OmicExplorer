@@ -24,6 +24,7 @@ import {
   curveGroupKey,
   decoyFits,
   decoyInputs,
+  DESCRIBE_Q,
   fitCurve,
   interpolationGrid,
   type CurveFit,
@@ -32,6 +33,7 @@ import {
 } from './curveFit'
 import { samTest, type SamGene } from './sam'
 import {
+  benjaminiHochberg,
   DEFAULT_THRESHOLD,
   SAM_PERMUTATIONS,
   SAM_S0,
@@ -241,9 +243,7 @@ function matchedConds(
   return new Set(
     [...input.match, ...alike].filter(
       (c) =>
-        !pool.has(c) &&
-        !axisSet.has(c) &&
-        (!invariantSet.has(c) || (ownLevel && alike.includes(c)))
+        !pool.has(c) && !axisSet.has(c) && (!invariantSet.has(c) || (ownLevel && alike.includes(c)))
     )
   )
 }
@@ -404,7 +404,16 @@ function compareLayout(input: CompareInput, numRows: StandardRow[]) {
   // Values carried onto each result row (not a curve's axis: the row is the whole curve).
   const contextDims = [...facetDims, ...axisDims.filter((c) => c !== curveAxis)]
   const matchSet = matchedConds(input, axisSet, invariantSet)
-  return { axisDims, axisSet, invariantSet, facetDims, numMultiAxis, groupDims, contextDims, matchSet }
+  return {
+    axisDims,
+    axisSet,
+    invariantSet,
+    facetDims,
+    numMultiAxis,
+    groupDims,
+    contextDims,
+    matchSet
+  }
 }
 
 /** One numerator group and the denominator slice it is compared against. */
@@ -694,7 +703,13 @@ export function* curveFitSteps(
       sliceDecoys.push({ first, decoys: decoyFits(decoyFitted) })
     }
   }
-  const finals = finaliseCompare(raw, threshold).map((r, i) => ({ ...r, curve: fits[i] }))
+  // Responders only: a curve beyond DESCRIBE_Q (BH over the run's raw p — fixed at run time, so a
+  // later threshold edit still finds its calls described) keeps its test but not its description.
+  const q = input.describeAll === false ? benjaminiHochberg(raw.map((r) => r.pVal)) : null
+  const finals = finaliseCompare(raw, threshold).map((r, i) => ({
+    ...r,
+    curve: q && !(q[i] <= DESCRIBE_Q) ? { ...fits[i]!, described: false as const } : fits[i]
+  }))
   const decoys: Record<string, DecoyCurve[]> = {}
   for (const { first, decoys: d } of sliceDecoys) decoys[curveGroupKey(finals[first])] = d
   // CurveCurator's calls need each row's curve, and by FDR its decoy q — so they come last.

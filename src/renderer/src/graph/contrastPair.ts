@@ -2,6 +2,7 @@
 import {
   condPresent,
   condsIn,
+  curveDescribed,
   replicateLog2FCs,
   stdByGene,
   type CompareResultRow,
@@ -84,7 +85,12 @@ export function compareFeatureValue(
     // EC50 in the axis's units — the 4PL's, or the description midpoint — as the potency plot reads
     // it; pEC50 = −log₁₀ EC50 (in molar over dose, where the unit says how).
     const axis = curveAxisOf(r)
-    const ec50 = r.curve ? 10 ** -r.curve.pec50 : r.rs?.desc?.mid
+    // (an undescribed 4PL curve — responders only, not one — has none)
+    const ec50 = r.curve
+      ? curveDescribed(r.curve)
+        ? 10 ** -r.curve.pec50
+        : undefined
+      : r.rs?.desc?.mid
     if (!axis || ec50 == null || !(ec50 > 0)) return null
     const v = -Math.log10(ec50 * (axis === 'dose' ? ctx.doseScale : 1))
     return Number.isFinite(v) ? v : null

@@ -7,7 +7,7 @@ import { fitText, flowChips, measureText } from './legendChips'
 import { tooltip } from './condTooltip'
 import { PlotlyChart, type PlotLabel } from './PlotlyChart'
 import { effectHalves } from './palettes'
-import { axisBase, CATEGORICAL, EFFECT_COLOR, plotBase, PALETTES } from './theme'
+import { axisBase, CATEGORICAL, EFFECT_COLOR, plotBase, plotFontCss, PALETTES } from './theme'
 import { useUiTheme } from './useUiTheme'
 import type { EffectColors } from '../graph/types'
 
@@ -120,7 +120,7 @@ export function EnrichView({
       }
       const rows: Row[] = shown.map((t) => ({
         // Measured bold, as the margin below is — the widest a label gets (on hover).
-        label: fitText(`${t.term} (${t.setSize})`, termBudget, 'bold 10px system-ui, sans-serif'),
+        label: fitText(`${t.term} (${t.setSize})`, termBudget, `bold 10px ${plotFontCss()}`),
         dist: t.dist as number[],
         hue: (t.nes ?? 0) >= 0 ? upColor : downColor,
         ref: false,
@@ -277,8 +277,7 @@ export function EnrichView({
         cats.map((c) => ({
           c,
           width:
-            Math.ceil(measureText(`■ ${c}`, `bold ${LEGEND_FS}px system-ui, sans-serif`)) +
-            LEGEND_PAD
+            Math.ceil(measureText(`■ ${c}`, `bold ${LEGEND_FS}px ${plotFontCss()}`)) + LEGEND_PAD
         })),
         legendBudget
       )
@@ -318,7 +317,7 @@ export function EnrichView({
         ...rows.map((row) =>
           measureText(
             `${row.label}${row.category ? ' ■' : ''}`,
-            `bold ${TICK_FS}px system-ui, sans-serif`
+            `bold ${TICK_FS}px ${plotFontCss()}`
           )
         )
       )
@@ -342,7 +341,7 @@ export function EnrichView({
             text: fitText(
               comparison ? `${measure} · ${comparison}` : measure,
               legendBudget,
-              '11px system-ui, sans-serif'
+              `11px ${plotFontCss()}`
             ),
             font: { size: 11 }
           },
@@ -468,7 +467,7 @@ export function EnrichView({
       const c = catOf.get(term)
       const fade = (col: string): string => (anyActive && !active ? hexA(col, 0.3) : col)
       // The shown name is capped; the category values (tickvals) stay the full term names.
-      const name = fitText(term, termBudget, '10px system-ui, sans-serif')
+      const name = fitText(term, termBudget, `10px ${plotFontCss()}`)
       const square = c ? ` <span style="color:${fade(groupColor.get(c)!)}">■</span>` : ''
       if (!active && !anyActive) return `${name}${square}`
       return `<span style="color:${fade(p.text)}">${active ? `<b>${name}</b>` : name}</span>${square}`
@@ -482,7 +481,7 @@ export function EnrichView({
     const { at: chipAt, lines: legendLineCount } = flowChips(
       groups.map((c) => ({
         c,
-        width: Math.ceil(measureText(`■ ${c}`, `bold ${LEGEND_FS}px system-ui, sans-serif`)) + 14
+        width: Math.ceil(measureText(`■ ${c}`, `bold ${LEGEND_FS}px ${plotFontCss()}`)) + 14
       })),
       legendBudget
     )
@@ -746,8 +745,8 @@ export function EnrichView({
     })
     // The title is cut to the PLOT's width — the tile less the term labels on the left and the
     // right margin — not the tile's: annotations are placed on the plot.
-    const TITLE_FONT = '11px system-ui, sans-serif'
-    const TICK_FONT = '10px system-ui, sans-serif'
+    const TITLE_FONT = `11px ${plotFontCss()}`
+    const TICK_FONT = `10px ${plotFontCss()}`
     const labelW =
       Math.max(0, ...order.map((t) => measureText(fitText(t, termBudget, TICK_FONT), TICK_FONT))) +
       (groups.length ? 14 : 0) +

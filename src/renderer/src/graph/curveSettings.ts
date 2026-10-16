@@ -23,6 +23,28 @@ export const curveSurfaceWhy = (shape: DataShape | null | undefined): string | n
     ? 'Needs both dose and time to vary in the data'
     : null
 
+/** The method presets, and the two models' choices — the tile panel's and the Configure window's
+ *  Model rows alike. The descriptor's spline isn't built yet, so it's offered greyed. */
+export const CURVE_METHOD_OPTIONS: { value: 'hybrid' | '4pl' | 'custom'; label: string }[] = [
+  { value: 'hybrid', label: 'Hybrid' },
+  { value: '4pl', label: '4PL' },
+  { value: 'custom', label: 'custom' }
+]
+export const DETECTOR_OPTIONS: { value: CurveModel; label: string }[] = [
+  { value: '4pl', label: '4PL' },
+  { value: 'spline', label: 'spline' }
+]
+export const DESCRIPTOR_OPTIONS = [
+  { value: '4pl' as const, label: '4PL' },
+  { value: 'spline' as const, label: 'spline', disabled: true, title: 'Not built yet' }
+]
+/** A model switch while a method preset holds it: faded (still usable — picking another value
+ *  makes the method custom). */
+export const MODEL_LOCK = {
+  style: { opacity: 0.55 },
+  title: 'Set by the method — picking another makes it custom'
+}
+
 export const CURVE_MODEL_OPTIONS: { value: CurveModel; label: string; title: string }[] = [
   {
     value: '4pl',
@@ -71,12 +93,13 @@ export const SURFACE_FIT_OPTIONS: { value: SurfaceFit; label: string; title: str
   },
   {
     value: 'slices',
-    label: 'time slice',
-    title: 'A 4PL dose curve at each time, fitted on its own'
-  },
-  {
-    value: 'doseSlices',
-    label: 'dose slice',
-    title: 'A 4PL time curve at each dose, fitted on its own'
+    label: 'slices',
+    title:
+      'A 4PL at each slice, each fitted on its own: a dose curve at each time and a time curve at each dose'
   }
 ]
+
+/** The fit option a saved setting shows as: the older 'doseSlices' (the same slice fits, drawn per
+ *  dose — now the Response plot's own slice switch) is 'slices'. */
+export const surfaceFitShown = (v: SurfaceFit | undefined): 'joint' | 'slices' =>
+  v === 'joint' ? 'joint' : 'slices'

@@ -226,6 +226,10 @@ export interface CompareInput {
    *  detector's fits, decoys and simulated nulls alike (fitCurve, surfaceJoint). Hybrid: only the
    *  description's 4PL — the spline detector, and so the calls, never see it. */
   interpolation?: boolean
+  /** curve fit: describe every curve / surface, or only those within DESCRIBE_Q (responders).
+   *  Unset: the response surface method describes responders; a 4PL curve every curve (its 4PL is
+   *  its test — responders only marks the rest `described: false`, their test kept). */
+  describeAll?: boolean
 }
 
 export interface VehNormInput {
@@ -290,6 +294,10 @@ export interface CompareResultRow {
     /** the control samples' own ratios to the control mean, and their replicates */
     cy?: number[]
     crep?: Array<number | null>
+    /** false: not described — its run described responders only (q ≤ DESCRIBE_Q, BH over the
+     *  run's raw p) and this curve isn't one. Its 4PL is still its test; its EC50, slope and
+     *  plateaus aren't read (curveDescribed). Absent = described. */
+    described?: false
   }
   /** SAM permutation FDR only: the moderated difference d and the pooled t's degrees of freedom
    *  (pP is that t-test; pQ the permutation q-value) */

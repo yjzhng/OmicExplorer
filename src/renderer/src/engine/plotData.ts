@@ -96,10 +96,19 @@ export function fcMeasure(
 /** The fold change curve-fit rows carry: a 4PL curve's change across the tested levels, or a Hybrid
  *  curve's / a surface's peak (rows with a response fit, `rs`); plain 'log₂FC' otherwise. */
 export function fcName(rows: Array<{ curve?: unknown; rs?: unknown }>): string {
-  return rows.some((r) => r.rs) ? 'peak log₂FC' : rows.some((r) => r.curve) ? 'curve log₂FC' : 'log₂FC'
+  return rows.some((r) => r.rs)
+    ? 'peak log₂FC'
+    : rows.some((r) => r.curve)
+      ? 'curve log₂FC'
+      : 'log₂FC'
 }
 
-type LabelRow = { comparison?: string; cmpd?: string | null; curve?: { baseline?: string }; rs?: { baseline?: string } }
+type LabelRow = {
+  comparison?: string
+  cmpd?: string | null
+  curve?: { baseline?: string }
+  rs?: { baseline?: string }
+}
 
 /** A curve fit's comparison as it reads in a plot: "dose curve | 0" (the stored key) as
  *  "drugA | baseline" — the compound when the rows are one, against the baseline the fit was given

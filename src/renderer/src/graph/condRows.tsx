@@ -42,7 +42,11 @@ export function SelectorShell({
     <div style={dock ? { ...cssVars(PALETTES[theme]), ...DOCKED_WRAP } : cssVars(PALETTES[theme])}>
       <style>{`.oe-chip:focus{outline:none}.oe-chip:focus-visible{box-shadow:0 0 0 2px var(--accent)}@keyframes oe-fade-in{from{opacity:0.25}to{opacity:1}}`}</style>
       {!dock && <div style={styles.scrim} onClick={onClose} />}
-      <div style={dock ? { ...styles.modal, ...DOCKED_CARD } : styles.modal} role="dialog" aria-label={title}>
+      <div
+        style={dock ? { ...styles.modal, ...DOCKED_CARD } : styles.modal}
+        role="dialog"
+        aria-label={title}
+      >
         <div style={styles.head}>
           <span style={styles.title}>{title}</span>
           <span style={styles.modeSwitch}>{mode}</span>
@@ -152,7 +156,12 @@ export function CondRow({
     <div style={{ ...styles.row, ...(first ? { borderTop: 'none' } : null) }}>
       <span style={{ ...styles.name, gridRow: 1 }}>
         {onFold ? (
-          <button style={styles.fold} aria-expanded={!folded} aria-label={`${folded ? 'Show' : 'Hide'} ${name} values`} onClick={onFold}>
+          <button
+            style={styles.fold}
+            aria-expanded={!folded}
+            aria-label={`${folded ? 'Show' : 'Hide'} ${name} values`}
+            onClick={onFold}
+          >
             <Chevron deg={folded ? 0 : 90} size={10} />
           </button>
         ) : (
@@ -172,7 +181,10 @@ export function CondRow({
       </div>
       {onFold && (
         // always mounted, so opening and folding can slide: the row's height eases between 0 and the box's
-        <div style={{ ...styles.foldBody, gridTemplateRows: folded ? '0fr' : '1fr' }} inert={folded}>
+        <div
+          style={{ ...styles.foldBody, gridTemplateRows: folded ? '0fr' : '1fr' }}
+          inert={folded}
+        >
           <div style={styles.foldClip}>
             <div key={swapKey} style={{ ...styles.swap, display: 'block', paddingTop: 5 }}>
               {box}
@@ -185,7 +197,13 @@ export function CondRow({
 }
 
 /** The two-sided value box: left | right, each a label and its chips. */
-export function SidesBox({ left, right }: { left: [string, ReactNode]; right: [string, ReactNode] }): ReactNode {
+export function SidesBox({
+  left,
+  right
+}: {
+  left: [string, ReactNode]
+  right: [string, ReactNode]
+}): ReactNode {
   const side = ([label, kids]: [string, ReactNode]): ReactNode => (
     <div style={styles.side}>
       <span style={styles.slabel} title={label}>
@@ -225,12 +243,29 @@ export function ValChip({
 }): ReactNode {
   const style: CSSProperties = {
     ...S.valChip,
-    ...(look === 'on' ? S.valChipOn : look === 'matched' ? S.valChipIncluded : look === 'out' ? styles.chipOut : null),
+    ...(look === 'on'
+      ? S.valChipOn
+      : look === 'matched'
+        ? S.valChipIncluded
+        : look === 'out'
+          ? styles.chipOut
+          : null),
     ...(disabled ? S.valChipDisabled : null),
     ...(!onClick ? { cursor: 'default' } : null),
-    ...(width ? { width, display: 'inline-flex', justifyContent: 'center', alignItems: 'center', paddingLeft: 4, paddingRight: 4 } : null)
+    ...(width
+      ? {
+          width,
+          display: 'inline-flex',
+          justifyContent: 'center',
+          alignItems: 'center',
+          paddingLeft: 4,
+          paddingRight: 4
+        }
+      : null)
   }
-  const dot = radio ? <span style={{ ...styles.dot, ...(look === 'on' ? styles.dotOn : null) }} /> : null
+  const dot = radio ? (
+    <span style={{ ...styles.dot, ...(look === 'on' ? styles.dotOn : null) }} />
+  ) : null
   return onClick ? (
     <button className="oe-chip" style={style} title={title} disabled={disabled} onClick={onClick}>
       {dot}
@@ -245,7 +280,13 @@ export function ValChip({
 }
 
 /** A row's tag: compared, own control (matched), shared control, pooled, contrasted, matched. */
-export function Tag({ kind, children }: { kind: 'cmp' | 'ctx' | 'own' | 'shared' | 'pool'; children: ReactNode }): ReactNode {
+export function Tag({
+  kind,
+  children
+}: {
+  kind: 'cmp' | 'ctx' | 'own' | 'shared' | 'pool'
+  children: ReactNode
+}): ReactNode {
   return <span style={{ ...styles.tag, ...TAGS[kind] }}>{children}</span>
 }
 
@@ -280,7 +321,15 @@ export function SideCell({
 }
 
 /** The preview table (cells may be nodes): test | vs | control, one row per comparison. */
-export function NodeTable({ columns, rows, more }: { columns: string[]; rows: ReactNode[][]; more?: number }): ReactNode {
+export function NodeTable({
+  columns,
+  rows,
+  more
+}: {
+  columns: string[]
+  rows: ReactNode[][]
+  more?: number
+}): ReactNode {
   return (
     <div style={S.tableOuter}>
       <div style={S.tableWrap}>
@@ -298,7 +347,10 @@ export function NodeTable({ columns, rows, more }: { columns: string[]; rows: Re
             {rows.map((r, i) => (
               <tr key={i}>
                 {r.map((cell, j) => (
-                  <td key={j} style={{ ...S.td, ...styles.tdNode, ...(columns[j] === '' ? S.tdSep : null) }}>
+                  <td
+                    key={j}
+                    style={{ ...S.td, ...styles.tdNode, ...(columns[j] === '' ? S.tdSep : null) }}
+                  >
                     {cell}
                   </td>
                 ))}
@@ -347,15 +399,52 @@ const styles: Record<string, CSSProperties> = {
     zIndex: 71,
     overflow: 'hidden'
   },
-  head: { display: 'flex', alignItems: 'center', padding: '12px 16px', borderBottom: `1px solid ${UI.border}`, background: UI.panelAlt },
+  head: {
+    display: 'flex',
+    alignItems: 'center',
+    padding: '12px 16px',
+    borderBottom: `1px solid ${UI.border}`,
+    background: UI.panelAlt
+  },
   title: { fontWeight: 700, fontSize: 14, color: UI.text },
   modeSwitch: { marginLeft: 'auto', display: 'inline-flex' },
-  close: { marginLeft: 12, background: 'transparent', border: 'none', color: UI.textMuted, fontSize: 14, cursor: 'pointer' },
+  close: {
+    marginLeft: 12,
+    background: 'transparent',
+    border: 'none',
+    color: UI.textMuted,
+    fontSize: 14,
+    cursor: 'pointer'
+  },
   // the scrollbar's space kept whether or not it shows, so content doesn't shift when it appears
   body: { overflow: 'auto', scrollbarGutter: 'stable', minHeight: 0, flex: 1 },
-  foot: { display: 'flex', justifyContent: 'flex-end', gap: 8, padding: '12px 16px', borderTop: `1px solid ${UI.border}`, background: UI.panelAlt },
-  cancel: { background: 'transparent', color: UI.text, border: `1px solid ${UI.border}`, borderRadius: 6, padding: '7px 16px', fontSize: 13, cursor: 'pointer' },
-  apply: { background: UI.accent, color: UI.accentText, border: 'none', borderRadius: 6, padding: '7px 18px', fontSize: 13, fontWeight: 600, cursor: 'pointer' },
+  foot: {
+    display: 'flex',
+    justifyContent: 'flex-end',
+    gap: 8,
+    padding: '12px 16px',
+    borderTop: `1px solid ${UI.border}`,
+    background: UI.panelAlt
+  },
+  cancel: {
+    background: 'transparent',
+    color: UI.text,
+    border: `1px solid ${UI.border}`,
+    borderRadius: 6,
+    padding: '7px 16px',
+    fontSize: 13,
+    cursor: 'pointer'
+  },
+  apply: {
+    background: UI.accent,
+    color: UI.accentText,
+    border: 'none',
+    borderRadius: 6,
+    padding: '7px 18px',
+    fontSize: 13,
+    fontWeight: 600,
+    cursor: 'pointer'
+  },
   applyDisabled: { opacity: 0.4, cursor: 'not-allowed' },
 
   sec: { padding: '12px 16px 14px', borderTop: `1px solid ${UI.border}` },
@@ -363,7 +452,13 @@ const styles: Record<string, CSSProperties> = {
   shead: { display: 'flex', alignItems: 'center', gap: 6 },
   sname: { fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5 },
   // the rows, indented under the title (past the chevron)
-  secGrid: { display: 'grid', gridTemplateColumns: 'max-content minmax(0, 1fr)', columnGap: 10, marginLeft: 6, marginTop: 8 },
+  secGrid: {
+    display: 'grid',
+    gridTemplateColumns: 'max-content minmax(0, 1fr)',
+    columnGap: 10,
+    marginLeft: 6,
+    marginTop: 8
+  },
   secFree: { display: 'flex', flexDirection: 'column', gap: 8, marginLeft: 6, marginTop: 8 },
   row: {
     gridColumn: '1 / -1',
@@ -375,12 +470,38 @@ const styles: Record<string, CSSProperties> = {
     alignItems: 'start'
   },
   // centred on the line, whose height varies with what it holds (toggle only, or toggle + context switch)
-  name: { gridColumn: 1, display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, fontWeight: 600, color: UI.text, alignSelf: 'center' },
+  name: {
+    gridColumn: 1,
+    display: 'flex',
+    alignItems: 'center',
+    gap: 8,
+    fontSize: 12,
+    fontWeight: 600,
+    color: UI.text,
+    alignSelf: 'center'
+  },
   toggle: { marginLeft: 'auto', paddingLeft: 4, display: 'inline-flex' },
   swap: { display: 'inline-flex', animation: 'oe-fade-in 350ms ease-out' },
-  foldBody: { gridColumn: 2, gridRow: 2, minWidth: 0, display: 'grid', transition: 'grid-template-rows 200ms ease' },
+  foldBody: {
+    gridColumn: 2,
+    gridRow: 2,
+    minWidth: 0,
+    display: 'grid',
+    transition: 'grid-template-rows 200ms ease'
+  },
   foldClip: { overflow: 'hidden', minHeight: 0 },
-  fold: { display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 12, flex: '0 0 auto', background: 'none', border: 'none', padding: 0, color: UI.textMuted, cursor: 'pointer' },
+  fold: {
+    display: 'inline-flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    width: 12,
+    flex: '0 0 auto',
+    background: 'none',
+    border: 'none',
+    padding: 0,
+    color: UI.textMuted,
+    cursor: 'pointer'
+  },
   line: { display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 6, minWidth: 0 },
   sides: {
     display: 'grid',
@@ -394,11 +515,35 @@ const styles: Record<string, CSSProperties> = {
   vs: { background: UI.border },
   side: { display: 'flex', flexDirection: 'column', gap: 4, minWidth: 0 },
   // one line whatever the mode, so switching it doesn't change the row's height (full text on hover)
-  slabel: { fontSize: 10, textTransform: 'uppercase', letterSpacing: 0.4, color: UI.textMuted, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' },
+  slabel: {
+    fontSize: 10,
+    textTransform: 'uppercase',
+    letterSpacing: 0.4,
+    color: UI.textMuted,
+    whiteSpace: 'nowrap',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis'
+  },
   chipOut: { color: UI.textMuted, textDecoration: 'line-through', borderStyle: 'dashed' },
-  dot: { display: 'inline-block', width: 7, height: 7, borderRadius: '50%', border: '1px solid currentColor', marginRight: 5, verticalAlign: 0 },
+  dot: {
+    display: 'inline-block',
+    width: 7,
+    height: 7,
+    borderRadius: '50%',
+    border: '1px solid currentColor',
+    marginRight: 5,
+    verticalAlign: 0
+  },
   dotOn: { background: 'currentColor' },
-  tag: { fontSize: 10, fontWeight: 'normal', textTransform: 'uppercase', letterSpacing: 0.4, padding: '1px 6px', borderRadius: 4, whiteSpace: 'nowrap' },
+  tag: {
+    fontSize: 10,
+    fontWeight: 'normal',
+    textTransform: 'uppercase',
+    letterSpacing: 0.4,
+    padding: '1px 6px',
+    borderRadius: 4,
+    whiteSpace: 'nowrap'
+  },
   pooled: { color: UI.textMuted, fontStyle: 'italic', fontSize: 10.5, fontFamily: 'inherit' },
   tdNode: { verticalAlign: 'top' }
 }

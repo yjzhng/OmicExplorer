@@ -8,7 +8,10 @@ import {
   nextWorkflowId,
   packedResultsChunks,
   ParkedRef,
+  MIGRATED_THROUGH,
   PROJECT_VERSION,
+  projectHeader,
+  projectStanding,
   RawJson,
   savedByVersion,
   serializeProject,
@@ -316,7 +319,9 @@ describe('project genesets', () => {
       expect(w.doc.favourites).toBeUndefined()
     }
     // each workflow remembers the mask its results were classified under: its OWN hidden sets
-    expect(ws[0].mask).toBe(geneMaskKey([{ id: 'x', name: 'x', genes: [gene('g1')], hidden: true }]))
+    expect(ws[0].mask).toBe(
+      geneMaskKey([{ id: 'x', name: 'x', genes: [gene('g1')], hidden: true }])
+    )
     expect(ws[1].mask).toBe('')
     expect(ws[1].mask).not.toBe(geneMaskKey(p.geneSets ?? []))
   })
@@ -330,7 +335,7 @@ describe('project genesets', () => {
     expect(back.folders[0].workflows[0].mask).toBe(p.folders[0].workflows[0].mask)
   })
 
-  it('keys the mask by the hidden sets\' genes only', () => {
+  it("keys the mask by the hidden sets' genes only", () => {
     const a = { id: 'a', name: 'a', genes: [gene('g1'), gene('g2')], hidden: true }
     const b = { id: 'b', name: 'b', genes: [gene('g2'), gene('g1')], hidden: true }
     expect(geneMaskKey([])).toBe('')
@@ -354,6 +359,39 @@ describe('project format version', () => {
       appVersion: '9.9.9'
     })
     expect(deserializeProject(text).name).toBe('P')
+  })
+
+  it('reads the header — format, saved by, created with — and keeps createdWith across a load', () => {
+    const p = newProjectFile('P')
+    const text = serializeProject({
+      format: p.format,
+      version: p.version,
+      appVersion: '0.3.7',
+      createdWith: '0.3.2',
+      ...p
+    })
+    expect(projectHeader(text)).toEqual({ format: 3, savedBy: '0.3.7', createdWith: '0.3.2' })
+    expect(deserializeProject(text).createdWith).toBe('0.3.2')
+    expect(projectHeader(serializeProject(p))).toEqual({
+      format: PROJECT_VERSION,
+      savedBy: null,
+      createdWith: null
+    })
+  })
+
+  it('stands a file against the app: older than its migrations, current, or newer', () => {
+    const h = (savedBy: string | null, format = PROJECT_VERSION) => ({
+      format,
+      savedBy,
+      createdWith: null
+    })
+    expect(projectStanding(h(MIGRATED_THROUGH), '0.3.7')).toBe('current')
+    expect(projectStanding(h('0.3.5'), '0.3.7')).toBe('older')
+    // Before 0.3.5 a file named no app version: older by definition.
+    expect(projectStanding(h(null), '0.3.7')).toBe('older')
+    expect(projectStanding(h(MIGRATED_THROUGH, PROJECT_VERSION - 1), '0.3.7')).toBe('older')
+    expect(projectStanding(h('0.9.0'), '0.3.7')).toBe('newer')
+    expect(projectStanding(h(MIGRATED_THROUGH, PROJECT_VERSION + 1), '0.3.7')).toBe('newer')
   })
 
   it('compares dotted versions numerically', () => {

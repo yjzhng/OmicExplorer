@@ -21,7 +21,16 @@ import { StatusNote } from '../ui/StatusNote'
 import { OnOffSwitch, ToggleSwitch } from '../ui/ToggleSwitch'
 import { UI } from '../ui/theme'
 import { sampleRows } from './compareModel'
-import { CondRow, NodeTable, Section, SelectorShell, SideCell, SidesBox, Tag, ValChip } from './condRows'
+import {
+  CondRow,
+  NodeTable,
+  Section,
+  SelectorShell,
+  SideCell,
+  SidesBox,
+  Tag,
+  ValChip
+} from './condRows'
 import { useCondUnits } from './useUpstreamFacts'
 import { pairSides, selectorRowsOf, toContrastSide } from './contrastPair'
 import {
@@ -42,11 +51,18 @@ import type { ContrastConfig } from './types'
 type Source = 'select' | 'pair'
 
 // A side row carries the condition fields a sample row does: read it as one.
-const asRows = (s: ReturnType<typeof toContrastSide>): StandardRow[] => s as unknown as StandardRow[]
+const asRows = (s: ReturnType<typeof toContrastSide>): StandardRow[] =>
+  s as unknown as StandardRow[]
 
 const LEGEND: Array<[string, string]> = [
-  ['contrasted', 'group A at one value and group B at one value: two different ones (what is contrasted), or the same one (where both sit).'],
-  ['matched', 'one contrast per value: group A and group B at the same value are paired. Click a value to leave it out; a value on one side only is dropped.']
+  [
+    'contrasted',
+    'group A at one value and group B at one value: two different ones (what is contrasted), or the same one (where both sit).'
+  ],
+  [
+    'matched',
+    'one contrast per value: group A and group B at the same value are paired. Click a value to leave it out; a value on one side only is dropped.'
+  ]
 ]
 
 export function ContrastDialog({
@@ -82,7 +98,9 @@ export function ContrastDialog({
   const inputCount = pair?.length ?? 0
   // each condition's value box: open unless folded
   const [fold, setFold] = useState<Partial<Record<ConditionKey, boolean>>>({})
-  const [source, setSource] = useState<Source>(initial.source === 'pair' && inputCount >= 2 ? 'pair' : 'select')
+  const [source, setSource] = useState<Source>(
+    initial.source === 'pair' && inputCount >= 2 ? 'pair' : 'select'
+  )
 
   // ── intra-dataset: the two groups from one input ──
   const [selectPick, setSelectPick] = useState<string | undefined>(initial.selectFrom)
@@ -97,49 +115,89 @@ export function ContrastDialog({
 
   // ── inter-dataset: two inputs ──
   const [pairPick, setPairPick] = useState<{ a?: string; b?: string }>(() => {
-    const s = pairSides({ pairA: initial.pairA, pairB: initial.pairB } as ContrastConfig, (pair ?? []).map((i) => i.id))
+    const s = pairSides(
+      { pairA: initial.pairA, pairB: initial.pairB } as ContrastConfig,
+      (pair ?? []).map((i) => i.id)
+    )
     return s ? { a: s[0], b: s[1] } : {}
   })
   const resA = pair?.find((i) => i.id === pairPick.a)?.result
   const resB = pair?.find((i) => i.id === pairPick.b)?.result
   const sideA = useMemo(() => toContrastSide(resA), [resA])
   const sideB = useMemo(() => toContrastSide(resB), [resB])
-  const interConds = useMemo(() => orderConds(condsIn([...asRows(sideA), ...asRows(sideB)])), [sideA, sideB])
+  const interConds = useMemo(
+    () => orderConds(condsIn([...asRows(sideA), ...asRows(sideB)])),
+    [sideA, sideB]
+  )
   const sA = useMemo(() => sampleRows(asRows(sideA), interConds), [sideA, interConds])
   const sB = useMemo(() => sampleRows(asRows(sideB), interConds), [sideB, interConds])
   const [inter, setInter] = useState<ContrastState>(() =>
-    readInter({ match: initial.matchSet ? initial.match : undefined, pairFix: initial.pairFix }, sA, sB, interConds)
+    readInter(
+      { match: initial.matchSet ? initial.match : undefined, pairFix: initial.pairFix },
+      sA,
+      sB,
+      interConds
+    )
   )
-  const pairOk = !!resA && !!resB && (resA.kind === 'compare' || resA.kind === 'standardize') && resB.kind === resA.kind
+  const pairOk =
+    !!resA &&
+    !!resB &&
+    (resA.kind === 'compare' || resA.kind === 'standardize') &&
+    resB.kind === resA.kind
 
   const isPair = source === 'pair'
   const m: ContrastModel = useMemo(
-    () => (isPair ? contrastModel(inter, sA, sB, interConds) : contrastModel(intra, samples, samples, active)),
+    () =>
+      isPair
+        ? contrastModel(inter, sA, sB, interConds)
+        : contrastModel(intra, samples, samples, active),
     [isPair, inter, sA, sB, interConds, intra, samples, active]
   )
   const setState = isPair ? setInter : setIntra
-  const labels = isPair ? { a: 'dataset A', b: 'dataset B' } : { a: 'group A (y-axis)', b: 'group B (x-axis)' }
+  const labels = isPair
+    ? { a: 'dataset A', b: 'dataset B' }
+    : { a: 'group A (y-axis)', b: 'group B (x-axis)' }
 
   // The engine's own check of what inter-dataset runs: nothing left unpinned, something to pair.
   const interCfg = useMemo(() => compileInter(m), [m])
   const interPreview = useMemo(
-    () => (isPair && pairOk ? previewContrastPair(sideA, sideB, interCfg.match, { a: 'A', b: 'B' }, interCfg.pairFix) : null),
+    () =>
+      isPair && pairOk
+        ? previewContrastPair(sideA, sideB, interCfg.match, { a: 'A', b: 'B' }, interCfg.pairFix)
+        : null,
     [isPair, pairOk, sideA, sideB, interCfg]
   )
   const warnings: string[] = []
   if (isPair) {
-    if (!pairOk) warnings.push('The two datasets must be the same kind and run: two Compares, or two Clean data.')
+    if (!pairOk)
+      warnings.push(
+        'The two datasets must be the same kind and run: two Compares, or two Clean data.'
+      )
     else if (interPreview?.unpinned.length) warnings.push(...interPreview.warnings)
     else if (!m.keys.length) warnings.push('Nothing pairs across the two datasets.')
   } else if (m.differs && !m.keys.length) warnings.push('No genes pair across the two groups.')
-  const canApply = isPair ? pairOk && warnings.length === 0 && m.keys.length > 0 : m.differs && m.keys.length > 0
+  const canApply = isPair
+    ? pairOk && warnings.length === 0 && m.keys.length > 0
+    : m.differs && m.keys.length > 0
 
   const apply = (): void => {
     if (isPair) {
-      update(id, { source: 'pair', match: interCfg.match, pairA: pairPick.a, pairB: pairPick.b, pairFix: interCfg.pairFix })
+      update(id, {
+        source: 'pair',
+        match: interCfg.match,
+        pairA: pairPick.a,
+        pairB: pairPick.b,
+        pairFix: interCfg.pairFix
+      })
     } else {
       const c = compileIntra(m)
-      update(id, { source: 'select', num: c.num, den: c.den, match: c.match, selectFrom: selectPick })
+      update(id, {
+        source: 'select',
+        num: c.num,
+        den: c.den,
+        match: c.match,
+        selectFrom: selectPick
+      })
     }
     onClose()
   }
@@ -159,7 +217,15 @@ export function ContrastDialog({
           key={c}
           first={i === 0}
           name={condLabel(c)}
-          toggle={<OnOffSwitch on={false} disabled label={`Contrast on ${condLabel(c)}`} title={`One ${condLabel(c)} only: nothing to contrast`} onChange={() => {}} />}
+          toggle={
+            <OnOffSwitch
+              on={false}
+              disabled
+              label={`Contrast on ${condLabel(c)}`}
+              title={`One ${condLabel(c)} only: nothing to contrast`}
+              onChange={() => {}}
+            />
+          }
           badge={<Tag kind="ctx">matched condition</Tag>}
           line={<span style={{ fontSize: 12, color: UI.textMuted }}>{va[0] ?? vb[0]}</span>}
         />
@@ -169,9 +235,20 @@ export function ContrastDialog({
     const col = (side: 'a' | 'b', vals: string[], other: string[]): ReactNode[] =>
       vals.map((v) =>
         x.m === 'slice' ? (
-          <ValChip key={v} label={v} radio look={sl[side] === v ? 'on' : 'plain'} onClick={() => edit((s) => void (s.sl[c] = { ...sl, [side]: v }))} />
+          <ValChip
+            key={v}
+            label={v}
+            radio
+            look={sl[side] === v ? 'on' : 'plain'}
+            onClick={() => edit((s) => void (s.sl[c] = { ...sl, [side]: v }))}
+          />
         ) : !other.includes(v) ? (
-          <ValChip key={v} label={v} look="out" title={`Only in ${side === 'a' ? labels.a : labels.b}: dropped`} />
+          <ValChip
+            key={v}
+            label={v}
+            look="out"
+            title={`Only in ${side === 'a' ? labels.a : labels.b}: dropped`}
+          />
         ) : (
           <ValChip
             key={v}
@@ -214,7 +291,13 @@ export function ContrastDialog({
             onChange={(on) => edit((s) => void (s.cmode[c] = on ? 'slice' : 'match'))}
           />
         }
-        badge={x.m === 'slice' ? <Tag kind="cmp">contrasted condition</Tag> : <Tag kind="ctx">matched condition</Tag>}
+        badge={
+          x.m === 'slice' ? (
+            <Tag kind="cmp">contrasted condition</Tag>
+          ) : (
+            <Tag kind="ctx">matched condition</Tag>
+          )
+        }
       />
     )
   }
@@ -234,17 +317,36 @@ export function ContrastDialog({
             value: v,
             label: v === 'select' ? 'intra-dataset' : 'inter-dataset',
             disabled: v === 'pair' && inputCount < 2,
-            title: v === 'pair' && inputCount < 2 ? 'Wire a second input into the tile to contrast two datasets' : undefined
+            title:
+              v === 'pair' && inputCount < 2
+                ? 'Wire a second input into the tile to contrast two datasets'
+                : undefined
           }))}
           onChange={setSource}
         />
       }
     >
       {isPair && pair && (
-        <Section title="Datasets" hint="The two wired inputs: dataset A on the y-axis, dataset B on the x-axis." grid={false}>
+        <Section
+          title="Datasets"
+          hint="The two wired inputs: dataset A on the y-axis, dataset B on the x-axis."
+          grid={false}
+        >
           <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-            <DatasetPick label="dataset A (y)" inputs={pair} value={pairPick.a} exclude={pairPick.b} onPick={(v) => setPairPick((p) => ({ ...p, a: v }))} />
-            <DatasetPick label="dataset B (x)" inputs={pair} value={pairPick.b} exclude={pairPick.a} onPick={(v) => setPairPick((p) => ({ ...p, b: v }))} />
+            <DatasetPick
+              label="dataset A (y)"
+              inputs={pair}
+              value={pairPick.a}
+              exclude={pairPick.b}
+              onPick={(v) => setPairPick((p) => ({ ...p, a: v }))}
+            />
+            <DatasetPick
+              label="dataset B (x)"
+              inputs={pair}
+              value={pairPick.b}
+              exclude={pairPick.a}
+              onPick={(v) => setPairPick((p) => ({ ...p, b: v }))}
+            />
           </div>
         </Section>
       )}
@@ -271,19 +373,37 @@ export function ContrastDialog({
             {m.rows.map(rowOf)}
             <div style={{ gridColumn: '1 / -1', paddingTop: 6 }}>
               <StatusNote kind={isPair || m.differs ? 'info' : 'warn'}>
-                <b>Contrast:</b> {contrastLine(m, isPair ? { a: 'dataset A', b: 'dataset B' } : undefined)}
+                <b>Contrast:</b>{' '}
+                {contrastLine(m, isPair ? { a: 'dataset A', b: 'dataset B' } : undefined)}
               </StatusNote>
             </div>
           </Section>
-          <Section title={`Preview (${m.keys.length} contrast${m.keys.length === 1 ? '' : 's'})`} hint="What will run: one row per contrast." grid={false} shade>
+          <Section
+            title={`Preview (${m.keys.length} contrast${m.keys.length === 1 ? '' : 's'})`}
+            hint="What will run: one row per contrast."
+            grid={false}
+            shade
+          >
             {m.keys.length > 0 && (
               <NodeTable
                 columns={[isPair ? 'dataset A' : 'group A', '', isPair ? 'dataset B' : 'group B']}
-                rows={m.keys.slice(0, 50).map((k) => [
-                  <SideCell key="a" rows={m.ga.get(k) ?? []} conds={isPair ? interConds : active} units={units} />,
-                  'vs',
-                  <SideCell key="b" rows={m.gb.get(k) ?? []} conds={isPair ? interConds : active} units={units} />
-                ])}
+                rows={m.keys
+                  .slice(0, 50)
+                  .map((k) => [
+                    <SideCell
+                      key="a"
+                      rows={m.ga.get(k) ?? []}
+                      conds={isPair ? interConds : active}
+                      units={units}
+                    />,
+                    'vs',
+                    <SideCell
+                      key="b"
+                      rows={m.gb.get(k) ?? []}
+                      conds={isPair ? interConds : active}
+                      units={units}
+                    />
+                  ])}
                 more={m.keys.length - 50}
               />
             )}

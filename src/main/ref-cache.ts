@@ -72,6 +72,36 @@ export interface RefCacheSummary {
   string: StringOrgSummary[]
 }
 
+/** One cached protein in Settings' browser: its gene name and the chosen source's values. */
+export interface UniprotCacheRow {
+  acc: string
+  gene: string
+  /** the source's values, one per `UniprotBrowseResult.cols` ('' where none) */
+  values: string[]
+}
+
+/** One species' proteins for one source — the browser shows a single slice at a time. */
+export interface UniprotBrowseQuery {
+  /** NCBI taxon (0 = not recorded) */
+  taxon: number
+  /** the source's import field id (CACHE_SOURCES) */
+  field: string
+  /** whitespace-separated terms, each to appear in the accession, gene or a value */
+  query: string
+  /** only proteins looked up for the source but with no value for it */
+  emptyOnly?: boolean
+  offset: number
+  limit: number
+}
+
+export interface UniprotBrowseResult {
+  /** the source's columns, in order */
+  cols: string[]
+  /** proteins matching the query (before offset/limit) */
+  total: number
+  rows: UniprotCacheRow[]
+}
+
 export type RefCacheTarget =
   | { kind: 'uniprot' }
   | { kind: 'uniprot-taxon'; taxon: number }
@@ -142,6 +172,43 @@ async function uniprotSummary(): Promise<UniprotCacheSummary | null> {
   }
 }
 
+/** The parsed store, kept while the file is unchanged — the browser queries it per keystroke. */
+let browseMemo: { mtimeMs: number; size: number; store: UniStore } | null = null
+async function storeForBrowse(): Promise<UniStore | null> {
+  const st = await statOrNull(uniprotStorePath())
+  if (!st) return (browseMemo = null)
+  if (browseMemo && browseMemo.mtimeMs === st.mtimeMs && browseMemo.size === st.size)
+    return browseMemo.store
+  const store = await readJson<UniStore>(uniprotStorePath())
+  browseMemo = store ? { mtimeMs: st.mtimeMs, size: st.size, store } : null
+  return store
+}
+
+/** One species' proteins looked up for one source, matching a search, accession order, a page. */
+async function browseUniprot(q: UniprotBrowseQuery): Promise<UniprotBrowseResult> {
+  const src = CACHE_SOURCES.find((s) => s.field === q.field)
+  if (!src) return { cols: [], total: 0, rows: [] }
+  const store = await storeForBrowse()
+  if (!store) return { cols: src.cols, total: 0, rows: [] }
+  const terms = (q.query ?? '').toLowerCase().split(/\s+/).filter(Boolean)
+  const hits: UniprotCacheRow[] = []
+  for (const acc of Object.keys(store.byAcc).sort()) {
+    const e = store.byAcc[acc]
+    if (taxonOf(e) !== q.taxon || !e.got?.includes(src.col)) continue
+    const values = src.cols.map((c) => e.fields?.[c] ?? '')
+    if (q.emptyOnly && values.some(Boolean)) continue
+    const gene = e.fields?.geneName ?? ''
+    if (terms.length) {
+      const cells = [acc, gene, ...values].map((c) => c.toLowerCase())
+      if (!terms.every((t) => cells.some((c) => c.includes(t)))) continue
+    }
+    hits.push({ acc, gene, values })
+  }
+  const offset = Math.max(0, q.offset | 0)
+  const limit = Math.min(500, Math.max(1, q.limit | 0))
+  return { cols: src.cols, total: hits.length, rows: hits.slice(offset, offset + limit) }
+}
+
 const stringDir = (): string => join(cacheRoot(), 'string')
 
 /** An organism's files, each with whether it belongs to the version its network is read from. */
@@ -190,6 +257,12 @@ export function registerRefCache(): void {
     uniprot: await uniprotSummary(),
     string: await stringSummary()
   }))
+
+  // Reads the local store only — never the network.
+  ipcMain.handle(
+    'refcache:browse',
+    async (_evt, q: UniprotBrowseQuery): Promise<UniprotBrowseResult> => browseUniprot(q)
+  )
 
   // Asks the network — only when the user presses "Check for newer versions".
   ipcMain.handle('refcache:latest', async (): Promise<{ uniprot: string; string: string }> => {

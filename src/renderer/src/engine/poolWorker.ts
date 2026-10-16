@@ -14,7 +14,8 @@ export type PoolRequest =
   | { op: 'fit'; id: number; batch: FitBatch }
   | { op: 'joint'; id: number; batch: JointBatch }
   | { op: 'enrich'; id: number; job: EnrichJob; rowsKey: string; annKey: string }
-export type PoolResponse = { id: number; ok: true; result: unknown } | { id: number; ok: false; error: string }
+export type PoolResponse =
+  { id: number; ok: true; result: unknown } | { id: number; ok: false; error: string }
 
 interface Ctx {
   postMessage(msg: PoolResponse): void
@@ -43,6 +44,10 @@ ctx.addEventListener('message', (e) => {
     }
     ctx.postMessage({ id: m.id, ok: true, result })
   } catch (err) {
-    ctx.postMessage({ id: m.id, ok: false, error: err instanceof Error ? err.message : String(err) })
+    ctx.postMessage({
+      id: m.id,
+      ok: false,
+      error: err instanceof Error ? err.message : String(err)
+    })
   }
 })

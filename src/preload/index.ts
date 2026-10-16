@@ -97,6 +97,20 @@ export interface RefCacheSummary {
     updated: number
   }[]
 }
+/** One page of Settings' cache browser: one species, one source (main/ref-cache.ts). */
+export interface RefCacheBrowseQuery {
+  taxon: number
+  field: string
+  query: string
+  emptyOnly?: boolean
+  offset: number
+  limit: number
+}
+export interface RefCacheBrowseResult {
+  cols: string[]
+  total: number
+  rows: { acc: string; gene: string; values: string[] }[]
+}
 export type RefCacheTarget =
   | { kind: 'uniprot' }
   | { kind: 'uniprot-taxon'; taxon: number }
@@ -157,6 +171,12 @@ const api = {
   parkRead: (key: string): Promise<string> => ipcRenderer.invoke('park:read', key),
   /** Forget parked results. */
   parkDrop: (key: string): Promise<void> => ipcRenderer.invoke('park:drop', key),
+  /** The first characters of each project file (its header) — null where unreadable. */
+  readProjectHeads: (paths: string[]): Promise<Record<string, string | null>> =>
+    ipcRenderer.invoke('proj:heads', paths),
+  /** Copy a project file beside itself before it's rewritten; resolves to the copy's path. */
+  backupProject: (path: string, version: string): Promise<string> =>
+    ipcRenderer.invoke('proj:backup', path, version),
   /** Write a project file — its text whole, or in pieces written one after another; a
    *  `{ park }` piece is that parked workflow's results, copied in from its park file. */
   saveProject: (path: string, content: string | Array<string | { park: string }>): Promise<void> =>
@@ -248,7 +268,7 @@ const api = {
   }): Promise<ExportResult> => ipcRenderer.invoke('tables:export', payload),
   /** Put plain text on the clipboard. */
   copyText: (text: string): Promise<void> => ipcRenderer.invoke('clip:text', text),
-  /** Put one rendered plot on the clipboard: PNG as an image, SVG as markup text. */
+  /** Put one rendered plot on the clipboard: PNG as an image; SVG as a vector picture (macOS) or markup text. */
   copyPlot: (payload: CopyPayload): Promise<void> => ipcRenderer.invoke('plots:copy', payload),
   /** Reveal a folder in the OS file manager. */
   revealFolder: (dir: string): Promise<void> => ipcRenderer.invoke('plots:reveal', dir),
@@ -322,6 +342,9 @@ const api = {
 
   /** What the UniProt / STRING reference cache holds, with versions and sizes. */
   refCacheSummary: (): Promise<RefCacheSummary> => ipcRenderer.invoke('refcache:summary'),
+  /** Search one species' cached proteins for one source, a page at a time — local, no network. */
+  browseRefCache: (q: RefCacheBrowseQuery): Promise<RefCacheBrowseResult> =>
+    ipcRenderer.invoke('refcache:browse', q),
   /** The live UniProt release and STRING version ('' where unreachable) — goes to the network. */
   refCacheLatest: (): Promise<{ uniprot: string; string: string }> =>
     ipcRenderer.invoke('refcache:latest'),

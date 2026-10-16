@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import { RESPONSE_THRESHOLD, runResponseSurface } from './responseSurface'
 import { rng } from './sam'
+import { jointPredict } from './surfaceJoint'
 import type { StandardRow } from './types'
 
 const DOSES = [1, 3, 10, 30, 100, 300, 1000, 3000]
@@ -151,6 +152,36 @@ describe('runResponseSurface — dose × time surface', () => {
     const x = called.find((r) => r.rs?.detector)!
     expect(x.rs?.detector).toBe('4pl')
     expect(x.rs?.df1).toBe(6)
+  })
+  it('with the 4PL surface detector: every surface described on request, the joint one its test’s own fit, no shape check', () => {
+    const res = runResponseSurface({
+      rows: build('vehicle'),
+      num: { cmpd: ['A'], dose: ['1', '10', '100', '1000', '3000'] },
+      den: { cmpd: ['DMSO'] },
+      match: [],
+      activeConditions: ['cmpd', 'dose', 'time'],
+      curveAxis: 'surface',
+      detector: '4pl',
+      surfaceDescription: 'joint',
+      describeAll: true,
+      threshold: RESPONSE_THRESHOLD
+    })
+    // describeAll reaches the flat surfaces too (q far above DESCRIBE_Q)
+    const described = res.rows.filter((x) => x.rs?.surface)
+    expect(described.length).toBe(res.rows.length)
+    for (const x of described) {
+      const d = x.rs!.surface!
+      // the detector's fit, reused: the description draws exactly the test's fitted cells
+      for (const c of x.rs!.cells!)
+        expect(jointPredict(d.joint!, d.jointUbar!, c.dose, c.time, x.rs!.timeOffset!)).toBeCloseTo(
+          c.fitted,
+          10
+        )
+      // no spline to check the shape against: R² only
+      expect(d.shapeRatio).toBeUndefined()
+      expect(d.lowShape).toBeUndefined()
+      expect(Number.isFinite(d.r2)).toBe(true)
+    }
   })
   it('with the 4PL surface detector, CurveCurator’s relevance score and decoy-surface FDR', () => {
     const cc = {

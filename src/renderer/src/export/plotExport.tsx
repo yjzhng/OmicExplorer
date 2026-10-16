@@ -17,11 +17,19 @@ import { PanelBody } from '../dashboard/PanelBody'
 import { useGraph } from '../graph/store'
 import type { NodeResult } from '../graph/types'
 import { hasGeneTitle, revealGeneTitle } from '../ui/geneTitle'
-import { hasGlTraces, toSvgTraces } from '../ui/glTraces'
-import { PALETTES } from '../ui/theme'
+import { hasGlTraces, sceneCount, toSvgTraces } from '../ui/glTraces'
+import { PALETTES, plotFontName } from '../ui/theme'
+import { useAppSettings } from '../ui/useAppSettings'
 import { useSelection } from '../ui/useSelection'
 import { useUiTheme } from '../ui/useUiTheme'
 import { planPlotJobs } from './facets'
+import {
+  insertSceneOverlays,
+  prepareSceneClone,
+  sceneOverlays,
+  type ScenePlan
+} from './sceneVector'
+import { cleanSvgForEditors } from './svgClean'
 import { deriveTabs, tabTitles } from '../graph/groups'
 import { pathSeg } from '../graph/diskNames'
 import { exportPath } from './paths'
@@ -119,10 +127,12 @@ async function syncSize(gd: Element): Promise<void> {
   }
 }
 
-/** Every capture is LIGHT on plain white, whatever the app's theme: an exported plot lands in a
- *  paper, a slide or a document, not back in the dark UI. Dark-theme charts are recoloured to the
- *  light palette first (see lightCapture) — a white ground alone would leave light ink invisible. */
-const EXPORT_GROUND = '#ffffff'
+/** Every capture is LIGHT, whatever the app's theme: an exported plot lands in a paper, a slide
+ *  or a document, not back in the dark UI. Dark-theme charts are recoloured to the light palette
+ *  first (see lightCapture) — a white ground alone would leave light ink invisible. The ground is
+ *  plain white, or none at all when the export background setting is Transparent. */
+const exportGround = (): string | null =>
+  useAppSettings.getState().exportBackground === 'transparent' ? null : '#ffffff'
 
 /** Plotly entry points absent from the dist-min typings. */
 const plotlyNewPlot = (
@@ -147,6 +157,8 @@ function lightSubstitutions(): Map<string, string> {
 /** A deep copy of a Plotly data/layout value with those substitutions applied to every string. */
 function recolor<T>(v: T, sub: Map<string, string>): T {
   if (typeof v === 'string') return (sub.get(v.toLowerCase()) ?? v) as T
+  // Typed arrays are numbers only: shared as-is (spread into an object they'd stop being data).
+  if (ArrayBuffer.isView(v)) return v
   if (Array.isArray(v)) return v.map((x) => recolor(x, sub)) as unknown as T
   if (v && typeof v === 'object') {
     const out: Record<string, unknown> = {}
@@ -158,21 +170,31 @@ function recolor<T>(v: T, sub: Map<string, string>): T {
   return v
 }
 
-/** The graph div a capture should read: the live one when it's light and all-SVG, else a hidden
- *  clone re-plotted at the same size, ranges and white paper — in the light palette (dark mode),
- *  with any WebGL cloud drawn back as SVG (see toSvgTraces) and a gene title shown (geneTitle). Returns the div plus a cleanup to run
- *  once the capture is done. */
-async function lightCapture(gd: Element): Promise<{ el: Element; done: () => void }> {
+/** A 3-D scene is always a bitmap in Plotly's SVG, drawn at `plotGlPixelRatio` × the on-screen
+ *  size (2 by default, ~192 dpi) whatever toImage's `scale` says — jagged in print or when
+ *  enlarged. A capture re-plots it at the capture's DPI instead, within WebGL's canvas limits. */
+const glPixelRatio = (dpi: number): number => Math.min(8, Math.max(2, dpi / DPI_BASE))
+
+/** The graph div a capture should read: the live one when it's light, all-SVG and has no 3-D
+ *  scene, else a hidden clone re-plotted at the same size, ranges, camera and white paper — in
+ *  the light palette (dark mode), with any WebGL cloud drawn back as SVG (see toSvgTraces), a gene
+ *  title shown (geneTitle) and 3-D scenes at `dpi` (glPixelRatio). A 3-D scene's lines and text
+ *  are left out of the clone and come back as vector (`scenes`, see sceneVector). Returns the div
+ *  plus a cleanup to run once the capture is done. */
+async function lightCapture(gd: Element, dpi: number): Promise<Capture> {
   const live = gd as unknown as {
     data?: unknown[]
     layout?: Record<string, unknown>
     _fullLayout?: Record<string, unknown>
+    _fullData?: Parameters<typeof prepareSceneClone>[1]
   }
   const dark = useUiTheme.getState().mode !== 'light'
   const gl = hasGlTraces(live.data ?? [])
   // A single-gene plot's title is hidden under its picker on screen; the capture shows it.
   const geneTitle = hasGeneTitle(live.layout)
-  if (!dark && !gl && !geneTitle) return { el: gd, done: () => {} }
+  const scenes = sceneCount(live.data ?? []) > 0
+  if (!dark && !gl && !geneTitle && !scenes)
+    return { el: gd, sceneEl: null, done: () => {}, scenes: [] }
   const { w, h } = liveSize(gd)
   const sub = dark ? lightSubstitutions() : new Map<string, string>()
   // Back to SVG first: recolor drops our private keys, which toSvgTraces still reads.
@@ -191,37 +213,94 @@ async function lightCapture(gd: Element): Promise<{ el: Element; done: () => voi
     ax.autorange = false
     layout[key] = ax
   }
+  // …and each 3-D scene's camera as the user last turned it (the scene's own, live).
+  for (const [key, fl] of Object.entries(live._fullLayout ?? {})) {
+    if (!/^scene\d*$/.test(key)) continue
+    const sc = fl as { camera?: unknown; _scene?: { getCamera?: () => unknown } }
+    const camera = sc._scene?.getCamera?.() ?? sc.camera
+    if (camera) layout[key] = { ...((layout[key] as Record<string, unknown>) ?? {}), camera }
+  }
   layout.width = w
   layout.height = h
   layout.autosize = false
-  // Dark mode prints on white paper; a light clone (WebGL → SVG only) keeps the live colours.
+  // Dark mode prints on the export ground; a light clone (WebGL → SVG only) keeps the live colours.
   if (dark) {
-    layout.paper_bgcolor = EXPORT_GROUND
-    layout.plot_bgcolor = EXPORT_GROUND
+    const ground = exportGround() ?? 'rgba(0,0,0,0)'
+    layout.paper_bgcolor = ground
+    layout.plot_bgcolor = ground
   }
-  const container = document.createElement('div')
-  container.style.cssText = `position:fixed;left:-100000px;top:0;width:${w}px;height:${h}px;pointer-events:none;`
-  document.body.appendChild(container)
-  await plotlyNewPlot(container, data as unknown[], layout, {
-    staticPlot: true,
-    displaylogo: false
-  })
-  return {
-    el: container,
-    done: () => {
+  const mounted: HTMLElement[] = []
+  const mount = async (d: unknown[], l: Record<string, unknown>): Promise<HTMLElement> => {
+    const el = document.createElement('div')
+    el.style.cssText = `position:fixed;left:-100000px;top:0;width:${w}px;height:${h}px;pointer-events:none;`
+    document.body.appendChild(el)
+    mounted.push(el)
+    await plotlyNewPlot(el, d, l, {
+      staticPlot: true,
+      displaylogo: false,
+      ...(scenes ? { plotGlPixelRatio: glPixelRatio(dpi) } : {})
+    })
+    return el
+  }
+  const done = (): void => {
+    for (const el of mounted) {
       try {
-        plotlyPurge(container)
+        plotlyPurge(el)
       } catch {
         // Nothing to release if the plot never drew.
       }
-      container.remove()
+      el.remove()
     }
   }
+  const main = await mount(data as unknown[], layout)
+  // 3-D scenes: lines and text are redrawn as vector over a bitmap of just the surfaces and
+  // markers, read from the live scene (which the clones match: same size, camera, ranges and
+  // aspect). That bitmap comes from a second clone with the rest hidden — its plot area pinned to
+  // the first's, since hiding a legend's traces would otherwise drop the legend and re-size it —
+  // and takes the place of the first clone's scene image (see captureSvg). Any failure leaves the
+  // first clone's full bitmap, chrome and all.
+  let plans: ScenePlan[] = []
+  let sceneEl: HTMLElement | null = null
+  if (scenes) {
+    try {
+      const l2 = { ...layout }
+      const d2 = [...(data as Record<string, unknown>[])]
+      const drawn = prepareSceneClone(live._fullLayout ?? {}, live._fullData ?? [], l2, d2)
+      const got = sceneOverlays(gd, drawn, sub)
+      if (got) {
+        const size = (main as { _fullLayout?: { _size?: Record<string, number> } })._fullLayout
+          ?._size
+        l2.showlegend = false
+        if (size)
+          l2.margin = {
+            l: size.l,
+            r: size.r,
+            t: size.t,
+            b: size.b,
+            pad: size.p ?? 0,
+            autoexpand: false
+          }
+        sceneEl = await mount(d2, l2)
+        plans = got
+      }
+    } catch (e) {
+      console.warn('3-D vector overlay unavailable:', e)
+    }
+  }
+  return { el: main, sceneEl, scenes: plans, done }
+}
+
+/** A capture clone: the div to snapshot, and for 3-D scenes the bitmap-only twin and overlays. */
+interface Capture {
+  el: Element
+  sceneEl: Element | null
+  scenes: ScenePlan[]
+  done: () => void
 }
 
 /**
  * Rasterise an SVG data URL to a PNG data URL at `w`×`h` device pixels, on `ground` (default:
- * plain white, see EXPORT_GROUND). We go via SVG (not Plotly's own PNG path)
+ * the export ground, see exportGround; null leaves the PNG transparent). We go via SVG (not Plotly's own PNG path)
  * because the app's CSP allows `data:` but not `blob:` images, and Plotly's PNG rasteriser loads
  * the intermediate image from a blob URL — which CSP blocks. A `data:` SVG drawn onto a canvas
  * stays within CSP and, being vector, scales to any DPI crisply.
@@ -230,7 +309,7 @@ function svgUrlToPng(
   svgUrl: string,
   w: number,
   h: number,
-  ground: string = EXPORT_GROUND
+  ground: string | null = exportGround()
 ): Promise<string> {
   return new Promise((resolve, reject) => {
     const img = new Image()
@@ -245,8 +324,10 @@ function svgUrlToPng(
       }
       // A plot's own (opaque) paper colour paints over this; it only shows through where the
       // plot is transparent — which is everywhere for the app's plots, so this IS the background.
-      ctx.fillStyle = ground
-      ctx.fillRect(0, 0, w, h)
+      if (ground) {
+        ctx.fillStyle = ground
+        ctx.fillRect(0, 0, w, h)
+      }
       ctx.drawImage(img, 0, 0, w, h)
       resolve(canvas.toDataURL('image/png').replace(/^data:image\/png;base64,/, ''))
     }
@@ -273,22 +354,107 @@ function liveSize(gd: Element): { w: number; h: number } {
   return { w, h }
 }
 
+/** A capture's SVG markup at `w`×`h`: Plotly's toImage (a `data:image/svg+xml,<url-encoded>` URL,
+ *  decoded) with any 3-D scene's vector lines and text laid over its bitmap. */
+async function captureSvg(cap: Capture, w: number, h: number): Promise<string> {
+  const snap = async (el: Element): Promise<string> => {
+    const url = await plotlyToImage(el, { format: 'svg', width: w, height: h, scale: 1 })
+    return decodeURIComponent(url.slice(url.indexOf(',') + 1))
+  }
+  const svg = await snap(cap.el)
+  if (!cap.sceneEl || !cap.scenes.length) return svg
+  let sceneSvg = await snap(cap.sceneEl)
+  // On a white ground, the scene's bitmap is flattened onto it: a translucent surface then hides
+  // the gridlines layered beneath it (sceneVector's back layer), as it reads on screen, instead
+  // of letting them through. (Over white it looks the same; a transparent export keeps its alpha.)
+  if (exportGround()) sceneSvg = await flattenSceneImages(sceneSvg)
+  const bare = swapSceneImages(svg, sceneSvg, cap.scenes)
+  return bare ? insertSceneOverlays(bare, cap.scenes) : svg
+}
+
+/** Every embedded PNG in `svg` with its translucent pixels made opaque, as they show over white. */
+async function flattenSceneImages(svg: string): Promise<string> {
+  const urls = [...svg.matchAll(/(?:xlink:)?href="(data:image\/png;base64,[^"]+)"/g)].map(
+    (m) => m[1]
+  )
+  let out = svg
+  for (const url of urls) {
+    const img = new Image()
+    await new Promise<void>((resolve, reject) => {
+      img.onload = () => resolve()
+      img.onerror = () => reject(new Error('scene image load failed'))
+      img.src = url
+    })
+    const canvas = document.createElement('canvas')
+    canvas.width = img.naturalWidth
+    canvas.height = img.naturalHeight
+    const ctx = canvas.getContext('2d')
+    if (!ctx) continue
+    ctx.drawImage(img, 0, 0)
+    const px = ctx.getImageData(0, 0, canvas.width, canvas.height)
+    const d = px.data
+    for (let i = 0; i < d.length; i += 4) {
+      const a = d[i + 3]
+      if (a === 0 || a === 255) continue
+      const f = a / 255
+      d[i] = d[i] * f + 255 * (1 - f)
+      d[i + 1] = d[i + 1] * f + 255 * (1 - f)
+      d[i + 2] = d[i + 2] * f + 255 * (1 - f)
+      d[i + 3] = 255
+    }
+    ctx.putImageData(px, 0, 0)
+    out = out.replace(url, canvas.toDataURL('image/png'))
+  }
+  return out
+}
+
+/** `svg` with each 3-D scene image's pixels taken from `bare`'s (the chrome-less clone), or null
+ *  unless every image — and every overlay — lines up box for box. */
+function swapSceneImages(svg: string, bare: string, plans: ScenePlan[]): string | null {
+  const IMG = /<image\b[^>]*?(?:\/>|>\s*<\/image>)/g
+  const box = (img: string): number[] =>
+    ['x', 'y', 'width', 'height'].map((a) =>
+      parseFloat(new RegExp(`\\s${a}="([-\\d.e]+)"`).exec(img)?.[1] ?? '0')
+    )
+  const href = (img: string): string | undefined => /(?:xlink:)?href="([^"]+)"/.exec(img)?.[1]
+  const from = bare.match(IMG) ?? []
+  const to = svg.match(IMG) ?? []
+  if (from.length !== to.length || to.length !== plans.length) return null
+  for (let i = 0; i < to.length; i++) {
+    const a = box(to[i])
+    const b = box(from[i])
+    if (a.some((v, k) => Math.abs(v - b[k]) > 0.5)) return null
+    if (Math.abs(a[2] - plans[i].width) > 1 || Math.abs(a[3] - plans[i].height) > 1) return null
+    if (!href(from[i]) || !href(to[i])) return null
+  }
+  let n = 0
+  return svg.replace(IMG, (img) => {
+    const src = href(from[n++])!
+    return img.replace(/((?:xlink:)?href=")[^"]+"/, `$1${src}"`)
+  })
+}
+const svgDataUrl = (svg: string): string =>
+  `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`
+
 /** The SVG markup of a live graph div, as drawn (see liveSize). Plotly's toImage returns it as a
- *  `data:image/svg+xml,<url-encoded>` URL, decoded here. */
-export async function gdToSvg(gd: Element): Promise<string> {
+ *  `data:image/svg+xml,<url-encoded>` URL, decoded here. `dpi` only sets the resolution of a 3-D
+ *  scene's bitmap; everything else is vector. */
+export async function gdToSvg(gd: Element, dpi: number): Promise<string> {
   await syncSize(gd)
   const { w, h } = liveSize(gd)
-  const { el, done } = await lightCapture(gd)
+  const cap = await lightCapture(gd, dpi)
   try {
-    const url = await plotlyToImage(el, { format: 'svg', width: w, height: h, scale: 1 })
-    const svg = decodeURIComponent(url.slice(url.indexOf(',') + 1))
-    // The paper is transparent; give the file a plain white first rect so it reads on any ground.
+    // Stripped of Plotly's browser-only scaffolding so it imports cleanly into an editor.
+    const svg = cleanSvgForEditors(await captureSvg(cap, w, h), plotFontName())
+    // The paper is transparent; on a white ground, give the file a first rect so it reads anywhere.
+    const ground = exportGround()
+    if (!ground) return svg
     return svg.replace(
       /<svg\b[^>]*>/,
-      (open) => `${open}<rect width="100%" height="100%" fill="${EXPORT_GROUND}"/>`
+      (open) => `${open}<rect width="100%" height="100%" fill="${ground}"/>`
     )
   } finally {
-    done()
+    cap.done()
   }
 }
 
@@ -316,7 +482,7 @@ export async function gdToExportItem(
     return {
       relPath,
       format,
-      base64: utf8ToBase64(await gdToSvg(gd)),
+      base64: utf8ToBase64(await gdToSvg(gd, dpi)),
       widthIn: w / DPI_BASE,
       heightIn: h / DPI_BASE
     }
@@ -333,14 +499,14 @@ export async function gdToExportItem(
 export async function rasterizeGd(gd: Element, dpi = 300): Promise<PngResult> {
   await syncSize(gd)
   const { w, h } = liveSize(gd)
-  const { el, done } = await lightCapture(gd)
+  const cap = await lightCapture(gd, dpi)
   try {
-    const svgUrl = await plotlyToImage(el, { format: 'svg', width: w, height: h, scale: 1 })
+    const svgUrl = svgDataUrl(await captureSvg(cap, w, h))
     const scale = dpi / DPI_BASE
     const base64 = await svgUrlToPng(svgUrl, Math.round(w * scale), Math.round(h * scale))
     return { base64, widthIn: w / DPI_BASE, heightIn: h / DPI_BASE }
   } finally {
-    done()
+    cap.done()
   }
 }
 
@@ -354,7 +520,7 @@ export async function rasterizeGd(gd: Element, dpi = 300): Promise<PngResult> {
 export async function copyGd(gd: Element, format: 'png' | 'svg', dpi: number): Promise<void> {
   const payload =
     format === 'svg'
-      ? ({ format, svg: await gdToSvg(gd) } as const)
+      ? ({ format, svg: await gdToSvg(gd, dpi) } as const)
       : ({ format, base64: (await rasterizeGd(gd, dpi)).base64 } as const)
   const why = (e: unknown): string => (e instanceof Error ? e.message : String(e))
   let ipcErr = 'copyPlot IPC unavailable — restart the app to load the update'
@@ -414,18 +580,13 @@ async function renderSpecToPng(
     const gd = await waitForPlot(container)
     if (!gd) return null
     // Exports are light-on-white like the per-tile capture, whatever theme the app is in.
-    const { el, done } = await lightCapture(gd)
+    const cap = await lightCapture(gd, dpi)
     try {
-      const svgUrl = await plotlyToImage(el, {
-        format: 'svg',
-        width: BASE_W,
-        height: BASE_H,
-        scale: 1
-      })
+      const svgUrl = svgDataUrl(await captureSvg(cap, BASE_W, BASE_H))
       const scale = dpi / DPI_BASE
       return await svgUrlToPng(svgUrl, Math.round(BASE_W * scale), Math.round(BASE_H * scale))
     } finally {
-      done()
+      cap.done()
     }
   } catch {
     return null

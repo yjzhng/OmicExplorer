@@ -117,25 +117,50 @@ export { storePath as uniprotStorePath, type UniStore }
 
 /** The cache's columns by source, for Settings › Database: `field` is the id an import asks
  *  for it by; an accession is covered for a source once `col` is in its `got`, and by the current
- *  resolver once `token` is too. */
-export const CACHE_SOURCES: { label: string; field: string; col: string; token?: string }[] = [
+ *  resolver once `token` is too. `cols` are every column the source fills (`col` first). */
+export const CACHE_SOURCES: {
+  label: string
+  field: string
+  col: string
+  cols: string[]
+  token?: string
+}[] = [
   { label: 'Protein names', field: 'protein_name', col: UNIPROT_FIELD.protein_name.col },
   { label: 'Gene names', field: 'gene_names', col: UNIPROT_FIELD.gene_names.col },
   { label: 'GO biological process', field: 'go_bp', col: UNIPROT_FIELD.go_bp.col },
   { label: 'GO molecular function', field: 'go_mf', col: UNIPROT_FIELD.go_mf.col },
   { label: 'GO cellular component', field: 'go_cc', col: UNIPROT_FIELD.go_cc.col },
   { label: 'STRING ids', field: 'string', col: UNIPROT_FIELD.string.col },
-  { label: 'KEGG pathways', field: 'kegg', col: KEGG_COL, token: RESOLVER_TOKEN.kegg },
-  { label: 'COG groups', field: 'cog', col: OG_COLS.COG.group, token: RESOLVER_TOKEN.cog },
-  { label: 'KOG groups', field: 'kog', col: OG_COLS.KOG.group, token: RESOLVER_TOKEN.cog },
+  {
+    label: 'KEGG pathways',
+    field: 'kegg',
+    col: KEGG_COL,
+    cols: [KEGG_COL, KEGG_CAT_COL, KEGG_GRP_COL],
+    token: RESOLVER_TOKEN.kegg
+  },
+  {
+    label: 'COG groups',
+    field: 'cog',
+    col: OG_COLS.COG.group,
+    cols: Object.values(OG_COLS.COG),
+    token: RESOLVER_TOKEN.cog
+  },
+  {
+    label: 'KOG groups',
+    field: 'kog',
+    col: OG_COLS.KOG.group,
+    cols: Object.values(OG_COLS.KOG),
+    token: RESOLVER_TOKEN.cog
+  },
   { label: 'MSigDB hallmarks', field: 'msigdb', col: MSIG_COL, token: RESOLVER_TOKEN.msigdb },
   {
     label: 'Reactome pathways',
     field: 'reactome',
     col: REACTOME_COL,
+    cols: [REACTOME_COL, REACTOME_GRP_COL, REACTOME_CAT_COL],
     token: RESOLVER_TOKEN.reactome
   }
-]
+].map((s) => ({ ...s, cols: s.cols ?? [s.col] }))
 /** The cache column holding an accession's NCBI taxon. */
 export const CACHE_TAXON_COL = TAXON_COL
 
@@ -166,6 +191,8 @@ function cleanValue(col: string, raw: string): string {
 }
 
 const CHUNK = 80
+/** Pause before a failed UniProt chunk's one retry. */
+const CHUNK_RETRY_MS = 1500
 /** Per-request network timeout so a stalled UniProt/KEGG connection fails instead of hanging the
  *  whole import forever. */
 const FETCH_TIMEOUT = 45000
@@ -811,24 +838,43 @@ export async function annotateAccessions(
   }
 
   let error: string | undefined
-  // Fetch a set of accessions from UniProt and fold them into the store.
+  // Fetch a set of accessions from UniProt and fold them into the store. A chunk that still fails
+  // after a retry costs only ITS accessions: they're left out of the store (so the next fetch asks
+  // for them again) while every chunk that came back is kept. A single failed request used to
+  // sink the whole fetch — every accession not already cached came back bare.
   const fetchInto = async (accs: string[]): Promise<string> => {
     const byId: Record<string, Record<string, string>> = {}
     const extra = emptyExtras()
     const meta = { release: '' }
+    const failed = new Set<string>()
+    let chunkError = ''
     onProg(0, accs.length)
     for (let i = 0; i < accs.length; i += CHUNK) {
-      await fetchUniprotChunk(
-        accs.slice(i, i + CHUNK),
-        uni.map((u) => u.uni),
-        outCols,
-        extras,
-        byId,
-        extra,
-        meta
-      )
+      const chunk = accs.slice(i, i + CHUNK)
+      const run = (): Promise<void> =>
+        fetchUniprotChunk(
+          chunk,
+          uni.map((u) => u.uni),
+          outCols,
+          extras,
+          byId,
+          extra,
+          meta
+        )
+      try {
+        await run().catch(async () => {
+          await new Promise((r) => setTimeout(r, CHUNK_RETRY_MS))
+          await run()
+        })
+      } catch (e) {
+        for (const a of chunk) failed.add(a)
+        chunkError = e instanceof Error ? e.message : 'UniProt request failed'
+      }
       onProg(Math.min(i + CHUNK, accs.length), accs.length)
     }
+    if (failed.size > 0)
+      error = `${failed.size} of ${accs.length} proteins not fetched (${chunkError}) — fetch again to retry them`
+    if (failed.size === accs.length) return ''
     // The taxon is the one extra that's also persisted — STRING reads it back from the cache.
     for (const [acc, t] of Object.entries(extra.organism)) (byId[acc] ??= {})[TAXON_COL] = t
     if (withKegg) {
@@ -860,6 +906,7 @@ export async function annotateAccessions(
       await addReactomePathways(accs, byId)
     }
     for (const acc of accs) {
+      if (failed.has(acc)) continue
       const e = (store.byAcc[acc] ??= { got: [], fields: {}, release: meta.release })
       for (const c of requiredCols) if (!e.got.includes(c)) e.got.push(c)
       // This fetch REPLACES what it re-resolved: a value it no longer produces (a stale group

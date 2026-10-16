@@ -21,6 +21,15 @@ export function IconTrash(): ReactNode {
   )
 }
 
+/** Menu (three stacked lines): a row's actions. */
+export function IconMenu({ size = 15 }: { size?: number } = {}): ReactNode {
+  return (
+    <svg {...base} width={size} height={size}>
+      <path d="M4 7h16M4 12h16M4 17h16" />
+    </svg>
+  )
+}
+
 /** Settings gear (cog with a hub). Sized per site: 16/2 on tile headers, 17/1.7 in the app nav
  *  beside the guide icon. */
 export function IconGear({

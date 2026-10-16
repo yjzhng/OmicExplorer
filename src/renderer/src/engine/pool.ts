@@ -184,10 +184,12 @@ export function pool(): {
         if (!k) keyOf.set(o, (k = `${call}:${tag}${keyOf.size}`))
         return k
       }
-      const order = jobs.map((_, i) => i).sort((a, b) => {
-        const g = (i: number): number => (jobs[i].opts.method === 'gsea' ? 0 : 1)
-        return g(a) - g(b) || a - b
-      })
+      const order = jobs
+        .map((_, i) => i)
+        .sort((a, b) => {
+          const g = (i: number): number => (jobs[i].opts.method === 'gsea' ? 0 : 1)
+          return g(a) - g(b) || a - b
+        })
       const out: EnrichData[] = new Array(jobs.length)
       try {
         await Promise.all(

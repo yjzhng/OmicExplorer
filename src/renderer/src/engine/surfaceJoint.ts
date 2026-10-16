@@ -119,11 +119,13 @@ function refine(
 /**
  * Fit the joint model to a fitted surface's treated cells (effects vs their vehicle). Returns the
  * parameters, the midpoint (log₁₀ dose) and top at each treated time, and the residual sum of
- * squares over the cells. Null for one-axis curves.
+ * squares over the cells. Null for one-axis curves. `prefit` is a fit of these same cells already
+ * made (the 4PL surface detector's), used as it is rather than fitted again.
  */
 export function fitJointSurface(
   c: SplineCurve,
-  interpolation = false
+  interpolation = false,
+  prefit?: JointFit
 ): {
   params: JointParams
   byTime: Array<{ time: number; x50: number; top: number }>
@@ -134,15 +136,17 @@ export function fitJointSurface(
   const s = c.surface
   if (!s) return null
   const nG = s.vehicle.length
-  const fit = fitJointCells(
-    s.treated.map((r, i) => ({
-      dose: r.dose,
-      time: r.time,
-      e: c.y[nG + i] - s.vehicle[r.group].mean
-    })),
-    s.timeOffset,
-    interpolation
-  )
+  const fit =
+    prefit ??
+    fitJointCells(
+      s.treated.map((r, i) => ({
+        dose: r.dose,
+        time: r.time,
+        e: c.y[nG + i] - s.vehicle[r.group].mean
+      })),
+      s.timeOffset,
+      interpolation
+    )
   const times = [...new Set(s.treated.map((r) => r.time))].sort((a, b) => a - b)
   const { A, k, tau, m0, m1 } = fit.params
   return {

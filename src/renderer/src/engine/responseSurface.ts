@@ -13,6 +13,7 @@ import {
   ccEquivalentF,
   classifyCompareRow,
   curveGroupKey,
+  DESCRIBE_Q,
   relevanceScore,
   type CcTest,
   type DecoyCurve
@@ -61,17 +62,13 @@ export const RESPONSE_THRESHOLD: ThresholdConfig = {
   fcHigh: 0
 }
 
-/** Curves are described (4PL) up to this q, so a stricter or looser call made later — the
- *  threshold follows without a re-run — still finds its called curves described. */
-export const DESCRIBE_Q = 0.25
+export { DESCRIBE_Q }
 
 export interface ResponseInput extends Omit<CompareInput, 'curveAxis'> {
   /** the curve's axis, or 'surface' for one dose × time surface per gene × compound */
   curveAxis: ConditionKey | 'surface'
   /** surfaces: describe slice by slice (default) or by one joint model */
   surfaceDescription?: SurfaceMethod
-  /** describe every curve / surface, not just those within DESCRIBE_Q */
-  describeAll?: boolean
   /** surfaces: detect with the spline surface (default) or with the 4PL surface — the joint model
    *  vs flat, its adjusted F (see scoreJoint4pl) */
   detector?: 'spline' | '4pl'
@@ -107,6 +104,8 @@ export function* responseSurfaceSteps(
   const comparisons: string[] = []
   for (const { run, cmpCond, label, context } of parts) {
     for (const r of run.rows) {
+      // the 4PL detector's joint fit of this surface (its rows in the same order as these)
+      const detected = cc?.[fits.length].fit
       const comparison = r.comparison ?? label
       if (!comparisons.includes(comparison)) comparisons.push(comparison)
       const row: RawStatRow = {
@@ -124,7 +123,8 @@ export function* responseSurfaceSteps(
       for (const [c, v] of Object.entries({ ...context, ...r.context }))
         setCond(row, c as ConditionKey, v)
       raw.push(row)
-      fits.push(r.baseline ? { ...fitOf(r, input), baseline: r.baseline } : fitOf(r, input))
+      const fit = fitOf(r, input, detected)
+      fits.push(r.baseline ? { ...fit, baseline: r.baseline } : fit)
       qs.push(r.q)
     }
   }
@@ -249,9 +249,10 @@ function surfaceParts(input: CompareInput): Part[] {
   return out
 }
 
-/** A row's fit for the table: the levels and the spline, plus the description when its q is
- *  within DESCRIBE_Q. */
-function fitOf(r: SplineRow, input: ResponseInput): ResponseFit {
+/** A row's fit for the table: the levels and the spline (a 4PL surface: its joint 4PL), plus the
+ *  description when its q is within DESCRIBE_Q (or every row's, with describeAll). `detected` is
+ *  the 4PL surface detector's fit, handed to the description to reuse. */
+function fitOf(r: SplineRow, input: ResponseInput, detected?: JointFit): ResponseFit {
   const c = r.curve
   const base = { F: r.F, df1: r.df1, df2: r.df2 }
   const describe = !!input.describeAll || r.q <= DESCRIBE_Q
@@ -259,7 +260,7 @@ function fitOf(r: SplineRow, input: ResponseInput): ResponseFit {
     const s = c.surface
     const nG = s.vehicle.length
     const desc = describe
-      ? describeSurface(c, undefined, input.surfaceDescription, !!input.interpolation)
+      ? describeSurface(c, undefined, input.surfaceDescription, !!input.interpolation, detected)
       : null
     return {
       axis: 'surface',
@@ -372,7 +373,11 @@ const NULL_DESIGNS = 4
 function* scoreJoint4pl(
   rows: SplineRow[],
   interpolation = false
-): Generator<JointBatch, Array<{ cc: CcTest; decoy: DecoyCurve | null }>, JointFit[]> {
+): Generator<
+  JointBatch,
+  Array<{ cc: CcTest; decoy: DecoyCurve | null; fit: JointFit }>,
+  JointFit[]
+> {
   const cellsOf = rows.map((r) => {
     const c = r.curve
     const s = c.surface!
@@ -497,7 +502,7 @@ function* scoreJoint4pl(
   return rows.map((r, i) => {
     const n = raws[i].n + 1
     const cc: CcTest = { f: ccEquivalentF(p[i], n), n }
-    if (!(raws[i].d > 0)) return { cc, decoy: null }
+    if (!(raws[i].d > 0)) return { cc, decoy: null, fit: fitted[i] }
     const dc = decoyCells[i]
     const rss0 = dc.cells.reduce((a, x) => a + x.e * x.e, 0)
     const dF = jointF(
@@ -512,6 +517,10 @@ function* scoreJoint4pl(
       const v = jointPredict(decoyFits[i].params, decoyFits[i].ubar, c.dose, c.time, dc.timeOffset)
       if (Math.abs(v) > Math.abs(peak)) peak = v
     }
-    return { cc, decoy: { f: ccEquivalentF(nullSurvival(dF, tailOf[i]), n), log2FC: peak, n } }
+    return {
+      cc,
+      decoy: { f: ccEquivalentF(nullSurvival(dF, tailOf[i]), n), log2FC: peak, n },
+      fit: fitted[i]
+    }
   })
 }

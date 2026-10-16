@@ -33,6 +33,7 @@ import { thresholdForAnalysis, thresholdForDetection, type ContrastConfig } from
 import {
   CURVE_MODEL_OPTIONS,
   SURFACE_FIT_OPTIONS,
+  surfaceFitShown,
   curveAxisOptions,
   type CurveModel,
   type SurfaceFit
@@ -877,9 +878,9 @@ export function ComparisonDialog({
             {head('fit')}
             <ToggleSwitch
               label="Fit"
-              value={surfaceFit}
+              value={surfaceFitShown(surfaceFit)}
               options={SURFACE_FIT_OPTIONS}
-              onChange={setSurfaceFit}
+              onChange={(v) => v !== surfaceFitShown(surfaceFit) && setSurfaceFit(v)}
             />
           </div>
         )}
@@ -1148,7 +1149,9 @@ export function ComparisonDialog({
                           {/* How each surface is then described — the fit picked above. */}
                           {surface &&
                             (() => {
-                              const fit = SURFACE_FIT_OPTIONS.find((o) => o.value === surfaceFit)
+                              const fit = SURFACE_FIT_OPTIONS.find(
+                                (o) => o.value === surfaceFitShown(surfaceFit)
+                              )
                               return fit ? (
                                 <div style={styles.previewItemNote}>
                                   described by {fit.label}: {fit.title.charAt(0).toLowerCase()}

@@ -1,6 +1,7 @@
 /** Opening a saved workflow repairs an order that predates the sequencing rule. */
 import { describe, expect, it } from 'vitest'
 
+import { upgradeWorkflowDoc } from './upgrades'
 import { parseWorkflowDoc } from './workflowDoc'
 import type { WorkflowDoc } from './workflowDoc'
 
@@ -17,22 +18,24 @@ const doc = (ids: [string, string][], edges: [string, string][]): WorkflowDoc =>
     nextId: 9
   }) as unknown as WorkflowDoc
 
-describe('parseWorkflowDoc ordering', () => {
+describe('workflow upgrade: step order', () => {
   it('moves a step that was saved above its own input', () => {
     // What an existing project looks like: built on the canvas, where nothing enforced an order.
     const loaded = parseWorkflowDoc(
-      doc(
-        [
-          ['vol-1', 'volcano'],
-          ['cmp-1', 'compare'],
-          ['std-1', 'standardize'],
-          ['load-1', 'load']
-        ],
-        [
-          ['load-1', 'std-1'],
-          ['std-1', 'cmp-1'],
-          ['cmp-1', 'vol-1']
-        ]
+      upgradeWorkflowDoc(
+        doc(
+          [
+            ['vol-1', 'volcano'],
+            ['cmp-1', 'compare'],
+            ['std-1', 'standardize'],
+            ['load-1', 'load']
+          ],
+          [
+            ['load-1', 'std-1'],
+            ['std-1', 'cmp-1'],
+            ['cmp-1', 'vol-1']
+          ]
+        )
       )
     )
     expect(loaded.nodes.map((n) => n.id)).toEqual(['load-1', 'std-1', 'cmp-1', 'vol-1'])
@@ -46,11 +49,13 @@ describe('parseWorkflowDoc ordering', () => {
       ['cmp-1', 'compare']
     ]
     const loaded = parseWorkflowDoc(
-      doc(ids, [
-        ['load-1', 'std-1'],
-        ['std-1', 'qc-1'],
-        ['std-1', 'cmp-1']
-      ])
+      upgradeWorkflowDoc(
+        doc(ids, [
+          ['load-1', 'std-1'],
+          ['std-1', 'qc-1'],
+          ['std-1', 'cmp-1']
+        ])
+      )
     )
     // qc before cmp is the user's choice, not something the wiring decides — it must survive.
     expect(loaded.nodes.map((n) => n.id)).toEqual(ids.map(([id]) => id))
@@ -58,13 +63,15 @@ describe('parseWorkflowDoc ordering', () => {
 
   it('loses no step while reordering, including an unwired one', () => {
     const loaded = parseWorkflowDoc(
-      doc(
-        [
-          ['b', 'compare'],
-          ['note', 'qc'],
-          ['a', 'standardize']
-        ],
-        [['a', 'b']]
+      upgradeWorkflowDoc(
+        doc(
+          [
+            ['b', 'compare'],
+            ['note', 'qc'],
+            ['a', 'standardize']
+          ],
+          [['a', 'b']]
+        )
       )
     )
     expect(new Set(loaded.nodes.map((n) => n.id))).toEqual(new Set(['a', 'b', 'note']))

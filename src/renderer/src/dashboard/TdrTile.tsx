@@ -37,6 +37,8 @@ export function TdrBody({
   look: ResponseLook
   /** 3-D lines: a dose curve at each time, or a time curve at each dose */
   slice?: 'time' | 'dose'
+  /** 3-D: the camera's projection */
+  projection?: 'perspective' | 'orthographic'
   rolePalettes: { value: PaletteRef; points: PaletteRef }
   doseLabel?: string
   timeLabel?: string

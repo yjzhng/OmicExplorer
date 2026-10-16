@@ -8,7 +8,12 @@
 import type { GeneSet, NodeResult } from './types'
 import { dirOf, relativeTo, resolveFrom } from './relPath'
 import { packResults, unpackResults } from './resultPack'
-import { emptyWorkflowDoc, legacyGeneSets, type WorkflowDoc } from './workflowDoc'
+import { MIGRATED_THROUGH, upgradeProjectFile, type RawProject } from './upgrades'
+import { emptyWorkflowDoc, type WorkflowDoc } from './workflowDoc'
+
+/** Re-exported from where they live now, for existing callers. */
+export { geneMaskKey } from './geneMask'
+export { migrateStrainToCell } from './upgrades'
 
 export interface ProjectWorkflow {
   id: string
@@ -70,6 +75,9 @@ export interface ProjectFile {
   /** the app version that saved the file, so an older app can warn it may not read it right
    *  (see savedByVersion). Optional (files before 0.3.5 don't carry it). */
   appVersion?: string
+  /** the app version the project was first created with — kept unchanged by every later save.
+   *  Optional (files before 0.3.7 don't carry it, and it's never guessed for them). */
+  createdWith?: string
   name: string
   folders: ProjectFolder[]
   activeFolderId: string
@@ -86,10 +94,50 @@ export interface ProjectFile {
 /** The newest project format this build reads and writes. */
 export const PROJECT_VERSION = 3
 
-/** The app version a project file says saved it, read from the file's start (it's written right
- *  after `version`) without parsing the whole file; null when it names none (before 0.3.5). */
+/** The release of the last upgrade (upgrades.ts): a file saved before it is written in an older
+ *  form — it opens fine, being upgraded as it's read, and Fix writes it back in the current one. */
+export { MIGRATED_THROUGH }
+
+/** What a project file says about itself, from its first bytes (format, appVersion and
+ *  createdWith are written first) — no full parse, so it's cheap for a list of files. */
+export interface ProjectHeader {
+  /** the file format (`version`); null when unreadable */
+  format: number | null
+  /** the app version that last saved it; null before 0.3.5 */
+  savedBy: string | null
+  /** the app version it was created with; null before 0.3.7 */
+  createdWith: string | null
+}
+
+export function projectHeader(text: string): ProjectHeader {
+  const head = text.slice(0, 1000)
+  const str = (k: string): string | null =>
+    new RegExp(`"${k}"\\s*:\\s*"([^"]+)"`).exec(head)?.[1] ?? null
+  const format = /"version"\s*:\s*(\d+)/.exec(head)?.[1]
+  return {
+    format: format ? Number(format) : null,
+    savedBy: str('appVersion'),
+    createdWith: str('createdWith')
+  }
+}
+
+/** The app version a project file says saved it; null when it names none (before 0.3.5). */
 export function savedByVersion(text: string): string | null {
-  return /"appVersion"\s*:\s*"([^"]+)"/.exec(text.slice(0, 1000))?.[1] ?? null
+  return projectHeader(text).savedBy
+}
+
+/** How a project file stands against this app: `current`; `older` — written before a migration
+ *  this app applies on open (MIGRATED_THROUGH) or in an older format, so Fix rewrites it; or
+ *  `newer` — saved by a newer app, which this one may not read right. */
+export function projectStanding(
+  h: ProjectHeader,
+  appVersion: string | null
+): 'current' | 'older' | 'newer' {
+  if ((h.format ?? 0) > PROJECT_VERSION) return 'newer'
+  if (h.savedBy && appVersion && isNewerVersion(h.savedBy, appVersion)) return 'newer'
+  if ((h.format ?? 0) < PROJECT_VERSION) return 'older'
+  if (!h.savedBy || isNewerVersion(MIGRATED_THROUGH, h.savedBy)) return 'older'
+  return 'current'
 }
 
 /** Whether dotted version `a` is newer than `b` ("0.4.0" > "0.3.10"). */
@@ -131,55 +179,6 @@ function reserveIds(raw: Partial<ProjectFile> & ProjectFileV1): void {
   }
   for (const w of Array.isArray(raw.workflows) ? raw.workflows : []) scan(w?.id) // v1
   seq = max
-}
-
-/** Identifies the gene mask — the genes of every HIDDEN geneset — so a workflow can tell whether
- *  its results were classified under the project's current one. '' = nothing masked. */
-export function geneMaskKey(sets: GeneSet[]): string {
-  const ids = new Set<string>()
-  for (const g of sets) if (g.hidden) for (const gene of g.genes) ids.add(gene.id)
-  if (ids.size === 0) return ''
-  // FNV-1a over the sorted ids: short enough to save per workflow.
-  let h = 0x811c9dc5
-  for (const ch of [...ids].sort().join('\n')) {
-    h ^= ch.charCodeAt(0)
-    h = Math.imul(h, 0x01000193)
-  }
-  return `${ids.size}:${(h >>> 0).toString(36)}`
-}
-
-/** Genesets were per workflow before 0.3.6: gather every workflow's into the project's list, and
- *  record on each workflow the mask its results were classified under (its own hidden sets), so
- *  opening it re-applies the project's. A set found in several workflows (same id — a copied
- *  workflow, or the legacy Favourites) becomes one: its genes united, hidden if hidden in any. */
-function gatherGeneSets(folders: ProjectFolder[]): GeneSet[] {
-  const byId = new Map<string, GeneSet>()
-  for (const f of folders)
-    for (const w of f.workflows) {
-      const own = legacyGeneSets(w.doc)
-      if (w.mask === undefined) w.mask = geneMaskKey(own)
-      for (const g of own) {
-        const had = byId.get(g.id)
-        if (!had) {
-          byId.set(g.id, { ...g, genes: [...g.genes] })
-          continue
-        }
-        const ids = new Set(had.genes.map((x) => x.id))
-        had.genes.push(...g.genes.filter((x) => !ids.has(x.id)))
-        if (g.hidden) had.hidden = true
-        if (!had.color && g.color) had.color = g.color
-      }
-    }
-  return [...byId.values()]
-}
-
-/** The workflow's doc without the genesets it kept before they were the project's. */
-function withoutLegacySets(w: ProjectWorkflow): ProjectWorkflow {
-  if (!('geneSets' in w.doc) && !('favourites' in w.doc)) return w
-  const doc = { ...w.doc }
-  delete doc.geneSets
-  delete doc.favourites
-  return { ...w, doc }
 }
 
 export function emptyWorkflow(name = 'Workflow 1'): ProjectWorkflow {
@@ -338,94 +337,26 @@ function coerceWorkflows(
   return { workflows, activeWorkflowId: active }
 }
 
-/** Object keys renamed by the strain → cell condition rename (v0.3.3). */
-const RENAMED_KEYS: Record<string, string> = { strain: 'cell' }
-/** The boolean "per strain/cell" clean-up flag became a list of grouping conditions (v0.3.3):
- *  true → ['cell'], false → pooled (key dropped). Config key → new key, result key → new key. */
-const PER_CELL_FLAGS: Record<string, string> = {
-  minSamplePctPerStrain: 'minSamplePctBy',
-  minSamplePctPerCell: 'minSamplePctBy',
-  perStrain: 'by',
-  perCell: 'by'
-}
-/** Keys whose string value names one condition. */
-const COND_VALUE_KEYS = new Set(['condition', 'condition2', 'colorBy'])
-/** Keys whose array value lists conditions. */
-const COND_LIST_KEYS = new Set(['match', 'activeConditions'])
-
-/** The `strain` condition was renamed `cell` (v0.3.3). Rewrite every place a saved project names
- *  it — row/selector/config keys, condition-valued fields, condition lists and `cmp_cond` labels
- *  (`cmpd:strain`) — in place, so projects saved before the rename open unchanged. Walks node
- *  configs and embedded results alike; a key already present under its new name wins. */
-export function migrateStrainToCell(v: unknown): void {
-  if (Array.isArray(v)) {
-    for (const x of v) migrateStrainToCell(x)
-    return
-  }
-  if (v === null || typeof v !== 'object') return
-  const o = v as Record<string, unknown>
-  for (const k of Object.keys(o)) {
-    const val = o[k]
-    if (typeof val === 'string') {
-      if (COND_VALUE_KEYS.has(k) && val === 'strain') o[k] = 'cell'
-      else if (k === 'cmp_cond' && val.includes('strain'))
-        o[k] = val
-          .split(':')
-          .map((c) => (c === 'strain' ? 'cell' : c))
-          .join(':')
-    } else if (Array.isArray(val) && COND_LIST_KEYS.has(k)) {
-      o[k] = val.map((c) => (c === 'strain' ? 'cell' : c))
-    } else migrateStrainToCell(val)
-    const to = RENAMED_KEYS[k]
-    if (to !== undefined) {
-      if (!(to in o)) o[to] = o[k]
-      delete o[k]
-    }
-    const flagTo = PER_CELL_FLAGS[k]
-    if (flagTo !== undefined) {
-      if (o[k] === true && !(flagTo in o)) o[flagTo] = ['cell']
-      delete o[k]
-    }
-  }
-}
-
-/** Parse + validate a project file, migrating the v1 (flat) shape into a folder and any
- *  pre-rename `strain` condition into `cell`. */
+/** Parse + validate a project file of any release: brought to the current form first
+ *  (upgrades.ts — every upgrade the file format has had, in one place), then read. */
 export function deserializeProject(text: string): ProjectFile {
   const raw = JSON.parse(text) as Partial<ProjectFile> & ProjectFileV1
-  migrateStrainToCell(raw)
   // Reserve every existing id so parse-time and later-minted ids can't collide with saved ones.
   reserveIds(raw)
-  let folders: ProjectFolder[]
-  if (Array.isArray(raw.folders) && raw.folders.length) {
-    folders = raw.folders.map((f, i) => {
-      const { workflows, activeWorkflowId } = coerceWorkflows(f.workflows, f.activeWorkflowId)
-      return {
-        id: f.id ?? nextFolderId(),
-        name: f.name ?? (f.path ? (f.path.split(/[/\\]/).pop() ?? f.path) : `Folder ${i + 1}`),
-        path: f.path ?? '',
-        workflows,
-        activeWorkflowId,
-        ...(typeof f.dataName === 'string' && f.dataName ? { dataName: f.dataName } : null),
-        ...(typeof f.rel === 'string' && f.rel ? { rel: f.rel } : null)
-      }
-    })
-  } else {
-    // v1 → one folder holding the flat workflow list at the old dataDir
-    const { workflows, activeWorkflowId } = coerceWorkflows(raw.workflows, raw.activeWorkflowId)
-    const path = raw.dataDir ?? ''
-    folders = [
-      {
-        id: nextFolderId(),
-        name: path ? (path.split(/[/\\]/).pop() ?? path) : 'Folder 1',
-        path,
-        workflows,
-        activeWorkflowId
-      }
-    ]
-  }
-  const geneSets = Array.isArray(raw.geneSets) ? raw.geneSets : gatherGeneSets(folders)
-  folders = folders.map((f) => ({ ...f, workflows: f.workflows.map(withoutLegacySets) }))
+  upgradeProjectFile(raw as RawProject, { nextFolderId })
+  const folders: ProjectFolder[] = (raw.folders ?? []).map((f, i) => {
+    const { workflows, activeWorkflowId } = coerceWorkflows(f.workflows, f.activeWorkflowId)
+    return {
+      id: f.id ?? nextFolderId(),
+      name: f.name ?? (f.path ? (f.path.split(/[/\\]/).pop() ?? f.path) : `Folder ${i + 1}`),
+      path: f.path ?? '',
+      workflows,
+      activeWorkflowId,
+      ...(typeof f.dataName === 'string' && f.dataName ? { dataName: f.dataName } : null),
+      ...(typeof f.rel === 'string' && f.rel ? { rel: f.rel } : null)
+    }
+  })
+  const geneSets = raw.geneSets ?? []
   const activeFolderId =
     raw.activeFolderId && folders.some((f) => f.id === raw.activeFolderId)
       ? raw.activeFolderId
@@ -433,6 +364,9 @@ export function deserializeProject(text: string): ProjectFile {
   return {
     format: 'omicexplorer-project',
     version: PROJECT_VERSION,
+    ...(typeof raw.createdWith === 'string' && raw.createdWith
+      ? { createdWith: raw.createdWith }
+      : null),
     name: raw.name ?? 'Untitled project',
     folders,
     activeFolderId,

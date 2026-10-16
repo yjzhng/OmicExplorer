@@ -10,7 +10,13 @@
  * the rest (pooled baselines, a time row on a dose axis, one position on a surface) are disabled with
  * the reason.
  */
-import { condLabel, orderConds, type CondSelector, type ConditionKey, type StandardRow } from '../engine'
+import {
+  condLabel,
+  orderConds,
+  type CondSelector,
+  type ConditionKey,
+  type StandardRow
+} from '../engine'
 import { cv, valuesOf } from './compareModel'
 import type { CurveAxisPick, CurveModel, SurfaceFit } from './curveSettings'
 
@@ -75,17 +81,24 @@ function chipWhy(
   const theirs = c === 'dose' ? s.time : s.dose
   if (mine.includes(v)) return null
   const name = `${condLabel(c)} ${v}`
-  if (mine.length) return `A pooled baseline (several ${condLabel(c)}s) isn't supported yet: clear ${condLabel(c)} ${mine[0]} first`
+  if (mine.length)
+    return `A pooled baseline (several ${condLabel(c)}s) isn't supported yet: clear ${condLabel(c)} ${mine[0]} first`
   const own = c === s.refAx
-  if (own) return theirs.length > 1 ? `Several ${c === 'dose' ? 'times' : 'doses'} are picked` : null
+  if (own)
+    return theirs.length > 1 ? `Several ${c === 'dose' ? 'times' : 'doses'} are picked` : null
   // the other condition: only as one position, with one of the axis' own picked
-  if (s.surface) return `A surface starts from the baseline at each time: ${name} can't be the baseline`
+  if (s.surface)
+    return `A surface starts from the baseline at each time: ${name} can't be the baseline`
   if (!theirs.length)
     return `A ${condLabel(c)} on its own isn't a baseline for a ${condLabel(s.refAx)} curve: pick a ${condLabel(s.refAx)} first (then ${name} makes one position)`
   return null
 }
 
-export function curveModel(state: CurveState, samples: readonly StandardRow[], active: readonly ConditionKey[]): CurveModelOut {
+export function curveModel(
+  state: CurveState,
+  samples: readonly StandardRow[],
+  active: readonly ConditionKey[]
+): CurveModelOut {
   const conds = orderConds(active).filter((c) => valuesOf(samples, c).length > 0)
   const outOf = (c: ConditionKey): Set<string> => new Set(state.filter[c] ?? [])
   const rows = samples.filter((r) => conds.every((c) => !outOf(c).has(cv(r, c) ?? '')))
@@ -102,7 +115,9 @@ export function curveModel(state: CurveState, samples: readonly StandardRow[], a
   const time = hasTime ? state.bTime.filter((v) => gy.includes(v)) : []
   const shape = { refAx, surface, dose, time }
   const doseChips = gx.map((v) => ({ v, on: dose.includes(v), why: chipWhy('dose', v, shape) }))
-  const timeChips = hasTime ? (gy as string[]).map((v) => ({ v, on: time.includes(v), why: chipWhy('time', v, shape) })) : []
+  const timeChips = hasTime
+    ? (gy as string[]).map((v) => ({ v, on: time.includes(v), why: chipWhy('time', v, shape) }))
+    : []
   // The picks the engine runs: the axis' own level, plus (not on a surface) one of the other.
   const ownPick = refAx === 'dose' ? dose : time
   const otherPick = refAx === 'dose' ? time : dose
@@ -113,14 +128,19 @@ export function curveModel(state: CurveState, samples: readonly StandardRow[], a
     if (otherPick.length) pin[refAx === 'dose' ? 'time' : 'dose'] = otherPick
   }
   const isBase = (r: StandardRow): boolean =>
-    picked && (Object.entries(pin) as Array<['dose' | 'time', string[]]>).every(([c, vs]) => vs.includes(cv(r, c) ?? ''))
+    picked &&
+    (Object.entries(pin) as Array<['dose' | 'time', string[]]>).every(([c, vs]) =>
+      vs.includes(cv(r, c) ?? '')
+    )
 
   // context: every condition but the axis — time beside a dose axis (a curve per time), dose beside a
   // time axis; a surface spans both
   const ctxConds: ConditionKey[] = conds.filter((c) => !axisConds.includes(c))
   const warnings: string[] = []
   if (!picked) warnings.push(`Pick the baseline: a ${condLabel(refAx)} on the grid.`)
-  for (const c of conds) if (valuesOf(samples, c).every((v) => outOf(c).has(v))) warnings.push(`${condLabel(c)}: every value is filtered out.`)
+  for (const c of conds)
+    if (valuesOf(samples, c).every((v) => outOf(c).has(v)))
+      warnings.push(`${condLabel(c)}: every value is filtered out.`)
 
   // ── compile ──
   const num: CondSelector = {}
@@ -136,7 +156,8 @@ export function curveModel(state: CurveState, samples: readonly StandardRow[], a
       if (pin[c as 'dose' | 'time']) {
         const drop = new Set(state.drop[c] ?? [])
         const kept = valuesOf(rows, c)
-        if (drop.size || kept.length < valuesOf(samples, c).length) num[c] = kept.filter((v) => !drop.has(v))
+        if (drop.size || kept.length < valuesOf(samples, c).length)
+          num[c] = kept.filter((v) => !drop.has(v))
         continue
       }
       // a surface's time: only a filter, on the curves (responseSurface applies it to both sides;
@@ -160,7 +181,25 @@ export function curveModel(state: CurveState, samples: readonly StandardRow[], a
   }
   // matched: every other condition — except one the baseline pins (its one time serves every time)
   const match = conds.filter((c) => !axisConds.includes(c) && !pin[c as 'dose' | 'time'])
-  return { conds, hasTime, surface, refAx, rows, gx, gy, doseChips, timeChips, pin, picked, isBase, ctxConds, num, den, match, warnings }
+  return {
+    conds,
+    hasTime,
+    surface,
+    refAx,
+    rows,
+    gx,
+    gy,
+    doseChips,
+    timeChips,
+    pin,
+    picked,
+    isBase,
+    ctxConds,
+    num,
+    den,
+    match,
+    warnings
+  }
 }
 
 /** The Baseline line: where each curve starts and what it's matched on. `matched` / `invariant`
@@ -170,19 +209,39 @@ export function baselineLine(
   baseRows: readonly StandardRow[],
   matched: readonly ConditionKey[]
 ): string {
-  const at = (['dose', 'time'] as const).filter((c) => m.pin[c]).map((c) => `${condLabel(c)} ${m.pin[c]![0]}`)
+  const at = (['dose', 'time'] as const)
+    .filter((c) => m.pin[c])
+    .map((c) => `${condLabel(c)} ${m.pin[c]![0]}`)
   // a context condition the baseline holds one value of (DMSO is the only dose 0) is said
-  const locked = m.ctxConds.find((c) => !m.pin[c as 'dose' | 'time'] && !matched.includes(c) && valuesOf(baseRows, c).length === 1 && valuesOf(m.rows, c).length > 1)
-  const start = locked ? `${valuesOf(baseRows, locked)[0]}'s ${at.join(' at ')}, the only ${at[0]} in the data` : `its own ${at.join(' at ')}`
+  const locked = m.ctxConds.find(
+    (c) =>
+      !m.pin[c as 'dose' | 'time'] &&
+      !matched.includes(c) &&
+      valuesOf(baseRows, c).length === 1 &&
+      valuesOf(m.rows, c).length > 1
+  )
+  const start = locked
+    ? `${valuesOf(baseRows, locked)[0]}'s ${at.join(' at ')}, the only ${at[0]} in the data`
+    : `its own ${at.join(' at ')}`
   // a surface is always matched per time (responseSurface), whatever the preview lists
-  const per = [...new Set<ConditionKey>([...(m.surface && !m.pin.time ? ['time' as ConditionKey] : []), ...matched])].map(condLabel)
+  const per = [
+    ...new Set<ConditionKey>([
+      ...(m.surface && !m.pin.time ? ['time' as ConditionKey] : []),
+      ...matched
+    ])
+  ].map(condLabel)
   return `each ${m.surface ? 'surface' : 'curve'} starts from ${start}${per.length ? `, matched per ${per.join(' per ')}` : ''}`
 }
 
 /** A fresh window's baseline: the axis' lowest level (dose 0's column; t₀'s row on a time axis). */
-export function defaultBaseline(samples: readonly StandardRow[], refAx: ConditionKey): Pick<CurveState, 'bDose' | 'bTime'> {
+export function defaultBaseline(
+  samples: readonly StandardRow[],
+  refAx: ConditionKey
+): Pick<CurveState, 'bDose' | 'bTime'> {
   const lowest = valuesOf(samples, refAx)[0]
-  return refAx === 'time' ? { bDose: [], bTime: lowest ? [lowest] : [] } : { bDose: lowest ? [lowest] : [], bTime: [] }
+  return refAx === 'time'
+    ? { bDose: [], bTime: lowest ? [lowest] : [] }
+    : { bDose: lowest ? [lowest] : [], bTime: [] }
 }
 
 /**
@@ -208,7 +267,13 @@ export function readCurveState(
   const den = cfg.den ?? {}
   const pinnedAny = (s: CondSelector): boolean => Object.values(s).some((v) => v && v.length > 0)
   const configured = pinnedAny(num) && pinnedAny(den)
-  const axis: CurveAxisPick = configured ? (cfg.surface ? 'surface' : cfg.curveAxis === 'time' ? 'time' : 'dose') : fresh.axis
+  const axis: CurveAxisPick = configured
+    ? cfg.surface
+      ? 'surface'
+      : cfg.curveAxis === 'time'
+        ? 'time'
+        : 'dose'
+    : fresh.axis
   const refAx: ConditionKey = axis === 'time' ? 'time' : 'dose'
   const base: CurveState = {
     detection: cfg.detection ?? fresh.detection,
@@ -219,8 +284,10 @@ export function readCurveState(
     ...defaultBaseline(samples, refAx)
   }
   if (!configured) return base
-  const sel = (s: CondSelector) => (r: StandardRow): boolean =>
-    active.every((c) => !s[c]?.length || s[c]!.includes(cv(r, c) ?? ''))
+  const sel =
+    (s: CondSelector) =>
+    (r: StandardRow): boolean =>
+      active.every((c) => !s[c]?.length || s[c]!.includes(cv(r, c) ?? ''))
   const denRows = samples.filter(sel(den))
   const levelOf = (c: 'dose' | 'time'): string[] =>
     den[c]?.length ? [...den[c]!] : valuesOf(denRows, c).length === 1 ? valuesOf(denRows, c) : []
@@ -235,7 +302,12 @@ export function readCurveState(
     const n = num[c]
     if (!n?.length || n.length === all.length) continue
     // a value with no treated samples (DMSO only at dose 0) was never a curve: not left out
-    const treatedVals = new Set(valuesOf(samples.filter((r) => Number(cv(r, refAx)) > 0), c))
+    const treatedVals = new Set(
+      valuesOf(
+        samples.filter((r) => Number(cv(r, refAx)) > 0),
+        c
+      )
+    )
     const out = all.filter((v) => !n.includes(v) && treatedVals.has(v))
     if (!out.length) continue
     // pinned alike on the baseline (or the baseline lacks those values anyway): a filter

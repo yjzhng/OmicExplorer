@@ -3,8 +3,13 @@ import type { Edge } from '@xyflow/react'
 import { describe, expect, it } from 'vitest'
 
 import { childPanelId } from './groups'
-import { deserializeWorkflow, serializeWorkflow } from './workflowDoc'
+import { upgradeWorkflowDoc } from './upgrades'
+import { parseWorkflowDoc, serializeWorkflow, type LoadedWorkflow } from './workflowDoc'
 import type { GraphNode, NodeKind, PanelLayoutItem, PlotGroupConfig } from './types'
+
+/** A saved workflow as the app reads it: brought to the current form (upgrades.ts), then parsed. */
+const deserializeWorkflow = (text: string): LoadedWorkflow =>
+  parseWorkflowDoc(upgradeWorkflowDoc(JSON.parse(text)))
 
 function step(id: string, kind: NodeKind): GraphNode {
   return {

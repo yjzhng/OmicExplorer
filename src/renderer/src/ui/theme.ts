@@ -206,6 +206,34 @@ export function setCategorical(id: CategoricalId): void {
   CATEGORICAL.splice(0, CATEGORICAL.length, ...CATEGORICAL_SCHEMES[id])
 }
 
+/** Fonts offered for plot text — the ones journals' figure guidelines ask for. `name` is the one
+ *  family an exported SVG names (an editor resolves a single installed font, not a CSS list);
+ *  `css` is what plots draw and measure with on screen. */
+export const PLOT_FONTS = {
+  arial: { label: 'Arial', name: 'Arial', css: 'Arial, Helvetica, sans-serif' },
+  helvetica: { label: 'Helvetica', name: 'Helvetica', css: 'Helvetica, Arial, sans-serif' },
+  times: {
+    label: 'Times New Roman',
+    name: 'Times New Roman',
+    css: '"Times New Roman", Times, serif'
+  }
+} as const
+export type PlotFontId = keyof typeof PLOT_FONTS
+export const DEFAULT_PLOT_FONT: PlotFontId = 'arial'
+export const isPlotFontId = (v: unknown): v is PlotFontId =>
+  typeof v === 'string' && Object.prototype.hasOwnProperty.call(PLOT_FONTS, v)
+
+let plotFont: PlotFontId = DEFAULT_PLOT_FONT
+/** Point plot text at another font (app settings → plot font). Like setCategorical, read deep in
+ *  the plot builders; plot tiles remount on a change so memoised plots redraw in it. */
+export function setPlotFont(id: PlotFontId): void {
+  plotFont = id
+}
+/** The plot font as a CSS family list (Plotly layouts, canvas text measurement). */
+export const plotFontCss = (): string => PLOT_FONTS[plotFont].css
+/** The plot font's single family name (exported SVG). */
+export const plotFontName = (): string => PLOT_FONTS[plotFont].name
+
 /** Base Plotly layout for the active palette (Plotly needs concrete colors). */
 export function plotBase(p: Palette): Record<string, unknown> {
   return {
@@ -213,7 +241,7 @@ export function plotBase(p: Palette): Record<string, unknown> {
     plot_bgcolor: 'rgba(0,0,0,0)',
     // Muted font so axis titles/labels/legend read as faint chrome behind the data
     // (which carries its own colors). size stays 12.
-    font: { color: p.textMuted, family: 'system-ui, sans-serif', size: 12 },
+    font: { color: p.textMuted, family: plotFontCss(), size: 12 },
     // Vertical legend just outside the plot on the right. x > 1 places it outside the
     // axes; Plotly reserves margin for it so it never overlays the data.
     legend: { orientation: 'v', x: 1.02, xanchor: 'left', y: 1, yanchor: 'top' },

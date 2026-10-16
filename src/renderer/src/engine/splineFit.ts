@@ -36,7 +36,7 @@ import {
 } from './curveFit'
 import { baselineText, compareSlices } from './direct'
 import { benjaminiHochberg } from './stats'
-import { fitJointSurface, type JointParams } from './surfaceJoint'
+import { fitJointSurface, type JointFit, type JointParams } from './surfaceJoint'
 import type { CompareInput, ConditionKey, StandardRow } from './types'
 
 // ── natural cubic spline basis ───────────────────────────────────────────────────────────────
@@ -689,11 +689,13 @@ export interface SurfaceDescription {
   joint?: JointParams
   jointUbar?: number
   /** R² of the description (slices: the worse direction) and of the spline surface, over the
-   *  treated cells' effects; shapeRatio and lowShape as for one curve */
+   *  treated cells' effects; shapeRatio and lowShape as for one curve. The three shape fields are
+   *  absent on a 4PL-detected surface: its fit is the 4PL, so there is no shape-free fit to check
+   *  the description against. */
   r2: number
-  r2Spline: number
-  shapeRatio: number
-  lowShape: boolean
+  r2Spline?: number
+  shapeRatio?: number
+  lowShape?: boolean
 }
 
 /**
@@ -706,12 +708,16 @@ export interface SurfaceDescription {
  * levels is not described; null when neither direction is. `method: 'joint'` fits one model over
  * every cell instead (surfaceJoint.ts): steadier pEC50 on dense grids, at an assumed smooth change
  * with time and ~10× the compute.
+ *
+ * `detected` is the 4PL surface detector's joint fit of this surface: then `c.fitted` is that 4PL
+ * (not a spline), so no shape check is made (only R²), and 'joint' takes the fit as it is.
  */
 export function describeSurface(
   c: SplineCurve,
   minShapeRatio = 0.8,
   method: SurfaceMethod = 'slices',
-  interpolation = false
+  interpolation = false,
+  detected?: JointFit
 ): SurfaceDescription | null {
   const s = c.surface
   if (!s) return null
@@ -720,8 +726,15 @@ export function describeSurface(
   const rssSpline = s.treated.reduce((a, _, i) => a + (c.y[nG + i] - c.fitted[nG + i]) ** 2, 0)
   const em = mean(eff)
   const sst = eff.reduce((a, v) => a + (v - em) ** 2, 0)
+  // the description's fit, and against a spline its shape check
+  const fitOf = (
+    rss: number
+  ): Pick<SurfaceDescription, 'r2' | 'r2Spline' | 'shapeRatio' | 'lowShape'> =>
+    detected
+      ? { r2: shape(rss, rssSpline, sst, minShapeRatio).r2 }
+      : shape(rss, rssSpline, sst, minShapeRatio)
   if (method === 'joint') {
-    const j = fitJointSurface(c, interpolation)
+    const j = fitJointSurface(c, interpolation, detected)
     if (!j) return null
     return {
       method,
@@ -736,7 +749,7 @@ export function describeSurface(
       byDose: [],
       joint: j.params,
       jointUbar: j.ubar,
-      ...shape(j.rss, rssSpline, sst, minShapeRatio)
+      ...fitOf(j.rss)
     }
   }
   const direction = (
@@ -775,10 +788,11 @@ export function describeSurface(
   const byTime = direction('time', { axis: 'dose' })
   const byDose = direction('dose', { axis: 'time', offset: s.timeOffset })
   if (!byTime && !byDose) return null
+  // the worse direction: the lower shape ratio against a spline, else the lower R²
   const worst = [byTime, byDose]
     .filter((d): d is NonNullable<typeof d> => d != null)
-    .map((d) => shape(d.rss, rssSpline, sst, minShapeRatio))
-    .reduce((a, b) => (b.shapeRatio < a.shapeRatio ? b : a))
+    .map((d) => fitOf(d.rss))
+    .reduce((a, b) => ((b.shapeRatio ?? b.r2) < (a.shapeRatio ?? a.r2) ? b : a))
   return { method, byTime: byTime?.slices ?? [], byDose: byDose?.slices ?? [], ...worst }
 }
 

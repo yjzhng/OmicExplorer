@@ -108,7 +108,15 @@ import { contrastSummary } from './ComparisonDialog'
 import { CompareDialog } from './CompareDialog'
 import { CurveDialog } from './CurveDialog'
 import { ContrastDialog } from './ContrastDialog'
-import { CURVE_MODEL_OPTIONS, SURFACE_FIT_OPTIONS, curveAxisOptions } from './curveSettings'
+import {
+  CURVE_METHOD_OPTIONS,
+  DESCRIPTOR_OPTIONS,
+  DETECTOR_OPTIONS,
+  MODEL_LOCK,
+  SURFACE_FIT_OPTIONS,
+  curveAxisOptions,
+  surfaceFitShown
+} from './curveSettings'
 import { isPairable, pairSides, selectorRowsOf, selectSource, toContrastSide } from './contrastPair'
 import type { PairInput } from './PairContrastDialog'
 import { InteractiveImportDialog } from './InteractiveImportDialog'
@@ -154,6 +162,8 @@ import {
   isStep,
   normalizeCompareConfig,
   thresholdForDetection,
+  curveMethodOf,
+  describesAll,
   thresholdForAnalysis,
   resolveContrastSource,
   resolveLoadMode,
@@ -174,6 +184,10 @@ import {
   responseLook,
   responseShow,
   responseShowWhy,
+  responseSlice,
+  CURVE_OF_SLICE,
+  SLICE_OF_CURVE,
+  responseSliceable,
   type ResponseConfig,
   type TdrConfig,
   drYScale,
@@ -260,6 +274,14 @@ const PLOT_MENU_GROUPS: { label: string; entries: PlotMenuEntry[] }[] = (() => {
   const rest = PLOT_ENTRIES.filter((e) => !used.has(entryKey(e)))
   return rest.length ? [...groups, { label: 'Other', entries: rest }] : groups
 })()
+
+/** The add-plot menu's sections for a step of `upstreamKind`: only the plots it can feed. */
+function plotMenuGroupsFor(upstreamKind: NodeKind): { label: string; entries: PlotMenuEntry[] }[] {
+  return PLOT_MENU_GROUPS.map((g) => ({
+    ...g,
+    entries: g.entries.filter((e) => canConnect(upstreamKind, e.kind))
+  })).filter((g) => g.entries.length > 0)
+}
 
 /** True when a subcard is this menu entry's kind and matches every override key (so Dose-response
  *  and Time-response match independently even though both are `dr`). */
@@ -774,33 +796,36 @@ function PlotPicker({
   )
 }
 
-/** The group tile's plot menu, as a SINGLE-choice picker: the same trigger, sections and rows, but
- *  one kind is chosen rather than a set added. Used by Settings → Customisation to pick the type whose
- *  defaults are being edited (so the two places name and group the plots identically). */
-export function PlotKindMenu({
+/** Settings › Plot defaults' plot picker: the plot tile's own "Select plots" menu (AddPlotMenu —
+ *  same window, collapsible section headers with their count, rows), single-choice: the plots a
+ *  step of `upstreamKind` feeds, Dose-response and Time-response as their own entries. The
+ *  section count is 1 where the picked plot sits. */
+export function PlotEntryMenu({
   value,
-  kinds,
+  upstreamKind,
   onChange
 }: {
-  value: NodeKind
-  /** the kinds to offer, in any order — the menu groups them by PLOT_SECTIONS */
-  kinds: NodeKind[]
-  onChange: (kind: NodeKind) => void
+  /** the picked entry's key (entryKey) */
+  value: string
+  upstreamKind: NodeKind
+  onChange: (entry: PlotMenuEntry) => void
 }): ReactNode {
   const { open, toggle, setOpen, rect, z, p, btnRef, menuRef } = useZoomDropdown()
-  const offered = new Set(kinds)
-  const sections = PLOT_SECTIONS.map((s) => ({
-    label: s.label,
-    kinds: s.kinds.filter((k) => offered.has(k))
-  })).filter((s) => s.kinds.length > 0)
-  const listed = new Set(sections.flatMap((s) => s.kinds))
-  const rest = kinds.filter((k) => !listed.has(k))
-  const groups = rest.length ? [...sections, { label: 'Other', kinds: rest }] : sections
+  const menuGroups = plotMenuGroupsFor(upstreamKind)
+  const picked = menuGroups.flatMap((g) => g.entries).find((e) => entryKey(e) === value)
   const plotAccent = accentOf('plotting')
+  const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set())
+  const toggleSection = (label: string): void =>
+    setCollapsed((prev) => {
+      const next = new Set(prev)
+      if (next.has(label)) next.delete(label)
+      else next.add(label)
+      return next
+    })
   return (
     <div style={{ flex: 1, minWidth: 0 }}>
       <button ref={btnRef} onClick={toggle} style={{ ...styles.input, ...styles.menuTrigger }}>
-        <span>{NODE_SPECS[value].label}</span>
+        <span>{picked?.label ?? 'Select a plot'}</span>
         <span style={{ color: UI.textMuted, display: 'inline-flex' }}>
           <Chevron size={11} deg={open ? -90 : 90} />
         </span>
@@ -827,35 +852,82 @@ export function PlotKindMenu({
               flexDirection: 'column'
             }}
           >
-            {groups.map((g, gi) => (
-              <div key={g.label}>
-                <div
-                  style={{
-                    padding: `${gi === 0 ? 2 * z : 6 * z}px ${6 * z}px ${2 * z}px`,
-                    fontSize: 9.5 * z,
-                    fontWeight: 700,
-                    textTransform: 'uppercase',
-                    letterSpacing: 0.5 * z,
-                    color: p.textMuted
-                  }}
-                >
-                  {g.label}
-                </div>
-                {g.kinds.map((k) => (
-                  <AddPlotItem
-                    key={k}
-                    label={NODE_SPECS[k].label}
-                    checked={k === value}
-                    z={z}
-                    colors={{ text: p.text, hover: p.panel, accent: plotAccent }}
-                    onClick={() => {
-                      onChange(k)
-                      setOpen(false)
+            {menuGroups.map((g, gi) => {
+              const active = g.entries.some((e) => entryKey(e) === value) ? 1 : 0
+              const isOpen = !collapsed.has(g.label)
+              return (
+                <div key={g.label}>
+                  <div
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 6 * z,
+                      padding: `${gi === 0 ? 2 * z : 6 * z}px ${6 * z}px ${2 * z}px`,
+                      fontSize: 9.5 * z,
+                      fontWeight: 700,
+                      textTransform: 'uppercase',
+                      letterSpacing: 0.5 * z,
+                      color: p.textMuted
                     }}
-                  />
-                ))}
-              </div>
-            ))}
+                  >
+                    <button
+                      onClick={() => toggleSection(g.label)}
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 5 * z,
+                        flex: 1,
+                        minWidth: 0,
+                        border: 'none',
+                        background: 'transparent',
+                        color: 'inherit',
+                        font: 'inherit',
+                        letterSpacing: 'inherit',
+                        textTransform: 'inherit',
+                        cursor: 'pointer',
+                        padding: 0,
+                        textAlign: 'left'
+                      }}
+                    >
+                      <Chevron size={10 * z} deg={isOpen ? 90 : 0} />
+                      <span>{g.label}</span>
+                    </button>
+                    <span
+                      style={{
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        minWidth: 14 * z,
+                        height: 14 * z,
+                        padding: `0 ${4 * z}px`,
+                        borderRadius: 7 * z,
+                        fontSize: 9 * z,
+                        fontWeight: 700,
+                        lineHeight: 1,
+                        color: active > 0 ? plotAccent : p.textMuted,
+                        background: active > 0 ? `${plotAccent}26` : `${p.textMuted}22`
+                      }}
+                    >
+                      {active}
+                    </span>
+                  </div>
+                  {isOpen &&
+                    g.entries.map((e) => (
+                      <AddPlotItem
+                        key={entryKey(e)}
+                        label={e.label}
+                        checked={entryKey(e) === value}
+                        z={z}
+                        colors={{ text: p.text, hover: p.panel, accent: plotAccent }}
+                        onClick={() => {
+                          onChange(e)
+                          setOpen(false)
+                        }}
+                      />
+                    ))}
+                </div>
+              )
+            })}
           </div>,
           document.body
         )}
@@ -887,11 +959,22 @@ export function PlotConfig({
   return AXIS_KINDS.has(kind) ? (
     <>
       {own}
-      <AxesSection config={config as { axes?: PlotAxes }} update={update} defaults={axisDefaults} />
+      <AxesSection
+        config={config as { axes?: PlotAxes }}
+        update={update}
+        defaults={axisDefaults}
+        minimal={kind === 'pca' && clusterMinimalAxes(config as ClusterConfig)}
+      />
     </>
   ) : (
     own
   )
+}
+
+/** Whether a cluster tile draws its embedding scatter with minimal axes (scree and loadings keep
+ *  their own, so the setting doesn't reach them). */
+function clusterMinimalAxes(c: ClusterConfig): boolean {
+  return c.axisMode === 'minimal' && ((c.plot ?? 'pc') === 'pc' || c.method !== 'pca')
 }
 
 /** The plots whose settings carry the shared Axes section (Plotly x/y axes). */
@@ -2773,6 +2856,7 @@ function ComparePanel({
   // fits the new analysis — one compared condition for a t-test, two for a 2-way ANOVA (its
   // factors); otherwise the dialog opens on the new analysis to finish setting it up.
   const update = useGraph((s) => s.updateConfig)
+  const setCurveMethod = useGraph((s) => s.setCurveMethod)
   // A fresh (unconfigured) Compare starts on the first analysis its data can take, rather than a
   // t-test the data can't support; a fresh Curve fit moves off an axis its data can't fit over
   // (onto the first one it can) — but never off one it can, which the user may just have picked. A
@@ -2842,16 +2926,22 @@ function ComparePanel({
     : nComparisons
       ? `Ready, ${nComparisons.n} ${unit}${nComparisons.n === 1 ? '' : 's'}${nComparisons.on.length ? ` on ${nComparisons.on.join(', ')}` : ''}`
       : 'Ready'
-  const switchDetection = (d: '4pl' | 'spline'): void => {
-    if (d === detection) return
+  // A detector switch's patch: the model, the threshold its calls need, and — onto the spline —
+  // the surface wherever dose and time both vary (the response surface method's default).
+  const detectionPatch = (d: '4pl' | 'spline'): Record<string, unknown> => {
+    if (d === detection) return {}
     const patch: Record<string, unknown> = { detection: d }
     const t = thresholdForDetection(d, config.threshold, surfaceRun)
     if (t) patch.threshold = t
-    // The surface is the response surface method's default wherever dose and time both vary.
     if (d === 'spline' && config.surface == null && shape)
       patch.surface = (shape.levels.dose ?? 0) >= 2 && (shape.levels.time ?? 0) >= 2
-    update(id, patch)
+    return patch
   }
+  // The method preset (Hybrid / 4PL) or custom; and the descriptor's rows — one, or on a surface
+  // described slice by slice one per slice direction.
+  const method = curveMethodOf(config)
+  const descriptorAxes: Array<'dose' | 'time' | null> =
+    surfaceRun && (config.surfaceDescription ?? 'slices') !== 'joint' ? ['dose', 'time'] : [null]
   // The axis a curve runs over, or the dose × time surface. An axis the data can't fit over (too
   // few levels — unknown until Clean data has run) is offered greyed.
   const axisValue = surfaceRun ? 'surface' : (config.curveAxis ?? 'dose')
@@ -2862,27 +2952,38 @@ function ComparePanel({
         {curve ? (
           <>
             <Field
-              label="model"
+              label="method"
               info={
                 <>
+                  A preset of the detector and descriptor models below.
+                  <br />
+                  <b>Hybrid</b> — detection and description split: a smooth spline (or a dose × time
+                  spline surface) against a flat line, moderated F, called by q — it finds responses
+                  of any shape, not only sigmoid ones; each described curve is then fitted by a 4PL
+                  (EC50, slope, plateaus).
+                  <br />
                   <b>4PL</b> — the CurveCurator method: a 4-parameter sigmoid against a flat line
                   (its adjusted F-test), called by p-value or its relevance score. Over dose × time:
                   a 4PL surface (a dose sigmoid whose top and midpoint change with time) against
                   flat, its adjusted F-test (the null simulated on the run’s own design), called by
                   p or q — slower, and it misses responses that aren’t sigmoid.
                   <br />
-                  <b>Hybrid</b> — detection and description split: a smooth spline (or a dose × time
-                  spline surface) against a flat line, moderated F, called by q — it finds responses
-                  of any shape, not only sigmoid ones; each called curve is then described by a 4PL
-                  (EC50, slope, plateaus).
+                  <b>custom</b> — pick the detector and descriptor yourself.
                 </>
               }
             >
               <ToggleSwitch
-                label="Model"
-                value={detection}
-                options={CURVE_MODEL_OPTIONS}
-                onChange={switchDetection}
+                label="Method"
+                value={method}
+                options={CURVE_METHOD_OPTIONS}
+                onChange={(m) => {
+                  // A preset that changes the detector re-runs; one that only relabels (custom ⇄
+                  // the preset the models already match) doesn't.
+                  const patch =
+                    m === 'custom' ? {} : detectionPatch(m === 'hybrid' ? 'spline' : '4pl')
+                  if (Object.keys(patch).length) update(id, { ...patch, curveMethod: undefined })
+                  else setCurveMethod(id, m === 'custom' ? 'custom' : undefined)
+                }}
               />
             </Field>
             <Field
@@ -2891,11 +2992,11 @@ function ComparePanel({
                 <>
                   What each gene’s response is fitted over.
                   <br />
+                  <b>dose × time</b> — one surface per gene × compound, tested once.
+                  <br />
                   <b>dose</b> — one curve per gene × compound, at each time point.
                   <br />
                   <b>time</b> — one curve per gene × compound, at each dose.
-                  <br />
-                  <b>dose × time</b> — one surface per gene × compound, tested once.
                   <br />
                   Greyed: the data has too few levels for it.
                 </>
@@ -2904,7 +3005,10 @@ function ComparePanel({
               <ToggleSwitch
                 label="Axis"
                 value={axisValue}
-                options={curveAxisOptions(shape, detection)}
+                // dose × time first, as the method's widest view
+                options={[...curveAxisOptions(shape, detection)].sort(
+                  (a, b) => Number(b.value === 'surface') - Number(a.value === 'surface')
+                )}
                 onChange={(v) => {
                   const surface = v === 'surface'
                   const patch: Record<string, unknown> = surface
@@ -2926,55 +3030,123 @@ function ComparePanel({
                     and the Dose & Time response plot draws what it describes.
                     <br />
                     <b>surface</b> — one model over the whole grid, EC50 and top changing smoothly
-                    with time: steadier on dense grids, about 10× slower.
+                    with time: steadier on dense grids, about 10× slower (with the 4PL detector it
+                    is the test’s own fit, reused, so no slower).
                     <br />
-                    <b>time slice</b> — a 4PL dose curve at each time point, fitted on its own: EC50
-                    and top read straight from each time’s data.
+                    <b>slices</b> — a 4PL at each slice, each fitted on its own: a dose curve at
+                    each time (EC50 and top read straight from each time’s data) and a time curve at
+                    each dose (when the response arrives, dose by dose). Fitted separately, a dose
+                    and a time curve needn’t agree where they cross.
                     <br />
-                    <b>dose slice</b> — a 4PL time curve at each dose, fitted on its own: when the
-                    response arrives, dose by dose.
+                    Either way, the response plot views the surface by time or by dose slices.
                   </>
                 }
               >
                 <ToggleSwitch
                   label="Fit"
-                  value={config.surfaceDescription ?? 'slices'}
+                  value={surfaceFitShown(config.surfaceDescription)}
                   options={SURFACE_FIT_OPTIONS}
-                  onChange={(v) => update(id, { surfaceDescription: v })}
+                  // (slices onto a saved 'doseSlices' keeps it: the same fits, nothing to re-run)
+                  onChange={(v) =>
+                    v !== surfaceFitShown(config.surfaceDescription) &&
+                    update(id, { surfaceDescription: v })
+                  }
                 />
               </Field>
             )}
-            {/* Which genes the Hybrid model describes: its responders, or all. Not under 4PL —
-                its 4PL is the test itself, fitted to every gene. */}
-            {config.detection === 'spline' && (
+            {/* The two models the method sets: shown under a preset too, locked to its choice —
+                picking another there makes the method custom. */}
+            <Field
+              label="detector"
+              info={
+                <>
+                  What decides whether a gene responds — its test, p and q.
+                  <br />
+                  <b>4PL</b> — a 4PL (over dose × time, a 4PL surface) against flat, its adjusted
+                  F-test.
+                  <br />
+                  <b>spline</b> — a smooth spline (over dose × time, a spline surface) against flat,
+                  moderated F: any response shape.
+                  {method !== 'custom' && (
+                    <>
+                      <br />
+                      Set by the method; picking the other makes it custom.
+                    </>
+                  )}
+                </>
+              }
+            >
+              <ModelLock locked={method !== 'custom'}>
+                <ToggleSwitch
+                  label="Detector"
+                  value={detection}
+                  options={DETECTOR_OPTIONS}
+                  onChange={(d) => update(id, { ...detectionPatch(d), curveMethod: 'custom' })}
+                />
+              </ModelLock>
+            </Field>
+            {descriptorAxes.map((ax) => (
               <Field
-                label="describe"
+                key={ax ?? 'one'}
+                label={ax ? `descriptor (${ax} curves)` : 'descriptor'}
                 info={
                   <>
-                    Which genes get a 4PL description (EC50, top) — what the Dose & Time response
-                    plot, the potency plot and a Contrast’s pEC50 read. Calls and q are the same
-                    either way.
+                    What describes a responding gene’s curve
+                    {ax === 'dose'
+                      ? ' along dose — the time slices’ dose curves'
+                      : ax === 'time'
+                        ? ' along time — the dose slices’ time curves'
+                        : ''}
+                    : its EC50, slope and plateaus, which the response plot draws.
                     <br />
-                    <b>responders</b> — the genes within q ≤ {DESCRIBE_Q} (default): their EC50s
-                    describe real curves.
+                    <b>4PL</b> — a 4-parameter sigmoid.
                     <br />
-                    <b>every gene</b> — all of them, so every gene has an EC50 (e.g. to contrast
-                    pEC50). Slower — much slower with the surface fit — and a flat curve’s EC50
-                    means little.
+                    <b>spline</b> — the spline itself (not built yet).
                   </>
                 }
               >
-                <ToggleSwitch
-                  label="Describe"
-                  value={config.describeAll ? 'all' : 'responders'}
-                  options={[
-                    { value: 'responders', label: 'responders' },
-                    { value: 'all', label: 'every gene' }
-                  ]}
-                  onChange={(v) => update(id, { describeAll: v === 'all' || undefined })}
-                />
+                <ModelLock locked={method !== 'custom'}>
+                  <ToggleSwitch
+                    label="Descriptor"
+                    value="4pl"
+                    options={DESCRIPTOR_OPTIONS}
+                    onChange={() => {}}
+                  />
+                </ModelLock>
               </Field>
-            )}
+            ))}
+            <Field
+              label="description for"
+              info={
+                <>
+                  Which genes get a description (EC50, top) — what the Dose & Time response plot,
+                  the potency plot and a Contrast’s pEC50 read. Calls and q are the same either way.
+                  <br />
+                  <b>every gene</b> — all of them, so every gene has an EC50 (e.g. to contrast
+                  pEC50). Slower with a separate descriptor (much slower with the spline detector’s
+                  surface fit), and a flat curve’s EC50 means little.
+                  <br />
+                  <b>responders only</b> — the genes within q ≤ {DESCRIBE_Q}: their EC50s describe
+                  real curves. The rest are drawn flat.
+                  <br />
+                  Default: every gene with the 4PL detector over dose or time (its 4PL is its test,
+                  so describing costs nothing), responders only otherwise.
+                </>
+              }
+            >
+              <ToggleSwitch
+                label="Description for"
+                value={describesAll(config, surfaceRun) ? 'all' : 'responders'}
+                options={[
+                  { value: 'all', label: 'every gene' },
+                  { value: 'responders', label: 'responders only' }
+                ]}
+                onChange={(v) => {
+                  if ((v === 'all') !== describesAll(config, surfaceRun))
+                    update(id, { describeAll: v === 'all' })
+                }}
+              />
+            </Field>
             {/* CurveCurator's interpolation, for every model and axis. */}
             <Field
               label="interpolation"
@@ -3078,7 +3250,8 @@ function ComparePanel({
               controlBackground: config.controlBackground,
               surface: config.surface,
               surfaceDescription: config.surfaceDescription,
-              detection: config.detection
+              detection: config.detection,
+              curveMethod: config.curveMethod
             }}
             detection={detection}
             onClose={() => setDialogOpen(false)}
@@ -4320,28 +4493,16 @@ function ResponsePanel({
   const globalFc = useRolePalette('fc')
   const dim = responseDim(config)
   const show = responseShow(config)
-  // A joint description's 3-D lines can be sliced by time or by dose (a per-time one by time).
+  // The view by time or by dose slices: every 3-D line view, and a slices description's surface
+  // and heatmap too (its dose and time curves are separate fits) — see responseSliceable.
   const upId = useGraph((s) => s.edges.find((e) => e.target === edgeNodeId)?.source)
   const { result } = useUpstreamFacts(upId)
-  const methodIn = (m: string): boolean =>
-    !measured &&
-    result?.kind === 'compare' &&
-    result.cmp.rows.some((r) => r.rs?.surface?.method === m)
-  const joint = methodIn('joint')
-  const perDose = methodIn('doseSlices')
-  // …so can the spline surface's, for a gene with no description (beyond the describe cutoff)…
-  const undescribed =
-    !measured &&
-    result?.kind === 'compare' &&
-    result.cmp.rows.some((r) => r.rs?.axis === 'surface' && !r.rs.surface)
-  // …and the measured values' (the Time & Dose-response plot).
-  const sliceable = dim === '3d' && show === 'line' && (joint || undescribed || measured)
-  const slice = config.slice ?? 'time'
+  const rows = !measured && result?.kind === 'compare' ? result.cmp.rows : undefined
+  const joint = !!rows?.some((r) => r.rs?.surface?.method === 'joint')
+  const sliceable = responseSliceable(dim, show, rows)
+  const slice = responseSlice(config, rows)
   // What the lines are per — their Automatic palette is that levels' role (dose / time).
-  const linesPer: 'dose' | 'time' =
-    dim === '3d' && (perDose || ((joint || undescribed || measured) && slice === 'dose'))
-      ? 'dose'
-      : 'time'
+  const linesPer: 'dose' | 'time' = dim === '3d' && slice === 'dose' ? 'dose' : 'time'
   const lineRole = useRolePalette(linesPer)
   const look = responseLook(config)
   const lines = show === 'line'
@@ -4416,17 +4577,42 @@ function ResponsePanel({
         </Field>
         {sliceable && (
           <Field
-            label="lines per"
+            label="curve"
             aside={<QuickToggle config={config} field="slice" update={update} />}
           >
+            {/* named by the curves drawn: dose curves (a slice at each time) or time curves */}
             <ToggleSwitch
-              label="Lines per"
-              value={slice}
+              label="Curve"
+              value={CURVE_OF_SLICE[slice]}
               options={[
-                { value: 'time', label: 'time' },
-                { value: 'dose', label: 'dose' }
+                { value: 'dose', label: 'dose' },
+                { value: 'time', label: 'time' }
               ]}
-              onChange={(v) => update({ slice: v })}
+              onChange={(v) => update({ slice: SLICE_OF_CURVE[v] })}
+            />
+          </Field>
+        )}
+        {/* Perspective draws the far side smaller; orthographic keeps parallels parallel, so a
+            level lines up with its tick across the box. */}
+        {dim === '3d' && (
+          <Field
+            label="projection"
+            aside={
+              <QuickToggle
+                config={config}
+                field="projection"
+                update={update}
+                kind={measured ? 'tdr' : 'response'}
+              />
+            }
+          >
+            <Select
+              value={config.projection ?? 'orthographic'}
+              options={[
+                { value: 'orthographic', label: 'orthographic' },
+                { value: 'perspective', label: 'perspective' }
+              ]}
+              onChange={(v) => update({ projection: v as ResponseConfig['projection'] })}
             />
           </Field>
         )}
@@ -4461,14 +4647,14 @@ function ResponsePanel({
                   ? slice === 'dose'
                     ? 'Slices of the joint model at each dose: its time curves.'
                     : 'Slices of the joint model at each time: its dose curves.'
-                  : perDose
+                  : slice === 'dose'
                     ? 'Each dose’s 4PL time curve, drawn at its dose in dose × time × effect.'
                     : 'Each time’s 4PL dose curve, drawn at its time in dose × time × effect.'
                 : 'Each time point’s dose curve, coloured early → late.'
               : show === 'surface'
                 ? joint
                   ? 'The joint model over dose × time, with the measured means.'
-                  : perDose
+                  : slice === 'dose'
                     ? 'Each dose’s 4PL time curve, joined across doses, with the measured means.'
                     : 'Each time’s 4PL dose curve, joined across times, with the measured means.'
                 : 'The measured effect over dose × time.'}
@@ -5152,6 +5338,11 @@ function DumbbellPanel({ config, update, edgeNodeId }: PlotPanelProps<DumbbellCo
   )
 }
 
+/** A model switch the method preset sets: shown faded while the preset holds it (MODEL_LOCK). */
+function ModelLock({ locked, children }: { locked: boolean; children: ReactNode }): ReactNode {
+  return <div {...(locked ? MODEL_LOCK : null)}>{children}</div>
+}
+
 /** One axis decoration (gridlines, zero line): show it, how it's stroked, how thick. The style
  *  and width only appear while it's shown — they'd configure nothing otherwise. */
 function LineRow({
@@ -5161,9 +5352,15 @@ function LineRow({
   style,
   onStyle,
   width,
-  onWidth
+  onWidth,
+  locked,
+  disabled
 }: {
   label: string
+  /** the line can't be switched or restyled, only its width set (a cluster's minimal axes) */
+  locked?: boolean
+  /** the whole row greyed: the plot doesn't draw this line at all */
+  disabled?: boolean
   on: boolean
   onShow: (on: boolean) => void
   /** omitted where Plotly offers no dash for that line (the axis line itself) */
@@ -5177,15 +5374,17 @@ function LineRow({
   return (
     <Field label={label} top>
       <div style={styles.lineRow}>
-        <OnOffSwitch on={on} label={label} onChange={onShow} />
-        {style && onStyle && <LineStyleChoice value={style} onChange={onStyle} disabled={!on} />}
+        <OnOffSwitch on={on} label={label} onChange={onShow} disabled={locked || disabled} />
+        {style && onStyle && (
+          <LineStyleChoice value={style} onChange={onStyle} disabled={locked || disabled || !on} />
+        )}
         <div style={styles.lineWidth}>
           <SizeBox
             value={width}
             min={0.5}
             max={4}
             step={0.5}
-            disabled={!on}
+            disabled={disabled || (!locked && !on)}
             title={`${label} width (px)`}
             onChange={onWidth}
           />
@@ -5247,13 +5446,15 @@ function OptNumberInput({
   onChange,
   step,
   placeholder,
-  title
+  title,
+  disabled
 }: {
   value: number | undefined
   onChange: (v: number | undefined) => void
   step?: number
   placeholder?: string
   title?: string
+  disabled?: boolean
 }): ReactNode {
   // Draft while editing (see NumberInput); here an EMPTY box is meaningful — it commits
   // undefined ("auto") — but a partial entry ("-", "1e") must still not be thrown away.
@@ -5267,6 +5468,7 @@ function OptNumberInput({
       step={step ?? 'any'}
       placeholder={placeholder}
       title={title}
+      disabled={disabled}
       onChange={(e) => {
         const raw = e.target.value
         setDraft(raw)
@@ -5295,10 +5497,14 @@ function OptNumberInput({
 function AxesSection({
   config,
   update,
-  defaults
+  defaults,
+  minimal = false
 }: {
   config: { axes?: PlotAxes }
   update: (patch: Record<string, unknown>) => void
+  /** a cluster's minimal axes: only the title size and the axis line's width apply, so every other
+   *  field is greyed (its value kept for when the axes go back to standard) */
+  minimal?: boolean
   /** the live plot's own title/range per axis — shown as each field's placeholder, so "unset"
    *  reads as the value actually in use rather than a blank or the word "auto". */
   defaults?: AxisDefaults
@@ -5367,6 +5573,7 @@ function AxesSection({
             style={{ minWidth: 0, width: '100%' }}
             placeholder={def.title ?? "the plot's own"}
             title="Axis title (blank = the plot's own)"
+            disabled={minimal}
           />
         </Field>
         <Field label="Size">
@@ -5391,6 +5598,7 @@ function AxesSection({
                 value={st.min}
                 placeholder={round(def.min) ?? 'auto'}
                 title="Lower bound (blank = the plot's own)"
+                disabled={minimal}
                 onChange={(v) => set({ min: v })}
               />
             </div>
@@ -5400,6 +5608,7 @@ function AxesSection({
                 value={st.max}
                 placeholder={round(def.max) ?? 'auto'}
                 title="Upper bound (blank = the plot's own)"
+                disabled={minimal}
                 onChange={(v) => set({ max: v })}
               />
             </div>
@@ -5409,6 +5618,7 @@ function AxesSection({
           <div style={styles.cutoffRow}>
             <Select
               value={st.ticks ?? 'auto'}
+              disabled={minimal}
               onChange={(v) => set({ ticks: v === 'auto' ? undefined : (v as AxisStyle['ticks']) })}
               options={[
                 { value: 'auto', label: 'default' },
@@ -5423,6 +5633,7 @@ function AxesSection({
                 value={st.interval}
                 placeholder="auto"
                 title="Tick spacing in the axis's own units (blank = automatic spacing)"
+                disabled={minimal}
                 onChange={(v) => set({ interval: v && v > 0 ? v : undefined })}
               />
             </div>
@@ -5435,6 +5646,7 @@ function AxesSection({
               on={st.tickLabels ?? true}
               label="Tick labels"
               onChange={(on) => set({ tickLabels: on })}
+              disabled={minimal}
             />
             {(st.tickLabels ?? true) && (
               <SizeBox
@@ -5442,6 +5654,7 @@ function AxesSection({
                 min={8}
                 max={18}
                 title="Tick label font size (px)"
+                disabled={minimal}
                 onChange={(v) => set({ tickSize: v })}
               />
             )}
@@ -5453,7 +5666,8 @@ function AxesSection({
       <div style={styles.subGroup}>
         <LineRow
           label="Axis line"
-          on={st.lineWidth != null ? st.lineWidth > 0 : (def.line ?? true)}
+          locked={minimal}
+          on={minimal || (st.lineWidth != null ? st.lineWidth > 0 : (def.line ?? true))}
           onShow={(on) => set({ lineWidth: on ? st.lineWidth || 1 : 0 })}
           style={st.lineStyle ?? 'solid'}
           onStyle={(v) => set({ lineStyle: v === 'solid' ? undefined : v })}
@@ -5464,6 +5678,7 @@ function AxesSection({
         />
         <LineRow
           label="Frame"
+          disabled={minimal}
           on={st.mirror ?? false}
           onShow={(on) => set({ mirror: on })}
           style={st.frameStyle ?? 'solid'}
@@ -5473,6 +5688,7 @@ function AxesSection({
         />
         <LineRow
           label="Gridlines"
+          disabled={minimal}
           on={st.grid ?? def.grid ?? false}
           onShow={(on) => set({ grid: on })}
           style={st.gridStyle ?? 'solid'}
@@ -5482,6 +5698,7 @@ function AxesSection({
         />
         <LineRow
           label="Zero line"
+          disabled={minimal}
           on={st.zeroline ?? def.zeroline ?? true}
           onShow={(on) => set({ zeroline: on })}
           style={st.zerolineStyle ?? 'solid'}
@@ -6016,6 +6233,27 @@ function ClusterPanel({ config, update, edgeNodeId }: PlotPanelProps<ClusterConf
           </div>
         )}
         <ClusterMarkerField config={config} update={update} centroid={look.data === 'centroid'} />
+        {/* the embedding scatter's axes (scree and loadings keep their own) */}
+        {(config.plot ?? 'pc') === 'pc' || config.method !== 'pca' ? (
+          <>
+            <Field label="axes">
+              <Select
+                value={config.axisMode ?? 'standard'}
+                onChange={(v) => update({ axisMode: v as ClusterConfig['axisMode'] })}
+                options={[
+                  { value: 'standard', label: 'standard' },
+                  { value: 'minimal', label: 'minimal' }
+                ]}
+              />
+            </Field>
+            {config.axisMode === 'minimal' && (
+              <div style={styles.hint}>
+                Two short lines at the bottom-left corner with the axis titles — no ticks or
+                numbers. Of the Axes settings only the title size and the axis line’s width apply.
+              </div>
+            )}
+          </>
+        ) : null}
       </Section>
     </>
   )
@@ -7066,13 +7304,15 @@ function EffectLabelInput({
   onCommit,
   style,
   placeholder,
-  title = 'Name shown for this effect class in legends and tables'
+  title = 'Name shown for this effect class in legends and tables',
+  disabled
 }: {
   value: string
   onCommit: (v: string) => void
   style?: CSSProperties
   placeholder?: string
   title?: string
+  disabled?: boolean
 }) {
   const [draft, setDraft] = useState<string | null>(null)
   const commit = (): void => {
@@ -7085,6 +7325,7 @@ function EffectLabelInput({
       style={{ ...styles.labelInput, ...style }}
       value={draft ?? value}
       placeholder={placeholder}
+      disabled={disabled}
       onFocus={() => setDraft(value)}
       onChange={(e) => setDraft(e.target.value)}
       onBlur={commit}

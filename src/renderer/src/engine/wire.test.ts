@@ -16,7 +16,8 @@ function fingerprint(v: unknown): string {
     const seen = ids.get(x)
     if (seen !== undefined) return `@${seen}`
     ids.set(x, ids.size)
-    if (ArrayBuffer.isView(x)) return `${x.constructor.name}[${Array.from(x as unknown as ArrayLike<number>).join(',')}]`
+    if (ArrayBuffer.isView(x))
+      return `${x.constructor.name}[${Array.from(x as unknown as ArrayLike<number>).join(',')}]`
     if (Array.isArray(x)) {
       const parts: string[] = []
       for (let i = 0; i < x.length; i++) parts.push(i in x ? walk(x[i]) : '<hole>')
@@ -112,7 +113,7 @@ describe('wire format', () => {
 
   it('round-trips randomised tables', () => {
     let seed = 7
-    const rnd = (): number => ((seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648)
+    const rnd = (): number => (seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648
     const pick = (): unknown => {
       const r = rnd()
       if (r < 0.1) return null

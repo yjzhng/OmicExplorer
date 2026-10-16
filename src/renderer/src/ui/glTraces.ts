@@ -107,3 +107,20 @@ export function toSvgTraces(data: unknown[]): unknown[] {
     return t
   })
 }
+
+/** The distinct 3-D scenes a plot's traces draw into. */
+const SCENE_TYPES = new Set([
+  'scatter3d',
+  'surface',
+  'mesh3d',
+  'isosurface',
+  'volume',
+  'cone',
+  'streamtube'
+])
+export function sceneCount(data: unknown[]): number {
+  const ids = new Set<string>()
+  for (const t of data as Array<{ type?: string; scene?: string }>)
+    if (t && SCENE_TYPES.has(t.type ?? '')) ids.add(t.scene ?? 'scene')
+  return ids.size
+}

@@ -39,8 +39,12 @@ import {
   type HeadChip
 } from './curveModel'
 import {
-  CURVE_MODEL_OPTIONS,
+  CURVE_METHOD_OPTIONS,
+  DESCRIPTOR_OPTIONS,
+  DETECTOR_OPTIONS,
+  MODEL_LOCK,
   SURFACE_FIT_OPTIONS,
+  surfaceFitShown,
   curveAxisOptions,
   type CurveAxisPick
 } from './curveSettings'
@@ -72,6 +76,7 @@ export function CurveDialog({
     | 'surfaceDescription'
     | 'controlBackground'
     | 'detection'
+    | 'curveMethod'
   >
   /** the tile's model, for a fresh window */
   detection: 'spline' | '4pl'
@@ -97,6 +102,10 @@ export function CurveDialog({
       }
     )
   )
+  // the method: a preset of the models (Hybrid / 4PL), or custom — picked here, or by picking a
+  // model the preset doesn't (as the tile panel's)
+  const [custom, setCustom] = useState(initial.curveMethod === 'custom')
+  const method = custom ? 'custom' : state.detection === 'spline' ? 'hybrid' : '4pl'
   const edit = (f: (s: CurveState) => void): void =>
     setState((s) => {
       const n: CurveState = {
@@ -151,6 +160,7 @@ export function CurveDialog({
       curveAxis: m.refAx,
       surface: surfaceOk ? m.surface : undefined,
       detection: state.detection,
+      curveMethod: custom ? 'custom' : undefined,
       ...(m.surface ? { surfaceDescription: state.surfaceFit } : {}),
       // any baseline the user picks runs (a treated one too): no confirmation to store
       controlBackground: undefined,
@@ -391,7 +401,7 @@ export function CurveDialog({
   const nCurves = m.surface
     ? new Set([...used].map((r) => m.ctxConds.map((c) => cv(r, c) ?? '').join('\u0001'))).size
     : (preview?.groups ?? 0)
-  const fit = SURFACE_FIT_OPTIONS.find((o) => o.value === state.surfaceFit)
+  const fit = SURFACE_FIT_OPTIONS.find((o) => o.value === surfaceFitShown(state.surfaceFit))
   return (
     <SelectorShell
       title="Configure curve fit"
@@ -401,15 +411,19 @@ export function CurveDialog({
     >
       <Section
         title="Model"
-        hint="The curve model, and what each curve runs over: dose, time, or a dose × time surface."
+        hint="The method (a preset of the detector and descriptor models, or custom), and what each curve runs over: dose × time, dose, or time."
       >
-        <FieldRow name="model">
+        <FieldRow name="method">
           <ToggleSwitch
             size="sm"
-            label="Model"
-            value={state.detection}
-            options={CURVE_MODEL_OPTIONS}
-            onChange={(v) => edit((s) => void (s.detection = v))}
+            label="Method"
+            value={method}
+            options={CURVE_METHOD_OPTIONS}
+            onChange={(v) => {
+              setCustom(v === 'custom')
+              if (v !== 'custom')
+                edit((s) => void (s.detection = v === 'hybrid' ? 'spline' : '4pl'))
+            }}
           />
         </FieldRow>
         <FieldRow name="axis">
@@ -417,14 +431,17 @@ export function CurveDialog({
             size="sm"
             label="Axis"
             value={m.surface ? 'surface' : m.refAx === 'time' ? 'time' : 'dose'}
-            options={curveAxisOptions(shape, state.detection).map((o) => {
-              const absent = o.value === 'surface' ? !surfaceOk : !active.includes(o.value)
-              return {
-                ...o,
-                disabled: o.disabled || absent,
-                title: absent && !o.disabled ? `No ${o.label} in the data` : o.title
-              }
-            })}
+            // dose × time first, as the tile panel orders it
+            options={[...curveAxisOptions(shape, state.detection)]
+              .sort((a, b) => Number(b.value === 'surface') - Number(a.value === 'surface'))
+              .map((o) => {
+                const absent = o.value === 'surface' ? !surfaceOk : !active.includes(o.value)
+                return {
+                  ...o,
+                  disabled: o.disabled || absent,
+                  title: absent && !o.disabled ? `No ${o.label} in the data` : o.title
+                }
+              })}
             onChange={pickAxis}
           />
         </FieldRow>
@@ -432,15 +449,50 @@ export function CurveDialog({
           <ToggleSwitch
             size="sm"
             label="Surface fit"
-            value={state.surfaceFit}
+            value={surfaceFitShown(state.surfaceFit)}
             disabled={!m.surface}
             options={SURFACE_FIT_OPTIONS.map((o) => ({
               ...o,
               title: m.surface ? o.title : 'Only for a dose × time surface'
             }))}
-            onChange={(v) => edit((s) => void (s.surfaceFit = v))}
+            // (slices onto a saved 'doseSlices' keeps it: the same fits)
+            onChange={(v) =>
+              v !== surfaceFitShown(state.surfaceFit) && edit((s) => void (s.surfaceFit = v))
+            }
           />
         </FieldRow>
+        {/* the models the method sets: shown under a preset too, faded — picking another there
+            makes the method custom */}
+        <FieldRow name="detector">
+          <span {...(custom ? null : MODEL_LOCK)}>
+            <ToggleSwitch
+              size="sm"
+              label="Detector"
+              value={state.detection}
+              options={DETECTOR_OPTIONS}
+              onChange={(v) => {
+                if (v === state.detection) return
+                setCustom(true)
+                edit((s) => void (s.detection = v))
+              }}
+            />
+          </span>
+        </FieldRow>
+        {(m.surface && state.surfaceFit !== 'joint' ? (['dose', 'time'] as const) : [null]).map(
+          (ax) => (
+            <FieldRow key={ax ?? 'one'} name={ax ? `descriptor (${ax} curves)` : 'descriptor'}>
+              <span {...(custom ? null : MODEL_LOCK)}>
+                <ToggleSwitch
+                  size="sm"
+                  label="Descriptor"
+                  value="4pl"
+                  options={DESCRIPTOR_OPTIONS}
+                  onChange={() => {}}
+                />
+              </span>
+            </FieldRow>
+          )
+        )}
       </Section>
 
       {/* Filter (a quarter) beside Baseline (three quarters) */}

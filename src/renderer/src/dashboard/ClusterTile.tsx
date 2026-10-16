@@ -26,6 +26,7 @@ export function ClusterTile({
   plot,
   loadings,
   legend = 'simple',
+  axisMode,
   look,
   schemeColor,
   schemeShade,
@@ -46,6 +47,8 @@ export function ClusterTile({
   /** loadings plot only: how many features to show (the run keeps the most there can be) */
   loadings?: number
   legend?: 'simple' | 'complex'
+  /** the embedding's full axes, or a minimal corner L (see ClusterConfig) */
+  axisMode?: 'standard' | 'minimal'
   /** markers' and arrow trails' look (see ClusterStyle) */
   look?: ClusterStyle
   /** complex legend: the user's colour / shade / arrow choices (unset = automatic) */
@@ -90,6 +93,7 @@ export function ClusterTile({
       display={display}
       territory={territory}
       legend={legend}
+      axisMode={axisMode}
       look={look}
       scheme={scheme}
       categorical={categorical}

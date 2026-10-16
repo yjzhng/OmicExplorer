@@ -37,7 +37,9 @@ import { tooltip } from './condTooltip'
 import { PlotlyChart } from './PlotlyChart'
 import { keepCameras } from './traceFocus'
 import { errorTraces } from './errorTraces'
-import { axisBase, PALETTES, plotBase, withAlpha } from './theme'
+import { niceTicks, strokeAxes3d, type StrokeAxis } from './strokeAxes3d'
+import { liftGrid } from './surfaceLift'
+import { axisBase, PALETTES, plotBase, plotFontCss, withAlpha } from './theme'
 import { useUiTheme } from './useUiTheme'
 
 export type ResponseShow = 'line' | 'surface' | 'heatmap'
@@ -141,6 +143,9 @@ interface SurfaceHover {
   points: Array<{ x: number; y: number; z: number; color?: number; lx: number; u: number }>
   surfaceOpacity: number
   curveOpacity: number
+  /** where the hover's lines are drawn: the surface's vertices lifted toward the viewer (see
+   *  surfaceLift), by row and column as `z` — absent, on the surface itself */
+  lift?: { x: number[][]; y: number[][]; z: Array<Array<number | null>> }
 }
 
 /** A #rrggbb colour at `k` of its brightness (0–1, toward black) — the hover's lines, a shade
@@ -157,6 +162,9 @@ function shade(color: string, k: number): string {
 }
 /** The hover lines' brightness against the surface's palette. */
 const HOVER_LINE_SHADE = 0.75
+
+/** How much closer than Plotly's own fit a 3-D view opens (its box's aspect ratio, scaled). */
+const ZOOM_3D = 1.3
 
 /** How faint the surface, its curves and the far points go while a point is hovered. */
 const HOVER_DIM = 0.25
@@ -255,15 +263,17 @@ function bindSurfaceHover(el: PlotlyGraphDiv, hl: SurfaceHover): () => void {
     const [ld, lt] = idx('hlDose', 'hlTime')
     const row = hl.z[i]
     const col = hl.z.map((r) => r[j])
+    // drawn lifted off the surface (coloured by the value there)
+    const L = hl.lift
     edits.push(
-      [ld, 'x', hl.x],
-      [ld, 'y', hl.x.map(() => hl.y[i])],
-      [ld, 'z', row],
+      [ld, 'x', L ? L.x[i] : hl.x],
+      [ld, 'y', L ? L.y[i] : hl.x.map(() => hl.y[i])],
+      [ld, 'z', L ? L.z[i] : row],
       [ld, 'line.color', row.map((v) => v ?? 0)],
       [ld, 'visible', true],
-      [lt, 'x', hl.y.map(() => hl.x[j])],
-      [lt, 'y', hl.y],
-      [lt, 'z', col],
+      [lt, 'x', L ? L.x.map((r) => r[j]) : hl.y.map(() => hl.x[j])],
+      [lt, 'y', L ? L.y.map((r) => r[j]) : hl.y],
+      [lt, 'z', L ? L.z.map((r) => r[j]) : col],
       [lt, 'line.color', col.map((v) => v ?? 0)],
       [lt, 'visible', true]
     )
@@ -335,6 +345,21 @@ function bindSurfaceHover(el: PlotlyGraphDiv, hl: SurfaceHover): () => void {
   }
 }
 
+/** The side a 3-D camera sees the scene from: the signs of its eye less its centre, as '+-+'
+ *  (from +x, −y, above); undefined for something that isn't a camera. */
+function sideOf(camera: unknown): string | undefined {
+  const c = camera as
+    | {
+        eye?: Partial<Record<'x' | 'y' | 'z', number>>
+        center?: Partial<Record<'x' | 'y' | 'z', number>>
+      }
+    | undefined
+  if (!c?.eye) return undefined
+  const sign = (k: 'x' | 'y' | 'z'): string =>
+    (c.eye?.[k] ?? 0) - (c.center?.[k] ?? 0) >= 0 ? '+' : '-'
+  return sign('x') + sign('y') + sign('z')
+}
+
 export function ResponseSurfaceView({
   row,
   measured,
@@ -343,6 +368,7 @@ export function ResponseSurfaceView({
   look,
   rolePalettes,
   slice = 'time',
+  projection = 'orthographic',
   doseLabel = 'dose',
   timeLabel = 'time',
   valueRange
@@ -362,6 +388,8 @@ export function ResponseSurfaceView({
   /** 3-D lines from a joint description, the spline surface or measured values: slices at each
    *  time or at each dose */
   slice?: 'time' | 'dose'
+  /** 3-D: the camera's projection */
+  projection?: 'perspective' | 'orthographic'
   /** the axes' titles, with their units */
   doseLabel?: string
   timeLabel?: string
@@ -376,21 +404,52 @@ export function ResponseSurfaceView({
   const boxRef = useRef<HTMLDivElement>(null)
   const near = useNearView(boxRef)
   const cameraRef = useRef<Record<string, unknown> | null>(null)
-  const onCamera = useCallback((_scene: string, camera: Record<string, unknown>): void => {
-    cameraRef.current = camera
-  }, [])
+  // The side the scene is seen from (the signs of the camera's eye less its centre: '+-+' is
+  // from +x, −y, above), which places the drawn axes (see strokeAxes3d) — redrawn when a turn
+  // ends on another side.
+  const [side, setSide] = useState('+-+')
+  const sideRef = useRef(side)
   // The camera it was left at, taken as it goes away (and drawn from when it's back).
   const [resume, setResume] = useState<Record<string, unknown> | null>(null)
+  // A camera now on another side: redraw the axes for it — drawn FROM it, so the redraw can't put
+  // the scene back to an older camera (Plotly may not have taken the turn as the user's yet, and
+  // would then draw the layout's), which the next check would read as a turn back, and so on.
+  const syncSide = useCallback((camera: unknown): void => {
+    const sd = sideOf(camera)
+    if (!sd || sd === sideRef.current) return
+    sideRef.current = sd
+    setResume(camera as Record<string, unknown>)
+    setSide(sd)
+  }, [])
+  const onCamera = useCallback(
+    (_scene: string, camera: Record<string, unknown>): void => {
+      cameraRef.current = camera
+      syncSide(camera)
+    },
+    [syncSide]
+  )
   useEffect(() => {
     if (!near && cameraRef.current) setResume(cameraRef.current)
   }, [near])
+  // A new projection is a new camera to Plotly, which would put the turn and zoom back to the
+  // default — so it's drawn from the camera the user left, as a remount is.
+  useEffect(() => {
+    if (cameraRef.current) setResume(cameraRef.current)
+  }, [projection])
   // Lines per time / per dose run along those levels' palette roles unless the plot picked one.
   const timeRole = useRolePalette('time')
   const doseRole = useRolePalette('dose')
-  const { data, layout, hl } = useMemo((): {
+  const {
+    data: plotData,
+    layout: plotLayout,
+    hl,
+    axes3
+  } = useMemo((): {
     data: Record<string, unknown>[]
     layout: Record<string, unknown>
     hl?: SurfaceHover
+    /** a 3-D view's axes, drawn in the scene from the side it's seen from (below) */
+    axes3?: Parameters<typeof strokeAxes3d>
   } => {
     const p = PALETTES[mode]
     // Measured levels only: each is its own "fit", so the lines join the values themselves. Log
@@ -468,53 +527,112 @@ export function ResponseSurfaceView({
     // The scene's gridlines a step stronger than the 2-D plots' (theme grid): a 3-D box reads by
     // them, and at the theme's strength they faded into its background.
     const grid3 = mode === 'dark' ? '#343434' : '#e4e4e4'
-    const axis3 = (title: string, ticks?: number[]): Record<string, unknown> => ({
-      title: { text: title },
-      type: ticks ? 'log' : 'linear',
-      ...(ticks ? { tickvals: ticks, ticktext: ticks.map((v) => String(v)) } : null),
-      color: p.textMuted,
-      gridcolor: grid3,
-      zerolinecolor: grid3,
-      showline: true,
-      linecolor: p.textMuted,
-      ticks: 'outside',
-      // An explicit angle, never 'auto': Plotly's 3-D axes draw 'auto' tick labels aligned to the
-      // axis on the first frame after a scene update and level on every later one — so a
-      // restyle (a hover's fade), which draws just that one frame, left them turned.
-      tickangle: 0,
-      tickcolor: p.textMuted,
-      showbackground: false,
-      showspikes: false
-    })
-    const layout3 = (legend: boolean, legendTitle = timeLabel): Record<string, unknown> => ({
-      ...base,
-      showlegend: legend,
-      ...(legend ? { legend: { title: { text: legendTitle }, yanchor: 'middle', y: 0.5 } } : null),
-      // the 2-D axes a 3-D plot never uses — hidden, or an axis style (lines, frame) set for
-      // the app's plots would draw them across the scene
-      xaxis: { visible: false },
-      yaxis: { visible: false },
-      // Keep the user's turn and zoom across re-renders (paging genes, a setting) — Plotly.react
-      // otherwise puts the scene back to the camera below.
-      uirevision: 'response-3d',
-      scene: {
-        uirevision: 'response-3d',
-        xaxis: axis3(doseLabel, logTicks(doses)),
-        yaxis: axis3(timeLabel, logTicks(times)),
-        zaxis: { ...axis3(valueTitle), ...(valueRange ? { range: valueRange } : null) },
-        // the three axes drawn the same length
-        aspectmode: 'cube',
-        // Looking at a point a little left of and below the box's middle, so the box AND its
-        // labels sit centred: the axis titles and ticks hang off its front-bottom edges and its
-        // left, which centring the box alone leaves low-left in the tile. From this eye the
-        // screen's right runs along (1, 1, 0), so −x −y moves the plot right; −z moves it up.
-        camera: {
-          eye: { x: 1.6, y: -1.6, z: 0.9 },
-          center: { x: -0.16, y: -0.16, z: -0.12 }
+    // The value axis's extent: the set range, else every value drawn (lines, surface, points and
+    // their error) — flat values given a unit's room. (Unpadded: finish3 adds the margin.)
+    const zExtent = (): [number, number] => {
+      if (valueRange) return valueRange
+      let lo = Infinity
+      let hi = -Infinity
+      const take = (v: unknown): void => {
+        if (typeof v !== 'number' || !Number.isFinite(v)) return
+        if (v < lo) lo = v
+        if (v > hi) hi = v
+      }
+      for (const t of traces) {
+        const zs = (t.z ?? []) as unknown[]
+        const err = (t.error_z as { array?: number[] } | undefined)?.array
+        zs.forEach((v, i) => {
+          if (Array.isArray(v)) v.forEach(take)
+          else if (err && typeof v === 'number') {
+            take(v - (err[i] ?? 0))
+            take(v + (err[i] ?? 0))
+          } else take(v)
+        })
+      }
+      if (!(lo <= hi)) return [-1, 1]
+      if (hi - lo < 1e-6) return [lo - 0.5, hi + 0.5]
+      return [lo, hi]
+    }
+    // A 3-D view: the traces, the layout around them, and its axes — drawn in the scene (labels
+    // lying in the box's planes — see strokeAxes3d) once the side it's seen from is known.
+    const finish3 = (
+      legend: boolean,
+      legendTitle = timeLabel
+    ): {
+      data: Record<string, unknown>[]
+      layout: Record<string, unknown>
+      axes3: Parameters<typeof strokeAxes3d>
+    } => {
+      // Each axis runs half a tick interval past the data at either end, so the data (and the
+      // labels at its ends) don't crowd the box's edges; a set value range is kept as set.
+      const ze = zExtent()
+      const zt = niceTicks(ze[0], ze[1])
+      const zStep = zt.ticks.length > 1 ? zt.ticks[1] - zt.ticks[0] : (ze[1] - ze[0]) / 4
+      const zr: [number, number] = valueRange ? ze : [ze[0] - zStep / 2, ze[1] + zStep / 2]
+      const logAxis = (title: string, vals: number[]): StrokeAxis => {
+        const ticks = logTicks(vals)
+        const lo = Math.min(...vals)
+        const hi = Math.max(...vals)
+        // half the first and last tick intervals (in log units), or half a decade for one tick
+        const L = ticks.map((t) => Math.log10(t))
+        const padLo = L.length > 1 ? (L[1] - L[0]) / 2 : 0.5
+        const padHi = L.length > 1 ? (L[L.length - 1] - L[L.length - 2]) / 2 : 0.5
+        return {
+          title,
+          ticks,
+          labels: ticks.map((v) => String(v)),
+          range: [lo / 10 ** padLo, hi * 10 ** padHi],
+          log: true
         }
-      },
-      margin: { l: 0, r: 0, t: 5, b: 5 }
-    })
+      }
+      return {
+        data: traces,
+        axes3: [
+          {
+            x: logAxis(doseLabel, doses),
+            y: logAxis(timeLabel, times),
+            z: { title: valueTitle, ticks: zt.ticks, labels: zt.labels, range: zr, log: false }
+          },
+          { line: p.textMuted, grid: grid3, ink: p.textMuted }
+        ],
+        layout: {
+          ...base,
+          showlegend: legend,
+          // The legend (and a colour bar, below) inside the plot's right edge, not in a margin of
+          // their own: the scene is centred on the whole tile, the key in the space beside it.
+          ...(legend
+            ? {
+                legend: {
+                  title: { text: legendTitle },
+                  x: 1,
+                  xanchor: 'right',
+                  yanchor: 'middle',
+                  y: 0.5
+                }
+              }
+            : null),
+          // the 2-D axes a 3-D plot never uses — hidden, or an axis style (lines, frame) set for
+          // the app's plots would draw them across the scene
+          xaxis: { visible: false },
+          yaxis: { visible: false },
+          // Keep the user's turn and zoom across re-renders (paging genes, a setting) —
+          // Plotly.react otherwise puts the scene back to the camera below.
+          uirevision: 'response-3d',
+          scene: {
+            uirevision: 'response-3d',
+            // From the front-right corner, above, looking a little below the middle (−z moves
+            // the plot up): perspective draws the near corner large, and centred its labels
+            // ran off the bottom. Raised to ~35° (isometric; the distance as before) so the
+            // labels lying on the floor read at an angle, not edge-on.
+            camera: {
+              eye: { x: 1.4, y: -1.4, z: 1.4 },
+              center: { x: 0, y: 0, z: -0.15 }
+            }
+          },
+          margin: { l: 0, r: 0, t: 5, b: 5 }
+        }
+      }
+    }
 
     // ── the model the 3-D views draw (see the file comment) ──
     const desc = row?.rs?.surface
@@ -526,21 +644,38 @@ export function ResponseSurfaceView({
     const ubar = desc?.jointUbar ?? cells.reduce((a, c) => a + uOf(c.time), 0) / cells.length
     const joint = jp ? (d: number, t: number): number => jointPredict(jp, ubar, d, t, off) : null
     const doseSlices = new Map((desc?.byDose ?? []).map((s) => [s.at, s]))
-    // Per dose when so described — or when only the dose direction could be (too few doses at
-    // some time); else per time.
-    const perDose =
-      !joint && doseSlices.size > 0 && (desc?.method === 'doseSlices' || slices.size === 0)
+    // A slices description viewed per dose when so sliced — or when only the dose direction could
+    // be described (too few doses at some time); else per time. The 2-D line view has no slice
+    // switch: its lines are each time's dose curve, so it reads the dose curves whatever the slice.
+    const sliceBy = show === 'line' && dim === '2d' ? 'time' : slice
+    const perDose = !joint && doseSlices.size > 0 && (sliceBy === 'dose' || slices.size === 0)
     const perTime = !joint && !perDose && slices.size > 0
     // No description (q beyond the describe cutoff, or none could be fitted): drawn flat at 0 —
     // no response. The spline surface is the detector, not the representation.
     const flat = !measured && !joint && !perTime && !perDose
     const span = (lo: number, hi: number): number[] =>
       Array.from({ length: GRID + 1 }, (_, k) => lo + ((hi - lo) * k) / GRID)
-    const fineDoses = span(Math.log10(doses[0]), Math.log10(doses[doses.length - 1])).map(
-      (v) => 10 ** v
+    // The fine grid with the measured levels in it: every measured dose a column and every
+    // measured time a row of the surface's mesh, so the curves drawn at them run along its edges
+    // (between them they'd cut through the mesh's flat facets — half hidden, zig-zagging).
+    // A fine value within rounding of a level gives way to the level itself (the grid's ends are
+    // the extreme levels recomputed through logs — 59.99999999999996 for 60), so a curve drawn at a
+    // level finds its row or column exactly.
+    const withLevels = (fine: number[], levels: number[]): number[] => {
+      const near = (a: number, b: number): boolean =>
+        Math.abs(a - b) <= 1e-9 * Math.max(1, Math.abs(a), Math.abs(b))
+      const kept = fine.filter((v) => !levels.some((l) => near(v, l)))
+      return [...new Set([...kept, ...levels])].sort((a, b) => a - b)
+    }
+    const fineDoses = withLevels(
+      span(Math.log10(doses[0]), Math.log10(doses[doses.length - 1])).map((v) => 10 ** v),
+      doses
     )
     // Times spaced on the surface's own time axis, log(t + offset).
-    const fineTimes = span(uOf(times[0]), uOf(times[times.length - 1])).map((u) => 10 ** u - off)
+    const fineTimes = withLevels(
+      span(uOf(times[0]), uOf(times[times.length - 1])).map((u) => 10 ** u - off),
+      times
+    )
     const lx = (ds: number[]): number[] => ds.map((d) => Math.log10(d))
     const fineLx = lx(fineDoses)
     const fineU = fineTimes.map(uOf)
@@ -713,7 +848,7 @@ export function ResponseSurfaceView({
           })
         }
       })
-      return { data: traces, layout: layout3(true, byDose ? doseLabel : timeLabel) }
+      return finish3(true, byDose ? doseLabel : timeLabel)
     }
 
     if (show === 'line') {
@@ -898,7 +1033,8 @@ export function ResponseSurfaceView({
           z: { highlight: false }
         },
         meta: { oeRole: 'surface' },
-        colorbar: { title: { text: valueName }, thickness: 12, len: 0.5 },
+        // inside the plot's right edge (see finish3's legend)
+        colorbar: { title: { text: valueName }, thickness: 12, len: 0.5, x: 1, xanchor: 'right' },
         hovertemplate: tooltip(
           {
             conds: [
@@ -971,8 +1107,7 @@ export function ResponseSurfaceView({
           pointTrace('pointsDim', look.pointOpacity * HOVER_DIM)
         )
       return {
-        data: traces,
-        layout: layout3(false),
+        ...finish3(false),
         hl: {
           x: fineDoses,
           y: fineTimes,
@@ -1051,15 +1186,123 @@ export function ResponseSurfaceView({
     mode
   ])
 
+  // A 3-D view's axes, drawn for the side it's seen from: their traces after the view's, and
+  // Plotly's own axes hidden, the ranges padded for the drawn labels, the data box a cube.
+  const { data, layout, hlLifted } = useMemo(() => {
+    if (!axes3) return { data: plotData, layout: plotLayout, hlLifted: hl }
+    const [ax, colors] = axes3
+    const drawn = strokeAxes3d(
+      ax,
+      colors,
+      {
+        x: side[0] === '+' ? 1 : -1,
+        y: side[1] === '+' ? 1 : -1,
+        z: side[2] === '+' ? 1 : -1
+      },
+      // the plot font (a change remounts the tile, so this re-runs)
+      plotFontCss()
+    )
+    const sc = plotLayout.scene as Record<string, unknown>
+    // The surface's curves, moved a hair toward the camera (see surfaceLift) — their vertices
+    // are the surface's own (the measured levels are rows and columns of its grid). Along the
+    // camera's line of sight: the one the view was left at (resume) or its default.
+    const cam = (resume ?? sc.camera ?? {}) as {
+      eye?: { x?: number; y?: number; z?: number }
+      center?: { x?: number; y?: number; z?: number }
+    }
+    const toward: [number, number, number] = (['x', 'y', 'z'] as const).map(
+      (k) => (cam.eye?.[k] ?? 1) - (cam.center?.[k] ?? 0)
+    ) as [number, number, number]
+    const sceneAxis = (k: 'xaxis' | 'yaxis' | 'zaxis') => {
+      const a = drawn.scene[k] as { range: [number, number]; type?: string }
+      return { range: a.range, log: a.type === 'log' }
+    }
+    // The box drawn larger than Plotly would fit it: the scene opens closer up (its zoom).
+    const fit = drawn.scene.aspectratio as { x: number; y: number; z: number }
+    const aspect = { x: fit.x * ZOOM_3D, y: fit.y * ZOOM_3D, z: fit.z * ZOOM_3D }
+    const lift = hl
+      ? liftGrid(
+          hl.x,
+          hl.y,
+          hl.z,
+          {
+            axes: [sceneAxis('xaxis'), sceneAxis('yaxis'), sceneAxis('zaxis')],
+            aspect: [aspect.x, aspect.y, aspect.z]
+          },
+          toward
+        )
+      : null
+    const col = new Map(hl?.x.map((v, j) => [v, j]))
+    const row = new Map(hl?.y.map((v, i) => [v, i]))
+    const lifted = !lift
+      ? plotData
+      : plotData.map((t) => {
+          if ((t.meta as { oeRole?: string } | undefined)?.oeRole !== 'curve') return t
+          const xs = t.x as number[]
+          const ys = t.y as number[]
+          const at = xs.map((v, k) => [row.get(ys[k]), col.get(v)] as const)
+          if (at.some(([i, j]) => i == null || j == null)) return t
+          return {
+            ...t,
+            x: at.map(([i, j]) => lift.x[i!][j!]),
+            y: at.map(([i, j]) => lift.y[i!][j!]),
+            z: at.map(([i, j]) => lift.z[i!][j!])
+          }
+        })
+    return {
+      data: [...lifted, ...drawn.traces],
+      layout: { ...plotLayout, scene: { ...sc, ...drawn.scene, aspectratio: aspect } },
+      hlLifted: hl && lift ? { ...hl, lift } : hl
+    }
+  }, [plotData, plotLayout, axes3, side, hl, resume])
+
   // The 3-D surface's hover highlight, bound to each drawn chart (see bindSurfaceHover).
+  // …and the drawn axes kept on the side the scene is actually seen from. The turn's end event
+  // (onCamera) can miss — a draw from a kept or restored camera, a release outside the window —
+  // so the camera on screen is read after every draw, and after every release and wheel over it.
   const onSurfaceMount = useCallback(
-    (el: PlotlyGraphDiv): (() => void) | undefined => (hl ? bindSurfaceHover(el, hl) : undefined),
-    [hl]
+    (el: PlotlyGraphDiv): (() => void) | undefined => {
+      const unbindHover = hlLifted ? bindSurfaceHover(el, hlLifted) : undefined
+      let raf = 0
+      const check = (): void => {
+        cancelAnimationFrame(raf)
+        raf = requestAnimationFrame(() => {
+          const full = (el as unknown as { _fullLayout?: Record<string, unknown> })._fullLayout
+          const sc = full?.scene as { _scene?: { getCamera?: () => unknown } } | undefined
+          const camera = sc?._scene?.getCamera?.() as Record<string, unknown> | undefined
+          // The camera as it is now — a wheel zoom sends Plotly no camera event of its own — so a
+          // redraw (and a remount) goes on from it, not from the last turn's end.
+          if (camera) cameraRef.current = camera
+          syncSide(camera)
+        })
+      }
+      check()
+      window.addEventListener('mouseup', check)
+      el.addEventListener('wheel', check, { passive: true })
+      return () => {
+        cancelAnimationFrame(raf)
+        window.removeEventListener('mouseup', check)
+        el.removeEventListener('wheel', check)
+        unbindHover?.()
+      }
+    },
+    [hlLifted, syncSide]
   )
 
   // One box in every case, so the visibility check above always has it to watch.
   const scene = (layout as { scene?: Record<string, unknown> }).scene
-  const shown = resume && scene ? { ...layout, scene: { ...scene, camera: resume } } : layout
+  const shown = scene
+    ? {
+        ...layout,
+        scene: {
+          ...scene,
+          camera: {
+            ...((resume ?? scene.camera) as Record<string, unknown>),
+            projection: { type: projection }
+          }
+        }
+      }
+    : layout
   return (
     <div ref={boxRef} style={{ width: '100%', height: '100%' }}>
       {!data.length ? (

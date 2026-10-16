@@ -632,13 +632,22 @@ describe('sample order', () => {
 describe('curve-fit labels in plots', () => {
   it('names the fold change by method and reads the comparison with its compound and baseline', async () => {
     const { comparisonOf, fcName, fcMeasure } = await import('./plotData')
-    const curve = { comparison: 'dose curve | 0', cmp_cond: 'dose', cmpd: 'drugA', curve: { baseline: 'dose 0 · time 60' } }
+    const curve = {
+      comparison: 'dose curve | 0',
+      cmp_cond: 'dose',
+      cmpd: 'drugA',
+      curve: { baseline: 'dose 0 · time 60' }
+    }
     expect(comparisonOf([curve])).toBe('drugA | baseline (dose 0 · time 60)')
     expect(comparisonOf([{ ...curve, curve: {} }])).toBe('drugA | baseline')
-    expect(comparisonOf([curve, { ...curve, cmpd: 'drugB' }])).toBe('dose curve | baseline (dose 0 · time 60)')
+    expect(comparisonOf([curve, { ...curve, cmpd: 'drugB' }])).toBe(
+      'dose curve | baseline (dose 0 · time 60)'
+    )
     expect(fcName([curve])).toBe('curve log₂FC')
     expect(fcName([{ ...curve, curve: undefined, rs: {} }])).toBe('peak log₂FC')
-    expect(comparisonOf([{ comparison: 'drugA | dose 0', cmp_cond: 'cmpd', cmpd: 'drugA', rs: {} }])).toBe('drugA | baseline')
+    expect(
+      comparisonOf([{ comparison: 'drugA | dose 0', cmp_cond: 'cmpd', cmpd: 'drugA', rs: {} }])
+    ).toBe('drugA | baseline')
     // not a curve fit: untouched
     expect(comparisonOf([{ comparison: 'KO | WT', cmp_cond: 'cell' }])).toBe('KO | WT')
     expect(fcMeasure('curve_fit', '4pl')).toBe('curve log₂FC')

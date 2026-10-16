@@ -1,4 +1,4 @@
-import { useMemo, type CSSProperties } from 'react'
+import { useContext, useMemo, type CSSProperties } from 'react'
 
 import {
   condLabel,
@@ -8,7 +8,7 @@ import {
   type ClusterPoint,
   type ConditionKey
 } from '../engine'
-import { clusterStyle, type ClusterStyle } from '../graph/types'
+import { clusterStyle, type AxisStyle, type ClusterStyle, type PlotAxes } from '../graph/types'
 import { AUTO } from './ColorPicker'
 import { condsOf, planAesthetics, type PlanOverrides } from './clusterPlan'
 import { condTooltip, valueLine } from './condTooltip'
@@ -17,7 +17,8 @@ import { territoryRing, type TerritoryShape } from './territory'
 import { hslHex } from './colormap'
 import { shade } from './condColor'
 import { PlotlyChart } from './PlotlyChart'
-import { axisBase, CATEGORICAL, PALETTES, plotBase, UI, withAlpha } from './theme'
+import { PlotAxesContext, type PlotAxesCtx } from './plotAxes'
+import { axisBase, CATEGORICAL, PALETTES, plotBase, UI, withAlpha, type Palette } from './theme'
 import { useUiTheme } from './useUiTheme'
 import { sectionKey, SECTIONED_LEGEND } from './legendSections'
 import { groupMeta } from './traceFocus'
@@ -27,6 +28,12 @@ type Mode = 'replicate' | 'centroid'
 /** The region drawn under each condition's markers, or none. */
 type Territory = TerritoryShape | 'none'
 type Legend = 'simple' | 'complex'
+/** The axes: Plotly's full axes ('standard'), or only a short L at the bottom-left corner with
+ *  the axis titles along it ('minimal') — an embedding's coordinates carry no meaning of their own,
+ *  so the ticks and numbers are often just clutter. */
+type AxisMode = 'standard' | 'minimal'
+/** minimal axes: each segment's length (px) */
+const MINIMAL_AXIS_PX = 40
 /** The neutral the complex legend's shade and arrow keys are drawn in. */
 const SHADE_KEY_GREY = '#808080'
 /** A dose/time level's place on the shade, by RANK among its levels — 0 the lowest (palest), 1 the
@@ -49,6 +56,7 @@ export function ClusterView({
   display = 'replicate',
   territory = 'none',
   legend = 'simple',
+  axisMode = 'standard',
   look = DEFAULT_STYLE,
   scheme = NO_SCHEME,
   categorical = CATEGORICAL,
@@ -62,6 +70,8 @@ export function ClusterView({
   /** outline the replicates' convex hull, a ~95% Gaussian ellipse, or nothing */
   territory?: Territory
   legend?: Legend
+  /** full axes, or a short corner L with the titles (see AxisMode) */
+  axisMode?: AxisMode
   /** markers' and arrow trails' look (the tile's settings; see ClusterStyle) */
   look?: ClusterStyle
   /** complex legend: the user's colour / shade / arrow choices (unset = automatic) */
@@ -71,7 +81,12 @@ export function ClusterView({
 }) {
   const mode = useUiTheme((s) => s.mode)
 
-  const { data, layout } = useMemo(() => {
+  const {
+    data,
+    layout: own,
+    xLabel,
+    yLabel
+  } = useMemo(() => {
     const p = PALETTES[mode]
     // Axis labels per method: PCA reports variance explained; UMAP/t-SNE are unitless.
     const pct = (v: number): string => `${(v * 100).toFixed(1)}%`
@@ -105,7 +120,7 @@ export function ClusterView({
       if (complex) {
         lay.legend = complex.legend
         if (complex.annotations.length) lay.annotations = complex.annotations
-        return { data: complex.traces, layout: lay }
+        return { data: complex.traces, layout: lay, xLabel, yLabel }
       }
       // Not enough varying conditions to be meaningful — fall through to simple.
     }
@@ -161,8 +176,26 @@ export function ClusterView({
     // the legend headed by what the colours are: the condition (dose / time with its unit)
     if (cluster.colorBy !== 'cluster')
       lay.legend = { title: { text: condTitle(cluster.colorBy as ConditionKey) } }
-    return { data: territoriesBehind(traces), layout: lay }
+    return { data: territoriesBehind(traces), layout: lay, xLabel, yLabel }
   }, [cluster, title, display, territory, legend, mode, look, scheme, categorical, condTitle])
+
+  // Minimal axes take only the tile's title size and axis-line width (drawn into the corner L
+  // here); every other override is for axes that aren't drawn, so none is passed on to the chart.
+  const outer = useContext(PlotAxesContext)
+  const minimal = axisMode === 'minimal'
+  const layout = useMemo(
+    () => (minimal ? minimalAxes(own, xLabel, yLabel, PALETTES[mode], outer?.axes) : own),
+    [minimal, own, xLabel, yLabel, mode, outer?.axes]
+  )
+  const axesCtx = useMemo((): PlotAxesCtx | undefined => {
+    if (!minimal || !outer) return outer
+    const report = outer.onDefaults
+    return {
+      // the settings' title placeholders: the titles the L shows, not the hidden axes' blank ones
+      onDefaults:
+        report && ((d) => report({ x: { ...d.x, title: xLabel }, y: { ...d.y, title: yLabel } }))
+    }
+  }, [minimal, outer, xLabel, yLabel])
 
   const diag = cluster.diag
   // Nothing to embed: say why rather than draw an empty plot.
@@ -176,7 +209,9 @@ export function ClusterView({
     )
   return (
     <div style={styles.wrap}>
-      <PlotlyChart data={data} layout={layout} onGraphMount={bindSampleLink} />
+      <PlotAxesContext.Provider value={axesCtx}>
+        <PlotlyChart data={data} layout={layout} onGraphMount={bindSampleLink} />
+      </PlotAxesContext.Provider>
       {/* 'complete' kept too few genes (a gap somewhere in nearly every one): embedded on every
           gene, gaps imputed — said here so the setting isn't silently overridden. */}
       {diag?.completeFallback != null && (
@@ -214,6 +249,88 @@ const styles: Record<string, CSSProperties> = {
     padding: '1px 5px',
     opacity: 0.9,
     cursor: 'help'
+  }
+}
+
+/** The layout with minimal axes: Plotly's own axes stripped to nothing (no line, ticks, numbers or
+ *  title) and, in their place, two short segments meeting at the plot area's bottom-left corner,
+ *  each titled along its length — the x title under the horizontal one, the y title (rotated)
+ *  beside the vertical one. Pixel-sized, so the L stays the same size whatever the tile's shape.
+ *  Of the tile's axis overrides only the title size (the L's titles) and the axis-line width (its
+ *  segments) apply. */
+function minimalAxes(
+  lay: Record<string, unknown>,
+  xLabel: string,
+  yLabel: string,
+  p: Palette,
+  axes: PlotAxes | undefined
+): Record<string, unknown> {
+  const bare = (ax: unknown): Record<string, unknown> => ({
+    ...(ax as Record<string, unknown>),
+    title: { text: '' },
+    showline: false,
+    showticklabels: false,
+    ticks: '',
+    zeroline: false
+  })
+  // Each segment as thick as its axis's line-width setting (the Axes section's box shows 1 unset).
+  const line = (st: AxisStyle | undefined): Record<string, unknown> => ({
+    color: p.textMuted,
+    width: st?.lineWidth || 1
+  })
+  const corner = { type: 'line', xref: 'paper', yref: 'paper', layer: 'above' }
+  const shapes = [
+    {
+      ...corner,
+      line: line(axes?.x),
+      xsizemode: 'pixel',
+      xanchor: 0,
+      x0: 0,
+      x1: MINIMAL_AXIS_PX,
+      y0: 0,
+      y1: 0
+    },
+    {
+      ...corner,
+      line: line(axes?.y),
+      ysizemode: 'pixel',
+      yanchor: 0,
+      y0: 0,
+      y1: MINIMAL_AXIS_PX,
+      x0: 0,
+      x1: 0
+    }
+  ]
+  const font = (st: AxisStyle | undefined): Record<string, unknown> =>
+    st?.titleSize ? { size: st.titleSize } : {}
+  const label = { xref: 'paper', yref: 'paper', x: 0, y: 0, showarrow: false }
+  const annotations = [
+    {
+      ...label,
+      text: xLabel,
+      font: font(axes?.x),
+      xanchor: 'left',
+      yanchor: 'top',
+      yshift: -3
+    },
+    {
+      ...label,
+      text: yLabel,
+      font: font(axes?.y),
+      textangle: -90,
+      xanchor: 'right',
+      yanchor: 'bottom',
+      xshift: -3
+    }
+  ]
+  const ownShapes = Array.isArray(lay.shapes) ? (lay.shapes as unknown[]) : []
+  const ownNotes = Array.isArray(lay.annotations) ? (lay.annotations as unknown[]) : []
+  return {
+    ...lay,
+    xaxis: bare(lay.xaxis),
+    yaxis: bare(lay.yaxis),
+    shapes: [...ownShapes, ...shapes],
+    annotations: [...ownNotes, ...annotations]
   }
 }
 
@@ -269,7 +386,7 @@ function condGroupTraces(
   color: string,
   name: string,
   display: Mode,
-  p: (typeof PALETTES)[keyof typeof PALETTES],
+  p: Palette,
   hover: string,
   look: ClusterStyle,
   showlegend = true,
@@ -357,7 +474,7 @@ interface ComplexBuild {
 function buildComplex(
   cluster: ClusterData,
   display: Mode,
-  p: (typeof PALETTES)[keyof typeof PALETTES],
+  p: Palette,
   hover: string,
   territory: Territory,
   look: ClusterStyle,

@@ -1,16 +1,16 @@
 /** Serialize/deserialize a single workflow's graph + dashboard layout.
  *  A leaf module (no store import) so both the store and the project layer can use
  *  it without a cycle. Object-level build/parse feed the project bundle; the string
- *  wrappers preserve the standalone `.json` round-trip. */
+ *  wrappers preserve the standalone `.json` round-trip.
+ *
+ *  Reads the CURRENT form only: a document from an older release is brought up to date by
+ *  upgrades.ts (upgradeWorkflowDoc) when its project file is read, before it gets here. */
 import type { Edge } from '@xyflow/react'
 
 import { withoutTiles } from './frames'
-import { wrapLonePlots } from './plotGroups'
-import { orderedByWiring } from './sequence'
 
 import {
   isStep,
-  migrateCurveCompare,
   type CanvasFrame,
   type FavGene,
   type GeneSet,
@@ -21,9 +21,12 @@ import {
   type PanelLayoutItem
 } from './types'
 
+/** The workflow document's current form: 1 = no dashboard layout; 2 added groupLayouts /
+ *  groupMeta; 3 doubled the grid both ways; 4 doubled its columns (see upgrades.ts). */
+export const WORKFLOW_DOC_VERSION = 4
+
 export interface WorkflowDoc {
-  /** absent/1 = legacy (no dashboard layout); 2 adds groupLayouts/groupMeta; 3 doubled
-   *  the grid resolution (pre-3 layouts are scaled ×2 on load). */
+  /** see WORKFLOW_DOC_VERSION */
   version?: number
   nextId?: number
   // `category` may be present in legacy files (v1) — read but ignore it.
@@ -67,27 +70,6 @@ export interface LoadedWorkflow {
 const pruneByRoot = <T>(m: Record<string, T>, live: Set<string>): Record<string, T> =>
   Object.fromEntries(Object.entries(m).filter(([rootId]) => live.has(rootId)))
 
-/** Scale saved layouts to the current grid. Columns and rows scale independently:
- *  v2→v3 doubled BOTH axes (12→24 cols, 40→20px rows); v3→v4 doubled COLUMNS only (24→48 cols).
- *  So `kx` (x,w) can differ from `ky` (y,h). */
-function scaleLayouts(
-  m: Record<string, PanelLayoutItem[]>,
-  kx: number,
-  ky: number
-): Record<string, PanelLayoutItem[]> {
-  const out: Record<string, PanelLayoutItem[]> = {}
-  for (const [rootId, items] of Object.entries(m)) {
-    out[rootId] = items.map((it) => ({
-      ...it,
-      x: it.x * kx,
-      y: it.y * ky,
-      w: it.w * kx,
-      h: it.h * ky
-    }))
-  }
-  return out
-}
-
 /** Build the plain workflow doc object (graph + layout), pruned to live nodes. */
 export function buildWorkflowDoc(s: SerializeInput): WorkflowDoc {
   // placeholders are transient UI — never persist them or edges touching them
@@ -102,7 +84,7 @@ export function buildWorkflowDoc(s: SerializeInput): WorkflowDoc {
   )
   const frames = withoutTiles(s.frames ?? [], gone)
   return {
-    version: 4,
+    version: WORKFLOW_DOC_VERSION,
     nextId: s.nextId,
     nodes: steps.map((n) => ({
       id: n.id,
@@ -123,68 +105,31 @@ export function buildWorkflowDoc(s: SerializeInput): WorkflowDoc {
   }
 }
 
-/** Parse a workflow doc object into graph nodes/edges + layout maps. */
+/** A current-form workflow doc (see upgrades.ts) as graph nodes/edges + layout maps. */
 export function parseWorkflowDoc(doc: WorkflowDoc): LoadedWorkflow {
-  const version = doc.version ?? 1
-  // Grid migrations compose: v2→v3 doubled both axes; v3→v4 doubled columns only. Accumulate the
-  // per-axis scale so an old layout keeps its pixel footprint on the current 48-col grid.
-  const kx = (version < 3 ? 2 : 1) * (version < 4 ? 2 : 1) // x, w
-  const ky = version < 3 ? 2 : 1 // y, h
-  // A Compare saved in curve-fit mode opens as the Curve fit tile it now is (same id, so its parked
-  // result and its plots carry over).
   const nodes: GraphNode[] = doc.nodes.map((n) => ({
     id: n.id,
     type: 'step',
     position: n.position,
     data: {
-      ...migrateCurveCompare({ kind: n.data.kind, config: n.data.config }),
+      kind: n.data.kind,
+      config: n.data.config,
       status: 'idle',
       ...(n.data.name ? { name: n.data.name } : {})
     }
   }))
-  const edges: Edge[] = doc.edges.map((e) => ({ id: e.id, source: e.source, target: e.target }))
-  // A step never sits before one of its inputs. Projects saved before that rule existed can, and
-  // this is the one place a stored workflow becomes a graph — so fixing it here repairs every old
-  // file on open, rather than leaving the form layout to render an order the wiring contradicts.
-  const seq = orderedByWiring(
-    nodes.map((n) => n.id),
-    edges
-  )
-  const byId = new Map(nodes.map((n) => [n.id, n]))
-  const ordered = seq.flatMap((id) => {
-    const n = byId.get(id)
-    return n ? [n] : []
-  })
   const maxIdx = nodes.reduce((m, n) => {
     const k = Number(n.id.split('-').pop())
     return Number.isFinite(k) ? Math.max(m, k) : m
   }, 1)
-  const layouts =
-    version >= 2
-      ? kx === 1 && ky === 1
-        ? (doc.groupLayouts ?? {})
-        : scaleLayouts(doc.groupLayouts ?? {}, kx, ky)
-      : {}
-  // Every visualisation tile is a plot group now: a lone plot saved before that opens as a group of
-  // one (same tile id, name and place; its results tile moves to the subcard).
-  const wrapped = wrapLonePlots(ordered, doc.nextId ?? maxIdx + 1, layouts)
   return {
-    nodes: wrapped.nodes,
-    edges,
-    nextId: wrapped.nextId,
-    groupLayouts: wrapped.layouts,
-    groupMeta: version >= 2 ? (doc.groupMeta ?? {}) : {},
+    nodes,
+    edges: doc.edges.map((e) => ({ id: e.id, source: e.source, target: e.target })),
+    nextId: doc.nextId ?? maxIdx + 1,
+    groupLayouts: doc.groupLayouts ?? {},
+    groupMeta: doc.groupMeta ?? {},
     frames: doc.frames ?? []
   }
-}
-
-/** The genesets a workflow saved before they became the project's (0.3.6) — legacy flat
- *  favourites as a single "Favourites" geneset. */
-export function legacyGeneSets(doc: WorkflowDoc): GeneSet[] {
-  if (doc.geneSets) return doc.geneSets
-  return doc.favourites?.length
-    ? [{ id: 'gs_favourites', name: 'Favourites', genes: doc.favourites }]
-    : []
 }
 
 /** Serializable workflow = graph + per-node config + dashboard layout (string form). */
@@ -192,11 +137,7 @@ export function serializeWorkflow(s: SerializeInput): string {
   return JSON.stringify(buildWorkflowDoc(s), null, 2)
 }
 
-export function deserializeWorkflow(text: string): LoadedWorkflow {
-  return parseWorkflowDoc(JSON.parse(text) as WorkflowDoc)
-}
-
 /** An empty workflow doc (fresh tab in a project). */
 export function emptyWorkflowDoc(): WorkflowDoc {
-  return { version: 3, nextId: 1, nodes: [], edges: [] }
+  return { version: WORKFLOW_DOC_VERSION, nextId: 1, nodes: [], edges: [] }
 }

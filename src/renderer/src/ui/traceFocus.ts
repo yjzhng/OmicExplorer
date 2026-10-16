@@ -34,7 +34,9 @@ const sources = new WeakMap<HTMLElement, Map<string, Map<object, number>>>()
 
 /** A 3-D scene redraws on any restyle and puts its camera back to the layout's, which holds the
  *  user's turn or zoom only once Plotly has saved it — so a fade mid-way (a hover after a scroll
- *  zoom) snapped the view back. First write each scene's live camera into the layout. */
+ *  zoom) snapped the view back. First write each scene's live camera into the layout — and, in
+ *  an orthographic scene, its live aspect ratio: there a scroll zoom scales the aspect ratio,
+ *  not the camera. */
 export function keepCameras(el: PlotlyGraphDiv): void {
   const gd = el as unknown as {
     layout?: Record<string, unknown>
@@ -47,7 +49,13 @@ export function keepCameras(el: PlotlyGraphDiv): void {
     const sceneLayout = full[key] as { _scene?: { getCamera?: () => unknown } } | undefined
     const camera = sceneLayout?._scene?.getCamera?.()
     if (!camera) continue
-    gd.layout[key] = { ...(gd.layout[key] as object | undefined), camera }
+    const ortho = (camera as { projection?: { type?: string } }).projection?.type === 'orthographic'
+    const aspect = (full[key] as { aspectratio?: Record<string, number> }).aspectratio
+    gd.layout[key] = {
+      ...(gd.layout[key] as object | undefined),
+      camera,
+      ...(ortho && aspect ? { aspectmode: 'manual', aspectratio: { ...aspect } } : null)
+    }
     ;(full[key] as Record<string, unknown>).camera = camera
   }
 }

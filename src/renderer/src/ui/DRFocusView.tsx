@@ -17,6 +17,7 @@ import {
   curveBand,
   curvePointsFromStd,
   curveSampleX,
+  curveDescribed,
   logistic,
   replicateLog2FCs,
   responseCurve,
@@ -119,9 +120,11 @@ function widenExtent(
   if (curves.length) {
     for (const r of curves) {
       const c = r.curve!
-      // A logistic is monotonic: its ends bound it.
-      add(Math.log2(logistic(c.xMin, c)))
-      add(Math.log2(logistic(c.xMax, c)))
+      // A logistic is monotonic: its ends bound it. An undescribed curve is drawn flat at 0.
+      if (curveDescribed(c)) {
+        add(Math.log2(logistic(c.xMin, c)))
+        add(Math.log2(logistic(c.xMax, c)))
+      } else add(0)
       // The band is an overlay on the data, not data: it never sets the scale (a fit the data
       // don't pin down would stretch the axis without bound) — it's clipped at the axis instead.
       if (!look.points) continue
@@ -341,22 +344,29 @@ export function DRFocusView({
         for (const r of gRows.filter((r) => r.curve && r.curve.axis === axis)) {
           const c = r.curve!
           const col = color(id, gRows, r.comparison)
+          // Undescribed (its run described responders only, and it isn't one): drawn flat at 0,
+          // with no band and no EC50 — as a response surface method curve without a description.
+          const described = curveDescribed(c)
           const at = curveSampleX(c, SAMPLES)
           const xs = at.map((lx) => 10 ** lx)
-          const ys = at.map((lx) => Math.log2(logistic(lx, c)))
+          const ys = at.map((lx) => (described ? Math.log2(logistic(lx, c)) : 0))
           // The measured points — every replicate — the fit was made on (see curvePoints).
           const got = curvePoints(r, geneStd, axis)
           const pts = (got.x ?? []).map((x, i) => ({ x: 10 ** x, ratio: got.y?.[i] ?? NaN }))
           // The 4PL's 95% confidence band, under the curve: a shaded band along it, or whiskers on
           // it at the tested doses, capped (fitError); an unbounded stretch is said in the hover.
-          const e = look.errors && range ? fitError(c, got, look.errorStyle, cap(range)) : null
+          const e =
+            described && look.errors && range ? fitError(c, got, look.errorStyle, cap(range)) : null
           const noBand = e?.unbounded
             ? "<br><i>band unbounded — the data don't constrain this fit</i>"
             : ''
           // Every curve is drawn as its 4PL (the volcano's estimate); one whose F-test doesn't
           // reject flat says so — its final model (CompareResultRow.model) is M0.
-          const modelNote =
-            r.model === 'M0' ? "<br><i>F-test doesn't reject flat (model M0)</i>" : ''
+          const modelNote = !described
+            ? '<br><i>not described (responders only)</i>'
+            : r.model === 'M0'
+              ? "<br><i>F-test doesn't reject flat (model M0)</i>"
+              : ''
           traces.push({
             type: 'scatter',
             mode: 'lines',
@@ -418,7 +428,7 @@ export function DRFocusView({
             })
           // EC50 (when shown), where it falls within the tested doses — a 4PL's only (M0 has none).
           const ec50 = -c.pec50
-          if (look.ec50Line && ec50 >= c.xMin && ec50 <= c.xMax)
+          if (described && look.ec50Line && ec50 >= c.xMin && ec50 <= c.xMax)
             shapes.push({
               type: 'line',
               x0: 10 ** ec50,

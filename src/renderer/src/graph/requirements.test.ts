@@ -97,7 +97,11 @@ describe('tile requirements', () => {
         displayMap: {},
         annotationMap: {}
       }) as unknown as NodeResult
-    expect(factsOf(res('surface'))).toMatchObject({ kind: 'curveFit', detection: 'spline', surface: true })
+    expect(factsOf(res('surface'))).toMatchObject({
+      kind: 'curveFit',
+      detection: 'spline',
+      surface: true
+    })
     expect(factsOf(res('dose'))).toMatchObject({ detection: 'spline', surface: false })
   })
 

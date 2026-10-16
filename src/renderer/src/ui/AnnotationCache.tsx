@@ -7,9 +7,14 @@ import { useCallback, useEffect, useState, type CSSProperties, type ReactNode } 
 import { StatusDot, type StatusInfo } from '../graph/StatusDot'
 import { Chevron } from './Chevron'
 import { formatSize, REVEAL } from './fileLabels'
+import { Select } from './Select'
+import { TableSearch } from './TableSearch'
 import { UI } from './theme'
 
 type Summary = Awaited<ReturnType<Window['api']['refCacheSummary']>>
+type BrowseQuery = Parameters<Window['api']['browseRefCache']>[0]
+type BrowseResult = Awaited<ReturnType<Window['api']['browseRefCache']>>
+type BrowseRow = BrowseResult['rows'][number]
 type Target = Parameters<Window['api']['clearRefCache']>[0]
 
 const date = (ms: number): string => (ms ? new Date(ms).toLocaleDateString() : '—')
@@ -290,6 +295,221 @@ function SourceTable({
       {uni.species.length > MAX_TAXON_COLS + 1 && (
         <div style={styles.hint}>
           Columns for the {MAX_TAXON_COLS} species with the most proteins; All counts every one.
+        </div>
+      )}
+    </>
+  )
+}
+
+/** Proteins the browser fetches per page. */
+const BROWSE_PAGE = 100
+
+/** The sources a species' proteins were looked up for. */
+const sourcesOf = (sp: NonNullable<Summary['uniprot']>['species'][number] | undefined): string[] =>
+  (sp?.sources ?? []).filter((s) => s.count + s.outdated > 0).map((s) => s.field)
+
+/** Browse the cache one species and one source at a time: pick both, then search and page
+ *  through that slice — its proteins with their gene name and the source's values. A row opens to
+ *  its values in full. `uni.updated` re-runs the search when the cache changes under it. */
+function CacheBrowser({ uni }: { uni: NonNullable<Summary['uniprot']> }): ReactNode {
+  const [taxon, setTaxon] = useState(() => uni.species[0]?.taxon ?? 0)
+  const species = uni.species.find((sp) => sp.taxon === taxon) ?? uni.species[0]
+  const available = sourcesOf(species)
+  const [pickedField, setField] = useState('')
+  // A source the species wasn't looked up for falls back to its first one.
+  const field = available.includes(pickedField) ? pickedField : (available[0] ?? '')
+  const [query, setQuery] = useState('')
+  const [emptyOnly, setEmptyOnly] = useState(false)
+  const [page, setPage] = useState<{ cols: string[]; total: number; rows: BrowseRow[] }>({
+    cols: [],
+    total: 0,
+    rows: []
+  })
+  const [loading, setLoading] = useState(false)
+  const [failed, setFailed] = useState<string | null>(null)
+  const [openAcc, setOpenAcc] = useState<Set<string>>(new Set())
+  const spTaxon = species?.taxon ?? 0
+  // One page from the main process; a failure is shown rather than left as a search that never
+  // ends. (The browser's handler lives in the main process and preload, which an open app picks up
+  // only on restart.)
+  const search = async (q: BrowseQuery): Promise<BrowseResult | null> => {
+    try {
+      if (typeof window.api.browseRefCache !== 'function')
+        throw new Error('restart the app to load the cache browser')
+      const r = await window.api.browseRefCache(q)
+      setFailed(null)
+      return r
+    } catch (e) {
+      setFailed(e instanceof Error ? e.message : String(e))
+      return null
+    }
+  }
+
+  // A new slice or search starts from the first page — after a short pause in typing, and only
+  // its own reply lands (a slower, older one is dropped).
+  useEffect(() => {
+    if (!field) return
+    let live = true
+    const t = setTimeout(() => {
+      setLoading(true)
+      void search({ taxon: spTaxon, field, query, emptyOnly, offset: 0, limit: BROWSE_PAGE })
+        .then((r) => {
+          if (!live || !r) return
+          setPage(r)
+          setOpenAcc(new Set())
+        })
+        .finally(() => live && setLoading(false))
+    }, 200)
+    return () => {
+      live = false
+      clearTimeout(t)
+    }
+  }, [spTaxon, field, query, emptyOnly, uni.updated])
+  const more = (): void => {
+    setLoading(true)
+    void search({
+      taxon: spTaxon,
+      field,
+      query,
+      emptyOnly,
+      offset: page.rows.length,
+      limit: BROWSE_PAGE
+    })
+      .then((r) => r && setPage((prev) => ({ ...r, rows: [...prev.rows, ...r.rows] })))
+      .finally(() => setLoading(false))
+  }
+  const flip = (acc: string): void =>
+    setOpenAcc((prev) => {
+      const next = new Set(prev)
+      if (!next.delete(acc)) next.add(acc)
+      return next
+    })
+
+  const label = uni.sources.find((s) => s.field === field)?.label ?? field
+  // The gene column, unless the source IS gene names.
+  const withGene = !page.cols.includes('geneName')
+  const { rows, total, cols } = page
+
+  return (
+    <>
+      <div style={styles.browseBar}>
+        <span style={styles.pick}>
+          <span style={styles.muted}>Species</span>
+          <Select
+            value={String(spTaxon)}
+            options={uni.species.map((sp) => ({
+              value: String(sp.taxon),
+              label: `${sp.taxon || 'not recorded'} · ${count(sp.count)} proteins`
+            }))}
+            onChange={(v) => setTaxon(Number(v))}
+          />
+        </span>
+        <span style={styles.pick}>
+          <span style={styles.muted}>Source</span>
+          <Select
+            value={field}
+            options={uni.sources
+              .filter((s) => available.includes(s.field))
+              .map((s) => ({ value: s.field, label: s.label }))}
+            onChange={setField}
+          />
+        </span>
+      </div>
+      <div style={styles.browseBar}>
+        <TableSearch
+          value={query}
+          onChange={setQuery}
+          placeholder="Accession, gene, value…"
+          title="Every word must appear in the accession, the gene name or one of the values"
+        />
+        <label
+          style={styles.check}
+          title={`Proteins looked up for ${label} that UniProt returned nothing for`}
+        >
+          <input
+            type="checkbox"
+            checked={emptyOnly}
+            onChange={(e) => setEmptyOnly(e.target.checked)}
+          />
+          No value only
+        </label>
+        <span style={styles.muted}>
+          {failed ? (
+            <span style={{ color: RED }}>Couldn&apos;t search the cache: {failed}</span>
+          ) : loading && rows.length === 0 ? (
+            'Searching…'
+          ) : (
+            `${count(total)} proteins`
+          )}
+        </span>
+      </div>
+      {rows.length > 0 && (
+        <table style={{ ...styles.table, tableLayout: 'fixed' }}>
+          <colgroup>
+            <col style={{ width: 120 }} />
+            {withGene && <col style={{ width: 100 }} />}
+            {cols.map((c) => (
+              <col key={c} />
+            ))}
+          </colgroup>
+          <thead>
+            <tr>
+              <th style={styles.colHead}>Accession</th>
+              {withGene && <th style={styles.colHead}>Gene</th>}
+              {cols.map((c) => (
+                <th key={c} style={styles.colHead}>
+                  {c}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r) => {
+              const isOpen = openAcc.has(r.acc)
+              const cell = { ...styles.td, ...(isOpen ? styles.wrap : styles.clip) }
+              const none = r.values.every((v) => !v)
+              return (
+                <tr
+                  key={r.acc}
+                  style={styles.browseRow}
+                  onClick={() => flip(r.acc)}
+                  title={isOpen ? 'Clip the values to one line' : 'Show the values in full'}
+                >
+                  <td style={{ ...styles.td, ...styles.clip, verticalAlign: 'top' }}>
+                    <span style={styles.dotted}>
+                      <Chevron deg={isOpen ? 90 : 0} size={9} />
+                      {r.acc}
+                    </span>
+                  </td>
+                  {withGene && (
+                    <td style={{ ...cell, verticalAlign: 'top' }}>
+                      {r.gene || <span style={styles.muted}>—</span>}
+                    </td>
+                  )}
+                  {r.values.map((v, i) => (
+                    <td key={cols[i]} style={{ ...cell, verticalAlign: 'top' }}>
+                      {v ||
+                        (none && i === 0 ? (
+                          <span style={{ ...styles.muted, color: AMBER }}>no value</span>
+                        ) : (
+                          <span style={styles.muted}>—</span>
+                        ))}
+                    </td>
+                  ))}
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      )}
+      {rows.length < total && (
+        <div style={styles.hint}>
+          <Btn disabled={loading} onClick={more}>
+            Show {count(Math.min(BROWSE_PAGE, total - rows.length))} more
+          </Btn>
+          <span style={{ marginLeft: 8 }}>
+            {count(rows.length)} of {count(total)} shown
+          </span>
         </div>
       )}
     </>
@@ -628,6 +848,18 @@ export function AnnotationCache(): ReactNode {
                 </div>
               </Section>
             )}
+
+            {/* Closed until asked for (opening it reads the whole store), so its key is in the
+                remembered set when OPEN, unlike the other sections'. */}
+            <Section
+              sub
+              title="Browse proteins"
+              summary={count(uni.accessions)}
+              open={folded.has('uniprot-browse-open')}
+              onToggle={toggle('uniprot-browse-open')}
+            >
+              <CacheBrowser uni={uni} />
+            </Section>
           </>
         )}
       </Section>
@@ -819,6 +1051,19 @@ const styles: Record<string, CSSProperties> = {
     whiteSpace: 'nowrap'
   },
   num: { textAlign: 'right', fontVariantNumeric: 'tabular-nums' },
+  clip: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+  wrap: { whiteSpace: 'normal', wordBreak: 'break-word', lineHeight: 1.45 },
+  browseBar: { display: 'flex', alignItems: 'center', gap: 12, margin: '2px 0 8px' },
+  check: {
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: 5,
+    fontSize: 12,
+    color: UI.text,
+    cursor: 'pointer'
+  },
+  browseRow: { cursor: 'pointer' },
+  pick: { display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: 12 },
   // Above the Settings window (its scrim is 60, the window 61).
   confirmScrim: { position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.35)', zIndex: 70 },
   confirm: {

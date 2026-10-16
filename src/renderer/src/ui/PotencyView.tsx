@@ -6,7 +6,7 @@
  */
 import { useMemo } from 'react'
 
-import { comparisonOf, fcName, type CompareResultRow } from '../engine'
+import { comparisonOf, curveDescribed, fcName, type CompareResultRow } from '../engine'
 import {
   DEFAULT_EFFECT_LABELS,
   type EffectColors,
@@ -105,7 +105,9 @@ export function PotencyView({
       if (show === 'called' && !r.signf) continue
       const c = r.curve
       if (c) {
-        if (r.log2FC != null && Number.isFinite(c.pec50)) add(r, 10 ** -c.pec50, r.log2FC)
+        // an undescribed curve (its run described responders only) has no EC50 to place
+        if (curveDescribed(c) && r.log2FC != null && Number.isFinite(c.pec50))
+          add(r, 10 ** -c.pec50, r.log2FC)
         continue
       }
       // The response surface method: a curve's description midpoint against its peak; a

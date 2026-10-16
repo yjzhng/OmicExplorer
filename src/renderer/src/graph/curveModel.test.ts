@@ -4,7 +4,13 @@
  */
 import { describe, expect, it } from 'vitest'
 
-import { compareSlices, previewCompare, type CompareInput, type CondSelector, type StandardRow } from '../engine'
+import {
+  compareSlices,
+  previewCompare,
+  type CompareInput,
+  type CondSelector,
+  type StandardRow
+} from '../engine'
 import { sampleRows, valuesOf } from './compareModel'
 import { curveModel, readCurveState, type CurveState } from './curveModel'
 
@@ -14,8 +20,15 @@ const DOSES = [1, 3, 10, 30, 100]
 function design(own: boolean): StandardRow[] {
   const out: StandardRow[] = []
   const cmpds: Array<[string, number[]]> = own
-    ? [['A', [0, ...DOSES]], ['B', [0, ...DOSES]]]
-    : [['A', DOSES], ['B', DOSES], ['DMSO', [0]]]
+    ? [
+        ['A', [0, ...DOSES]],
+        ['B', [0, ...DOSES]]
+      ]
+    : [
+        ['A', DOSES],
+        ['B', DOSES],
+        ['DMSO', [0]]
+      ]
   let k = 0
   for (const cell of ['M', 'W'])
     for (const time of [0, 8, 24])
@@ -40,8 +53,20 @@ const fresh = (axis: CurveState['axis'] = 'dose'): CurveState => ({
 })
 const run = (rows: StandardRow[], s: CurveState) => {
   const m = curveModel(s, sampleRows(rows, active), active)
-  const input: CompareInput = { rows, activeConditions: active, num: m.num, den: m.den, match: m.match, curveAxis: m.refAx }
-  return { m, input, preview: previewCompare(input), slices: m.picked ? compareSlices(input).slices : [] }
+  const input: CompareInput = {
+    rows,
+    activeConditions: active,
+    num: m.num,
+    den: m.den,
+    match: m.match,
+    curveAxis: m.refAx
+  }
+  return {
+    m,
+    input,
+    preview: previewCompare(input),
+    slices: m.picked ? compareSlices(input).slices : []
+  }
 }
 // each curve's group and its baseline, as "cmpd|cell|time ← baseline cmpd|time"
 const pairs = (slices: ReturnType<typeof run>['slices']): string[] =>
@@ -119,7 +144,11 @@ describe('picks the engine cannot run are disabled', () => {
 
 describe('filter and context', () => {
   it('a filtered cell is pinned alike on both sides; a dropped compound only on the curves', () => {
-    const { m, preview, slices } = run(own, { ...fresh(), filter: { cell: ['W'] }, drop: { cmpd: ['B'] } })
+    const { m, preview, slices } = run(own, {
+      ...fresh(),
+      filter: { cell: ['W'] },
+      drop: { cmpd: ['B'] }
+    })
     expect(m.num.cell).toEqual(['M'])
     expect(m.den.cell).toEqual(['M'])
     expect(m.num.cmpd).toEqual(['A'])
@@ -134,30 +163,51 @@ describe('time as context on a dose axis', () => {
     const matched = run(own, { ...fresh(), drop: { time: ['24'] } })
     expect(matched.m.ctxConds).toContain('time')
     expect(matched.m.num.time).toEqual(['0', '8'])
-    expect(new Set(matched.slices.map((sl) => valuesOf(sl.grp, 'time').join()))).toEqual(new Set(['0', '8']))
+    expect(new Set(matched.slices.map((sl) => valuesOf(sl.grp, 'time').join()))).toEqual(
+      new Set(['0', '8'])
+    )
     const pinned = run(own, { ...fresh(), bTime: ['0'], drop: { time: ['24'] } })
     expect(pinned.m.num.time).toEqual(['0', '8'])
     expect(pinned.m.den.time).toEqual(['0'])
-    expect(new Set(pinned.slices.map((sl) => valuesOf(sl.grp, 'time').join()))).toEqual(new Set(['0', '8']))
+    expect(new Set(pinned.slices.map((sl) => valuesOf(sl.grp, 'time').join()))).toEqual(
+      new Set(['0', '8'])
+    )
   })
 })
 
 describe('saved configs read back', () => {
   it('a legacy DMSO config (den on the control compound) reads as the dose-0 column and runs the same', () => {
-    const legacy: { num: CondSelector; den: CondSelector } = { num: { cmpd: ['A', 'B'], dose: ['1', '3', '10', '30', '100'] }, den: { cmpd: ['DMSO'] } }
-    const s = readCurveState({ ...legacy, curveAxis: 'dose' }, sampleRows(shared, active), active, { axis: 'dose', detection: '4pl' })
+    const legacy: { num: CondSelector; den: CondSelector } = {
+      num: { cmpd: ['A', 'B'], dose: ['1', '3', '10', '30', '100'] },
+      den: { cmpd: ['DMSO'] }
+    }
+    const s = readCurveState({ ...legacy, curveAxis: 'dose' }, sampleRows(shared, active), active, {
+      axis: 'dose',
+      detection: '4pl'
+    })
     expect(s.bDose).toEqual(['0'])
     expect(s.bTime).toEqual([])
     // DMSO, never dosed, isn't read as a compound left out
     expect(s.drop).toEqual({})
-    const then = compareSlices({ rows: shared, activeConditions: active, ...legacy, match: ['cell', 'time', 'cmpd'], curveAxis: 'dose' }).slices
+    const then = compareSlices({
+      rows: shared,
+      activeConditions: active,
+      ...legacy,
+      match: ['cell', 'time', 'cmpd'],
+      curveAxis: 'dose'
+    }).slices
     expect(pairs(run(shared, s).slices)).toEqual(pairs(then))
   })
 
   it('a config this window wrote reads back to the same state', () => {
     const s0 = { ...fresh(), bTime: ['0'], filter: { cell: ['W'] } }
     const { m } = run(own, s0)
-    const s1 = readCurveState({ num: m.num, den: m.den, curveAxis: 'dose' }, sampleRows(own, active), active, { axis: 'dose', detection: '4pl' })
+    const s1 = readCurveState(
+      { num: m.num, den: m.den, curveAxis: 'dose' },
+      sampleRows(own, active),
+      active,
+      { axis: 'dose', detection: '4pl' }
+    )
     expect(s1.bDose).toEqual(['0'])
     expect(s1.bTime).toEqual(['0'])
     expect(s1.filter).toEqual({ cell: ['W'] })
@@ -168,13 +218,30 @@ describe('the baseline in words (plots: "baseline (…)")', () => {
   it('names what the baseline holds that the curve does not share', async () => {
     const { baselineText } = await import('../engine')
     const at = (rows: StandardRow[], f: Partial<StandardRow>): StandardRow[] =>
-      rows.filter((r) => Object.entries(f).every(([k, v]) => (r as unknown as Record<string, unknown>)[k] === v))
+      rows.filter((r) =>
+        Object.entries(f).every(([k, v]) => (r as unknown as Record<string, unknown>)[k] === v)
+      )
     // DMSO design, dose curve at 8 h against dose 0 at 8 h (matched time): "DMSO · dose 0"
-    expect(baselineText(at(shared, { cmpd: 'DMSO', time: 8, cell: 'M' }), at(shared, { cmpd: 'A', time: 8, cell: 'M' }))).toBe('DMSO · dose 0')
+    expect(
+      baselineText(
+        at(shared, { cmpd: 'DMSO', time: 8, cell: 'M' }),
+        at(shared, { cmpd: 'A', time: 8, cell: 'M' })
+      )
+    ).toBe('DMSO · dose 0')
     // own dose 0, one position at time 0, for the 24 h curve: "dose 0 · time 0"
-    expect(baselineText(at(own, { cmpd: 'A', dose: 0, time: 0, cell: 'M' }), at(own, { cmpd: 'A', time: 24, cell: 'M' }).filter((r) => (r.dose as number) > 0))).toBe('dose 0 · time 0')
+    expect(
+      baselineText(
+        at(own, { cmpd: 'A', dose: 0, time: 0, cell: 'M' }),
+        at(own, { cmpd: 'A', time: 24, cell: 'M' }).filter((r) => (r.dose as number) > 0)
+      )
+    ).toBe('dose 0 · time 0')
     // time curve of dose 10 against itself at time 0: "time 0"
-    expect(baselineText(at(own, { cmpd: 'A', dose: 10, time: 0, cell: 'M' }), at(own, { cmpd: 'A', dose: 10, cell: 'M' }).filter((r) => (r.time as number) > 0))).toBe('time 0')
+    expect(
+      baselineText(
+        at(own, { cmpd: 'A', dose: 10, time: 0, cell: 'M' }),
+        at(own, { cmpd: 'A', dose: 10, cell: 'M' }).filter((r) => (r.time as number) > 0)
+      )
+    ).toBe('time 0')
   })
 })
 

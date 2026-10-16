@@ -12,7 +12,7 @@ import {
 import { Readable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 import { promisify } from 'node:util'
-import { createGzip, gunzip } from 'node:zlib'
+import { createGunzip, createGzip, gunzip } from 'node:zlib'
 import { basename, dirname, isAbsolute, join, relative, sep } from 'node:path'
 
 import { dialog, ipcMain, shell } from 'electron'
@@ -27,6 +27,50 @@ async function readProjectText(path: string): Promise<string> {
   const buf = await readFile(path)
   const gz = buf.length > 2 && buf[0] === 0x1f && buf[1] === 0x8b
   return (gz ? await gunzipAsync(buf) : buf).toString('utf8')
+}
+
+/** The first ~`chars` characters of a project file's text, decompressing only as far as that —
+ *  enough for its header (format, appVersion, createdWith come first) without reading a large
+ *  project whole. */
+export async function readProjectHead(path: string, chars = 1500): Promise<string> {
+  const gz = await new Promise<boolean>((resolve, reject) => {
+    const st = createReadStream(path, { start: 0, end: 1 })
+    const got: Buffer[] = []
+    st.on('data', (b) => got.push(b as Buffer))
+    st.on('error', reject)
+    st.on('end', () => {
+      const b = Buffer.concat(got)
+      resolve(b.length > 1 && b[0] === 0x1f && b[1] === 0x8b)
+    })
+  })
+  const src = createReadStream(path)
+  const stream = gz ? src.pipe(createGunzip()) : src
+  let text = ''
+  try {
+    for await (const chunk of stream) {
+      text += (chunk as Buffer).toString('utf8')
+      if (text.length >= chars) break
+    }
+  } finally {
+    src.destroy()
+    if (stream !== src) stream.destroy()
+  }
+  return text.slice(0, chars)
+}
+
+/** A free name beside `path` for a copy of the file as saved by app `version`:
+ *  `<name>.omicexplorer` → `<name>.v0.3.4.omicexplorer.bak` (then `… (2).bak`, …). */
+async function backupPathFor(path: string, version: string): Promise<string> {
+  const safe = version.replace(/[^0-9A-Za-z._-]+/g, '') || 'unknown'
+  const base = `${path.replace(/\.omicexplorer$/i, '')}.v${safe}.omicexplorer`
+  for (let i = 1; ; i++) {
+    const p = i === 1 ? `${base}.bak` : `${base} (${i}).bak`
+    try {
+      await stat(p)
+    } catch {
+      return p
+    }
+  }
 }
 
 export interface OpenFileResult {
@@ -236,6 +280,28 @@ export function registerFileIo(): void {
 
   ipcMain.handle('proj:read', async (_evt, path: string): Promise<string> => {
     return readProjectText(path)
+  })
+
+  // Each file's first characters (its header), for the home page's version tags; null where a
+  // file can't be read.
+  ipcMain.handle(
+    'proj:heads',
+    async (_evt, paths: string[]): Promise<Record<string, string | null>> => {
+      const out: Record<string, string | null> = {}
+      await Promise.all(
+        (paths ?? []).map(async (p) => {
+          out[p] = await readProjectHead(p).catch(() => null)
+        })
+      )
+      return out
+    }
+  )
+
+  // A copy of the project file as it is, beside it, before Fix rewrites it; returns its path.
+  ipcMain.handle('proj:backup', async (_evt, path: string, version: string): Promise<string> => {
+    const to = await backupPathFor(path, version)
+    await copyFile(path, to, constants.COPYFILE_EXCL)
+    return to
   })
 
   // Written to a temporary file first and moved over the project only once complete, so a save

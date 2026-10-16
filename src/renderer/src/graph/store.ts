@@ -58,6 +58,8 @@ import {
   isNewerVersion,
   ParkedRef,
   PROJECT_VERSION,
+  projectHeader,
+  type ProjectHeader,
   savedByVersion,
   serializeProjectChunks,
   unpackParked,
@@ -107,6 +109,7 @@ import {
 import {
   DEFAULT_EFFECT_LABELS,
   isComparisonKind,
+  describesAll,
   isContrastConfigured,
   isStep,
   normalizeCompareConfig,
@@ -345,6 +348,9 @@ interface GraphState {
     id: string,
     colors: Partial<Record<'up' | 'down' | 'none', string | undefined>>
   ) => void
+  /** A Curve fit's method label: 'custom', or unset (the preset its detector implies). UI only —
+   *  the run reads the models themselves — so it never stales the result. */
+  setCurveMethod: (id: string, method: 'custom' | undefined) => void
   /** Set a curve fit's dose unit (pEC50's molar scale). Display-only — never stales the result. */
   /** Set a Load tile's condition units. Display-only — downstream results stay current. */
   setLoadUnits: (id: string, units: CondUnits) => void
@@ -434,6 +440,9 @@ interface GraphState {
   // ── project (.omicexplorer) → folders → workflows ────────────────────────
   projectPath: string | null
   projectName: string
+  /** the app version the open project was created with (saved as its `createdWith`); null for a
+   *  file from before 0.3.7, which never recorded it */
+  projectCreatedWith: string | null
   /** whether a project is open (false = show the home page) */
   projectOpen: boolean
   /** active folder's path, scanned for input files (kept in sync from folders) */
@@ -471,6 +480,9 @@ interface GraphState {
   activeWorkflowId: string | null
   /** recently opened/saved projects (persisted to localStorage) */
   recentProjects: RecentProject[]
+  /** each recent project file's header (format, saved by, created with), read from disk for the
+   *  home page's version tags; a path missing here hasn't been read (or couldn't be) */
+  recentHeaders: Record<string, ProjectHeader>
   /** last error from opening a project (shown on the Home screen); null when none */
   openError: string | null
   /** why the last save failed (cleared by the next successful one) */
@@ -531,6 +543,11 @@ interface GraphState {
   /** recent projects: drop one entry, or prune entries whose file no longer exists */
   forgetRecent: (path: string) => void
   pruneMissingRecents: () => Promise<void>
+  /** read the recent project files' headers into recentHeaders */
+  loadRecentHeaders: () => Promise<void>
+  /** rewrite an older project file in the current format, keeping a copy of the old file beside
+   *  it; the open project is saved instead. Returns the backup's path, or an error. */
+  upgradeProject: (path: string) => Promise<{ backup?: string; error?: string }>
 
   /** workflows within the active folder */
   addWorkflow: (name?: string) => void
@@ -1192,8 +1209,8 @@ function loadSlot(get: Getter, set: Setter, folderId: string, workflowId?: strin
   // Restore run state so a resumed session shows results (Re-run, not Run).
   const nodes: GraphNode[] = restoredStatuses(loaded.nodes, results)
   set({
-    // Groups kept together in the step order (a workflow saved before they were may not be).
-    nodes: sortStepsByWiring(nodes, loaded.edges, loaded.frames),
+    // Already in step order: the file's upgrade (upgrades.ts) put every workflow in it on read.
+    nodes,
     edges: loaded.edges,
     nextId: loaded.nextId,
     groupLayouts: loaded.groupLayouts,
@@ -1400,6 +1417,7 @@ function startFromTemplate(get: Getter, set: Setter, text: string): void {
   set({
     projectPath: null,
     projectName: 'Untitled project',
+    projectCreatedWith: typeof __APP_VERSION__ === 'string' ? __APP_VERSION__ : null,
     projectOpen: true,
     folders: proj.folders,
     activeFolderId: proj.activeFolderId,
@@ -1413,6 +1431,15 @@ function startFromTemplate(get: Getter, set: Setter, text: string): void {
   useAppView.getState().setView('canvas')
 }
 
+/** The header a file just saved from this session carries (for the home page's version tag). */
+function savedHeader(get: Getter): ProjectHeader {
+  return {
+    format: PROJECT_VERSION,
+    savedBy: typeof __APP_VERSION__ === 'string' ? __APP_VERSION__ : null,
+    createdWith: get().projectCreatedWith
+  }
+}
+
 function buildProjectFile(get: Getter): ProjectFile {
   const s = get()
   const av = useAppView.getState()
@@ -1421,6 +1448,7 @@ function buildProjectFile(get: Getter): ProjectFile {
     version: PROJECT_VERSION,
     // Named when an older app version is asked to open this file (see deserializeProject).
     ...(typeof __APP_VERSION__ === 'string' ? { appVersion: __APP_VERSION__ } : null),
+    ...(s.projectCreatedWith ? { createdWith: s.projectCreatedWith } : null),
     name: s.projectName,
     folders: s.projectPath ? withRelPaths(s.folders, s.projectPath) : s.folders,
     activeFolderId: s.activeFolderId ?? s.folders[0]?.id ?? '',
@@ -1480,6 +1508,7 @@ export const useGraph = create<GraphState>()((set, get) => ({
   outputSubdirFor: (stepId, folderId, workflowId) =>
     pinOutDirs(get, set, [stepId], folderId, workflowId)[stepId] ?? null,
   projectName: 'Untitled project',
+  projectCreatedWith: null,
   projectOpen: false,
   dataDir: null,
   dirty: false,
@@ -1490,6 +1519,7 @@ export const useGraph = create<GraphState>()((set, get) => ({
   activeFolderId: null,
   activeWorkflowId: null,
   recentProjects: [],
+  recentHeaders: {},
   openError: null,
   saveError: null,
   saving: false,
@@ -1872,6 +1902,22 @@ export const useGraph = create<GraphState>()((set, get) => ({
       nodes: s.nodes.map((n) =>
         n.id === id && isStep(n)
           ? { ...n, data: { ...n.data, config: { ...cfg, effectLabels } as NodeConfig } }
+          : n
+      ),
+      dirty: true
+    }))
+  },
+  setCurveMethod: (id, method) => {
+    const node = get().nodes.find((n) => n.id === id)
+    if (!node || !isStep(node) || !isComparisonKind(node.data.kind)) return
+    const cfg = node.data.config as CompareConfig
+    if (cfg.curveMethod === method) return
+    get().commit()
+    // Display-only, so patch the config directly (updateConfig would stale the curve fit).
+    set((s) => ({
+      nodes: s.nodes.map((n) =>
+        n.id === id && isStep(n)
+          ? { ...n, data: { ...n.data, config: { ...cfg, curveMethod: method } as NodeConfig } }
           : n
       ),
       dirty: true
@@ -2816,8 +2862,7 @@ export const useGraph = create<GraphState>()((set, get) => ({
               // under the 4PL model, the 4PL surface detector (adjusted F)
               detector: cfg.detection === 'spline' ? 'spline' : '4pl',
               surfaceDescription: cfg.surfaceDescription,
-              // Hybrid only (its setting isn't offered under 4PL, so a saved one is ignored there)
-              describeAll: cfg.detection === 'spline' && !!cfg.describeAll,
+              describeAll: describesAll(cfg, surface),
               threshold: cfg.threshold,
               interpolation: !!cfg.interpolation
             })
@@ -2832,7 +2877,9 @@ export const useGraph = create<GraphState>()((set, get) => ({
               activeConditions: std.activeConditions,
               curveAxis,
               threshold: cfg.threshold,
-              interpolation: !!cfg.interpolation
+              interpolation: !!cfg.interpolation,
+              // responders only marks the rest undescribed (their 4PL is still their test)
+              describeAll: describesAll(cfg, false)
             })
         } else if (cfg.analysis === 'compare') {
           const numPinned = Object.values(cfg.num).some((v) => v && v.length > 0)
@@ -3486,6 +3533,7 @@ export const useGraph = create<GraphState>()((set, get) => ({
     set({
       projectPath: null,
       projectName: proj.name,
+      projectCreatedWith: typeof __APP_VERSION__ === 'string' ? __APP_VERSION__ : null,
       projectOpen: true,
       folders: proj.folders,
       activeFolderId: proj.activeFolderId,
@@ -3557,6 +3605,10 @@ export const useGraph = create<GraphState>()((set, get) => ({
       set({
         projectPath: p,
         projectName,
+        projectCreatedWith: proj.createdWith ?? null,
+        recentHeaders: p
+          ? { ...get().recentHeaders, [p]: projectHeader(text) }
+          : get().recentHeaders,
         projectOpen: true,
         folders,
         activeFolderId,
@@ -3604,7 +3656,8 @@ export const useGraph = create<GraphState>()((set, get) => ({
       dirty: false,
       saveError: null,
       saveWarning: layoutWarning(warnings),
-      recentProjects: pushRecent(get().recentProjects, { path, name: get().projectName })
+      recentProjects: pushRecent(get().recentProjects, { path, name: get().projectName }),
+      recentHeaders: { ...get().recentHeaders, [path]: savedHeader(get) }
     })
     return true
   },
@@ -3637,7 +3690,8 @@ export const useGraph = create<GraphState>()((set, get) => ({
       dirty: false,
       saveError: null,
       saveWarning: layoutWarning(warnings),
-      recentProjects: pushRecent(get().recentProjects, { path, name })
+      recentProjects: pushRecent(get().recentProjects, { path, name }),
+      recentHeaders: { ...get().recentHeaders, [path]: savedHeader(get) }
     })
     return true
   },
@@ -3951,6 +4005,58 @@ export const useGraph = create<GraphState>()((set, get) => ({
       if (kept.length !== list.length) set({ recentProjects: saveRecents(kept) })
     } catch {
       // best-effort — leave recents untouched on any probe failure
+    }
+  },
+  loadRecentHeaders: async () => {
+    const paths = get().recentProjects.map((r) => r.path)
+    if (paths.length === 0 || typeof window.api.readProjectHeads !== 'function') return
+    try {
+      const heads = await window.api.readProjectHeads(paths)
+      const next: Record<string, ProjectHeader> = {}
+      for (const [path, text] of Object.entries(heads)) if (text) next[path] = projectHeader(text)
+      set({ recentHeaders: { ...get().recentHeaders, ...next } })
+    } catch {
+      // best-effort — rows just go without a version tag
+    }
+  },
+  upgradeProject: async (path) => {
+    const s0 = get()
+    const isOpen = s0.projectOpen && s0.projectPath === path
+    try {
+      const text = await window.api.readProject(path)
+      const before = projectHeader(text)
+      // The old file, untouched, beside the project — the way back if the rewrite misreads it.
+      const backup = await window.api.backupProject(path, before.savedBy ?? 'unknown')
+      if (isOpen) {
+        // The open project was migrated when it was opened: saving it writes the current form.
+        if (!(await get().saveProject())) return { error: get().saveError ?? 'save failed' }
+        return { backup }
+      }
+      // Not open: read it as opening would (every migration applied), write it straight back.
+      const proj = deserializeProject(text)
+      // Header first, in the order the home page reads it back (projectHeader).
+      const { format, version, createdWith, ...body } = proj
+      const file: ProjectFile = {
+        format,
+        version,
+        ...(typeof __APP_VERSION__ === 'string' ? { appVersion: __APP_VERSION__ } : null),
+        ...(createdWith ? { createdWith } : null),
+        ...body
+      }
+      await window.api.saveProject(path, serializeProjectChunks(file))
+      set({
+        recentHeaders: {
+          ...get().recentHeaders,
+          [path]: {
+            format: PROJECT_VERSION,
+            savedBy: file.appVersion ?? null,
+            createdWith: createdWith ?? null
+          }
+        }
+      })
+      return { backup }
+    } catch (e) {
+      return { error: e instanceof Error ? e.message : String(e) }
     }
   },
 

@@ -9,6 +9,7 @@ import {
   type MouseEvent as ReactMouseEvent,
   type ReactNode
 } from 'react'
+import { createPortal } from 'react-dom'
 import {
   applyNodeChanges,
   Background,
@@ -46,10 +47,14 @@ import {
   ALL_OPS,
   canConnect,
   categoryOf,
+  entryKey,
   NODE_SPECS,
-  PLOT_CONFIG_KINDS
+  PLOT_SECTIONS,
+  plotEntriesFor,
+  type PlotMenuEntry
 } from './graph/registry'
-import { PlotConfig, PlotKindMenu } from './graph/NodeConfigPanel'
+import { PlotConfig, PlotEntryMenu } from './graph/NodeConfigPanel'
+import { projectStanding } from './graph/project'
 import {
   isStep,
   type GraphNode,
@@ -60,9 +65,19 @@ import {
   type StepNode
 } from './graph/types'
 import { Chevron } from './ui/Chevron'
-import { IconGear, IconTrash } from './ui/icons'
+import { IconGear, IconMenu, IconTrash } from './ui/icons'
+import { REVEAL } from './ui/fileLabels'
+import { placeMenu } from './ui/placeMenu'
 import { StatusIcon, StatusNote } from './ui/StatusNote'
-import { accentColors, ACCENT_LABELS, cssVars, PALETTES, UI } from './ui/theme'
+import {
+  accentColors,
+  ACCENT_LABELS,
+  cssVars,
+  PALETTES,
+  PLOT_FONTS,
+  UI,
+  type PlotFontId
+} from './ui/theme'
 import { ColorPicker } from './ui/ColorPicker'
 import { ToggleSwitch } from './ui/ToggleSwitch'
 import { FreezeNotice } from './ui/FreezeNotice'
@@ -985,30 +1000,68 @@ function PaletteSettings(): ReactNode {
   )
 }
 
+/** The process steps a plot can be added after, in the editor's order — the Plot defaults page's
+ *  first pick. */
+const DEFAULT_STEPS = ALL_OPS.filter(
+  (k) => categoryOf(k) !== 'plotting' && plotEntriesAfter(k).length > 0
+)
+/** The plot menu's entries for a step, in its section order (PLOT_SECTIONS). */
+function plotEntriesAfter(step: NodeKind): PlotMenuEntry[] {
+  return PLOT_SECTIONS.flatMap((sec) => sec.kinds)
+    .filter((k) => canConnect(step, k))
+    .flatMap(plotEntriesFor)
+}
+
 function PlotDefaults(): ReactNode {
-  const KINDS = ALL_OPS.filter((k) => PLOT_CONFIG_KINDS.has(k))
-  const [kind, setKind] = useState<NodeKind>(KINDS[0])
+  // Pick the process step first, then one of the plots it feeds — the plot tile's own menu, so
+  // Dose-response and Time-response are their own entries, as in the editor.
+  const [step, setStep] = useState<NodeKind>(DEFAULT_STEPS[0])
+  const entries = plotEntriesAfter(step)
+  const [pickedKey, setPickedKey] = useState('')
+  const entry = entries.find((e) => entryKey(e) === pickedKey) ?? entries[0]
+  const kind = entry.kind
   const plotDefaults = useAppSettings((s) => s.plotDefaults)
   const setPlotDefault = useAppSettings((s) => s.setPlotDefault)
   const clearPlotDefault = useAppSettings((s) => s.clearPlotDefault)
   const own = plotDefaults[kind]
-  // The panel edits a full config: the kind's built-in defaults with the stored overrides on top —
-  // the same value a new tile would be created with.
-  const config = { ...NODE_SPECS[kind].defaultConfig(), ...(own ?? {}) } as NodeConfig
+  // The panel edits a full config: what a new tile from this entry starts with — the kind's
+  // built-in defaults, the stored overrides on top, then the entry's own (dr's axis).
+  const config = {
+    ...NODE_SPECS[kind].defaultConfig(),
+    ...(own ?? {}),
+    ...(entry.override ?? {})
+  } as NodeConfig
+  // Dose-response and Time-response are one plot kind: one set of defaults serves both.
+  const shared = plotEntriesFor(kind).length > 1
   return (
     <>
-      <div style={styles.settingsSubTitle}>Defaults for new plots</div>
+      {/* One row: the process step, then the plot it feeds (and Reset, once there's a default). */}
       <div style={styles.defaultsHead}>
+        <span style={styles.defaultsLabel}>Process:</span>
+        <span style={styles.defaultsPick}>
+          <Select
+            value={step}
+            options={DEFAULT_STEPS.map((k) => ({ value: k, label: NODE_SPECS[k].label }))}
+            onChange={(v) => setStep(v as NodeKind)}
+          />
+        </span>
+        <span style={{ ...styles.defaultsLabel, marginLeft: 8 }}>Plot:</span>
         {/* The workflow tile's plot menu, single-choice: same sections, same rows. Its themed
             dropdown reads the canvas zoom, so it needs a provider of its own out here. */}
-        <ReactFlowProvider>
-          <PlotKindMenu value={kind} kinds={KINDS} onChange={setKind} />
-        </ReactFlowProvider>
+        <span style={styles.defaultsPick}>
+          <ReactFlowProvider>
+            <PlotEntryMenu
+              value={entryKey(entry)}
+              upstreamKind={step}
+              onChange={(e) => setPickedKey(entryKey(e))}
+            />
+          </ReactFlowProvider>
+        </span>
         {own && (
           <button
             style={styles.defaultsReset}
             onClick={() => clearPlotDefault(kind)}
-            title={`Forget the saved defaults for ${NODE_SPECS[kind].label}`}
+            title={`Forget the saved defaults for ${entry.label}`}
           >
             Reset
           </button>
@@ -1016,8 +1069,9 @@ function PlotDefaults(): ReactNode {
       </div>
       <div style={styles.settingsHint}>
         {own
-          ? `New ${NODE_SPECS[kind].label} tiles start with these settings.`
-          : `New ${NODE_SPECS[kind].label} tiles start with the built-in settings — change anything below to save a default.`}
+          ? `New ${entry.label} tiles start with these settings.`
+          : `New ${entry.label} tiles start with the built-in settings — change anything below to save a default.`}
+        {shared && ' Dose-response and Time-response share one set of defaults.'}
       </div>
       {/* The panel's Selects read React Flow's zoom for their dropdown metrics; a provider of its
           own pins that to 1 here, outside the canvas. `edgeNodeId` matches no node, so the panels
@@ -1025,7 +1079,7 @@ function PlotDefaults(): ReactNode {
       <ReactFlowProvider>
         <div style={styles.defaultsPanel}>
           <PlotConfig
-            key={kind}
+            key={entryKey(entry)}
             kind={kind}
             config={config}
             update={(patch) => setPlotDefault(kind, patch)}
@@ -1060,12 +1114,14 @@ function SettingsPopover({
   const downloadFormat = useAppSettings((s) => s.downloadFormat)
   const downloadDpi = useAppSettings((s) => s.downloadDpi)
   const tableFormat = useAppSettings((s) => s.tableFormat)
+  const exportBackground = useAppSettings((s) => s.exportBackground)
+  const plotFont = useAppSettings((s) => s.plotFont)
   const uiStyle = useAppSettings((s) => s.uiStyle)
   const updateSettings = useAppSettings((s) => s.update)
   const DPI_OPTS = DPI_CHOICES.map((d) => ({ v: String(d), label: `${d} dpi` }))
-  const [active, setActive] = useState<'appearance' | 'plots' | 'export' | 'database' | 'about'>(
-    'appearance'
-  )
+  const [active, setActive] = useState<
+    'appearance' | 'plots' | 'plotDefaults' | 'export' | 'database' | 'about'
+  >('appearance')
   const showDot = update.updateAvailable && !silenced
   const APPEARANCE = [
     { v: 'light', label: '☀ Light' },
@@ -1075,6 +1131,7 @@ function SettingsPopover({
   const SECTIONS = [
     { id: 'appearance', title: 'Appearance', dot: false },
     { id: 'plots', title: 'Customisation', dot: false },
+    { id: 'plotDefaults', title: 'Plot defaults', dot: false },
     { id: 'export', title: 'Export', dot: false },
     { id: 'database', title: 'Database', dot: false },
     { id: 'about', title: 'About', dot: showDot }
@@ -1209,7 +1266,30 @@ function SettingsPopover({
             ) : active === 'plots' ? (
               <>
                 <h2 style={styles.settingsContentTitle}>Customisation</h2>
+                <div style={styles.settingsSubTitle}>
+                  Plot font
+                  <span style={{ marginLeft: 4, verticalAlign: 'middle' }}>
+                    <InfoTip label="About the plot font">
+                      All plot text, on screen and in every copy and export. Arial and Helvetica are
+                      what most journals ask for in figures.
+                    </InfoTip>
+                  </span>
+                </div>
+                <div style={{ marginBottom: 24 }}>
+                  {seg(
+                    plotFont,
+                    (Object.keys(PLOT_FONTS) as PlotFontId[]).map((id) => ({
+                      v: id,
+                      label: PLOT_FONTS[id].label
+                    })),
+                    (v) => updateSettings({ plotFont: v })
+                  )}
+                </div>
                 <PaletteSettings />
+              </>
+            ) : active === 'plotDefaults' ? (
+              <>
+                <h2 style={styles.settingsContentTitle}>Plot defaults</h2>
                 <PlotDefaults />
               </>
             ) : active === 'export' ? (
@@ -1217,7 +1297,25 @@ function SettingsPopover({
                 <h2 style={styles.settingsContentTitle}>Export</h2>
                 {/* A tile's Copy and Download buttons act straight away (no window of their own):
                     Copy in this format/DPI; Download opens the OS save window for this format. */}
-                <div style={styles.settingsSubTitle}>Copy to clipboard</div>
+                <div style={styles.settingsSubTitle}>
+                  Background
+                  <span style={{ marginLeft: 4, verticalAlign: 'middle' }}>
+                    <InfoTip label="About the export background">
+                      What every copied or exported plot sits on. Transparent leaves no backdrop,
+                      for placing a plot on a coloured slide or into a figure.
+                    </InfoTip>
+                  </span>
+                </div>
+                {seg(
+                  exportBackground,
+                  [
+                    { v: 'white', label: 'White' },
+                    { v: 'transparent', label: 'Transparent' }
+                  ] as const,
+                  (v) => updateSettings({ exportBackground: v })
+                )}
+
+                <div style={{ ...styles.settingsSubTitle, marginTop: 24 }}>Copy to clipboard</div>
                 {/* format, then resolution in line to its right */}
                 <div style={styles.settingsInline}>
                   <div>
@@ -2358,6 +2456,170 @@ function HomeGuides({ onGuide }: { onGuide: () => void }) {
 }
 
 /** Landing page: create/open a project, with a recent-projects list. */
+/** This build's version, for comparing a project file against. */
+const APP_VERSION = typeof __APP_VERSION__ === 'string' ? __APP_VERSION__ : null
+
+/** A recent project's version tag, beside its name: the app version that last saved the file —
+ *  amber when the file is older than this app's migrations (Fix rewrites it), red when a newer app
+ *  saved it. The tooltip has the file format and the version it was created with. */
+function ProjectVersionTag({ path }: { path: string | null }): ReactNode {
+  const h = useGraph((s) => (path ? s.recentHeaders[path] : undefined))
+  if (!h) return null
+  const standing = projectStanding(h, APP_VERSION)
+  const color = standing === 'older' ? '#e2b93b' : standing === 'newer' ? UI.err : UI.textMuted
+  const title = [
+    h.savedBy ? `Last saved by OmicExplorer ${h.savedBy}` : 'Saved before OmicExplorer 0.3.5',
+    `Created with ${h.createdWith ?? 'an unrecorded version (before 0.3.7)'}`,
+    `File format ${h.format ?? '?'}`,
+    standing === 'older'
+      ? 'Written in an older form — it opens fine; Fix rewrites it in the current one'
+      : standing === 'newer'
+        ? `Saved by a newer app than this one (${APP_VERSION ?? '?'}) — update before editing it`
+        : ''
+  ]
+    .filter(Boolean)
+    .join('\n')
+  return (
+    <span
+      title={title}
+      style={{ ...styles.versionTag, color, borderColor: `${color}66`, background: `${color}14` }}
+    >
+      {h.savedBy ? `v${h.savedBy}` : 'pre-0.3.5'}
+    </span>
+  )
+}
+
+/** The menu width (px) of a project row's actions. */
+const ROW_MENU_W = 200
+
+/** A Last / Recent project row's actions, behind the hamburger at its right: open it (resume, for
+ *  the session still live), show the file in the OS file manager, Fix — only for a file in an older
+ *  form: rewrite it in the current format, a copy of the old file kept beside it, then say how it
+ *  went — and remove it from the list (the file itself stays on disk). */
+function ProjectRowMenu({
+  path,
+  openLabel = 'Open',
+  onOpen,
+  onDelete
+}: {
+  path: string | null
+  /** the open item's label ('Resume' for the live session) */
+  openLabel?: string
+  onOpen: () => void
+  /** remove from the recents; unset = not listed there (an unsaved live session) */
+  onDelete?: () => void
+}): ReactNode {
+  const h = useGraph((s) => (path ? s.recentHeaders[path] : undefined))
+  const upgradeProject = useGraph((s) => s.upgradeProject)
+  const isOpen = useGraph((s) => s.projectOpen && s.projectPath === path)
+  const [state, setState] = useState<
+    { busy: true } | { busy: false; ok: boolean; text: string } | null
+  >(null)
+  const [at, setAt] = useState<CSSProperties | null>(null)
+  // The menu is portalled to <body>, outside the app root that carries the theme's CSS variables,
+  // so it's coloured from the palette itself (as the app's Select menu is).
+  const p = PALETTES[useUiTheme((s) => s.mode)]
+  const older = !!path && !!h && projectStanding(h, APP_VERSION) === 'older'
+  const fix = async (): Promise<void> => {
+    if (!path) return
+    setState({ busy: true })
+    const r = await upgradeProject(path)
+    setState(
+      r.error
+        ? { busy: false, ok: false, text: `Couldn't fix: ${r.error}` }
+        : {
+            busy: false,
+            ok: true,
+            text: `Fixed — old file kept as ${(r.backup ?? '').split(/[/\\]/).pop()}`
+          }
+    )
+  }
+  // Each item closes the menu, then acts.
+  const item = (
+    label: string,
+    act: (() => void) | null,
+    title?: string,
+    danger?: boolean
+  ): ReactNode => (
+    <button
+      style={{
+        ...styles.menuAction,
+        color: danger ? p.err : p.text,
+        ...(act ? null : { color: p.textMuted, opacity: 0.5, cursor: 'default' })
+      }}
+      disabled={!act}
+      title={title}
+      onClick={() => {
+        setAt(null)
+        act?.()
+      }}
+    >
+      {label}
+    </button>
+  )
+  return (
+    <span style={styles.fixWrap}>
+      {state && (
+        <span
+          style={{ ...styles.fixNote, color: state.busy || state.ok ? UI.textMuted : UI.err }}
+          title={state.busy ? undefined : state.text}
+        >
+          {state.busy ? 'Fixing…' : state.text}
+        </span>
+      )}
+      <button
+        className="oe-row-menu-btn"
+        style={{ ...styles.recentMenuBtn, ...(at ? styles.recentMenuBtnOpen : null) }}
+        title="Project actions"
+        aria-haspopup="menu"
+        aria-expanded={!!at}
+        onClick={(e) => {
+          e.stopPropagation()
+          if (at) return setAt(null)
+          // Under the button, its right edge lined up with the button's (it sits at the row's end).
+          const r = e.currentTarget.getBoundingClientRect()
+          const place = placeMenu(r, ROW_MENU_W, 220)
+          setAt({ ...place, left: Math.max(8, r.right - ROW_MENU_W) })
+        }}
+      >
+        <IconMenu />
+      </button>
+      {at &&
+        createPortal(
+          <>
+            <div style={styles.scrim} onClick={() => setAt(null)} />
+            <div
+              className="oe-menu-in oe-row-menu"
+              role="menu"
+              style={{ ...styles.rowMenu, background: p.panel, borderColor: p.border, ...at }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              {item(openLabel, onOpen)}
+              {item(REVEAL.item, path ? () => void window.api.revealPath(path) : null)}
+              {item(
+                'Fix',
+                older && !state?.busy ? () => void fix() : null,
+                older
+                  ? isOpen
+                    ? 'Save the open project in the current format (its unsaved changes too); a copy of the old file is kept beside it'
+                    : 'Rewrite this project in the current format; a copy of the old file is kept beside it'
+                  : 'Already in the current format'
+              )}
+              <div style={{ ...styles.menuDivider, background: p.border }} />
+              {item(
+                'Remove',
+                onDelete ?? null,
+                'Remove from recent projects — the file stays on disk',
+                true
+              )}
+            </div>
+          </>,
+          document.body
+        )}
+    </span>
+  )
+}
+
 function Home({
   update,
   showUpdate,
@@ -2374,6 +2636,11 @@ function Home({
   const resumeProject = useGraph((s) => s.resumeProject)
   const recents = useGraph((s) => s.recentProjects)
   const forgetRecent = useGraph((s) => s.forgetRecent)
+  const loadRecentHeaders = useGraph((s) => s.loadRecentHeaders)
+  // Each recent file's header, for its version tag — re-read whenever the list changes.
+  useEffect(() => {
+    void loadRecentHeaders()
+  }, [recents, loadRecentHeaders])
   const openError = useGraph((s) => s.openError)
   const projectName = useGraph((s) => s.projectName)
   const projectPath = useGraph((s) => s.projectPath)
@@ -2402,14 +2669,36 @@ function Home({
         <div style={styles.homeRight}>
           <p style={styles.homeSub}>Create or open a project to begin.</p>
           <div style={styles.homeActions}>
-            <button style={styles.homePrimary} onClick={() => void newProject()}>
+            <button
+              style={{ ...styles.homePrimary, ...styles.homeAction }}
+              onClick={() => void newProject()}
+            >
               ＋ New project
             </button>
-            <button style={styles.homeSecondary} onClick={() => void openProject()}>
+            <button
+              style={{ ...styles.homeSecondary, ...styles.homeAction }}
+              onClick={() => void openProject()}
+            >
               Open project…
             </button>
-            <button style={styles.homeSecondary} onClick={() => void newFromTemplate()}>
+            <button
+              style={{ ...styles.homeSecondary, ...styles.homeAction }}
+              onClick={() => void newFromTemplate()}
+            >
               From template…
+            </button>
+            {/* not wired up yet: shown so the home page's layout is final */}
+            <button
+              style={{
+                ...styles.homeSecondary,
+                ...styles.homeAction,
+                opacity: 0.45,
+                cursor: 'default'
+              }}
+              disabled
+              title="Coming soon"
+            >
+              Example project
             </button>
           </div>
           {openError && (
@@ -2452,6 +2741,7 @@ function Home({
                         }}
                       />
                       {last.name}
+                      <ProjectVersionTag path={last.path} />
                     </span>
                     <span style={styles.recentPath}>
                       {last.mode === 'resume'
@@ -2461,6 +2751,20 @@ function Home({
                         : (last.path ?? '')}
                     </span>
                   </button>
+                  <ProjectRowMenu
+                    path={last.path}
+                    openLabel={last.mode === 'resume' ? 'Resume' : 'Open'}
+                    onOpen={() =>
+                      last.mode === 'resume'
+                        ? resumeProject()
+                        : void openProject(last.path ?? undefined)
+                    }
+                    onDelete={
+                      last.path && recents.some((r) => r.path === last.path)
+                        ? () => forgetRecent(last.path!)
+                        : undefined
+                    }
+                  />
                 </div>
               </div>
             </>
@@ -2487,19 +2791,17 @@ function Home({
                     title={r.path}
                     onClick={() => void openProject(r.path)}
                   >
-                    <span style={styles.recentName}>{r.name}</span>
+                    <span style={styles.recentNameLine}>
+                      <span style={styles.recentName}>{r.name}</span>
+                      <ProjectVersionTag path={r.path} />
+                    </span>
                     <span style={styles.recentPath}>{r.path}</span>
                   </button>
-                  <button
-                    style={styles.recentForget}
-                    title="Remove from recents"
-                    onClick={(e) => {
-                      e.stopPropagation()
-                      forgetRecent(r.path)
-                    }}
-                  >
-                    ✕
-                  </button>
+                  <ProjectRowMenu
+                    path={r.path}
+                    onOpen={() => void openProject(r.path)}
+                    onDelete={() => forgetRecent(r.path)}
+                  />
                 </div>
               ))
             )}
@@ -2826,7 +3128,8 @@ const styles: Record<string, CSSProperties> = {
   },
   homeLeft: { flex: '0 1 380px', minWidth: 0, display: 'flex', flexDirection: 'column' },
   homeRight: {
-    flex: '1 1 420px',
+    // wide enough for the four project buttons on one line before the columns stack
+    flex: '1 1 520px',
     minWidth: 0,
     minHeight: 0,
     display: 'flex',
@@ -2894,7 +3197,18 @@ const styles: Record<string, CSSProperties> = {
     textDecoration: 'none'
   },
   homeSub: { color: UI.textMuted, fontSize: 14, margin: '6px 0 20px' },
-  homeActions: { display: 'flex', gap: 12, marginBottom: 12 },
+  homeActions: { display: 'flex', gap: 8, marginBottom: 12 },
+  /** the four project buttons share one line: they shrink together rather than wrap, and a label
+   *  that still can't fit (a very narrow window) is cut short rather than broken over two lines */
+  homeAction: {
+    flex: '1 1 auto',
+    minWidth: 0,
+    padding: '10px 12px',
+    fontSize: 13,
+    whiteSpace: 'nowrap',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis'
+  },
   homePrimary: {
     background: UI.accent,
     color: UI.accentText,
@@ -2995,7 +3309,56 @@ const styles: Record<string, CSSProperties> = {
     padding: '0 12px',
     fontSize: 13
   },
+  // A project row's hamburger (ProjectRowMenu), and its menu — the project menu's look, floated
+  // over the page (the recent list scrolls, so it would clip a menu inside it).
+  recentMenuBtn: {
+    alignSelf: 'center',
+    flex: '0 0 auto',
+    display: 'inline-flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    width: 28,
+    height: 28,
+    marginRight: 8,
+    background: 'transparent',
+    border: 'none',
+    borderRadius: 6,
+    color: UI.textMuted,
+    cursor: 'pointer'
+  },
+  recentMenuBtnOpen: { background: UI.panelAlt, color: UI.text },
+  rowMenu: {
+    position: 'fixed',
+    width: ROW_MENU_W,
+    boxSizing: 'border-box',
+    // background and border colour set per theme at render (see ProjectRowMenu)
+    border: '1px solid',
+    borderRadius: 8,
+    boxShadow: '0 8px 30px rgba(0,0,0,0.4)',
+    zIndex: 50,
+    overflowY: 'auto',
+    padding: 4
+  },
   recentName: { fontSize: 14, fontWeight: 600, color: UI.text },
+  recentNameLine: { display: 'inline-flex', alignItems: 'center', gap: 6 },
+  // A recent project's version tag (ProjectVersionTag): colours set per standing.
+  versionTag: {
+    fontSize: 10.5,
+    fontWeight: 600,
+    padding: '0 6px',
+    lineHeight: '16px',
+    borderRadius: 8,
+    border: '1px solid',
+    fontVariantNumeric: 'tabular-nums'
+  },
+  fixWrap: { display: 'inline-flex', alignItems: 'center', gap: 8, flex: '0 1 auto', minWidth: 0 },
+  fixNote: {
+    fontSize: 11,
+    maxWidth: 220,
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap'
+  },
   recentPath: {
     fontSize: 12,
     color: UI.textMuted,
@@ -3346,6 +3709,8 @@ const styles: Record<string, CSSProperties> = {
   layoutTileText: { fontSize: 11, color: UI.textMuted, lineHeight: 1.4 },
   /** the plot-defaults block: its type picker, and the tile config panel under it */
   defaultsHead: { display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 },
+  defaultsLabel: { flex: '0 0 auto', fontSize: 12, color: UI.textMuted },
+  defaultsPick: { flex: 1, minWidth: 0, display: 'flex' },
   defaultsSelect: {
     background: UI.panelAlt,
     color: UI.text,

@@ -472,6 +472,17 @@ export function fSurvival(f: number, dfn: number, dfd: number, loc = 0): number 
   return betai(dfd / 2, dfn / 2, dfd / (dfd + dfn * x))
 }
 
+/** Curves are described (4PL) up to this q, so a stricter or looser call made later — the
+ *  threshold follows without a re-run — still finds its called curves described. Read by the
+ *  response surface method's description, and by a 4PL curve's when it describes responders only
+ *  (there the q is BH over the run's raw p, fixed at run time). */
+export const DESCRIBE_Q = 0.25
+
+/** Whether a 4PL curve's description (EC50, slope, plateaus) is meant to be read: every curve's
+ *  is, unless its run described responders only and it isn't one (`described: false`). Its test
+ *  stands either way. */
+export const curveDescribed = (c: { described?: false }): boolean => c.described !== false
+
 /** One fitted curve and its test. `xMin`/`xMax` are the tested log₁₀ doses' range. */
 export interface CurveFit extends LogisticParams {
   /** curve fold change, log₂: the fitted ratio at the highest dose over that at the lowest */
@@ -871,6 +882,7 @@ export function curveMetrics(
     q?: number
     x?: number[]
     y?: number[]
+    described?: false
   },
   t: ThresholdConfig | undefined,
   /** the dose unit's size in molar (1e-9 for nM), so pEC50 is molar; 1 = in the dose's own units */
@@ -897,12 +909,14 @@ export function curveMetrics(
       : c.x && c.y
         ? curveLackOfFit(c.x, c.y, c)
         : undefined
+  // an undescribed curve (responders only, not one of them): its test, without its description
+  const d = curveDescribed(c)
   return {
-    pEC50: c.pec50 - Math.log10(doseScale),
-    EC50: 10 ** -c.pec50,
-    slope: c.slope,
-    front: c.front,
-    back: c.back,
+    pEC50: d ? c.pec50 - Math.log10(doseScale) : undefined,
+    EC50: d ? 10 ** -c.pec50 : undefined,
+    slope: d ? c.slope : undefined,
+    front: d ? c.front : undefined,
+    back: d ? c.back : undefined,
     R2: c.r2,
     RMSE: rmse,
     points: c.n,

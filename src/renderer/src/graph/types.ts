@@ -234,6 +234,10 @@ export interface CompareConfig {
   /** curve_fit only: the detection model — '4pl' (absent): the CurveCurator method; 'spline': the
    *  response surface method (spline detection, moderated F, 4PL description) */
   detection?: '4pl' | 'spline'
+  /** curve_fit: 'custom' when the detector and descriptor were picked by hand rather than by a
+   *  method preset; unset = the preset `detection` implies (spline → Hybrid, 4PL → 4PL). See
+   *  curveMethodOf. UI only — the run reads the models themselves. */
+  curveMethod?: 'custom'
   /** curve_fit, the CurveCurator method (4PL over one axis): its interpolation — the fit also sees
    *  points between the doses, read off straight lines between the measured ratios; the test stays
    *  on the real points. Off (unset) by default, as CurveCurator's own. */
@@ -244,9 +248,11 @@ export interface CompareConfig {
   /** curve_fit, surfaces only: describe slice by slice — drawn per time (absent / 'slices') or per
    *  dose ('doseSlices') — or by one joint model ('joint') */
   surfaceDescription?: 'slices' | 'doseSlices' | 'joint'
-  /** curve_fit, Hybrid model only (ignored under 4PL): describe (4PL — EC50, top) every gene, not just the
-   *  responders (q ≤ DESCRIBE_Q, the default). Slower, and a flat curve's EC50 means little — but
-   *  every gene then has one, e.g. to contrast pEC50 between two conditions. */
+  /** curve_fit: describe (4PL — EC50, top) every gene (true), or the responders only (false:
+   *  q ≤ DESCRIBE_Q). Unset = every gene under the 4PL detector over one axis (its 4PL is its
+   *  test), responders otherwise — see describesAll. Every gene is slower with a separate
+   *  descriptor, and a flat curve's EC50 means little — but every gene then has one, e.g. to
+   *  contrast pEC50 between two conditions. */
   describeAll?: boolean
   /** curve_fit only: the control is a background treatment (e.g. drug B alone, for drug A
    *  titrated on top of it) rather than the vehicle — confirmed by the user, since a curve's
@@ -374,6 +380,23 @@ export const RESPONSE_THRESHOLD_DEFAULT: Partial<ThresholdConfig> = {
  *  dose × time) — or null when it can stay. The CurveCurator method's curves start on its
  *  relevance score; the response surface method, and any dose × time surface, start on q (a 4PL
  *  surface can then switch to the relevance score, its decoys surfaces). */
+/** A Curve fit's method: a preset of its detector and descriptor (Hybrid: spline + 4PL; 4PL: 4PL +
+ *  4PL), or 'custom' when they were picked by hand. */
+export type CurveMethod = 'hybrid' | '4pl' | 'custom'
+export function curveMethodOf(c: Pick<CompareConfig, 'curveMethod' | 'detection'>): CurveMethod {
+  return c.curveMethod === 'custom' ? 'custom' : c.detection === 'spline' ? 'hybrid' : '4pl'
+}
+
+/** Whether a Curve fit describes every gene (else its responders only): its setting, else every
+ *  gene under the 4PL detector over one axis — its 4PL is its test, so already fitted — and the
+ *  responders otherwise. `surface` = the run is a dose × time surface. */
+export function describesAll(
+  c: Pick<CompareConfig, 'describeAll' | 'detection'>,
+  surface: boolean
+): boolean {
+  return c.describeAll ?? (c.detection !== 'spline' && !surface)
+}
+
 export function thresholdForDetection(
   to: NonNullable<CompareConfig['detection']>,
   t: ThresholdConfig,
@@ -911,7 +934,10 @@ export const QUICK_DEFAULTS: Partial<Record<NodeKind, Record<string, boolean>>> 
     geneTree: false,
     condModules: false,
     condTree: false
-  }
+  },
+  // the 3-D projection is set once, in the settings window
+  response: { projection: false },
+  tdr: { projection: false }
 }
 /** Whether a setting is surfaced in the tile as a quick-access switch bar: the user's choice, else
  *  the kind's default (QUICK_DEFAULTS), else on. */
@@ -1057,9 +1083,14 @@ export interface ResponseConfig extends FcPaletteConfig {
   /** what's drawn; one the dimension can't draw (a heatmap in 3-D, a surface in 2-D) falls back
    *  to the dimension's default (see responseShow) */
   show?: 'line' | 'surface' | 'heatmap'
-  /** 3-D lines from a joint description: slices of its surface at each time (dose curves; the
-   *  default) or at each dose (time curves). A per-time description has dose curves only. */
+  /** The surface viewed by slices at each time (dose curves; the default) or at each dose (time
+   *  curves): the lines a 3-D line view draws, and — with a slices description, whose dose and time
+   *  curves are separate fits — the curves its surface and heatmap are built from. Unset on a result
+   *  described by the older 'doseSlices': by dose (see responseSlice). */
   slice?: 'time' | 'dose'
+  /** 3-D: the camera's projection — orthographic (default; parallel lines stay parallel, so
+   *  levels line up across the box) or perspective (the far side drawn smaller) */
+  projection?: 'perspective' | 'orthographic'
   /** the lines: width (px; default 2), colour ('auto' = one per slice, low → high, along
    *  `linePalette` — unset: the dose / time levels' palette role, as the lines are per dose / per
    *  time), opacity. Earlier versions stored the palette's name, with `linePaletteReverse` beside
@@ -1102,6 +1133,33 @@ export function responseShow(c: Partial<ResponseConfig>): 'line' | 'surface' | '
   return show
 }
 /** Why a show can't be picked in a dimension (its tooltip), else undefined. */
+/** A Response plot's slice direction: its setting, else by dose for a surface described by the
+ *  older 'doseSlices' fit (drawn per dose, as it was), else by time. */
+/** The slice switch as the plot names it — by the curves drawn: dose curves (a slice at each time)
+ *  or time curves (a slice at each dose). Stored as the slice direction (`slice`). */
+export const CURVE_OF_SLICE = { time: 'dose', dose: 'time' } as const
+export const SLICE_OF_CURVE = { dose: 'time', time: 'dose' } as const
+
+export function responseSlice(
+  cfg: { slice?: 'time' | 'dose' },
+  rows: ReadonlyArray<{ rs?: { surface?: { method?: string } } }> | undefined
+): 'time' | 'dose' {
+  return cfg.slice ?? (rows?.some((r) => r.rs?.surface?.method === 'doseSlices') ? 'dose' : 'time')
+}
+
+/** Whether a Response plot's view can be switched between time and dose slices: every 3-D line view
+ *  can; a 3-D surface or 2-D heatmap only from a slices description (separate dose and time curves
+ *  — a joint model or measured values are the same whichever way they're sliced). */
+export function responseSliceable(
+  dim: '2d' | '3d',
+  show: string,
+  rows: ReadonlyArray<{ rs?: { axis?: string; surface?: { method?: string } } }> | undefined
+): boolean {
+  if (dim === '3d' && show === 'line') return true
+  if (show === 'line') return false
+  return !!rows?.some((r) => r.rs?.surface && r.rs.surface.method !== 'joint')
+}
+
 export const responseShowWhy = (dim: '2d' | '3d', show: string): string | undefined =>
   dim === '3d' && show === 'heatmap'
     ? 'A heatmap is 2-D — switch the view to 2D'
@@ -1695,6 +1753,9 @@ export interface ClusterConfig {
   quick?: QuickAccess
   /** x / y axis overrides (title, fonts, range, ticks, grid, line); unset = the view's layout */
   axes?: PlotAxes
+  /** the embedding's axes: 'standard' (default) Plotly's full axes; 'minimal' only two short
+   *  segments at the bottom-left corner, each with its axis title — no ticks or numbers */
+  axisMode?: 'standard' | 'minimal'
 }
 
 /** A cluster plot's marker and arrow-trail look with every default filled in (see ClusterConfig). */

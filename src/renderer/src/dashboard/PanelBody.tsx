@@ -147,6 +147,10 @@ import {
   responseLook,
   responseShow,
   responseShowWhy,
+  responseSlice,
+  CURVE_OF_SLICE,
+  SLICE_OF_CURVE,
+  responseSliceable,
   type CurveMadConfig,
   clusterLook,
   type ClusterConfig,
@@ -2151,13 +2155,10 @@ export function PanelBody({
     if (!surfaces.length)
       return <Empty text="Needs dose × time surfaces — set the Curve fit’s axis to dose × time." />
     const present = new Set(surfaces.map((r) => r.uniqID))
-    // A joint description's or the spline surface's (no description) 3-D lines can be sliced by
-    // time or by dose (a per-time one's by time, a per-dose one's by dose).
-    const sliceable =
-      dim === '3d' &&
-      show === 'line' &&
-      surfaces.some((r) => !r.rs?.surface || r.rs.surface.method === 'joint')
-    const slice = cfg.slice ?? 'time'
+    // The view by time or by dose slices (see responseSliceable / responseSlice).
+    const sliceable = responseSliceable(dim, show, surfaces)
+    const slice = responseSlice(cfg, surfaces)
+    const projection = cfg.projection ?? 'orthographic'
     const yScale = cfg.yScale ?? 'gene'
     return (
       <div style={styles.chart}>
@@ -2195,10 +2196,19 @@ export function PanelBody({
                   {sliceable && quickOn(cfg, 'slice') && (
                     <SwitchBar
                       inline
-                      label="lines per"
-                      value={slice}
-                      options={['time', 'dose']}
-                      onChange={(v) => patchConfig({ slice: v })}
+                      label="curve"
+                      value={CURVE_OF_SLICE[slice]}
+                      options={['dose', 'time']}
+                      onChange={(v) => patchConfig({ slice: SLICE_OF_CURVE[v as 'dose' | 'time'] })}
+                    />
+                  )}
+                  {dim === '3d' && quickOn(cfg, 'projection', 'response') && (
+                    <SwitchBar
+                      inline
+                      label="projection"
+                      value={projection}
+                      options={['orthographic', 'perspective']}
+                      onChange={(v) => patchConfig({ projection: v })}
                     />
                   )}
                   {quickOn(cfg, 'yScale') && (
@@ -2224,6 +2234,7 @@ export function PanelBody({
                       look={look}
                       rolePalettes={responseRoles}
                       slice={slice}
+                      projection={projection}
                       valueRange={
                         yScale === 'global'
                           ? surfaceValueRange(upstream.cmp.rows, facetKey, rows)
@@ -2339,6 +2350,7 @@ export function PanelBody({
     // 3-D lines can run along dose (one per time) or along time (one per dose).
     const sliceable = dim === '3d' && show === 'line'
     const slice = cfg.slice ?? 'time'
+    const projection = cfg.projection ?? 'orthographic'
     const yScale = cfg.yScale ?? 'gene'
     return (
       <div style={styles.chart}>
@@ -2376,10 +2388,19 @@ export function PanelBody({
                   {sliceable && quickOn(cfg, 'slice') && (
                     <SwitchBar
                       inline
-                      label="lines per"
-                      value={slice}
-                      options={['time', 'dose']}
-                      onChange={(v) => patchConfig({ slice: v })}
+                      label="curve"
+                      value={CURVE_OF_SLICE[slice]}
+                      options={['dose', 'time']}
+                      onChange={(v) => patchConfig({ slice: SLICE_OF_CURVE[v as 'dose' | 'time'] })}
+                    />
+                  )}
+                  {dim === '3d' && quickOn(cfg, 'projection', 'tdr') && (
+                    <SwitchBar
+                      inline
+                      label="projection"
+                      value={projection}
+                      options={['orthographic', 'perspective']}
+                      onChange={(v) => patchConfig({ projection: v })}
                     />
                   )}
                   {quickOn(cfg, 'yScale') && (
@@ -2413,6 +2434,7 @@ export function PanelBody({
                       show={show}
                       look={look}
                       slice={slice}
+                      projection={projection}
                       rolePalettes={responseRoles}
                       doseLabel={axisTitle('dose', units)}
                       timeLabel={axisTitle('time', units)}
@@ -2594,6 +2616,7 @@ export function PanelBody({
         // two conditions picked under the simple legend: drawn by the complex legend's colour
         // and shade (clusterTwoConds)
         legend={clusterTwoConds(cfg) ? 'complex' : 'simple'}
+        axisMode={cfg.axisMode}
         look={clusterStyle(cfg)}
         schemeColor={clusterTwoConds(cfg)?.color}
         schemeShade={clusterTwoConds(cfg)?.shade}

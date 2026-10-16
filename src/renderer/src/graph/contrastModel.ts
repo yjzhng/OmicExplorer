@@ -5,7 +5,14 @@
  * condition or fixes it to one value per side (engine/contrast.ts runContrastPair), and this compiles
  * to exactly that — intra-dataset as num / den / match, inter-dataset as match / pairFix.
  */
-import { condLabel, orderConds, type CondSelector, type ConditionKey, type PairFix, type StandardRow } from '../engine'
+import {
+  condLabel,
+  orderConds,
+  type CondSelector,
+  type ConditionKey,
+  type PairFix,
+  type StandardRow
+} from '../engine'
 import { cv, valuesOf } from './compareModel'
 
 export type SliceMode = 'slice' | 'match'
@@ -41,7 +48,10 @@ export interface ContrastModel {
   differs: boolean
 }
 
-const groupBy = (rows: StandardRow[], key: (r: StandardRow) => string): Map<string, StandardRow[]> => {
+const groupBy = (
+  rows: StandardRow[],
+  key: (r: StandardRow) => string
+): Map<string, StandardRow[]> => {
   const m = new Map<string, StandardRow[]>()
   for (const r of rows) {
     const k = key(r)
@@ -68,12 +78,19 @@ export function contrastModel(
     let m: SliceInfo['m'] = single ? 'single' : (state.cmode[c] ?? defMode)
     if (m === 'match' && !va.some((v) => vb.includes(v))) m = 'slice'
     const s = state.sl[c] ?? {}
-    const sl = { a: s.a != null && va.includes(s.a) ? s.a : va[0], b: s.b != null && vb.includes(s.b) ? s.b : vb[0] }
+    const sl = {
+      a: s.a != null && va.includes(s.a) ? s.a : va[0],
+      b: s.b != null && vb.includes(s.b) ? s.b : vb[0]
+    }
     const drop = new Set(state.drop[c] ?? [])
     return { c, m, va, vb, sl, drop, kept: va.filter((v) => vb.includes(v) && !drop.has(v)) }
   })
   const keep = (x: SliceInfo, r: StandardRow, side: 'a' | 'b'): boolean =>
-    x.m === 'slice' ? cv(r, x.c) === x.sl[side] : x.m === 'match' ? x.kept.includes(cv(r, x.c) ?? '') : true
+    x.m === 'slice'
+      ? cv(r, x.c) === x.sl[side]
+      : x.m === 'match'
+        ? x.kept.includes(cv(r, x.c) ?? '')
+        : true
   const A = RA.filter((r) => rows.every((x) => keep(x, r, 'a')))
   const B = RB.filter((r) => rows.every((x) => keep(x, r, 'b')))
   const key = (r: StandardRow): string =>
@@ -94,7 +111,11 @@ export function contrastModel(
 
 /** Intra-dataset: each contrasted condition pinned to one value per side, a matched one with values
  *  left out pinned to the kept ones on both sides. */
-export function compileIntra(m: ContrastModel): { num: CondSelector; den: CondSelector; match: ConditionKey[] } {
+export function compileIntra(m: ContrastModel): {
+  num: CondSelector
+  den: CondSelector
+  match: ConditionKey[]
+} {
   const num: CondSelector = {}
   const den: CondSelector = {}
   for (const x of m.rows) {
@@ -121,7 +142,10 @@ export function compileInter(m: ContrastModel): { match: ConditionKey[]; pairFix
 
 /** A fresh intra-dataset contrast: every condition matched, with cmpd (or the first condition that
  *  has two values) contrasted between its first two values. */
-export function defaultIntra(rows: readonly StandardRow[], conds: readonly ConditionKey[]): ContrastState {
+export function defaultIntra(
+  rows: readonly StandardRow[],
+  conds: readonly ConditionKey[]
+): ContrastState {
   const multi = orderConds(conds).filter((c) => valuesOf(rows, c).length > 1)
   const c = multi.includes('cmpd') ? 'cmpd' : multi[0]
   if (!c) return { cmode: {}, sl: {}, drop: {} }
@@ -144,7 +168,8 @@ export function readIntra(
 ): ContrastState {
   const num = cfg.num ?? {}
   const den = cfg.den ?? {}
-  const pinned = Object.values(num).some((v) => v?.length) || Object.values(den).some((v) => v?.length)
+  const pinned =
+    Object.values(num).some((v) => v?.length) || Object.values(den).some((v) => v?.length)
   if (!pinned) return defaultIntra(rows, conds)
   const state: ContrastState = { cmode: {}, sl: {}, drop: {} }
   for (const c of conds) {
@@ -194,8 +219,10 @@ export function contrastLine(m: ContrastModel, base?: { a: string; b: string }):
   const diff = m.rows.filter((x) => x.m === 'slice' && x.sl.a !== x.sl.b)
   const same = m.rows.filter((x) => x.m === 'slice' && x.sl.a === x.sl.b)
   const per = m.rows.filter((x) => x.m === 'match')
-  const side = (s: 'a' | 'b'): string => [base?.[s], ...diff.map((x) => x.sl[s])].filter(Boolean).join(' · ')
-  if (!side('a') && !side('b')) return 'condition identical on both sides. Select different conditions.'
+  const side = (s: 'a' | 'b'): string =>
+    [base?.[s], ...diff.map((x) => x.sl[s])].filter(Boolean).join(' · ')
+  if (!side('a') && !side('b'))
+    return 'condition identical on both sides. Select different conditions.'
   return (
     `${side('a')} vs ${side('b')}` +
     (same.length ? `, at ${same.map((x) => x.sl.a).join(' · ')}` : '') +

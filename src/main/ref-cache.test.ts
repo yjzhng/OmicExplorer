@@ -178,3 +178,46 @@ describe('updating a source', () => {
     expect(res.error).toMatch(/Unknown source/)
   })
 })
+
+describe('reference cache browser', () => {
+  interface Page {
+    cols: string[]
+    total: number
+    rows: { acc: string; gene: string; values: string[] }[]
+  }
+  const browse = (q: object): Promise<Page> =>
+    handlers['refcache:browse'](
+      {},
+      { taxon: 9606, field: 'kegg', query: '', offset: 0, limit: 100, ...q }
+    ) as Promise<Page>
+
+  it("lists one species' proteins looked up for one source, with that source's columns", async () => {
+    const r = await browse({})
+    expect(r.cols).toEqual(['KEGG', 'KEGG_cat', 'KEGG_grp'])
+    expect(r.rows).toEqual([
+      { acc: 'P1', gene: 'A', values: ['', '', ''] },
+      { acc: 'P2', gene: '', values: ['', '', ''] }
+    ])
+  })
+
+  it('keeps to the species: no taxon recorded is its own', async () => {
+    const r = await browse({ taxon: 0, field: 'gene_names' })
+    expect(r.rows.map((x) => x.acc)).toEqual(['Q3'])
+    expect(r.cols).toEqual(['geneName'])
+  })
+
+  it('matches every term against the accession, gene and values, case-insensitively', async () => {
+    expect((await browse({ query: 'a' })).rows.map((x) => x.acc)).toEqual(['P1'])
+    expect((await browse({ query: 'p2' })).rows.map((x) => x.acc)).toEqual(['P2'])
+    expect((await browse({ query: 'p1 zzz' })).total).toBe(0)
+  })
+
+  it('finds proteins looked up for the source but with no value for it', async () => {
+    const r = await browse({ field: 'gene_names', emptyOnly: true })
+    expect(r.rows.map((x) => x.acc)).toEqual(['P2'])
+  })
+
+  it('pages', async () => {
+    expect(await browse({ offset: 1, limit: 1 })).toMatchObject({ total: 2, rows: [{ acc: 'P2' }] })
+  })
+})

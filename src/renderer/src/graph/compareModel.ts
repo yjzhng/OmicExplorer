@@ -63,7 +63,10 @@ export function valuesOf(rows: readonly StandardRow[], c: ConditionKey): string[
 }
 
 /** One row per distinct sample (combination of condition values): what the grouping depends on. */
-export function sampleRows(rows: readonly StandardRow[], active: readonly ConditionKey[]): StandardRow[] {
+export function sampleRows(
+  rows: readonly StandardRow[],
+  active: readonly ConditionKey[]
+): StandardRow[] {
   const seen = new Map<string, StandardRow>()
   for (const r of rows) {
     const k = active.map((c) => cv(r, c) ?? '').join('\u0001')
@@ -160,9 +163,13 @@ export function compareModel(
   // both sides when matched or pooled, from the test side only when shared (the control is its level).
   const ctx = conds.filter((c) => !CMP.includes(c)).map((c) => contextInfo(state, c, test0, ctrl0))
   const dropOf = (c: ConditionKey): Set<string> => new Set(state.drop[c] ?? [])
-  const test = test0.filter((r) => ctx.every((x) => x.mode === 'single' || !dropOf(x.c).has(cv(r, x.c) ?? '')))
+  const test = test0.filter((r) =>
+    ctx.every((x) => x.mode === 'single' || !dropOf(x.c).has(cv(r, x.c) ?? ''))
+  )
   const ctrl = ctrl0.filter((r) =>
-    ctx.every((x) => (x.mode !== 'match' && x.mode !== 'pool') || !dropOf(x.c).has(cv(r, x.c) ?? ''))
+    ctx.every(
+      (x) => (x.mode !== 'match' && x.mode !== 'pool') || !dropOf(x.c).has(cv(r, x.c) ?? '')
+    )
   )
 
   const num: CondSelector = {}
@@ -185,11 +192,13 @@ export function compareModel(
   }
   const warnings: string[] = []
   if (any) {
-    for (const c of CMP) if (!P[c]!.T.length) warnings.push(`${condLabel(c)}: pick at least one test value.`)
+    for (const c of CMP)
+      if (!P[c]!.T.length) warnings.push(`${condLabel(c)}: pick at least one test value.`)
     for (const x of ctx)
       if (x.mode !== 'single' && x.Tv.length && x.Tv.every((v) => dropOf(x.c).has(v)))
         warnings.push(`${condLabel(x.c)}: every value is left out.`)
-    if (!ctrl0.length) warnings.push(`No sample is ${controlName({ CMP, P })}: the control doesn't exist.`)
+    if (!ctrl0.length)
+      warnings.push(`No sample is ${controlName({ CMP, P })}: the control doesn't exist.`)
   }
   return {
     conds,
@@ -208,7 +217,11 @@ export function compareModel(
 
 /** A value list for a summary: past four, "first–last (n)". */
 export const shortList = (vs: string[]): string =>
-  !vs.length ? 'none' : vs.length > 4 ? `${vs[0]}–${vs[vs.length - 1]} (${vs.length})` : vs.join(', ')
+  !vs.length
+    ? 'none'
+    : vs.length > 4
+      ? `${vs[0]}–${vs[vs.length - 1]} (${vs.length})`
+      : vs.join(', ')
 
 /** A value with its condition, unless the value already names it ("DMSO", "cell A", "dose 0"). */
 export const valueName = (c: ConditionKey, v: string): string =>
@@ -228,8 +241,7 @@ export function confounded(
     c,
     row: rows.find(
       (r) =>
-        m.P[c]!.T.includes(cv(r, c) ?? '') &&
-        m.CMP.every((o) => o === c || cv(r, o) === m.P[o]!.r)
+        m.P[c]!.T.includes(cv(r, c) ?? '') && m.CMP.every((o) => o === c || cv(r, o) === m.P[o]!.r)
     )
   })).filter((a) => a.row)
   if (!alone.length) return null
@@ -242,7 +254,9 @@ export function confounded(
 /** A tip while every context condition is matched — or shared because the data force it (the
  *  control has one value there); a warning once one is shared or pooled by choice. */
 export const controlKind = (m: CompareModel): 'info' | 'warn' =>
-  m.ctx.every((x) => x.mode === 'match' || x.mode === 'single' || (x.mode === 'fixed' && !x.matchOk))
+  m.ctx.every(
+    (x) => x.mode === 'match' || x.mode === 'single' || (x.mode === 'fixed' && !x.matchOk)
+  )
     ? 'info'
     : 'warn'
 
@@ -303,7 +317,9 @@ export function controlLine(m: CompareModel): string {
   const pooled = by('pool').map((x) => `${condLabel(x.c)}s`)
   const per = by('match')
     .map((x) => x.c)
-    .filter((c) => !(m.CMP.length === 1 && !locked.length && isNumericCond(m.CMP[0]) && c === 'cmpd'))
+    .filter(
+      (c) => !(m.CMP.length === 1 && !locked.length && isNumericCond(m.CMP[0]) && c === 'cmpd')
+    )
   return (
     who +
     (at.length ? ' ' + at.join(' and ') : '') +
@@ -315,7 +331,12 @@ export function controlLine(m: CompareModel): string {
 
 /** A fresh comparison: nothing compared yet — the user switches a condition on (its control then
  *  defaults to defaultControl's pick). */
-export const emptyCompareState = (): CompareState => ({ cmp: {}, modes: {}, fixedVal: {}, drop: {} })
+export const emptyCompareState = (): CompareState => ({
+  cmp: {},
+  modes: {},
+  fixedVal: {},
+  drop: {}
+})
 
 const sameSet = (a: string[], b: string[]): boolean =>
   a.length === b.length && a.every((v) => b.includes(v))
@@ -327,16 +348,22 @@ const sameSet = (a: string[], b: string[]): boolean =>
  * unmatched one pooled (unless the data lock it to shared).
  */
 export function readCompareState(
-  cfg: { num: CondSelector; den: CondSelector; match: ConditionKey[]; compared?: ConditionKey[]; pool?: ConditionKey[] },
+  cfg: {
+    num: CondSelector
+    den: CondSelector
+    match: ConditionKey[]
+    compared?: ConditionKey[]
+    pool?: ConditionKey[]
+  },
   rows: readonly StandardRow[],
   active: readonly ConditionKey[]
 ): CompareState {
   const pinned = (s: CondSelector): boolean => Object.values(s).some((v) => v && v.length > 0)
   if (!pinned(cfg.num) && !pinned(cfg.den)) return emptyCompareState()
   const conds = orderConds(active).filter((c) => valuesOf(rows, c).length > 0)
-  const compared = (cfg.compared ?? classifyConditions([...rows], cfg.num, cfg.den, [...active]).axis).filter((c) =>
-    conds.includes(c)
-  )
+  const compared = (
+    cfg.compared ?? classifyConditions([...rows], cfg.num, cfg.den, [...active]).axis
+  ).filter((c) => conds.includes(c))
   const state: CompareState = { cmp: {}, modes: {}, fixedVal: {}, drop: {} }
   for (const c of compared) {
     const vs = valuesOf(rows, c)
@@ -350,7 +377,8 @@ export function readCompareState(
     const vs = valuesOf(rows, c)
     const n = cfg.num[c]?.length ? cfg.num[c]! : null
     const d = cfg.den[c]?.length ? cfg.den[c]! : null
-    const leftOut = (keep: string[] | null): string[] => (keep ? vs.filter((v) => !keep.includes(v)) : [])
+    const leftOut = (keep: string[] | null): string[] =>
+      keep ? vs.filter((v) => !keep.includes(v)) : []
     if (cfg.pool?.includes(c)) {
       state.modes[c] = 'pool'
       state.drop[c] = leftOut(n)

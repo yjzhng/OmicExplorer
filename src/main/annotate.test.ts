@@ -415,3 +415,42 @@ describe('annot:uniprot — Reactome', () => {
     expect(res.byId.P04637.Reactome_cat).toBe('Cell Cycle; Cell Cycle / Disease')
   })
 })
+
+describe('annot:uniprot — a failed UniProt request', () => {
+  // 200 accessions = three chunks of up to 80; the middle one is the request that fails.
+  const ACCS = Array.from({ length: 200 }, (_, i) => `X${String(i).padStart(5, '0')}`)
+  const MIDDLE = new Set(ACCS.slice(80, 160))
+  const serve = (failures: number): void => {
+    let left = failures
+    vi.stubGlobal('fetch', async (url: string) => {
+      const want = decodeURIComponent(url)
+        .match(/accession:(\w+)/g)!
+        .map((m) => m.slice(10))
+      if (MIDDLE.has(want[0]) && left-- > 0)
+        return { ok: false, status: 503, headers: { get: () => null } } as unknown as Response
+      return ok(['Entry\tGene Names', ...want.map((a) => `${a}\tG${a}`)].join('\n'))
+    })
+  }
+  const fetchGenes = (): Promise<AnnotOut> =>
+    handlers['annot:uniprot']({ sender: { send: () => {} } }, ACCS, ['gene_names'])
+
+  it("costs only that chunk's proteins — the rest are kept, and the failed ones aren't cached", async () => {
+    serve(Infinity)
+    const res = await fetchGenes()
+    expect(res.found).toBe(120)
+    expect(res.byId[ACCS[0]]?.geneName).toBe(`G${ACCS[0]}`)
+    expect(res.byId[ACCS[199]]?.geneName).toBe(`G${ACCS[199]}`)
+    expect(res.byId[ACCS[100]]).toBeUndefined()
+    expect(res.error).toMatch(/^80 of 200 proteins not fetched \(UniProt HTTP 503\)/)
+    // Not marked covered, so the next fetch asks for them again.
+    expect(written!.byAcc[ACCS[100]]).toBeUndefined()
+    expect(written!.byAcc[ACCS[0]]).toBeDefined()
+  })
+
+  it('retries a request once before giving up on it', async () => {
+    serve(1)
+    const res = await fetchGenes()
+    expect(res.found).toBe(200)
+    expect(res.error).toBeUndefined()
+  })
+})

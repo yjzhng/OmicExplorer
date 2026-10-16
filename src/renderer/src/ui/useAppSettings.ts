@@ -15,7 +15,13 @@ import {
   type PaletteRef,
   type PaletteRole
 } from './palettes'
-import { setCategorical } from './theme'
+import {
+  DEFAULT_PLOT_FONT,
+  isPlotFontId,
+  setCategorical,
+  setPlotFont,
+  type PlotFontId
+} from './theme'
 
 /** Image format a plot tile's Copy button puts on the clipboard (PDF has no clipboard form). */
 export type CopyFormat = 'png' | 'svg'
@@ -23,6 +29,10 @@ export type CopyFormat = 'png' | 'svg'
 export type PlotFileFormat = 'svg' | 'png' | 'pdf'
 /** File format a table tile's Download button saves. */
 export type TableFileFormat = 'csv' | 'xlsx'
+
+/** What an exported/copied plot sits on: plain white, or nothing (transparent, for placing on a
+ *  coloured slide or a figure panel). */
+export type ExportBackground = 'white' | 'transparent'
 
 /** DPI choices offered wherever a plot is rasterised (copy defaults, per-tile download, export). */
 export const DPI_CHOICES = [96, 150, 300, 600] as const
@@ -63,6 +73,10 @@ export interface AppSettings {
   downloadDpi: number
   /** what a table tile's Download button saves */
   tableFormat: TableFileFormat
+  /** the ground every exported or copied plot is drawn on */
+  exportBackground: ExportBackground
+  /** the font plot text is set in, on screen and in every export */
+  plotFont: PlotFontId
   /** per plot kind, the settings a NEW tile of that kind starts with — the look (markers,
    *  highlight, axes), caps, and whatever else that kind's config panel offers. Merged over the
    *  kind's built-in defaults at creation; existing tiles keep what they have. */
@@ -88,6 +102,8 @@ const DEFAULTS: AppSettings = {
   downloadFormat: 'png',
   downloadDpi: 300,
   tableFormat: 'csv',
+  exportBackground: 'white',
+  plotFont: DEFAULT_PLOT_FONT,
   plotDefaults: {},
   palettes: ROLE_DEFAULTS,
   categorical: DEFAULT_CATEGORICAL
@@ -141,6 +157,8 @@ function load(): AppSettings {
         v.downloadFormat === 'svg' || v.downloadFormat === 'pdf' ? v.downloadFormat : 'png',
       downloadDpi: dpiOr(v.downloadDpi, DEFAULTS.downloadDpi),
       tableFormat: v.tableFormat === 'xlsx' ? 'xlsx' : 'csv',
+      exportBackground: v.exportBackground === 'transparent' ? 'transparent' : 'white',
+      plotFont: isPlotFontId(v.plotFont) ? v.plotFont : DEFAULT_PLOT_FONT,
       // Shapes change as the panels grow, so this is taken as-is and merged over the current
       // defaults at creation: a stale or unknown key simply never matches a config field.
       plotDefaults:
@@ -181,6 +199,7 @@ interface AppSettingsState extends AppSettings {
 const initial = load()
 // The live categorical palette (theme.CATEGORICAL) follows the setting from the start.
 setCategorical(initial.categorical)
+setPlotFont(initial.plotFont)
 
 export const useAppSettings = create<AppSettingsState>((set, get) => ({
   ...initial,
@@ -196,6 +215,8 @@ export const useAppSettings = create<AppSettingsState>((set, get) => ({
       downloadFormat,
       downloadDpi,
       tableFormat,
+      exportBackground,
+      plotFont,
       plotDefaults,
       palettes,
       categorical,
@@ -213,6 +234,8 @@ export const useAppSettings = create<AppSettingsState>((set, get) => ({
       downloadFormat,
       downloadDpi,
       tableFormat,
+      exportBackground,
+      plotFont,
       plotDefaults,
       palettes,
       categorical,
@@ -240,6 +263,7 @@ export const useAppSettings = create<AppSettingsState>((set, get) => ({
     persist(next)
     if (next.categorical !== categorical || 'customCategorical' in patch)
       setCategorical(next.categorical)
+    if (next.plotFont !== plotFont) setPlotFont(next.plotFont)
     set(next)
   },
   setPlotDefault: (kind, patch) => {

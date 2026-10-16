@@ -392,11 +392,21 @@ describe('curve fit control: a baseline or a background treatment', () => {
     })
 
   it('accepts the vehicle (no dose) as the control', () => {
-    expect(controlIsBaseline(rows.filter((x) => x.cmpd === 'DMSO'), 'dose')).toBe(true)
+    expect(
+      controlIsBaseline(
+        rows.filter((x) => x.cmpd === 'DMSO'),
+        'dose'
+      )
+    ).toBe(true)
     expect(preview('DMSO').controlTreated).toBeUndefined()
   })
   it('flags another compound at a dose as a treated control', () => {
-    expect(controlIsBaseline(rows.filter((x) => x.cmpd === 'B'), 'dose')).toBe(false)
+    expect(
+      controlIsBaseline(
+        rows.filter((x) => x.cmpd === 'B'),
+        'dose'
+      )
+    ).toBe(false)
     expect(preview('B').controlTreated).toBe(true)
   })
   it('a time curve may start from t₀ of the same treatment', () => {

@@ -35,7 +35,16 @@ import {
   type CompareState,
   type CtxMode
 } from './compareModel'
-import { CondRow, NodeTable, Section, SelectorShell, SideCell, SidesBox, Tag, ValChip } from './condRows'
+import {
+  CondRow,
+  NodeTable,
+  Section,
+  SelectorShell,
+  SideCell,
+  SidesBox,
+  Tag,
+  ValChip
+} from './condRows'
 import { useCondUnits } from './useUpstreamFacts'
 import { PreviewTable } from './selectorParts'
 import { useGraph } from './store'
@@ -44,10 +53,19 @@ import { thresholdForAnalysis, type CompareConfig } from './types'
 type Analysis = 'compare' | 'two_way_anova'
 
 const LEGEND: Array<[string, string]> = [
-  ['compared', 'what is tested: test values, each its own comparison, against one control value. Several compared conditions combine: each combination of test values against the control combination.'],
+  [
+    'compared',
+    'what is tested: test values, each its own comparison, against one control value. Several compared conditions combine: each combination of test values against the control combination.'
+  ],
   ['context', 'every other condition: how each test group finds its control there, one of —'],
-  ['matched', 'each test group gets its own control at the same value; the test side is split per value.'],
-  ['shared', 'still split per value, but every value is compared against one control at a single value.'],
+  [
+    'matched',
+    'each test group gets its own control at the same value; the test side is split per value.'
+  ],
+  [
+    'shared',
+    'still split per value, but every value is compared against one control at a single value.'
+  ],
   ['pooled', 'the condition is ignored: its values are merged into one group on both sides.']
 ]
 
@@ -74,16 +92,29 @@ export function CompareDialog({
   const [state, setState] = useState<CompareState>(() => readCompareState(initial, samples, active))
   // each condition's value box: set by its chevron; until then a compared one open, a context one folded
   const [fold, setFold] = useState<Partial<Record<ConditionKey, boolean>>>({})
-  const [analysis, setAnalysis] = useState<Analysis>(initial.analysis === 'two_way_anova' ? 'two_way_anova' : 'compare')
+  const [analysis, setAnalysis] = useState<Analysis>(
+    initial.analysis === 'two_way_anova' ? 'two_way_anova' : 'compare'
+  )
   const twoWay = analysis === 'two_way_anova'
 
   const m = useMemo(() => compareModel(state, samples, active), [state, samples, active])
   const any = m.CMP.length > 0
   const input = useMemo<CompareInput>(
-    () => ({ rows: samples, num: m.num, den: m.den, match: m.match, compared: m.CMP, pool: m.pool, activeConditions: active }),
+    () => ({
+      rows: samples,
+      num: m.num,
+      den: m.den,
+      match: m.match,
+      compared: m.CMP,
+      pool: m.pool,
+      activeConditions: active
+    }),
     [m, samples, active]
   )
-  const preview = useMemo(() => (any && !twoWay ? previewCompare(input) : null), [any, twoWay, input])
+  const preview = useMemo(
+    () => (any && !twoWay ? previewCompare(input) : null),
+    [any, twoWay, input]
+  )
   const slices = useMemo(
     () => (preview && preview.groups > 0 ? compareSlices(input).slices : []),
     [preview, input]
@@ -92,10 +123,19 @@ export function CompareDialog({
   // pair of each runs as its own 2×2 interaction.
   const twoWayView = useMemo(() => {
     if (!twoWay || m.CMP.length !== 2) return null
-    const [f1, f2] = m.CMP.map((c) => ({ condition: c, pairs: crossPairs(m.num[c] ?? [], m.den[c] ?? []) }))
+    const [f1, f2] = m.CMP.map((c) => ({
+      condition: c,
+      pairs: crossPairs(m.num[c] ?? [], m.den[c] ?? [])
+    }))
     if (!f1.pairs.length || !f2.pairs.length) return null
     const factors: [typeof f1, typeof f2] = [f1, f2]
-    return previewTwoWay({ rows: samples, factors, activeConditions: active, num: m.num, den: m.den })
+    return previewTwoWay({
+      rows: samples,
+      factors,
+      activeConditions: active,
+      num: m.num,
+      den: m.den
+    })
   }, [twoWay, m, samples, active])
   const conf = !twoWay ? confounded(m, samples) : null
 
@@ -110,7 +150,10 @@ export function CompareDialog({
   const canApply = any && warnings.length === 0
 
   const apply = (): void => {
-    const cur = (useGraph.getState().nodes.find((n) => n.id === id)?.data.config as { threshold?: ThresholdConfig } | undefined)?.threshold
+    const cur = (
+      useGraph.getState().nodes.find((n) => n.id === id)?.data.config as
+        { threshold?: ThresholdConfig } | undefined
+    )?.threshold
     const next = cur ? thresholdForAnalysis(initial.analysis ?? 'compare', analysis, cur) : null
     const patch: Record<string, unknown> = {
       analysis,
@@ -171,7 +214,13 @@ export function CompareDialog({
     const isX = m.CMP.includes(c)
     const x = isX ? null : (m.ctx.find((k) => k.c === c) ?? null)
     const live = any && x
-    const mode = isX ? 'cmp' : live ? x.mode : vs.length < 2 ? 'single' : (state.modes[c] ?? 'match')
+    const mode = isX
+      ? 'cmp'
+      : live
+        ? x.mode
+        : vs.length < 2
+          ? 'single'
+          : (state.modes[c] ?? 'match')
     if (mode === 'single')
       return (
         <CondRow
@@ -179,7 +228,15 @@ export function CompareDialog({
           first={i === 0}
           name={condLabel(c)}
           badge={<Tag kind="ctx">context condition</Tag>}
-          toggle={<OnOffSwitch on={false} disabled label={`Compare on ${condLabel(c)}`} title={`One ${condLabel(c)} only: nothing to compare`} onChange={() => {}} />}
+          toggle={
+            <OnOffSwitch
+              on={false}
+              disabled
+              label={`Compare on ${condLabel(c)}`}
+              title={`One ${condLabel(c)} only: nothing to compare`}
+              onChange={() => {}}
+            />
+          }
           line={<span style={{ fontSize: 12, color: UI.textMuted }}>{vs[0]}</span>}
         />
       )
@@ -211,7 +268,9 @@ export function CompareDialog({
                 look={P.T.includes(v) ? 'on' : 'plain'}
                 disabled={v === P.r}
                 title={v === P.r ? 'This is the control' : undefined}
-                onClick={() => edit((s) => void (s.cmp[c] = { ...s.cmp[c]!, T: toggle(s.cmp[c]!.T, v) }))}
+                onClick={() =>
+                  edit((s) => void (s.cmp[c] = { ...s.cmp[c]!, T: toggle(s.cmp[c]!.T, v) }))
+                }
               />
             ))
           ]}
@@ -223,7 +282,9 @@ export function CompareDialog({
                 label={v}
                 radio
                 look={v === P.r ? 'on' : 'plain'}
-                onClick={() => edit((s) => void (s.cmp[c] = { r: v, T: s.cmp[c]!.T.filter((t) => t !== v) }))}
+                onClick={() =>
+                  edit((s) => void (s.cmp[c] = { r: v, T: s.cmp[c]!.T.filter((t) => t !== v) }))
+                }
               />
             ))
           ]}
@@ -251,15 +312,43 @@ export function CompareDialog({
     } else if (mode === 'match') {
       box = (
         <SidesBox
-          left={['test', Tv.map((v) => (Cv.includes(v) ? outChip(v, 'matched') : <ValChip key={v} label={v} look="out" title="No control at this value: skipped" />))]}
-          right={['control', Cv.map((v) => (Tv.includes(v) ? outChip(v, 'matched') : <ValChip key={v} label={v} look="out" title="No test group at this value" />))]}
+          left={[
+            'test',
+            Tv.map((v) =>
+              Cv.includes(v) ? (
+                outChip(v, 'matched')
+              ) : (
+                <ValChip key={v} label={v} look="out" title="No control at this value: skipped" />
+              )
+            )
+          ]}
+          right={[
+            'control',
+            Cv.map((v) =>
+              Tv.includes(v) ? (
+                outChip(v, 'matched')
+              ) : (
+                <ValChip key={v} label={v} look="out" title="No test group at this value" />
+              )
+            )
+          ]}
         />
       )
     } else {
-      box = <SidesBox left={['test · merged', Tv.map((v) => outChip(v, 'plain'))]} right={['control · merged', Cv.map((v) => outChip(v, 'plain'))]} />
+      box = (
+        <SidesBox
+          left={['test · merged', Tv.map((v) => outChip(v, 'plain'))]}
+          right={['control · merged', Cv.map((v) => outChip(v, 'plain'))]}
+        />
+      )
     }
     // the row's role sits by its name
-    const badge = mode === 'cmp' ? <Tag kind="cmp">compared condition</Tag> : <Tag kind="ctx">context condition</Tag>
+    const badge =
+      mode === 'cmp' ? (
+        <Tag kind="cmp">compared condition</Tag>
+      ) : (
+        <Tag kind="ctx">context condition</Tag>
+      )
     const locked = !!live && !x.matchOk
     return (
       <CondRow
@@ -276,7 +365,11 @@ export function CompareDialog({
           <OnOffSwitch
             on={mode === 'cmp'}
             label={`Compare on ${condLabel(c)}`}
-            title={mode === 'cmp' ? `${condLabel(c)} is compared. Switch off to make it context` : `Compare on ${condLabel(c)}`}
+            title={
+              mode === 'cmp'
+                ? `${condLabel(c)} is compared. Switch off to make it context`
+                : `Compare on ${condLabel(c)}`
+            }
             onChange={(on) => {
               if (on) return compareOn(c)
               toContext(c, state.modes[c] ?? 'match')
@@ -291,7 +384,11 @@ export function CompareDialog({
             {!twoWay && (
               <span
                 style={styles.ctxGroup}
-                title={mode === 'cmp' ? `${condLabel(c)} is compared. Switch compared off to set its context` : undefined}
+                title={
+                  mode === 'cmp'
+                    ? `${condLabel(c)} is compared. Switch compared off to set its context`
+                    : undefined
+                }
               >
                 <span style={styles.swLabel}>context:</span>
                 <ToggleSwitch
@@ -300,7 +397,12 @@ export function CompareDialog({
                   value={mode === 'cmp' ? (state.modes[c] ?? 'match') : mode}
                   disabled={mode === 'cmp'}
                   options={[
-                    { value: 'match', label: 'matched', disabled: locked, title: locked ? `The control has one ${condLabel(c)} only` : undefined },
+                    {
+                      value: 'match',
+                      label: 'matched',
+                      disabled: locked,
+                      title: locked ? `The control has one ${condLabel(c)} only` : undefined
+                    },
                     { value: 'fixed', label: 'shared' },
                     { value: 'pool', label: 'pooled' }
                   ]}
@@ -345,14 +447,23 @@ export function CompareDialog({
         legend={LEGEND}
       >
         {m.conds.map(rowOf)}
-        <div style={{ gridColumn: '1 / -1', display: 'flex', flexDirection: 'column', gap: 2, paddingTop: 6 }}>
+        <div
+          style={{
+            gridColumn: '1 / -1',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 2,
+            paddingTop: 6
+          }}
+        >
           {!any ? (
             <StatusNote kind="warn">
               <b>Comparison:</b> no condition is compared. Set one to compared.
             </StatusNote>
           ) : twoWay ? (
             <StatusNote kind="info">
-              <b>Factors:</b> {m.CMP.map(condLabel).join(' × ')}; every other condition matched like-for-like.
+              <b>Factors:</b> {m.CMP.map(condLabel).join(' × ')}; every other condition matched
+              like-for-like.
             </StatusNote>
           ) : (
             <StatusNote kind={controlKind(m)}>
@@ -361,12 +472,19 @@ export function CompareDialog({
           )}
           {conf && (
             <StatusNote kind="warn">
-              <b>Confounded:</b> the data have samples where {conf.conds.map(condLabel).join(' or ')} changes alone (e.g. {conf.example}), so the effects of {m.CMP.map(condLabel).join(' and ')} can’t be told apart.
+              <b>Confounded:</b> the data have samples where{' '}
+              {conf.conds.map(condLabel).join(' or ')} changes alone (e.g. {conf.example}), so the
+              effects of {m.CMP.map(condLabel).join(' and ')} can’t be told apart.
             </StatusNote>
           )}
         </div>
       </Section>
-      <Section title={`Preview (${nComparisons} ${twoWay ? 'interaction' : 'comparison'}${nComparisons === 1 ? '' : 's'})`} hint="What will run: one row per comparison." grid={false} shade>
+      <Section
+        title={`Preview (${nComparisons} ${twoWay ? 'interaction' : 'comparison'}${nComparisons === 1 ? '' : 's'})`}
+        hint="What will run: one row per comparison."
+        grid={false}
+        shade
+      >
         {any && (
           <div style={styles.formula}>
             {twoWay && m.CMP.length === 2
@@ -379,15 +497,20 @@ export function CompareDialog({
           </div>
         )}
         {twoWay
-          ? twoWayView && twoWayView.rows.length > 0 && <PreviewTable columns={twoWayView.columns} rows={twoWayView.rows} />
+          ? twoWayView &&
+            twoWayView.rows.length > 0 && (
+              <PreviewTable columns={twoWayView.columns} rows={twoWayView.rows} />
+            )
           : slices.length > 0 && (
               <NodeTable
                 columns={['test', '', 'control']}
-                rows={slices.slice(0, 50).map((s) => [
-                  <SideCell key="t" rows={s.grp} conds={active} units={units} />,
-                  'vs',
-                  <SideCell key="c" rows={s.denSlice} conds={active} units={units} />
-                ])}
+                rows={slices
+                  .slice(0, 50)
+                  .map((s) => [
+                    <SideCell key="t" rows={s.grp} conds={active} units={units} />,
+                    'vs',
+                    <SideCell key="c" rows={s.denSlice} conds={active} units={units} />
+                  ])}
                 more={slices.length - 50}
               />
             )}
@@ -411,5 +534,11 @@ const styles = {
   swLabel: { fontSize: 11, color: UI.textMuted },
   ctxGroup: { display: 'inline-flex', alignItems: 'center', gap: 6, marginLeft: 'auto' },
   formula: { fontSize: 12, color: UI.text, fontFamily: 'ui-monospace, monospace' },
-  formulaNote: { fontFamily: 'inherit', color: UI.textMuted, fontWeight: 400, marginTop: 2, fontSize: 11 }
+  formulaNote: {
+    fontFamily: 'inherit',
+    color: UI.textMuted,
+    fontWeight: 400,
+    marginTop: 2,
+    fontSize: 11
+  }
 } as const

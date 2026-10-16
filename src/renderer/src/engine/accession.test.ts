@@ -169,12 +169,7 @@ describe('Clean data on protein groups', () => {
 
   it('matches a data ID column of another name against the DB’s uniqID', () => {
     const r = run(
-      [
-        'UniProtIDs,s1,s2',
-        'P06733-2,1,2',
-        'sp|O14733|MP2K7_HUMAN,3,4',
-        'Q13547;Q92769-2,5,6'
-      ],
+      ['UniProtIDs,s1,s2', 'P06733-2,1,2', 'sp|O14733|MP2K7_HUMAN,3,4', 'Q13547;Q92769-2,5,6'],
       ['uniqID,gene', 'P06733,ENO1', 'O14733,MAP2K7', 'Q13547,HDAC1', 'Q92769,HDAC2']
     )
     expect(r.displayMap.P06733).toBe('ENO1')

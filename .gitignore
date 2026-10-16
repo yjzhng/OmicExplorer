@@ -33,6 +33,9 @@ test_examples/decryptM/
 test_examples/CurveCurator/
 # Synthetic curve-fit benchmark — kept local (generator, calibration, generated data)
 test_examples/SynthData/
+# Test dataset catalogue + shared test compound/cell list — kept local
+test_examples/datasets.csv
+test_examples/test_list.json
 
 # Curve-fit benchmark evaluation — kept local
 bench/

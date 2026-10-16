@@ -42,6 +42,8 @@ import { cssVars, PALETTES, UI } from '../ui/theme'
 import { useUiTheme } from '../ui/useUiTheme'
 import { HoverTip, InfoTip } from '../ui/InfoTip'
 import { StatusNote, type StatusKind } from '../ui/StatusNote'
+import { rowMatches } from '../ui/rowMatches'
+import { TableSearch } from '../ui/TableSearch'
 import { Select as AppSelect } from '../ui/Select'
 import { OnOffSwitch, ToggleSwitch } from '../ui/ToggleSwitch'
 import { DOCKED_CARD, DOCKED_WRAP, useDialogDock } from './dialogDock'
@@ -674,6 +676,7 @@ function ScrollFade({
   fill = true,
   title,
   colNav = false,
+  headCenter,
   maxHeight
 }: {
   children: ReactNode
@@ -685,6 +688,8 @@ function ScrollFade({
   /** arrow buttons, right of the title, that step the view one column left / right — for tables
    *  far wider than the window. Above the table rather than on it, so they never cover a header. */
   colNav?: boolean
+  /** controls centred in the heading row, between the title and the column arrows */
+  headCenter?: ReactNode
 }): ReactNode {
   const scrollRef = useRef<HTMLDivElement>(null)
   const contentRef = useRef<HTMLDivElement>(null)
@@ -733,10 +738,11 @@ function ScrollFade({
   }, [update])
   const heading =
     title != null ? (
-      <div style={styles.tableHead}>
+      <div style={headCenter ? styles.tableHeadCentred : styles.tableHead}>
         <span style={styles.tableTitle}>{title}</span>
+        {headCenter && <span style={styles.tableHeadMid}>{headCenter}</span>}
         {colNav && (edges.left || edges.right) && (
-          <span style={styles.colSteps}>
+          <span style={{ ...styles.colSteps, justifySelf: 'end' }}>
             <ColStep
               dir={-1}
               disabled={!edges.left}
@@ -1828,15 +1834,16 @@ export function InteractiveImportDialog({
       </>
     ) : null
 
-  // Metadata preview must reflect the Filtering step — rows dropped by an active filter must not
-  // appear in (or be counted for) the generated DB. Computed only on the Metadata step (a single
-  // pass over the full matrix); with no active filters it's the plain preview.
+  // The Metadata step's rows must reflect the Filtering step — rows dropped by an active filter must
+  // not appear in (or be counted for) the generated DB. EVERY kept row, not the preview's first
+  // few, so its search finds any protein (the step renders only the first matches). Computed only
+  // on the Metadata step (a single pass over the full matrix).
   const metaPreview = ((): { rows: Record<string, string>[]; total: number } | null => {
     if (stage !== 5) return preview
     const active = filterCols
       .filter((c) => filters[c]?.active)
       .map((c) => ({ col: c, drop: new Set(filters[c].drop ?? []), spec: filters[c] }))
-    if (active.length === 0) return preview
+    if (active.length === 0) return { rows: allRows, total: allRows.length }
     const rows: Record<string, string>[] = []
     let total = 0
     for (const r of allRows) {
@@ -1861,7 +1868,7 @@ export function InteractiveImportDialog({
       }
       if (ok) {
         total++
-        if (rows.length < PREVIEW_ROWS) rows.push(r)
+        rows.push(r)
       }
     }
     return { rows, total }
@@ -2655,13 +2662,18 @@ function Step4Metadata({
     setPicked(next)
     if (annotations) onSelectFields([...next])
   }
-  const annCols = annotations?.fields ?? []
+  const annCols = useMemo(() => annotations?.fields ?? [], [annotations])
   // The DB exactly as it will be written (buildStandardInputs): one row per PROTEIN, keyed by its
   // canonical accession — a protein group's members each get their own row, with that protein's
   // own gene name and annotation; a protein named by two groups appears once.
-  const cols = idCol ? ['uniqID', 'gene', ...metaCols, ...annCols] : []
-  const dbRows: Record<string, string>[] = []
-  if (idCol) {
+  const cols = useMemo(
+    () => (idCol ? ['uniqID', 'gene', ...metaCols, ...annCols] : []),
+    [idCol, metaCols, annCols]
+  )
+  // Built from EVERY kept row (not a preview sample), so the search below reaches any protein.
+  const dbRows = useMemo(() => {
+    const out: Record<string, string>[] = []
+    if (!idCol) return out
     const written = new Set<string>()
     for (const r of rows ?? []) {
       const id = (r[idCol] ?? '').trim()
@@ -2671,14 +2683,30 @@ function Step4Metadata({
         if (!uniqID || written.has(uniqID)) continue
         written.add(uniqID)
         const ann = annotations?.byId[uniqID]
-        const out: Record<string, string> = { uniqID, gene: label || (ann?.geneName ?? '').trim() }
-        for (const c of metaCols) out[c] = r[c] ?? ''
-        for (const f of annCols) out[f] = ann?.[f] ?? ''
-        dbRows.push(out)
+        const row: Record<string, string> = { uniqID, gene: label || (ann?.geneName ?? '').trim() }
+        for (const c of metaCols) row[c] = r[c] ?? ''
+        for (const f of annCols) row[f] = ann?.[f] ?? ''
+        out.push(row)
       }
     }
-  }
+    return out
+  }, [idCol, labelCol, metaCols, annCols, rows, annotations])
   const accessors = cols.map((c) => (r: Record<string, string>) => r[c] ?? '')
+
+  // Search across every column; optionally only the proteins the fetch found nothing for.
+  const [query, setQuery] = useState('')
+  const [bareOnly, setBareOnly] = useState(false)
+  const matches = useMemo(() => {
+    const bare = (r: Record<string, string>): boolean => annCols.every((f) => !r[f])
+    return dbRows.filter(
+      (r) =>
+        (!bareOnly || !annotations || bare(r)) &&
+        rowMatches(
+          cols.map((c) => r[c] ?? ''),
+          query
+        )
+    )
+  }, [dbRows, cols, annCols, annotations, bareOnly, query])
 
   // Per-column user override (px); null = the computed content-fit default. Reset when the
   // column set changes (adjust-state-during-render).
@@ -2690,7 +2718,8 @@ function Step4Metadata({
   }
 
   if (!idCol) return <div style={styles.hint}>Pick an ID column in step 1.</div>
-  const shown = dbRows
+  // Rendering every row is slow and needless — the first matches; the search narrows the rest.
+  const shown = matches.slice(0, PREVIEW_ROWS)
   // Content-fit width from the longest value (header or any shown cell), capped.
   const fitWidth = (i: number): number => {
     let maxLen = cols[i].length
@@ -2798,7 +2827,37 @@ function Step4Metadata({
           )}
         </span>
       </div>
-      <ScrollFade title="Metadata DB" colNav>
+      <ScrollFade
+        title="Metadata DB"
+        colNav
+        headCenter={
+          <>
+            <TableSearch
+              value={query}
+              onChange={setQuery}
+              placeholder="Search accession, gene, annotation…"
+              title="Every word must appear in some column of the row"
+            />
+            {annotations && (
+              <label
+                style={styles.dbSearchToggle}
+                title="Only the proteins the fetch returned no annotation for"
+              >
+                <input
+                  type="checkbox"
+                  checked={bareOnly}
+                  onChange={(e) => setBareOnly(e.target.checked)}
+                />
+                Unannotated only
+              </label>
+            )}
+            {/* A fixed width, so the count changing as you type doesn't nudge the centred search. */}
+            <span style={{ ...styles.renameCount, minWidth: 120 }}>
+              {matches.length.toLocaleString()}/{dbRows.length.toLocaleString()} proteins.
+            </span>
+          </>
+        }
+      >
         {/* Always fixed layout with computed widths + minWidth:0 (not the shared grid's 100%), so
             long values clip instead of stretching the column and the table doesn't fill the width. */}
         <table style={{ ...styles.grid, tableLayout: 'fixed', minWidth: 0 }}>
@@ -5276,6 +5335,22 @@ const styles: Record<string, CSSProperties> = {
   },
   fade: { position: 'absolute', pointerEvents: 'none', zIndex: 2 },
   tableHead: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 },
+  // Title left, the centred controls in the middle, the column arrows right.
+  tableHeadCentred: {
+    display: 'grid',
+    gridTemplateColumns: '1fr auto 1fr',
+    alignItems: 'center',
+    gap: 12
+  },
+  tableHeadMid: { display: 'inline-flex', alignItems: 'center', gap: 12 },
+  dbSearchToggle: {
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: 5,
+    fontSize: 12,
+    color: UI.text,
+    cursor: 'pointer'
+  },
   colSteps: { display: 'inline-flex', gap: 4 },
   colStep: {
     width: 20,

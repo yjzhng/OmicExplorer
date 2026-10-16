@@ -199,3 +199,16 @@ export function unpackResults(stored: unknown): Record<string, NodeResult> {
     out[id] = unpackValue(r, pool) as NodeResult
   return out
 }
+
+/** Rename results in a workflow's stored `results` — packed or plain — in place: each `from` id
+ *  becomes its `to` (one already at `to` is kept). For upgrades that move a tile's result. */
+export function renameStoredResults(stored: unknown, rename: Map<string, string>): void {
+  if (!isObj(stored) || rename.size === 0) return
+  const map = stored[PACKED] === 1 ? stored.results : stored
+  if (!isObj(map)) return
+  for (const [from, to] of rename)
+    if (from in map) {
+      if (!(to in map)) map[to] = map[from]
+      delete map[from]
+    }
+}

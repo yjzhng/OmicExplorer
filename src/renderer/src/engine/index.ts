@@ -75,6 +75,7 @@ export {
   type DoseMad,
   logistic,
   curveSampleX,
+  curveDescribed,
   relevanceScore,
   type CurveFit
 } from './curveFit'
