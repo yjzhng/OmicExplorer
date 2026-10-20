@@ -27,7 +27,7 @@ for (const cell of ['M', 'W'])
           for (const uniqID of ['g1', 'g2'])
             rows.push({ uniqID, cell, cmpd, dose, time, rep, value: 10 + (k++ % 7) })
 const active = ['cell', 'cmpd', 'dose', 'time'] as const
-const base = { rows, activeConditions: [...active] }
+const base = { rows, activeConditions: [...active], numericConditions: [] }
 
 // A comparison as what runs: each numerator group's samples against its denominator slice's.
 const sample = (r: StandardRow): string => `${r.cell}|${r.cmpd}|${r.dose}|${r.time}`

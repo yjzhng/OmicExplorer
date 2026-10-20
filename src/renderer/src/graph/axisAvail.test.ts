@@ -24,10 +24,7 @@ describe('axisAvailFor (response-axis gating through stale upstreams)', () => {
   ]
 
   it('unwired ⇒ both axes (nothing to rule out)', () => {
-    expect(axisAvailFor({ nodes: [], edges: [], results: {} }, undefined)).toEqual({
-      dose: true,
-      time: true
-    })
+    expect(axisAvailFor({ nodes: [], edges: [], results: {} }, undefined)).toEqual(['dose', 'time'])
   })
 
   it('uses the direct upstream result when it exists', () => {
@@ -37,7 +34,7 @@ describe('axisAvailFor (response-axis gating through stale upstreams)', () => {
       results: { 'std-1': stdResult(['cmpd', 'dose']) }
     }
     // cmp-1 has no result (stale) → falls back to std-1's result
-    expect(axisAvailFor(g, 'cmp-1')).toEqual({ dose: true, time: false })
+    expect(axisAvailFor(g, 'cmp-1')).toEqual(['dose'])
   })
 
   it('falls back to the Clean data tile’s declared conditions when nothing has run', () => {
@@ -49,7 +46,7 @@ describe('axisAvailFor (response-axis gating through stale upstreams)', () => {
       edges: chain,
       results: {}
     }
-    expect(axisAvailFor(g, 'cmp-1')).toEqual({ dose: false, time: true })
+    expect(axisAvailFor(g, 'cmp-1')).toEqual(['time'])
   })
 
   it('offers neither axis when the upstream is stale and conditions are auto-detect', () => {
@@ -58,6 +55,36 @@ describe('axisAvailFor (response-axis gating through stale upstreams)', () => {
       edges: chain,
       results: {}
     }
-    expect(axisAvailFor(g, 'cmp-1')).toEqual({ dose: false, time: false })
+    expect(axisAvailFor(g, 'cmp-1')).toEqual([])
+  })
+
+  it('carries the numeric custom conditions, after dose and time — not the categorical ones', () => {
+    const ran: AxisGraph = {
+      nodes: [step('std-1', 'standardize'), step('cmp-1', 'compare')],
+      edges: chain,
+      results: {
+        'std-1': {
+          kind: 'standardize',
+          std: {
+            rows: [],
+            displayMap: {},
+            activeConditions: ['@temp', 'cmpd', 'time', '@batch'],
+            numericConditions: ['@temp']
+          }
+        } as NodeResult
+      }
+    }
+    expect(axisAvailFor(ran, 'cmp-1')).toEqual(['time', '@temp'])
+    // before anything has run: the Load tile's declaration
+    const unrun: AxisGraph = {
+      nodes: [
+        step('load-1', 'load', { mode: 'manual', numericConditions: ['temp'] }),
+        step('std-1', 'standardize', { activeConditions: ['dose', '@temp', '@batch'] }),
+        step('cmp-1', 'compare')
+      ],
+      edges: [{ source: 'load-1', target: 'std-1' }, ...chain],
+      results: {}
+    }
+    expect(axisAvailFor(unrun, 'cmp-1')).toEqual(['dose', '@temp'])
   })
 })

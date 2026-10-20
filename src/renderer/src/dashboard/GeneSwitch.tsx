@@ -7,25 +7,13 @@
  *  copied / downloaded plot is named; the tile's quick switches keep the strip above. A gene hovered in another plot/table
  *  transiently drives the figure (linked selection) without moving the pager. Renders
  *  `children(gene)` for the currently-shown gene. */
-import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  type CSSProperties,
-  type ReactNode
-} from 'react'
-import { createPortal } from 'react-dom'
+import { useCallback, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 
 import { GeneTitleContext } from '../ui/geneTitle'
-import { IconSearch } from '../ui/GeneSelectMenu'
-import { GENE_LIST_STYLES } from '../ui/geneListStyles'
 import { PagerTrigger } from '../ui/PagerTrigger'
-import { PALETTES, UI } from '../ui/theme'
+import { UI } from '../ui/theme'
 import { useSelection } from '../ui/useSelection'
-import { useUiTheme } from '../ui/useUiTheme'
-import { useGeneDescriptions } from './useGeneMenuTabs'
+import { GeneSearchMenu } from './GeneSearchMenu'
 
 export function GeneSwitch({
   genes,
@@ -141,51 +129,16 @@ function GenePicker({
   canStep: boolean
   onPick: (id: string) => void
 }): ReactNode {
-  const mode = useUiTheme((s) => s.mode)
-  const p = PALETTES[mode]
   const [open, setOpen] = useState(false)
-  const [q, setQ] = useState('')
   const [rect, setRect] = useState<DOMRect | null>(null)
   const btnRef = useRef<HTMLButtonElement>(null)
-  const menuRef = useRef<HTMLDivElement>(null)
-
-  useEffect(() => {
-    if (!open) return
-    const onDown = (e: MouseEvent): void => {
-      const t = e.target as Node
-      if (!menuRef.current?.contains(t) && !btnRef.current?.contains(t)) setOpen(false)
-    }
-    const onKey = (e: KeyboardEvent): void => {
-      if (e.key === 'Escape') setOpen(false)
-    }
-    document.addEventListener('mousedown', onDown)
-    document.addEventListener('keydown', onKey)
-    return () => {
-      document.removeEventListener('mousedown', onDown)
-      document.removeEventListener('keydown', onKey)
-    }
-  }, [open])
-
-  // Each gene's protein description, as the nav's gene selector shows it — listed and searched.
-  const descs = useGeneDescriptions()
-  const filtered = useMemo(() => {
-    const needle = q.trim().toLowerCase()
-    return needle
-      ? set.filter(
-          (id) =>
-            (displayMap[id] ?? id).toLowerCase().includes(needle) ||
-            (descs[id]?.toLowerCase().includes(needle) ?? false)
-        )
-      : set
-  }, [set, q, displayMap, descs])
+  const close = useCallback(() => setOpen(false), [])
 
   const toggle = (): void => {
     if (!open && btnRef.current) setRect(btnRef.current.getBoundingClientRect())
-    setQ('')
     setOpen((o) => !o)
   }
 
-  const L = GENE_LIST_STYLES
   return (
     <>
       <PagerTrigger
@@ -199,94 +152,20 @@ function GenePicker({
         noun="gene"
         title="Jump to a gene"
       />
-      {open &&
-        rect &&
-        createPortal(
-          // The nav's gene selector window: its search field, then gene rows — name, description.
-          <div
-            ref={menuRef}
-            style={{
-              ...L.menu,
-              left: rect.left,
-              top: rect.bottom + 4,
-              width: MENU_W,
-              maxHeight: Math.max(160, window.innerHeight - rect.bottom - 4 - 8),
-              zIndex: 5000,
-              background: p.panel,
-              border: `1px solid ${p.border}`
-            }}
-          >
-            <div style={L.searchWrap}>
-              <span style={{ ...L.searchIcon, color: p.textMuted }}>
-                <IconSearch />
-              </span>
-              <input
-                autoFocus
-                value={q}
-                onChange={(e) => setQ(e.target.value)}
-                placeholder={`Search ${set.length.toLocaleString()} gene${set.length === 1 ? '' : 's'}…`}
-                style={{
-                  ...L.search,
-                  paddingLeft: 26,
-                  background: p.panelAlt,
-                  color: p.text,
-                  border: `1px solid ${p.border}`
-                }}
-              />
-            </div>
-            <div
-              style={{ overflowY: 'auto', minHeight: 0, display: 'flex', flexDirection: 'column' }}
-            >
-              {filtered.length === 0 ? (
-                <div style={{ ...L.more, paddingLeft: 6, color: p.textMuted }}>No match.</div>
-              ) : (
-                filtered.slice(0, LIST_CAP).map((id) => {
-                  const on = id === current
-                  const desc = descs[id]
-                  return (
-                    <div
-                      key={id}
-                      role="button"
-                      onClick={() => {
-                        onPick(id)
-                        setOpen(false)
-                      }}
-                      style={{
-                        ...L.geneRow,
-                        paddingLeft: 6,
-                        color: p.text,
-                        fontWeight: on ? 700 : undefined,
-                        ...(on ? { background: `${p.accent}22` } : {})
-                      }}
-                    >
-                      <span style={L.geneName}>{displayMap[id] ?? id}</span>
-                      {desc && (
-                        <span style={{ ...L.geneDesc, color: p.textMuted }} title={desc}>
-                          {desc}
-                        </span>
-                      )}
-                    </div>
-                  )
-                })
-              )}
-              {filtered.length > LIST_CAP && (
-                <div style={{ ...L.more, paddingLeft: 6, color: p.textMuted }}>
-                  +{(filtered.length - LIST_CAP).toLocaleString()} more — refine search
-                </div>
-              )}
-            </div>
-          </div>,
-          document.body
-        )}
+      {open && rect && (
+        <GeneSearchMenu
+          genes={set}
+          current={current}
+          displayMap={displayMap}
+          anchor={rect}
+          triggerRef={btnRef}
+          onPick={onPick}
+          onClose={close}
+        />
+      )}
     </>
   )
 }
-
-/** The dropdown's width — room for a gene's name and its description, as the nav's menu. */
-const MENU_W = 340
-
-/** Rows the gene dropdown renders at once — the set can be every gene in the data. */
-const LIST_CAP = 300
 
 const styles: Record<string, CSSProperties> = {
   root: { height: '100%', display: 'flex', flexDirection: 'column', minHeight: 0 },

@@ -1,7 +1,15 @@
 import { describe, expect, it } from 'vitest'
 
-import { NODE_SPECS, plotEntriesFor } from './registry'
 import {
+  entryKey,
+  NODE_SPECS,
+  plotEntriesFor,
+  plotLabel,
+  seriesAxes,
+  tileEntryKey
+} from './registry'
+import {
+  entriesFor,
   factsOf,
   gatePlotEntries,
   UNWIRED,
@@ -27,13 +35,32 @@ describe('tile requirements', () => {
   })
 
   it('response plots need their axis; tdr needs both; bubble needs either', () => {
-    const doseOnly = facts({ kind: 'compare', axes: { dose: true, time: false } })
+    const doseOnly = facts({ kind: 'compare', axes: ['dose'] })
     expect(unmetRequirement('dr', { axis: 'dose' }, doseOnly)).toBeNull()
     expect(unmetRequirement('dr', { axis: 'time' }, doseOnly)).toMatch(/time condition/)
     expect(unmetRequirement('tdr', {}, doseOnly)).toMatch(/both dose and time/)
     expect(unmetRequirement('bubble', { axis: 'time' }, doseOnly)).toBeNull()
-    const none = facts({ kind: 'compare', axes: { dose: false, time: false } })
-    expect(unmetRequirement('bubble', {}, none)).toMatch(/dose or time/)
+    // the default (dose) axis on time-only data: the plot draws by time, so it's offered
+    const timeOnly = facts({ kind: 'compare', axes: ['time'] })
+    expect(unmetRequirement('bubble', NODE_SPECS.bubble.defaultConfig(), timeOnly)).toBeNull()
+    expect(seriesAxes('dose', ['time'], undefined)).toEqual({ axes: ['time'], axis: 'time' })
+    // a numeric custom condition alone is the axis too
+    const tempOnly = facts({ kind: 'compare', axes: ['@temp'] })
+    expect(unmetRequirement('bubble', NODE_SPECS.bubble.defaultConfig(), tempOnly)).toBeNull()
+    expect(seriesAxes('dose', ['@temp'], undefined)).toEqual({ axes: ['@temp'], axis: '@temp' })
+    expect(seriesAxes('time', ['dose', 'time'], undefined)).toEqual({
+      axes: ['dose', 'time'],
+      axis: 'time'
+    })
+    const none = facts({ kind: 'compare', axes: [] })
+    expect(unmetRequirement('bubble', {}, none)).toMatch(/numeric condition/)
+    // a numeric custom condition is an axis like dose and time, alone or in a pair
+    const withTemp = facts({ kind: 'compare', axes: ['dose', '@temp'] })
+    expect(unmetRequirement('dr', { axis: '@temp' }, withTemp)).toBeNull()
+    expect(unmetRequirement('tdr', { pair: ['dose', '@temp'] }, withTemp)).toBeNull()
+    expect(unmetRequirement('tdr', { pair: ['time', '@temp'] }, withTemp)).toMatch(
+      /both time and temp/
+    )
   })
 
   it('a Curve fit feeds curve plots, not per-dose or group-mean ones', () => {
@@ -43,6 +70,7 @@ describe('tile requirements', () => {
       'heatmap',
       'dr',
       'potency',
+      'metrics',
       'curveMad',
       'enrich',
       'string',
@@ -52,7 +80,7 @@ describe('tile requirements', () => {
     for (const k of ['ma', 'scatter', 'bubble', 'tdr'] as const)
       expect(unmetRequirement(k, NODE_SPECS[k].defaultConfig(), curve)).toMatch(/Needs a/)
     // Potency and the residual plots are a curve fit's only.
-    for (const k of ['potency', 'curveMad'] as const)
+    for (const k of ['potency', 'metrics', 'curveMad'] as const)
       expect(unmetRequirement(k, {}, facts({ kind: 'compare' }))).toMatch(/Curve fit/)
     // A Contrast's scatter (FC1 vs FC2) is unaffected.
     expect(unmetRequirement('scatter', {}, facts({ kind: 'contrast', curve: false }))).toBeNull()
@@ -165,11 +193,54 @@ describe('tile requirements', () => {
       ...plotEntriesFor('tdr'),
       ...plotEntriesFor('volcano')
     ]
-    const timeOnly = facts({ kind: 'compare', axes: { dose: false, time: true } })
+    const timeOnly = facts({ kind: 'compare', axes: ['time'] })
     expect(gatePlotEntries(entries, timeOnly).map((e) => e.label)).toEqual([
-      'Time-response',
+      'Time response',
       'Volcano'
     ])
     expect(gatePlotEntries(entries, UNWIRED)).toHaveLength(4)
+  })
+
+  it('a Curve fit offers the Response plot of its own axis (its rows hold no level of it)', () => {
+    // a dose curve fit at each time: its rows carry the time as context, never a dose
+    const fit = facts({ kind: 'curveFit', curve: true, axes: ['time'], curveAxis: 'dose' })
+    const offered = gatePlotEntries(entriesFor('dr', fit), fit).map((e) => e.label)
+    expect(offered).toEqual(['Dose response'])
+    expect(unmetRequirement('dr', { axis: 'time' }, fit)).toMatch(/runs over dose/)
+    // a time curve fit likewise
+    const tfit = facts({ kind: 'curveFit', curve: true, axes: ['dose'], curveAxis: 'time' })
+    expect(gatePlotEntries(entriesFor('dr', tfit), tfit).map((e) => e.label)).toEqual([
+      'Time response'
+    ])
+  })
+
+  it('fans the Response plots out over every numeric condition and every pair of them', () => {
+    const axes = ['dose', 'time', '@temp'] as const
+    expect(plotEntriesFor('dr', axes).map((e) => e.label)).toEqual([
+      'Dose response',
+      'Time response',
+      'Temp response'
+    ])
+    const pairs = plotEntriesFor('tdr', axes)
+    expect(pairs.map((e) => e.label)).toEqual([
+      'Dose & Time response',
+      'Dose & Temp response',
+      'Time & Temp response'
+    ])
+    expect(pairs.map((e) => e.override?.pair)).toEqual([
+      ['dose', 'time'],
+      ['dose', '@temp'],
+      ['time', '@temp']
+    ])
+    // each entry its own key, so each can be added (and checked) alongside the others
+    const keys = [...plotEntriesFor('dr', axes), ...pairs].map(entryKey)
+    expect(new Set(keys).size).toBe(keys.length)
+    // a tile from before pairs (no pair) is the dose × time entry
+    expect(tileEntryKey('tdr', {})).toBe(entryKey(pairs[0]))
+    expect(tileEntryKey('dr', { axis: '@temp' })).toBe(entryKey(plotEntriesFor('dr', axes)[2]))
+    // and is named for its conditions
+    expect(plotLabel('tdr', {})).toBe('Dose & Time response')
+    expect(plotLabel('tdr', { pair: ['time', '@temp'] })).toBe('Time & Temp response')
+    expect(plotLabel('dr', { axis: '@temp' })).toBe('Temp response')
   })
 })

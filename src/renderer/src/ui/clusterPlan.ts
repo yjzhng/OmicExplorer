@@ -8,23 +8,26 @@ import {
   isNumericCond,
   orderConds,
   type ClusterMeta,
-  type ConditionKey
+  type ConditionKey,
+  type NumericConds
 } from '../engine'
 
 /** Hierarchy order of the conditions these metas carry: cell → cmpd → dose → time, then any
- *  custom conditions. Custom conditions are ALWAYS categorical, so they can only ever join the
- *  qualitative side of the plan below — never the ordered shade or arrow channels. */
+ *  custom conditions. Whether each is numeric is the dataset's schema (NumericConds): a categorical
+ *  custom condition only ever joins the qualitative side of the plan below, never the ordered
+ *  shade or arrow channels; a declared numeric one can take them, as dose and time do. */
 export const condsOf = (metas: ReadonlyArray<Pick<ClusterMeta, 'extra'>>): ConditionKey[] =>
   orderConds(['cell', 'cmpd', 'dose', 'time', ...customCondsIn(metas)])
 
 /**
  * Complex-legend aesthetic plan: which condition drives colour, which drives light→dark
  * shade, and which is connected by low→high arrows. Qualitative conditions (cell, cmpd and any
- * custom one) take colour; quantitative ones (dose, time) take shade then arrow. Channel hierarchy
+ * categorical custom one) take colour; quantitative ones (dose, time, any declared numeric — the
+ * dataset's `numeric`) take shade then arrow, dose preferred for arrows and time for shade. Channel hierarchy
  * is colour → shade → arrow; condition hierarchy is cell → cmpd → dose → time → customs.
  *
  * Shade and arrow are ORDERED channels (light→dark, low→high), so only a numeric condition may
- * drive them — a custom condition has no defined order and would make either channel a lie. Every
+ * drive them — a categorical condition has no defined order and would make either channel a lie. Every
  * varying qualitative therefore lands on colour, however many there are: the first takes a hue
  * family and the rest spread within it (so each distinct combination still gets its own colour).
  */
@@ -50,11 +53,13 @@ export interface PlanOverrides {
 export function planAesthetics(
   varying: Set<ConditionKey>,
   conds: ConditionKey[],
+  numeric: NumericConds,
   ov: PlanOverrides = {}
 ): Plan {
-  if (ov.color?.length || ov.shade || ov.arrow) return planWithOverrides(varying, conds, ov)
-  const Q = conds.filter((c) => varying.has(c) && !isNumericCond(c))
-  const N = conds.filter((c) => varying.has(c) && isNumericCond(c))
+  if (ov.color?.length || ov.shade || ov.arrow)
+    return planWithOverrides(varying, conds, numeric, ov)
+  const Q = conds.filter((c) => varying.has(c) && !isNumericCond(c, numeric))
+  const N = conds.filter((c) => varying.has(c) && isNumericCond(c, numeric))
   let grouped = false
   let colorKey: ConditionKey | null = null
   let colorRamp = false
@@ -80,9 +85,11 @@ export function planAesthetics(
   } else if (colorKey && !colorRamp) {
     if (freeQuant.length === 1) shadeKey = freeQuant[0]
     else if (freeQuant.length >= 2) {
-      // dose+time with one qualitative: shade by time, connect doses with arrows.
-      shadeKey = 'time'
-      arrowKey = 'dose'
+      // two numerics with one qualitative: connect by arrows (dose preferred), shade by another
+      // (time preferred) — dose + time: shade by time, connect doses with arrows.
+      arrowKey = freeQuant.includes('dose') ? 'dose' : freeQuant[0]
+      const rest = freeQuant.filter((k) => k !== arrowKey)
+      shadeKey = rest.includes('time') ? 'time' : rest[0]
     }
   } else if (colorRamp && freeQuant.length >= 1) {
     arrowKey = freeQuant[0]
@@ -99,17 +106,18 @@ export function planAesthetics(
 function planWithOverrides(
   varying: Set<ConditionKey>,
   conds: ConditionKey[],
+  numeric: NumericConds,
   ov: PlanOverrides
 ): Plan {
-  const N = conds.filter((c) => varying.has(c) && isNumericCond(c))
+  const N = conds.filter((c) => varying.has(c) && isNumericCond(c, numeric))
   // Colour: the chosen conditions that vary (several categoricals → grouped hues; one → its own
   // colours; only numerics → a ramp on the first), else the automatic choice.
   const chosen = (ov.color ?? []).filter((c) => varying.has(c))
-  let quals = chosen.filter((c) => !isNumericCond(c))
+  let quals = chosen.filter((c) => !isNumericCond(c, numeric))
   let colorKey: ConditionKey | null = null
   let colorRamp = false
   if (!chosen.length) {
-    const auto = planAesthetics(varying, conds)
+    const auto = planAesthetics(varying, conds, numeric)
     quals = auto.quals
     colorKey = auto.grouped ? null : auto.colorKey
     colorRamp = auto.colorRamp

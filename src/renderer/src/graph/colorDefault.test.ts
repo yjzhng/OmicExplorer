@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { numericConds } from '../engine'
 
 import type { SampleConds, StandardizeResult } from '../engine'
 import {
@@ -10,6 +11,9 @@ import {
   type HeatmapConfig,
   type QcConfig
 } from './types'
+
+/** dose and time numeric, no custom condition declared (the schema of these tests' data) */
+const numeric = numericConds()
 
 /** `nCmpd` compounds × 8 doses × 3 replicates: many samples, few primary levels. */
 const std = (nCmpd: number): Pick<StandardizeResult, 'activeConditions' | 'samples' | 'rows'> => {
@@ -35,13 +39,13 @@ describe('colour-by-condition default: the primary condition’s levels', () => 
   it('colours by condition while the levels fit the palette (≤ 10)', () => {
     const levels = primaryColorLevels(std(3))
     expect(qcColorBy({ metric: 'intensity', plot: 'box' } as QcConfig, levels)).toBe('condition')
-    expect(barColorConds({} as BarConfig, ['cmpd', 'dose'], levels)).toEqual(['cmpd'])
+    expect(barColorConds({} as BarConfig, ['cmpd', 'dose'], levels, numeric)).toEqual(['cmpd'])
     expect(heatmapCondBar({} as HeatmapConfig, levels)).toBe(true)
   })
   it('falls back past 10 levels', () => {
     const levels = primaryColorLevels(std(11))
     expect(qcColorBy({ metric: 'intensity', plot: 'box' } as QcConfig, levels)).toBe('single')
-    expect(barColorConds({} as BarConfig, ['cmpd', 'dose'], levels)).toEqual([])
+    expect(barColorConds({} as BarConfig, ['cmpd', 'dose'], levels, numeric)).toEqual([])
     expect(heatmapCondBar({} as HeatmapConfig, levels)).toBe(false)
   })
   it('keeps a choice the tile made', () => {

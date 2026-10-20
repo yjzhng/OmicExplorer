@@ -144,8 +144,9 @@ export function Select({
   )
 }
 
-/** One row in the dropdown; own hover state, metrics pre-scaled by the caller. */
-function SelectItem({
+/** One row in the dropdown; own hover state, metrics pre-scaled by the caller. Shared with other
+ *  menus drawn in the Select's look (the unit box's suggestions). */
+export function SelectItem({
   label,
   render,
   selected,

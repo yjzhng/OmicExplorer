@@ -327,6 +327,20 @@ function workflowsToCurrent(raw: RawProject): void {
     for (const w of f.workflows ?? []) if (w.doc) w.doc = upgradeWorkflowDoc(w.doc, w.results)
 }
 
+// ── 0.3.8: the 2-way ANOVA became the ANOVA ─────────────────────────────────────────────────
+
+/** A Compare saved as a 'two_way_anova' (before 0.3.8) reads as the ANOVA, its two factors the
+ *  compared conditions, kept as factors (see normalizeCompareConfig). */
+function twoWayToAnova(raw: RawProject): void {
+  for (const f of raw.folders ?? [])
+    for (const w of f.workflows ?? [])
+      for (const n of w.doc?.nodes ?? []) {
+        const c = n?.data?.config as CompareConfig | undefined
+        if (n?.data?.kind === 'compare' && (c?.analysis as string) === 'two_way_anova')
+          n.data.config = normalizeCompareConfig(c as CompareConfig) as unknown as NodeConfig
+      }
+}
+
 // ── the list ────────────────────────────────────────────────────────────────────────────────
 
 /** Every upgrade, in release order. APPEND new ones; never edit or remove one (see top). */
@@ -338,7 +352,8 @@ export const UPGRADES: readonly Upgrade[] = [
     run: (raw) => migrateStrainToCell(raw)
   },
   { since: '0.3.6', what: 'genesets belong to the project', run: geneSetsToProject },
-  { since: '0.3.7', what: 'every workflow in the current form', run: workflowsToCurrent }
+  { since: '0.3.7', what: 'every workflow in the current form', run: workflowsToCurrent },
+  { since: '0.3.8', what: 'the 2-way ANOVA is the ANOVA', run: twoWayToAnova }
 ]
 
 /** The release of the last upgrade: a file saved before it is written in an older form (Fix). */

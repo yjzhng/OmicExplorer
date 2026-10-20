@@ -14,6 +14,8 @@ import {
   customCondsIn,
   customSlug,
   isCustomCond,
+  isInteractionRow,
+  isSlopeRow,
   type ConditionKey,
   type CustomConditionKey,
   presentStd,
@@ -148,13 +150,15 @@ function compareTable(
     ...(src.some((r) => r.model) ? ['model'] : [])
   ]
   const label =
-    analysis === 'two_way_anova'
-      ? 'interaction'
-      : response
-        ? 'peak_log2FC'
-        : analysis === 'curve_fit'
-          ? 'curve_log2FC'
-          : 'log2FC'
+    analysis === 'anova' && src.some(isSlopeRow)
+      ? 'slope'
+      : analysis === 'anova' && src.some(isInteractionRow)
+        ? 'interaction'
+        : response
+          ? 'peak_log2FC'
+          : analysis === 'curve_fit'
+            ? 'curve_log2FC'
+            : 'log2FC'
   const headers = cols.map((c) =>
     c === 'log2FC'
       ? label

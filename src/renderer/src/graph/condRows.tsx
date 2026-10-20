@@ -8,14 +8,20 @@
 import { type CSSProperties, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 
-import { condLabel, orderConds, type ConditionKey, type StandardRow } from '../engine'
+import {
+  condLabel,
+  orderConds,
+  type ConditionKey,
+  type NumericConds,
+  type StandardRow
+} from '../engine'
 import { Chevron } from '../ui/Chevron'
 import { InfoTip } from '../ui/InfoTip'
 import { cssVars, PALETTES, UI } from '../ui/theme'
 import { useUiTheme } from '../ui/useUiTheme'
 import { valuesOf } from './compareModel'
 import { DOCKED_CARD, DOCKED_WRAP, useDialogDock } from './dialogDock'
-import { AU, type CondUnits } from './types'
+import { AU, unitOf, type CondUnits } from './types'
 import { selectorStyles as S } from './selectorParts'
 
 /** The window: a modal over the app, or docked into the form workflow's details column. */
@@ -295,19 +301,22 @@ export function Tag({
 export function SideCell({
   rows,
   conds,
-  units
+  units,
+  numeric
 }: {
   rows: readonly StandardRow[]
   conds: readonly ConditionKey[]
+  /** the dataset's numeric conditions: their values listed in number order */
+  numeric: NumericConds
   /** the imported dose / time units, shown after their values ("10 µM", "8 h"); a.u. shows none */
   units?: CondUnits
 }): ReactNode {
   const main: string[] = []
   const sub: string[] = []
   for (const c of orderConds(conds)) {
-    const vs = valuesOf(rows, c)
+    const vs = valuesOf(rows, c, numeric)
     if (!vs.length) continue
-    const u = c === 'dose' ? units?.dose : c === 'time' ? units?.time : undefined
+    const u = unitOf(units, c)
     const unit = u && u !== AU ? ` ${u}` : ''
     if (vs.length === 1) main.push(vs[0] + unit)
     else sub.push(`${condLabel(c)} ${vs[0]}–${vs[vs.length - 1]}${unit} (${vs.length})`)

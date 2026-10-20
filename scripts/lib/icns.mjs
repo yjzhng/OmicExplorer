@@ -1,19 +1,21 @@
-// Shared: generate build-resources/icon.icns from icon.png (macOS only).
+// Shared: generate build-resources/icon.icns from icon.png (macOS only) — or, with `variant`
+// 'dev', icon-dev.icns from icon-dev.png (the logo with the red dev dot: the from-source app).
 // Cached — regenerates only when the .icns is missing or older than the .png.
 // Returns the .icns path, or null if unavailable (non-mac / no png / tooling error).
 import { existsSync, statSync, mkdirSync, rmSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { execFileSync } from 'node:child_process'
 
-export function ensureIcns(repo) {
+export function ensureIcns(repo, variant = '') {
   if (process.platform !== 'darwin') return null
-  const png = resolve(repo, 'build-resources/icon.png')
+  const base = variant ? `icon-${variant}` : 'icon'
+  const png = resolve(repo, `build-resources/${base}.png`)
   if (!existsSync(png)) return null
-  const icns = resolve(repo, 'build-resources/icon.icns')
+  const icns = resolve(repo, `build-resources/${base}.icns`)
   try {
     const fresh = existsSync(icns) && statSync(icns).mtimeMs >= statSync(png).mtimeMs
     if (!fresh) {
-      const iconset = resolve(repo, 'build-resources/icon.iconset')
+      const iconset = resolve(repo, `build-resources/${base}.iconset`)
       rmSync(iconset, { recursive: true, force: true })
       mkdirSync(iconset, { recursive: true })
       for (const s of [16, 32, 128, 256, 512]) {

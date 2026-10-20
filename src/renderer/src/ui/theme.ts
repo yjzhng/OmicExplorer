@@ -258,10 +258,16 @@ export function plotBase(p: Palette): Record<string, unknown> {
   }
 }
 
+/** A threshold / reference guide line's default width, px (a point plot's `guideWidth`). */
+export const GUIDE_WIDTH = 1
+
 /** Shared style for threshold / reference guide lines (volcano/MA/scatter). Uses the muted text
- *  colour (not the near-invisible border) at 1.5px so thresholds read clearly against the cloud. */
-export function guideLine(p: Palette): { color: string; width: number; dash: 'dash' } {
-  return { color: p.textMuted, width: 1.5, dash: 'dash' }
+ *  colour (not the near-invisible border) so thresholds read clearly against the cloud. */
+export function guideLine(
+  p: Palette,
+  width = GUIDE_WIDTH
+): { color: string; width: number; dash: 'dash' } {
+  return { color: p.textMuted, width, dash: 'dash' }
 }
 
 /**

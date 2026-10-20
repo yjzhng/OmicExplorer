@@ -59,7 +59,8 @@ describe('runCompare parity with runDirect (match all)', () => {
     num: { cell: ['M'] },
     den: { cell: ['W'] },
     match: ['dose'],
-    activeConditions: ['cell', 'dose']
+    activeConditions: ['cell', 'dose'],
+    numericConditions: []
   })
 
   it('produces the same comparison label + cmp_cond', () => {
@@ -113,7 +114,8 @@ describe('runCompare parity with runVehNorm (dose unmatched)', () => {
     num: { cmpd: ['drug'] },
     den: { cmpd: ['dmso'] },
     match: [],
-    activeConditions: ['cmpd', 'dose']
+    activeConditions: ['cmpd', 'dose'],
+    numericConditions: []
   })
 
   it('reproduces the "drug | dmso" comparison on cmp_cond=cmpd', () => {
@@ -172,7 +174,8 @@ describe('condition roles (classifyConditions / one-on-one t-test)', () => {
       num: { cmpd: ['drug'] },
       den: { cmpd: ['dmso'] },
       match: ['dose'],
-      activeConditions: active
+      activeConditions: active,
+      numericConditions: []
     })
     expect(res.comparisons).toEqual(['drug | dmso'])
     expect(res.rows.map((r) => r.dose).sort()).toEqual([10, 20])
@@ -193,7 +196,8 @@ describe('condition roles (classifyConditions / one-on-one t-test)', () => {
       num: { cmpd: ['drug'], dose: ['20'] },
       den: { cmpd: ['drug'], dose: ['10'] },
       match: active,
-      activeConditions: active
+      activeConditions: active,
+      numericConditions: []
     })
     expect(p.groups).toBe(1)
     expect(p.labels).toEqual(['20 | 10'])
@@ -206,7 +210,8 @@ describe('condition roles (classifyConditions / one-on-one t-test)', () => {
       num: { cmpd: ['drug'], dose: ['20'] },
       den: { cmpd: ['dmso'], dose: ['0'] },
       match: active,
-      activeConditions: active
+      activeConditions: active,
+      numericConditions: []
     })
     expect(p.groups).toBe(0)
     expect(p.warnings.some((w) => w.includes('differ between the sides'))).toBe(true)
@@ -251,7 +256,8 @@ describe('condition roles — filter pin on the numerator does not confuse the a
       num: { cmpd: ['drug'], dose: ['20'] },
       den: { cmpd: ['dmso'], dose: ['0'] },
       match: ['cmpd', 'dose'],
-      activeConditions: ['cmpd', 'dose']
+      activeConditions: ['cmpd', 'dose'],
+      numericConditions: []
     })
     expect(p.groups).toBe(1)
     expect(p.labels).toEqual(['drug | dmso'])
@@ -293,7 +299,8 @@ describe('matched context with partial coverage (B measured at fewer doses than 
       num: { cmpd: ['A'] },
       den: { cmpd: ['B'] },
       match: active,
-      activeConditions: active
+      activeConditions: active,
+      numericConditions: []
     })
     expect(p.matched).toEqual(['dose'])
     expect(p.invariant).toEqual([])
@@ -305,7 +312,8 @@ describe('matched context with partial coverage (B measured at fewer doses than 
       num: { cmpd: ['A'] },
       den: { cmpd: ['B'] },
       match: active,
-      activeConditions: active
+      activeConditions: active,
+      numericConditions: []
     })
     expect(res.rows.map((r) => r.dose).sort()).toEqual([1, 5])
   })
@@ -337,7 +345,8 @@ describe('denominator is a single reference (never pooled; the dialog allows one
       num: { cmpd: ['A', 'B'] },
       den: { cmpd: ['C', 'D'] },
       match: [],
-      activeConditions: ['cmpd']
+      activeConditions: ['cmpd'],
+      numericConditions: []
     })
     expect(res.comparisons.sort()).toEqual(['A | C', 'A | D', 'B | C', 'B | D'])
     const fc = new Map(res.rows.map((r) => [r.comparison, r.log2FC]))
@@ -352,7 +361,8 @@ describe('denominator is a single reference (never pooled; the dialog allows one
       num: { cmpd: ['A', 'B'] },
       den: { cmpd: ['C', 'D'] },
       match: [],
-      activeConditions: ['cmpd']
+      activeConditions: ['cmpd'],
+      numericConditions: []
     })
     expect(p.groups).toBe(0)
     expect(p.warnings.some((w) => w.includes('denominator must be one value'))).toBe(true)
@@ -361,7 +371,8 @@ describe('denominator is a single reference (never pooled; the dialog allows one
       num: { cmpd: ['A', 'B'] },
       den: { cmpd: ['C'] },
       match: [],
-      activeConditions: ['cmpd']
+      activeConditions: ['cmpd'],
+      numericConditions: []
     })
     expect(ok.groups).toBe(2)
   })
@@ -388,6 +399,7 @@ describe('curve fit control: a baseline or a background treatment', () => {
       den: { cmpd: [den] },
       match: [],
       activeConditions: ['cmpd', 'dose'],
+      numericConditions: [],
       curveAxis: 'dose'
     })
 

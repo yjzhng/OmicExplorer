@@ -6,13 +6,19 @@
  * after "|"), matched on the same context — and the control samples' own ratios. Like the fit, every
  * finite control value counts towards the mean (and a mean ≤ 0 leaves no ratios).
  */
-import { condValue } from './compare'
-import type { CompareResultRow, StandardRow } from './types'
-
-type Preset = 'cell' | 'cmpd' | 'dose' | 'time'
+import { storedMap, toX, treatedLevel } from './axisModel'
+import { condValue, numValue } from './compare'
+import {
+  customCond,
+  VALID_CONDITIONS,
+  type CompareResultRow,
+  type ConditionKey,
+  type StandardRow
+} from './types'
 
 export interface CurvePoints {
-  /** log₁₀ dose of each treated point, its ratio to the control mean, and its replicate */
+  /** each treated point's x (log₁₀ of its level, or the level in steps on a linear axis), its ratio
+   *  to the control mean, and its replicate */
   x: number[]
   y: number[]
   rep: Array<number | null>
@@ -26,19 +32,24 @@ export interface CurvePoints {
 export function curvePointsFromStd(
   r: CompareResultRow,
   geneStd: StandardRow[],
-  axis: 'dose' | 'time'
+  axis: ConditionKey
 ): CurvePoints | null {
   if (!geneStd.length) return null
-  const dims = r.cmp_cond.split(':') as Preset[]
+  const dims = r.cmp_cond.split(':') as ConditionKey[]
   const den = (r.comparison.split(' | ')[1] ?? '').split(' · ')
   if (den.length !== dims.length) return null
   // Context the row carries beyond the compared conditions and the curve's own axis.
-  const context = (['cell', 'cmpd', 'dose', 'time'] as const).filter(
+  // (presets here; the custom conditions' context is the row's `extra`, checked below)
+  const context = VALID_CONDITIONS.filter(
     (c) => c !== axis && !dims.includes(c) && r[c] != null && r[c] !== ''
   )
+  // a custom compared condition or axis is no context: the control holds its own value there
+  const ctxSkip = new Set<ConditionKey>([axis, ...dims])
   const inContext = (s: StandardRow): boolean =>
     context.every((c) => String(condValue(s, c) ?? '') === String(r[c])) &&
-    Object.entries(r.extra ?? {}).every(([k, v]) => v === '' || s.extra?.[k] === v)
+    Object.entries(r.extra ?? {}).every(
+      ([k, v]) => v === '' || ctxSkip.has(customCond(k)) || s.extra?.[k] === v
+    )
   const ctrl = geneStd.filter(
     (s) =>
       s.value != null &&
@@ -56,16 +67,20 @@ export function curvePointsFromStd(
     cy: ctrl.map((s) => (s.value as number) / base),
     crep: ctrl.map((s) => s.rep ?? null)
   }
+  // the fit's own scale (absent on fits from before scales: log₁₀)
+  const map = storedMap(r.curve ?? {})
   for (const s of geneStd) {
-    const dose = Number(condValue(s, axis))
+    const dose = numValue(s, axis)
     if (
       s.value == null ||
-      !(dose > 0) ||
-      !dims.every((c) => c === axis || String(condValue(s, c) ?? '') === String(r[c] ?? '')) ||
+      !treatedLevel(map.scale, dose) ||
+      !dims.every(
+        (c) => c === axis || String(condValue(s, c) ?? '') === String(condValue(r, c) ?? '')
+      ) ||
       !inContext(s)
     )
       continue
-    out.x.push(Math.log10(dose))
+    out.x.push(toX(map, dose))
     out.y.push(s.value / base)
     out.rep.push(s.rep ?? null)
   }

@@ -3,6 +3,7 @@
  * framework/library-free so the engine has no plotly dependency — the renderer
  * component assembles the actual Plotly traces from these.
  */
+import { xUnits } from './axisModel'
 import { pairsOf } from './accession'
 import { condValue } from './compare'
 import {
@@ -17,6 +18,7 @@ import {
 import type { ContrastResultRow } from './contrast'
 import { curveSampleX, logistic } from './curveFit'
 import { embed2D, type ClusterMethod } from './embed'
+import { descValue } from './splineFit'
 import { abundanceLabel, fromLinear, type ValueScale } from './scale'
 import {
   benjaminiHochberg,
@@ -34,11 +36,15 @@ import {
   customSlug,
   isCustomCond,
   isNumericCond,
+  isTermRow,
+  numericConds,
   VALID_CONDITIONS
 } from './types'
 import type {
   CompareResultRow,
   ConditionKey,
+  CustomConditionKey,
+  NumericConds,
   SampleConds,
   StandardizeResult,
   StandardRow
@@ -64,6 +70,9 @@ export interface VolcanoData {
   comparison?: string
   /** what the fold change is (fcName: range / peak log₂FC for curve fits) */
   measure?: string
+  /** a two-way ANOVA term's rows: the x is an unsigned effect size (≥ 0), so the plot is one-sided
+   *  — from 0, with only the right-hand guides */
+  unsigned?: boolean
 }
 
 export interface VolcanoOptions {
@@ -78,19 +87,26 @@ export interface VolcanoOptions {
  *  curve's change across the tested levels, a Hybrid curve's or a surface's peak — or a two-way ANOVA's
  *  interaction (a log₂ ratio of fold changes). */
 export function fcMeasure(
-  analysis?: 'compare' | 'two_way_anova' | 'curve_fit',
+  analysis?: 'compare' | 'anova' | 'curve_fit',
   /** a curve fit's detection model: the response surface method ('spline') measures the peak */
   detection?: '4pl' | 'spline',
   /** a dose × time surface (either model) measures the peak */
-  surface?: boolean
+  surface?: boolean,
+  /** an ANOVA's rows are its factors' interaction (two or more factors: isInteractionRow); a
+   *  one-way ANOVA's are fold changes */
+  interaction = true,
+  /** an ANOVA's rows are slopes (isSlopeRow): a change per unit of a numeric condition */
+  slope = false
 ): string {
   return analysis === 'curve_fit'
     ? detection === 'spline' || surface
       ? 'peak log₂FC'
       : 'curve log₂FC'
-    : analysis === 'two_way_anova'
-      ? 'interaction log₂FC'
-      : 'log₂FC'
+    : analysis === 'anova' && slope
+      ? 'slope log₂FC'
+      : analysis === 'anova' && interaction
+        ? 'interaction log₂FC'
+        : 'log₂FC'
 }
 
 /** The fold change curve-fit rows carry: a 4PL curve's change across the tested levels, or a Hybrid
@@ -106,23 +122,21 @@ export function fcName(rows: Array<{ curve?: unknown; rs?: unknown }>): string {
 type LabelRow = {
   comparison?: string
   cmpd?: string | null
-  curve?: { baseline?: string }
-  rs?: { baseline?: string }
+  curve?: unknown
+  rs?: unknown
 }
 
 /** A curve fit's comparison as it reads in a plot: "dose curve | 0" (the stored key) as
- *  "drugA | baseline" — the compound when the rows are one, against the baseline the fit was given
- *  (dose 0, a time, a top dose…). Display only: the stored label stays the key it is. */
+ *  "drugA | baseline" — the compound when the rows are one, against the baseline the fit was given.
+ *  Just "baseline": which one (dose 0, a time, a top dose…) isn't spelled out. Display only: the
+ *  stored label stays the key it is. */
 function curveComparisonText(label: string, rows: LabelRow[]): string {
   if (!rows.some((r) => r.curve || r.rs)) return label
   const [left, right] = label.split(' | ')
   if (right == null) return label
   const cmpds = [...new Set(rows.map((r) => r.cmpd).filter((c): c is string => !!c))]
   const what = / curve$/.test(left) && cmpds.length === 1 ? cmpds[0] : left
-  // the baseline in words, when the rows share one ("baseline (dose 0 · time 60)")
-  const bs = new Set(rows.map((r) => r.curve?.baseline ?? r.rs?.baseline ?? ''))
-  const b = bs.size === 1 ? [...bs][0] : ''
-  return `${what} | baseline${b ? ` (${b})` : ''}`
+  return `${what} | baseline`
 }
 
 /** The one `comparison` label ("A | B") these rows share, for axis titles — undefined when the
@@ -153,6 +167,7 @@ export function buildVolcano(rows: CompareResultRow[], opts: VolcanoOptions): Vo
       uniqID: r.uniqID
     })
   }
+  const unsigned = rows.length > 0 && rows.every(isTermRow)
   return {
     points,
     fcLow: opts.fcLow,
@@ -160,7 +175,8 @@ export function buildVolcano(rows: CompareResultRow[], opts: VolcanoOptions): Vo
     statMin: opts.statMin,
     statType: opts.statType,
     comparison: comparisonOf(rows),
-    measure: fcName(rows)
+    measure: unsigned ? 'effect size (log₂)' : fcName(rows),
+    ...(unsigned ? { unsigned } : null)
   }
 }
 
@@ -179,6 +195,8 @@ export function buildVolcano(rows: CompareResultRow[], opts: VolcanoOptions): Vo
 export interface ContextRow {
   /** Contrast rows only: the feature contrasted (its switcher label), when it offers several */
   feature?: string
+  /** a two-way ANOVA term row (see CompareResultRow.term) — the `show` facet's terms */
+  term?: unknown
   cmp_cond?: string
   comparison?: string
   cell?: string | null
@@ -216,30 +234,54 @@ export function facetSides(rows: ContextRow[]): string[] {
 /** A tab-bar facet dimension: a condition, the `comparison` label itself (used to split a
  *  multi-pair Compare tile into one plot per comparison instead of merging them), or a Contrast's
  *  `feature` (what its two sides compare — log₂FC, significance, pEC50, …). */
-export type FacetKey = ConditionKey | 'comparison' | 'feature'
+export type FacetKey = ConditionKey | 'comparison' | 'feature' | 'show'
 
 /** What to call a facet dimension on screen: a condition's display label (so a custom condition
  *  reads `genotype`, not the `@genotype` key), or the literal `comparison`. */
 export const facetKeyLabel = (d: FacetKey): string =>
-  d === 'comparison' || d === 'feature' ? d : condLabel(d)
+  d === 'comparison' || d === 'feature' || d === 'show' ? d : condLabel(d)
+
+/** A two-way ANOVA's two kinds of row, as the `show` facet names them: 'overall' — its signed 2×2
+ *  interaction fold changes — or 'factors' — one test per factor and their interaction (cmpd, cell,
+ *  cmpd × cell; unsigned effect sizes). */
+export type ShowKind = 'overall' | 'factors'
+export const SHOW_KINDS: readonly ShowKind[] = ['overall', 'factors']
+export const showKindOf = (r: { term?: unknown }): ShowKind =>
+  r.term != null ? 'factors' : 'overall'
+/** The rows of one kind — what a non-faceted reader (the table, the fold-change heatmap) shows for
+ *  the group's `show` pick; all of them when the rows have only one kind. Unset = overall, the
+ *  pick's own default. */
+export function rowsOfKind<T extends { term?: unknown }>(rows: T[], show?: string): T[] {
+  if (!rows.some((r) => r.term != null)) return rows
+  const want: ShowKind = show === 'factors' ? 'factors' : 'overall'
+  return rows.filter((r) => showKindOf(r) === want)
+}
 
 /** A context row's value for one condition — the `extra` bag for a custom condition, the column
  *  itself for a preset. `facetCompareRows` and the facet-dim scans all read through this, so a
  *  custom key is never used to index the row object directly. */
 export function ctxValue(r: ContextRow, c: FacetKey): string | number | null {
+  if (c === 'show') return showKindOf(r)
   if (c !== 'comparison' && c !== 'feature' && isCustomCond(c))
     return r.extra?.[customSlug(c)] ?? ''
   return (r as unknown as Record<string, string | number | null>)[c] ?? null
 }
 
+/** A context row's numeric condition value as a number — null where it has none (null, '' or not
+ *  a finite number), so an absent custom value never reads as 0. */
+export function ctxNum(r: ContextRow, c: ConditionKey): number | null {
+  const v = ctxValue(r, c)
+  if (v == null || v === '') return null
+  const n = typeof v === 'number' ? v : Number(v)
+  return Number.isFinite(n) ? n : null
+}
+
 function condPresentInRows(rows: ContextRow[], c: ConditionKey): boolean {
-  // Categorical conditions (cell, cmpd, every custom one) treat '' as absent; numeric ones null.
-  if (!isNumericCond(c))
-    return rows.some((r) => {
-      const v = ctxValue(r, c)
-      return v != null && v !== ''
-    })
-  return rows.some((r) => ctxValue(r, c) != null)
+  // null and '' (a custom condition's "absent") are no value, numeric or not.
+  return rows.some((r) => {
+    const v = ctxValue(r, c)
+    return v != null && v !== ''
+  })
 }
 
 /** Dimensions the comparison itself consumes (never faceted), parsed from `cmp_cond`. */
@@ -312,7 +354,10 @@ export function facetDims(rows: ContextRow[], exclude?: ConditionKey[]): FacetKe
   const labels = new Set(rows.map((r) => r.comparison).filter((c) => c != null))
   const multiCmp = labels.size > 1 && !labelsAreAxis(rows, labels, exclude)
   const multiFeature = new Set(rows.map((r) => r.feature).filter((f) => f != null)).size > 1
+  // A two-way ANOVA's contrasts and terms: picked first, so the comparisons on offer are that kind's.
+  const bothKinds = rows.some((r) => r.term != null) && rows.some((r) => r.term == null)
   return [
+    ...(bothKinds ? (['show'] as const) : []),
     ...(multiFeature ? (['feature'] as const) : []),
     ...(multiCmp ? (['comparison'] as const) : []),
     ...ctx
@@ -327,10 +372,12 @@ export interface FacetGroup<T = ContextRow> {
   rows: T[]
 }
 
-/** Split rows into one group per distinct tuple of `dims` values (omicViz groupby). */
+/** Split rows into one group per distinct tuple of `dims` values (omicViz groupby), ordered by
+ *  those values — numerically on the dataset's numeric conditions (`numeric`). */
 export function facetCompareRows<T extends ContextRow>(
   rows: T[],
-  dims: FacetKey[]
+  dims: FacetKey[],
+  numeric: NumericConds
 ): FacetGroup<T>[] {
   if (dims.length === 0) return [{ key: '', values: [], rows }]
   // Features keep the order the Contrast gives them (the sides' own value first), not A–Z.
@@ -338,6 +385,13 @@ export function facetCompareRows<T extends ContextRow>(
   if (dims.includes('feature'))
     for (const r of rows)
       if (r.feature != null && !featureAt.has(r.feature)) featureAt.set(r.feature, featureAt.size)
+  // A two-way ANOVA's factors keep the model's order — the main effects in factor order, then their
+  // interaction — not A–Z (the engine emits them so).
+  const termAt = new Map<string, number>()
+  if (dims.includes('comparison'))
+    for (const r of rows)
+      if (r.term != null && r.comparison != null && !termAt.has(r.comparison))
+        termAt.set(r.comparison, termAt.size)
   const groups = new Map<string, FacetGroup<T>>()
   for (const r of rows) {
     const values = dims.map((d) => ({ dim: d, value: ctxValue(r, d) as string | number }))
@@ -365,13 +419,21 @@ export function facetCompareRows<T extends ContextRow>(
       const cmp =
         d === 'feature'
           ? (featureAt.get(sa) ?? 0) - (featureAt.get(sb) ?? 0)
-          : d !== 'comparison' && isNumericCond(d) && Number.isFinite(an) && Number.isFinite(bn)
-            ? an - bn
-            : sa < sb
-              ? -1
-              : sa > sb
-                ? 1
-                : 0
+          : d === 'show'
+            ? // overall first: the pick's default
+              SHOW_KINDS.indexOf(sa as ShowKind) - SHOW_KINDS.indexOf(sb as ShowKind)
+            : d === 'comparison' && termAt.has(sa) && termAt.has(sb)
+              ? termAt.get(sa)! - termAt.get(sb)!
+              : d !== 'comparison' &&
+                  isNumericCond(d, numeric) &&
+                  Number.isFinite(an) &&
+                  Number.isFinite(bn)
+                ? an - bn
+                : sa < sb
+                  ? -1
+                  : sa > sb
+                    ? 1
+                    : 0
       if (cmp !== 0) return cmp
     }
     return 0
@@ -804,7 +866,7 @@ export interface DRData {
   /** every gene, most-differential first; the view draws all as faint background
    *  lines and colors the leading `highlight` of them */
   series: DRSeries[]
-  axis: 'dose' | 'time'
+  axis: ConditionKey
   /** how many leading (top differential) series to color/highlight */
   highlight: number
   /** total genes available (for a "top N of M" note) */
@@ -814,9 +876,11 @@ export interface DRData {
   /** fitted curves (a Compare's curve fit): x is the dose itself, sampled finely along each curve,
    *  so the view needs a continuous log axis rather than one category per tested level */
   continuous?: boolean
+  /** fitted curves on a linear axis (see axisModel.ts): the continuous axis is linear, not log */
+  linear?: boolean
 }
 export interface DROptions {
-  axis: 'dose' | 'time'
+  axis: ConditionKey
   /** response surface method curves: the description 4PL ('curve', default) or the spline */
   model?: 'spline' | 'curve'
   topGenes: number
@@ -872,7 +936,7 @@ const byMag = (a: { signed: number }, b: { signed: number }): number =>
 
 /**
  * A response surface method curve (a row's `rs`, one axis) as drawn, on the axis's own scale —
- * dose, or time from t₀: its line — the description 4PL ('curve') where the curve was described,
+ * dose, time from t₀, or a linear axis's own units: its line — the description 4PL ('curve') where the curve was described,
  * else (or for 'spline') the spline its detection fitted — the level means it was fitted to
  * (the baseline, at 0 by definition, left out), and the 4PL's midpoint when it falls within the
  * tested levels. Null for a surface.
@@ -889,8 +953,7 @@ export function responseCurve(
 } | null {
   const rs = r.rs
   if (!rs || rs.axis === 'surface' || !rs.x || !rs.y || rs.x.length < 2) return null
-  const off = rs.timeOffset
-  const toAxis = (lx: number): number => (off != null ? 10 ** lx - off : 10 ** lx)
+  const toAxis = (lx: number): number => xUnits(rs, lx)
   const lo = rs.x[1]
   const hi = rs.x[rs.x.length - 1]
   const points = rs.x.slice(1).map((lx, i) => ({ x: toAxis(lx), y: rs.y![i + 1] }))
@@ -900,7 +963,7 @@ export function responseCurve(
     const mid = d.mid >= toAxis(lo) && d.mid <= toAxis(hi) ? d.mid : undefined
     return {
       x: lx.map(toAxis),
-      y: lx.map((v) => logistic(v, d)),
+      y: lx.map((v) => descValue(d, v)),
       points,
       ...(mid != null ? { mid } : null),
       drawn: 'curve'
@@ -916,17 +979,19 @@ export function buildDR(rows: CompareResultRow[], opts: DROptions): DRData {
   // Genes significant at one level or more: the only ones the top-N colours (as in the bubble).
   const anySig = new Set<string>()
   let continuous = false
+  let linear = false
   for (const r of rows) {
     // A curve fit's row is one whole curve: draw the fitted ratio to the control (log₂) across the
     // tested doses rather than one point per level.
     if (r.curve) {
       if (r.curve.axis !== opts.axis) continue
       continuous = true
+      if (r.curve.scale === 'linear') linear = true
       if (r.signf) anySig.add(r.uniqID)
       const { xMin, xMax } = r.curve
       // Evenly spaced, plus extra points only where the curve turns (curveSampleX).
       const pts = curveSampleX({ ...r.curve, xMin, xMax }, CURVE_SAMPLES).map((lx) => ({
-        x: 10 ** lx,
+        x: xUnits(r.curve!, lx),
         y: Math.log2(logistic(lx, r.curve!))
       }))
       byGene.set(r.uniqID, pts)
@@ -939,13 +1004,16 @@ export function buildDR(rows: CompareResultRow[], opts: DROptions): DRData {
       if (!c) continue
       continuous = true
       if (r.signf) anySig.add(r.uniqID)
+      // (a log axis draws nothing at or below 0; a linear one has no such limit)
+      const lin = r.rs.scale === 'linear'
+      if (lin) linear = true
       byGene.set(
         r.uniqID,
-        c.x.map((x, i) => ({ x, y: c.y[i] })).filter((pt) => pt.x > 0)
+        c.x.map((x, i) => ({ x, y: c.y[i] })).filter((pt) => lin || pt.x > 0)
       )
       continue
     }
-    const x = opts.axis === 'dose' ? r.dose : r.time
+    const x = ctxNum(r, opts.axis)
     if (x == null || r.log2FC == null || !Number.isFinite(r.log2FC)) continue
     if (r.signf) anySig.add(r.uniqID)
     let arr = byGene.get(r.uniqID)
@@ -976,7 +1044,8 @@ export function buildDR(rows: CompareResultRow[], opts: DROptions): DRData {
       highlight: inFocus.length,
       total: series.length,
       comparison: comparisonOf(rows),
-      continuous
+      continuous,
+      ...(linear ? { linear } : null)
     }
   }
   // Show every gene (as faint background lines); the coloured top-N on top is drawn from the
@@ -999,7 +1068,8 @@ export function buildDR(rows: CompareResultRow[], opts: DROptions): DRData {
     highlight: front.length,
     total: series.length,
     comparison: comparisonOf(rows),
-    continuous
+    continuous,
+    ...(linear ? { linear } : null)
   }
 }
 
@@ -1021,12 +1091,12 @@ export interface BubbleData {
   points: BubblePoint[]
   genes: string[] // gene axis order as uniqIDs (unique — so same-named genes stay distinct rows)
   geneLabels: string[] // display names aligned to `genes`, for the axis tick labels
-  axis: 'dose' | 'time'
+  axis: ConditionKey
   /** total genes available before the cap (for a "top N of M" note) */
   total: number
 }
 export interface BubbleOptions {
-  axis: 'dose' | 'time'
+  axis: ConditionKey
   topGenes: number
   /** what ranks the genes: their log₂FC (default), or the significance column that drives the
    *  Compare's calls (−log₁₀ P or Q), signed by the fold change's direction */
@@ -1061,8 +1131,8 @@ export function buildBubble(rows: CompareResultRow[], opts: BubbleOptions): Bubb
   for (const r of rows) {
     if (r.log2FC == null || !Number.isFinite(r.log2FC)) continue
     if (r.signf) anySig.add(r.uniqID)
-    const x = opts.axis === 'dose' ? r.dose : r.time
-    if (x != null && Number.isFinite(x)) {
+    const x = ctxNum(r, opts.axis)
+    if (x != null) {
       const sc = scoreOf(r)
       const cur = topSigned.get(r.uniqID)
       if (cur == null) topSigned.set(r.uniqID, sc)
@@ -1101,7 +1171,7 @@ export function buildBubble(rows: CompareResultRow[], opts: BubbleOptions): Bubb
   for (const g of top) {
     const label = opts.displayMap?.[g] ?? g
     for (const r of byGene.get(g) ?? []) {
-      const x = opts.axis === 'dose' ? r.dose : r.time
+      const x = ctxNum(r, opts.axis)
       if (x == null || r.log2FC == null) continue
       points.push({
         x,
@@ -2033,9 +2103,9 @@ export interface HeatmapData {
 }
 
 /** How a sample axis (heatmap columns, gene-bar conditions, QC groups) is ordered: 'natural' =
- *  by condition — cell, cmpd, dose, time, the custom conditions, then the replicate — with text in
- *  natural order (numbers in it numerically) and dose and time as numbers; 'original' = the data's
- *  own sample order. */
+ *  by condition, in the hierarchy that groups the samples best (sampleHierarchy), then the
+ *  replicate — with text in natural order (numbers in it numerically) and dose and time as
+ *  numbers; 'original' = the data's own sample order. */
 export type SampleOrder = 'natural' | 'original'
 
 /** What orders a sample axis: the order, and — for 'original' — the data's samples in their
@@ -2043,6 +2113,64 @@ export type SampleOrder = 'natural' | 'original'
 export interface SampleOrdering {
   by: SampleOrder
   samples?: readonly SampleConds[]
+}
+
+/** Whether a meta value is there (a custom condition's absent is ''). */
+const present = (v: string | number | null): boolean => v !== '' && v != null
+
+/**
+ * The conditions a 'natural' sample axis sorts by, outermost first: those that don't vary, then
+ * the varying ones in the order whose condition tracks break least (the replicate isn't one: it
+ * always sorts last).
+ *
+ * Sorted by conditions c1, c2, …, the track of c_i breaks once per distinct combination of
+ * c1 … c_i's values, a count that depends only on WHICH conditions sit at or above it — so the
+ * fewest breaks over every order is found exactly over the subsets, not by trying sorts. A full
+ * design comes out fewest levels outermost; an uneven one (a vehicle only at dose 0) is counted
+ * as it is. Ties keep the usual order: cell, cmpd, dose, time, then the customs by name.
+ */
+export function sampleHierarchy(metas: readonly SampleMeta[]): ConditionKey[] {
+  const all = condsIn(metas).filter((c) => metas.some((m) => present(metaValue(m, c))))
+  const levels = (c: ConditionKey): number => new Set(metas.map((m) => metaValue(m, c))).size
+  const fixed = all.filter((c) => levels(c) < 2)
+  const vary = all.filter((c) => levels(c) >= 2)
+  const n = vary.length
+  // Past a dozen varying conditions (4096 subsets) keep the usual order.
+  if (n < 2 || n > 12) return [...fixed, ...vary]
+  const full = (1 << n) - 1
+  // distinct[S] = how many distinct value combinations the conditions in S take
+  const distinct = new Array<number>(1 << n).fill(1)
+  for (let S = 1; S <= full; S++) {
+    const keys = new Set<string>()
+    for (const m of metas) {
+      let k = ''
+      for (let i = 0; i < n; i++) if (S & (1 << i)) k += `${metaValue(m, vary[i]) ?? ''}\u0001`
+      keys.add(k)
+    }
+    distinct[S] = keys.size
+  }
+  // rest[S] = the fewest breaks below the conditions in S, placed outermost
+  const rest = new Array<number>(1 << n).fill(0)
+  for (let S = full - 1; S >= 0; S--) {
+    let best = Infinity
+    for (let i = 0; i < n; i++)
+      if (!(S & (1 << i))) best = Math.min(best, distinct[S | (1 << i)] + rest[S | (1 << i)])
+    rest[S] = best
+  }
+  // Walk down from the top, taking at each level the first condition (in the usual order) that
+  // still finishes at the fewest breaks.
+  const order: ConditionKey[] = []
+  let S = 0
+  while (S !== full)
+    for (let i = 0; i < n; i++) {
+      const T = S | (1 << i)
+      if (T !== S && distinct[T] + rest[T] === rest[S]) {
+        order.push(vary[i])
+        S = T
+        break
+      }
+    }
+  return [...fixed, ...order]
 }
 
 /** Sort a sample axis in place. `metaOf` reads a slot's condition values. `perSample` = slots are
@@ -2084,18 +2212,18 @@ export function sortSamples<T>(
     a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' })
   const numCmp = (a: number | null, b: number | null): number =>
     a == null && b == null ? 0 : a == null ? 1 : b == null ? -1 : a - b
-  // Custom conditions sort after the presets, in slug order, so the hierarchy stays
-  // cell → cmpd → dose → time → (customs) → rep.
-  const customSlugs = [...new Set(items.flatMap((t) => Object.keys(metaOf(t).extra ?? {})))].sort()
+  // The conditions in the hierarchy that groups these slots best (sampleHierarchy), then the rep.
+  const cmp = sampleHierarchy(items.map(metaOf)).map(
+    (k): ((a: SampleMeta, b: SampleMeta) => number) =>
+      k === 'dose' || k === 'time'
+        ? (a, b) => numCmp(a[k], b[k])
+        : (a, b) => strCmp(String(metaValue(a, k) ?? ''), String(metaValue(b, k) ?? ''))
+  )
   return items.sort((a, b) => {
     const ma = metaOf(a)
     const mb = metaOf(b)
-    let c = strCmp(ma.cell, mb.cell) || strCmp(ma.cmpd, mb.cmpd)
-    if (c !== 0) return c
-    c = numCmp(ma.dose, mb.dose) || numCmp(ma.time, mb.time)
-    if (c !== 0) return c
-    for (const k of customSlugs) {
-      c = strCmp(ma.extra?.[k] ?? '', mb.extra?.[k] ?? '')
+    for (const f of cmp) {
+      const c = f(ma, mb)
       if (c !== 0) return c
     }
     return perSample ? numCmp(ma.rep, mb.rep) : 0
@@ -2204,14 +2332,10 @@ export function* buildHeatmapSteps(
     cells.set(`${r.uniqID} ${s}`, v)
   }
 
-  // Order the sample columns — by default naturally by condition (cell, cmpd, dose, time, then
-  // replicate), so samples sharing a cell/compound/dose block together.
-  sortSamples(
-    sampleOrder,
-    opts.order ?? { by: 'natural' },
-    (s) => sampleMeta.get(s) as SampleMeta,
-    true
-  )
+  // Order the sample columns — by default naturally by condition (sampleHierarchy, then the
+  // replicate), so samples sharing a condition block together.
+  const ordering = opts.order ?? { by: 'natural' }
+  sortSamples(sampleOrder, ordering, (s) => sampleMeta.get(s) as SampleMeta, true)
 
   // The intensity heatmap shows the full proteome — no top-N cap (that's the FC heatmap's
   // job). Focus genes (when set) narrow it to exactly those rows.
@@ -2269,12 +2393,11 @@ export function* buildHeatmapSteps(
   const samples = sampleOrder.map(
     (s) => sampleMeta.get(s) ?? { cell: '', cmpd: '', dose: null, time: null, rep: null }
   )
-  // Conditions that actually carry values become annotation tracks (cell/cmpd non-empty,
-  // dose/time non-null across the samples); empty conditions are skipped.
-  const conds = condsIn(samples).filter((c) =>
-    isNumericCond(c)
-      ? samples.some((m) => metaValue(m, c) != null)
-      : samples.some((m) => metaValue(m, c) !== '' && metaValue(m, c) != null)
+  // Conditions that actually carry values become annotation tracks (a value neither null nor ''
+  // — a custom condition's "absent" — in some sample); empty conditions are skipped. Stacked as
+  // the columns were sorted: the outermost condition on top.
+  const conds = (ordering.by === 'natural' ? sampleHierarchy(samples) : condsIn(samples)).filter(
+    (c) => samples.some((m) => present(metaValue(m, c)))
   )
   return { z, x: sampleOrder, y, geneIds: genes, samples, conds }
 }
@@ -2914,14 +3037,15 @@ export function enrichTermGroups(
  *  top few the plot shows. */
 export function enrichmentTable(
   rows: CompareResultRow[],
-  opts: Omit<EnrichOptions, 'topTerms'>,
+  /** with the dataset's declared numeric conditions, for the facets' order */
+  opts: Omit<EnrichOptions, 'topTerms'> & { numericConditions: readonly CustomConditionKey[] },
   facet?: string
 ): Record<string, string | number | null>[] {
   const out: Record<string, string | number | null>[] = []
   const groups =
     facet != null
       ? [{ label: facet, rows }]
-      : facetCompareRows(rows, facetDims(rows)).map((g) => ({
+      : facetCompareRows(rows, facetDims(rows), numericConds(opts.numericConditions)).map((g) => ({
           label: facetLabel(g.values),
           rows: g.rows
         }))
@@ -2984,6 +3108,8 @@ export function enrichmentAll(
 }
 
 export type EnrichAllOptions = {
+  /** the dataset's declared numeric conditions (numericConds), for the facets' order */
+  numericConditions: readonly CustomConditionKey[]
   annotationMap: Record<string, Record<string, string>>
   displayMap?: Record<string, string>
   keggCategories?: Record<string, string>
@@ -3034,7 +3160,7 @@ export function* enrichmentAllSteps(
   rows: CompareResultRow[],
   opts: EnrichAllOptions
 ): Generator<EnrichJob[], Record<string, Record<string, EnrichData>>, EnrichData[]> {
-  const groups = facetCompareRows(rows, facetDims(rows))
+  const groups = facetCompareRows(rows, facetDims(rows), numericConds(opts.numericConditions))
   // Per source, the term grouping and the annotation columns — the same for every facet and method.
   const perSource = new Map(
     opts.sources.map((src) => [

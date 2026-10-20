@@ -82,8 +82,15 @@ describe('subsetStandardize', () => {
   })
 
   it('drops a condition no kept sample carries, and presents on the run scale', () => {
+    // only s5 (B2 · 1, no geno): geno goes as no kept sample carries it — and cmpd and dose too,
+    // narrowed to a single value each (narrowedConds)
     const out = subsetStandardize(std(), { '@geno': [''] })
-    expect(out.activeConditions).toEqual(['cmpd', 'dose'])
+    expect(out.activeConditions).toEqual([])
+    // s2, s5 (A · 1 wt, B2 · 1): dose narrowed to 1; geno still told apart (wt vs none)
+    expect(subsetStandardize(std(), { cmpd: ['A', 'B2'], dose: ['1'] }).activeConditions).toEqual([
+      'cmpd',
+      '@geno'
+    ])
     expect(out.inputScale).toBeUndefined()
     expect(out.scale).toBe('log10')
   })

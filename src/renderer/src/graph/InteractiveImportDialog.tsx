@@ -19,6 +19,7 @@ import {
   type Dispatch,
   type InputHTMLAttributes,
   type ReactNode,
+  type RefObject,
   type SetStateAction
 } from 'react'
 import { createPortal } from 'react-dom'
@@ -48,11 +49,12 @@ import { Select as AppSelect } from '../ui/Select'
 import { OnOffSwitch, ToggleSwitch } from '../ui/ToggleSwitch'
 import { DOCKED_CARD, DOCKED_WRAP, useDialogDock } from './dialogDock'
 import { useGraph } from './store'
+import { UnitInput } from './UnitInput'
 import {
-  AU,
-  DOSE_UNITS,
+  declaredNumeric,
+  DOSE_UNIT_SUGGESTIONS,
   isStep,
-  TIME_UNITS,
+  TIME_UNIT_SUGGESTIONS,
   type AnnotationSet,
   type CondUnits,
   type LoadConfig
@@ -1131,7 +1133,8 @@ function useFloatingMenu(
   return { btnRef, menuRef, rect }
 }
 
-/** A numeric condition's unit, for a UnitChip: dose and time have one, every other field none. */
+/** A numeric condition's unit, for a UnitChip: dose and time have one, every other field none. Any
+ *  text is a unit; `options` are suggestions. */
 interface UnitSpec {
   value: string | undefined
   options: readonly string[]
@@ -1140,20 +1143,30 @@ interface UnitSpec {
 function unitSpec(
   f: Field,
   units: CondUnits,
-  onUnits: (u: CondUnits) => void
+  onUnits: (u: CondUnits) => void,
+  /** the custom conditions declared numeric: each takes a unit too (keyed `@name`) */
+  numeric: readonly string[] = []
 ): UnitSpec | undefined {
   if (f === 'dose')
     return {
       value: units.dose,
-      options: [AU, ...Object.keys(DOSE_UNITS)],
-      onChange: (u) => onUnits({ dose: u as CondUnits['dose'] })
+      options: DOSE_UNIT_SUGGESTIONS,
+      onChange: (u) => onUnits({ dose: u })
     }
   if (f === 'time')
     return {
       value: units.time,
-      options: [AU, ...TIME_UNITS],
-      onChange: (u) => onUnits({ time: u as CondUnits['time'] })
+      options: TIME_UNIT_SUGGESTIONS,
+      onChange: (u) => onUnits({ time: u })
     }
+  if (numeric.includes(f)) {
+    const key = `@${f}` as const
+    return {
+      value: units[key],
+      options: [...new Set([...DOSE_UNIT_SUGGESTIONS, ...TIME_UNIT_SUGGESTIONS, '°C'])],
+      onChange: (u) => onUnits({ [key]: u })
+    }
+  }
   return undefined
 }
 
@@ -1168,8 +1181,8 @@ const COMMON_SEPARATORS: Array<{ value: string; label: string }> = [
 /** What an unpicked unit's chip says — a prompt: the import won't go on until one is picked. */
 const UNIT_PROMPT = 'unit'
 
-/** A minimal chip naming a numeric condition's unit ("unit" until one is picked — a.u. is one of
- *  the choices); a click opens the units as a floating list. Its clicks stay its own, so it can
+/** A minimal chip naming a numeric condition's unit ("unit" until one is named — a.u. is one of
+ *  the choices); a click opens a box to type any unit (Enter sets it) over a list of common ones. Its clicks stay its own, so it can
  *  sit inside another clickable chip. */
 function UnitChip({
   spec,
@@ -1235,6 +1248,18 @@ function UnitChip({
               top: rect.top
             }}
           >
+            <input
+              autoFocus
+              aria-label="unit"
+              placeholder="type a unit"
+              defaultValue={spec.value ?? ''}
+              style={styles.unitInput}
+              onKeyDown={(e) => {
+                if (e.key !== 'Enter') return
+                const v = e.currentTarget.value.trim()
+                pick(v || undefined)
+              }}
+            />
             {spec.options.map((u) => {
               const on = u === spec.value
               return (
@@ -1398,6 +1423,7 @@ export function InteractiveImportDialog({
   const convertInteractive = useGraph((s) => s.convertInteractive)
   const setInteractive = useGraph((s) => s.setInteractive)
   const setLoadUnits = useGraph((s) => s.setLoadUnits)
+  const setLoadNumeric = useGraph((s) => s.setLoadNumeric)
 
   // Wizard step + preset are restored from config so reopening lands on the last stage the user
   // was on (roadmap included), with the same column preset — mirroring how roles/conditions persist.
@@ -1575,6 +1601,12 @@ export function InteractiveImportDialog({
   // switching one back on restores them.
   const hiddenConditions = interactive?.hiddenConditions ?? []
   const hidden = new Set<Field>(hiddenConditions)
+  // The custom conditions declared numeric (their chip switched to num): each takes a unit, and
+  // its values must be numbers.
+  // (on the Load tile, shared with the manual panel; the pipeline goes stale on Apply)
+  const numericConditions = declaredNumeric(cfg)
+  const setNumeric = (name: string, on: boolean): void =>
+    setLoadNumeric(id, name, on, { stale: false })
   const setHidden = (f: Field, off: boolean): void => {
     if (off === hidden.has(f)) return
     setInteractive(id, {
@@ -1614,6 +1646,7 @@ export function InteractiveImportDialog({
       nextSpans[sc] = next
     }
     if (armed === name) setArmed(null)
+    setLoadNumeric(id, name, false, { stale: false })
     setInteractive(id, {
       customConditions: customConditions.filter((n) => n !== name),
       hiddenConditions: hiddenConditions.filter((n) => n !== name),
@@ -1774,10 +1807,12 @@ export function InteractiveImportDialog({
   // The numeric conditions carrying values with no unit picked yet — the Conditions and Samplesheet
   // steps ask for one (a.u. counts) before going on, so every dose / time reaches the analyses with
   // its unit. (The chips on both steps pick it.)
-  const unitsMissing = (['dose', 'time'] as const).filter(
+  const unitsMissing = (['dose', 'time', ...numericConditions] as string[]).filter(
     (f) =>
       !hidden.has(f) &&
-      !cfg?.units?.[f] &&
+      !(cfg?.units as Record<string, string | undefined> | undefined)?.[
+        f === 'dose' || f === 'time' ? f : `@${f}`
+      ] &&
       samples.some((s) => {
         const v = condOf(s, f).trim()
         return s.include !== false && v !== '' && Number.isFinite(Number(v))
@@ -1794,7 +1829,8 @@ export function InteractiveImportDialog({
         sample: s.sample,
         ...Object.fromEntries(fields.filter((f) => !hidden.has(f)).map((f) => [f, condOf(s, f)]))
       })),
-    customConditions.filter((n) => !hidden.has(n))
+    customConditions.filter((n) => !hidden.has(n)),
+    numericConditions.filter((n) => !hidden.has(n))
   )
   const canNext =
     stage === 1
@@ -1826,8 +1862,8 @@ export function InteractiveImportDialog({
   const nextBlockDetail =
     stage === 3 && condCard === 1 && sheetIssues.length ? (
       <>
-        Every condition in use needs a value for every sample, and dose and time must be numbers (a
-        vehicle’s dose is 0):
+        Every condition in use needs a value for every sample, and dose, time and every condition
+        switched to num must be numbers (a vehicle’s dose is 0):
         {sheetIssueLines(sheetIssues).map((line) => (
           <div key={line}>• {line}</div>
         ))}
@@ -2110,6 +2146,8 @@ export function InteractiveImportDialog({
                   onSeparator={setSeparator}
                   units={cfg?.units ?? {}}
                   onUnits={(u) => setLoadUnits(id, u)}
+                  numeric={numericConditions}
+                  onNumeric={setNumeric}
                   setCell={setCell}
                   setInclude={setInclude}
                   onRenameValue={renameConditionValue}
@@ -2925,7 +2963,9 @@ function ConditionSwitches({
   setActivated,
   onRemoveCustom,
   units,
-  onUnits
+  onUnits,
+  numeric,
+  onNumeric
 }: {
   fields: Field[]
   /** each condition's colour — the Set unit rows' dots (the switches have none yet) */
@@ -2937,13 +2977,41 @@ function ConditionSwitches({
   onRemoveCustom: (name: string) => void
   units: CondUnits
   onUnits: (units: CondUnits) => void
+  /** the custom conditions declared numeric, and switching one */
+  numeric: string[]
+  onNumeric: (name: string, on: boolean) => void
 }): ReactNode {
   const { isActive, hasValues, setOn, addCondition } = cond
   // Every condition that's on, in the list's order; only dose / time take a unit.
   const unitRows = fields.filter(isActive)
+  // A condition just added lands at the end of both lists — below the fold once the switches fill
+  // their part of the column — so it's scrolled into view in each, once it's there.
+  const switchRef = useRef<HTMLDivElement>(null)
+  const unitRef = useRef<HTMLDivElement>(null)
+  const added = useRef<string | null>(null)
+  const onAdd = (name: string): string | null => {
+    const problem = addCondition(name)
+    if (!problem) added.current = name
+    return problem
+  }
+  // A short fade at the panel's bottom while the list runs on past it (none once scrolled to the end)
+  const moreBelow = useMoreBelow(switchRef)
+  useEffect(() => {
+    const name = added.current
+    if (!name || !fields.includes(name)) return
+    added.current = null
+    for (const box of [switchRef.current, unitRef.current])
+      box?.querySelector(`[data-cond="${name}"]`)?.scrollIntoView({ block: 'nearest' })
+  }, [fields, unitRows.length])
   return (
     <>
-      <div style={styles.switchSec}>
+      {/* oe-scroll: a scrollbar that stays shown (not macOS's overlay one) while the list runs past
+          the panel */}
+      <div
+        ref={switchRef}
+        className="oe-scroll"
+        style={{ ...styles.switchSec, ...(moreBelow ? styles.listFadeBottom : null) }}
+      >
         <div style={styles.panelHead}>Active conditions</div>
         <div style={styles.condList}>
           {fields.map((f) => {
@@ -2952,6 +3020,7 @@ function ConditionSwitches({
             return (
               <span
                 key={f}
+                data-cond={f}
                 style={styles.condToggle}
                 title={
                   custom
@@ -2982,25 +3051,50 @@ function ConditionSwitches({
                   }}
                 />
                 <span style={{ color: active ? UI.text : UI.textMuted }}>{f}</span>
+                {/* its variable type, once it's on: numeric or categorical (the replicate is
+                    neither). A custom condition's switches on a click; the presets' are fixed. */}
+                {active &&
+                  f !== 'rep' &&
+                  (() => {
+                    const num = f === 'dose' || f === 'time' || numeric.includes(f)
+                    const what = num
+                      ? 'Numeric: its values are numbers on a scale, with a unit'
+                      : 'Categorical: its values are labels'
+                    return custom ? (
+                      <button
+                        type="button"
+                        style={{ ...styles.typeChip, ...styles.typeChipBtn }}
+                        title={`${what}. Click to make it ${num ? 'categorical' : 'numeric'}.`}
+                        onClick={() => onNumeric(f, !num)}
+                      >
+                        {num ? 'num' : 'cat'}
+                      </button>
+                    ) : (
+                      <span style={styles.typeChip} title={`${what} (fixed for ${f}).`}>
+                        {num ? 'num' : 'cat'}
+                      </span>
+                    )
+                  })()}
               </span>
             )
           })}
-          <NewConditionRow taken={fields} onAdd={addCondition} />
+          <NewConditionRow taken={fields} onAdd={onAdd} />
         </div>
       </div>
       {/* Set units: dose / time, each while it's on — the import needs one before it goes on. The
           bottom 45% of the column, there even when empty so it never moves. */}
-      <div style={styles.unitSec}>
+      <div ref={unitRef} style={styles.unitSec}>
         {unitRows.length > 0 && (
           <div style={styles.unitBlock}>
             <div style={styles.panelHead}>Set unit</div>
             {unitRows.map((f) => {
-              const spec = unitSpec(f, units, onUnits)
+              const spec = unitSpec(f, units, onUnits, numeric)
               // A condition a unit doesn't apply to (anything but dose / time): listed, greyed.
               if (!spec)
                 return (
                   <span
                     key={f}
+                    data-cond={f}
                     style={{ ...styles.unitRow, ...styles.unitRowNA }}
                     title={`${f} takes no unit`}
                   >
@@ -3010,16 +3104,21 @@ function ConditionSwitches({
                   </span>
                 )
               return (
-                <span key={f} style={styles.unitRow}>
+                <span key={f} data-cond={f} style={styles.unitRow}>
                   <span style={{ ...styles.chipDot, background: colorOf(f) }} />
                   <span style={styles.unitName}>{f}</span>
-                  {/* A note right against the chip: a tip asking for a unit (the import needs one),
-                    then — once picked — a success note saying it's set. */}
+                  {/* A note right against the box: a tip asking for a unit (the import needs one),
+                    then — once typed — a success note saying it's set. Any text is a unit; the
+                    common ones are listed, and an SI spelling is offered for what was typed. */}
                   <span style={styles.unitPick}>
                     <StatusNote kind={spec.value ? 'ok' : 'info'} inline style={{ fontSize: 12 }}>
-                      {spec.value ? 'Unit selected:' : 'Select unit:'}
+                      {spec.value ? 'Unit:' : 'Type a unit:'}
                     </StatusNote>
-                    <UnitChip spec={spec} color={colorOf(f)} prompt="—" />
+                    <UnitInput
+                      value={spec.value}
+                      onChange={spec.onChange}
+                      suggestions={spec.options}
+                    />
                   </span>
                 </span>
               )
@@ -3113,6 +3212,9 @@ function ConditionsStage(props: {
   onSeparator: (sep: string) => void
   units: CondUnits
   onUnits: (units: CondUnits) => void
+  /** the custom conditions declared numeric, and switching one */
+  numeric: string[]
+  onNumeric: (name: string, on: boolean) => void
   setCell: (i: number, field: Field, value: string) => void
   setInclude: (i: number, on: boolean) => void
   onRenameValue: (field: Field, map: Record<string, string>) => void
@@ -3221,6 +3323,8 @@ function ConditionsStage(props: {
                 onRemoveCustom={props.onRemoveCustom}
                 units={props.units}
                 onUnits={props.onUnits}
+                numeric={props.numeric}
+                onNumeric={props.onNumeric}
               />
             </div>
             <div style={styles.condSplitRight}>
@@ -3253,6 +3357,9 @@ function ConditionsStage(props: {
             onRenameValue={props.onRenameValue}
             units={props.units}
             onUnits={props.onUnits}
+            numeric={props.numeric}
+            onNumeric={props.onNumeric}
+            onAddCondition={cond.addCondition}
             activeFields={cond.activeFields}
           />
         )}
@@ -3496,7 +3603,7 @@ function Stage1({
             </InfoTip>
           </span>
           {activeFields.length === 0 && (
-            <span style={styles.chipsLabel}>Switch a condition on above to map it.</span>
+            <span style={styles.chipsLabel}>Switch on a condition on the left to map it.</span>
           )}
           {activeFields.map((f) => {
             const on = armed === f
@@ -3876,6 +3983,110 @@ function RenameBar({
   )
 }
 
+/** Whether a scroll box has content below what it shows — for a fade at its bottom edge. Follows
+ *  its scrolling and any change of its size or its content's. */
+function useMoreBelow(ref: RefObject<HTMLElement | null>): boolean {
+  const [more, setMore] = useState(false)
+  useLayoutEffect(() => {
+    const el = ref.current
+    if (!el) return
+    const update = (): void => setMore(el.scrollTop + el.clientHeight < el.scrollHeight - 1)
+    update()
+    el.addEventListener('scroll', update, { passive: true })
+    const ro = new ResizeObserver(update)
+    ro.observe(el)
+    for (const c of Array.from(el.children)) ro.observe(c)
+    return () => {
+      el.removeEventListener('scroll', update)
+      ro.disconnect()
+    }
+  }, [ref])
+  return more
+}
+
+/** The Refine table's empty last column is this wide. */
+const ADD_COL_W = 150
+
+/** A condition's type above its name in the Refine table: num (dose, time, a custom one switched to
+ *  num) or cat. A custom one's switches on a click, as its chip in the left panel; the presets'
+ *  are fixed. The replicate has none. */
+function CondTypeChip({
+  field,
+  numeric,
+  onNumeric
+}: {
+  field: Field
+  numeric: string[]
+  onNumeric: (name: string, on: boolean) => void
+}): ReactNode {
+  if (field === 'rep') return null
+  const num = field === 'dose' || field === 'time' || numeric.includes(field)
+  const what = num
+    ? 'Numeric: its values are numbers on a scale, with a unit'
+    : 'Categorical: its values are labels'
+  return isPresetField(field) ? (
+    <span style={styles.typeChip} title={`${what} (fixed for ${field}).`}>
+      {num ? 'num' : 'cat'}
+    </span>
+  ) : (
+    <button
+      type="button"
+      style={{ ...styles.typeChip, ...styles.typeChipBtn }}
+      title={`${what}. Click to make it ${num ? 'categorical' : 'numeric'}.`}
+      onClick={() => onNumeric(field, !num)}
+    >
+      {num ? 'num' : 'cat'}
+    </button>
+  )
+}
+
+/** The Refine table's empty last column: a name box — Enter (or leaving it) adds a condition of
+ *  your own, as the left panel's "new condition" row does; a name that can't be used says why. */
+function AddConditionField({
+  taken,
+  onAdd
+}: {
+  taken: readonly Field[]
+  onAdd: (name: string) => string | null
+}): ReactNode {
+  const [text, setText] = useState('')
+  const [err, setErr] = useState<string | null>(null)
+  const commit = (): void => {
+    const name = text.trim().toLowerCase()
+    if (name === '') return setErr(null)
+    if (taken.includes(name)) return setErr(`“${name}” is already a condition`)
+    const problem = onAdd(name)
+    if (problem) setErr(problem)
+    else {
+      setText('')
+      setErr(null)
+    }
+  }
+  return (
+    <>
+      <input
+        aria-label="new condition"
+        placeholder="+ new condition"
+        style={styles.addColInput}
+        value={text}
+        onChange={(e) => {
+          setText(e.target.value)
+          setErr(null)
+        }}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') commit()
+          else if (e.key === 'Escape') {
+            setText('')
+            setErr(null)
+          }
+        }}
+      />
+      {err && <span style={styles.addColErr}>{err}</span>}
+    </>
+  )
+}
+
 /** Stage 2: editable grid — include checkbox + per-cell overrides for naming exceptions, plus a
  *  rename bar to change a condition value across every sample at once. */
 function Stage2({
@@ -3888,6 +4099,9 @@ function Stage2({
   onRenameValue,
   units,
   onUnits,
+  numeric,
+  onNumeric,
+  onAddCondition,
   activeFields
 }: {
   samples: InteractiveSampleCond[]
@@ -3902,11 +4116,17 @@ function Stage2({
   /** the numeric conditions' units (kept on the Load tile) */
   units: CondUnits
   onUnits: (units: CondUnits) => void
+  /** the custom conditions declared numeric (each takes a unit, as dose and time), and switching
+   *  one (its cat / num chip, above its name) */
+  numeric: string[]
+  onNumeric: (name: string, on: boolean) => void
+  /** add a custom condition (the empty column at the right): why the name can't be used, or null */
+  onAddCondition: (name: string) => string | null
   /** the conditions switched on (the left panel) — one column each, in that order */
   activeFields: Field[]
 }): ReactNode {
   // Dose and time are the numeric conditions: each shows its unit chip by its name.
-  const unitFor = (f: Field): UnitSpec | undefined => unitSpec(f, units, onUnits)
+  const unitFor = (f: Field): UnitSpec | undefined => unitSpec(f, units, onUnits, numeric)
   // The rename bar's choices: each condition, with its distinct values (numeric-aware order, blank
   // last — so empty cells can be filled in one go) and how many samples carry each.
   // The refactor bar's pending matches, highlighted in the table until applied or cleared.
@@ -3980,13 +4200,16 @@ function Stage2({
         CELL_PAD +
         2
       const condW = (f: Field): number => {
-        const unit = f === 'dose' || f === 'time'
+        // a numeric condition (dose, time, a custom one switched to num) shows its unit
+        const preset = f === 'dose' || f === 'time'
+        const unit = preset || numeric.includes(f)
         const base = COND_W + (unit ? UNIT_EXTRA : 0)
-        // the longest value in its text box (+ the unit after it, for dose / time)
-        const unitText = unit ? textW(units[f] ?? '', '11px') + 4 : 0
+        // the longest value in its text box (+ the unit after it, for a numeric one)
+        const unitName = (units as Record<string, string | undefined>)[preset ? f : `@${f}`]
+        const unitText = unit ? textW(unitName ?? '', '11px') + 4 : 0
         const longest = Math.max(0, ...samples.map((sm) => textW(condOf(sm, f), '12px')))
         const value = Math.ceil(longest) + INPUT_PAD + unitText + CELL_PAD
-        // its name in the header (bold), with the unit chip beside it for dose / time
+        // its name in the header (bold), with the unit chip beside it for a numeric one
         const head = Math.ceil(textW(f, '600 12px')) + (unit ? 44 : 0) + CELL_PAD
         return Math.max(base, value, head)
       }
@@ -4000,7 +4223,7 @@ function Stage2({
         })
       )
     }
-  }, [widths, cols.length, activeFields, samples, units])
+  }, [widths, cols.length, activeFields, samples, units, numeric])
 
   const startResize = (i: number, startX: number): void => {
     const startW = widths[i] ?? headRefs.current[i]?.offsetWidth ?? 60
@@ -4039,7 +4262,7 @@ function Stage2({
             // Fitting (auto layout): natural widths, no stretching to the box — or the spare would
             // be spread over the columns and pinned into them. Pinned: exactly the columns' widths.
             ...(fixed
-              ? { tableLayout: 'fixed', width: pinnedSum, minWidth: 0 }
+              ? { tableLayout: 'fixed', width: pinnedSum + ADD_COL_W, minWidth: 0 }
               : { tableLayout: 'auto', minWidth: 0 })
           }}
         >
@@ -4047,6 +4270,7 @@ function Stage2({
             {cols.map((c, i) => (
               <col key={c} style={{ width: widths[i] != null ? `${widths[i]}px` : undefined }} />
             ))}
+            <col style={{ width: `${ADD_COL_W}px` }} />
           </colgroup>
           <thead>
             <tr>
@@ -4075,10 +4299,14 @@ function Stage2({
                         c
                       )
                     ) : (
-                      // A condition's name in its colour, with its unit chip for dose / time.
-                      <span style={styles.condName}>
-                        {c}
-                        {unitFor(c) && <UnitChip spec={unitFor(c)!} color={colorOf(c)} />}
+                      // Its type chip (cat / num) above; its name in its colour, with its unit chip
+                      // for a numeric one.
+                      <span style={styles.headStack}>
+                        <CondTypeChip field={c} numeric={numeric} onNumeric={onNumeric} />
+                        <span style={styles.condName}>
+                          {c}
+                          {unitFor(c) && <UnitChip spec={unitFor(c)!} color={colorOf(c)} />}
+                        </span>
                       </span>
                     )}
                     <span
@@ -4095,6 +4323,10 @@ function Stage2({
                   </th>
                 )
               })}
+              {/* An empty column at the right: type a name to add a condition of your own */}
+              <th style={{ ...styles.th, ...styles.addColHead, top: 0 }}>
+                <AddConditionField taken={activeFields} onAdd={onAddCondition} />
+              </th>
             </tr>
           </thead>
           <tbody>
@@ -4176,6 +4408,7 @@ function Stage2({
                       </td>
                     )
                   })}
+                  <td style={{ ...styles.td, ...styles.addColCell }} />
                 </tr>
               )
             })}
@@ -4695,6 +4928,17 @@ const styles: Record<string, CSSProperties> = {
   chipsLabel: { fontSize: 12, fontWeight: 600, color: UI.textMuted, marginRight: 2 },
   condList: { display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 8 },
   condToggle: { display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: 13 },
+  typeChip: {
+    fontSize: 10,
+    fontWeight: 600,
+    lineHeight: '14px',
+    padding: '1px 6px',
+    borderRadius: 9,
+    border: `1px solid ${UI.border}`,
+    color: UI.textMuted,
+    whiteSpace: 'nowrap'
+  },
+  typeChipBtn: { background: 'transparent', cursor: 'pointer', color: UI.text },
   // The left panel's Set units section: one row per numeric condition that's on, its name then
   // its unit chip.
   unitBlock: { display: 'flex', flexDirection: 'column', gap: 6 },
@@ -4709,6 +4953,11 @@ const styles: Record<string, CSSProperties> = {
     gap: 10
   },
   unitSec: { flex: '9 1 0', minHeight: 0, overflow: 'auto' },
+  // A scroll box's last 28px fading out, while there's more below.
+  listFadeBottom: {
+    maskImage: 'linear-gradient(to bottom, #000 calc(100% - 28px), transparent)',
+    WebkitMaskImage: 'linear-gradient(to bottom, #000 calc(100% - 28px), transparent)'
+  },
   unitRow: { display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: 13 },
   unitName: { minWidth: 40 },
   // "(i) Select unit:" and its chip, close together.
@@ -5123,7 +5372,17 @@ const styles: Record<string, CSSProperties> = {
     whiteSpace: 'nowrap'
   },
   unitChipUnset: { color: UI.textMuted, fontStyle: 'italic', fontWeight: 500 },
-  unitMenu: { padding: 4, gap: 0, minWidth: 64 },
+  unitMenu: { padding: 4, gap: 0, minWidth: 96 },
+  unitInput: {
+    fontSize: 12,
+    padding: '3px 6px',
+    margin: '0 0 4px',
+    border: `1px solid ${UI.border}`,
+    borderRadius: 4,
+    background: 'transparent',
+    color: UI.text,
+    width: 96
+  },
   unitItem: {
     background: 'transparent',
     border: 'none',
@@ -5410,6 +5669,7 @@ const styles: Record<string, CSSProperties> = {
     color: UI.textMuted,
     fontWeight: 600,
     textAlign: 'left',
+    verticalAlign: 'bottom',
     padding: '6px 8px',
     borderBottom: `1px solid ${UI.border}`
   },
@@ -5432,6 +5692,22 @@ const styles: Record<string, CSSProperties> = {
   },
   cellWithUnit: { display: 'flex', alignItems: 'center', gap: 4 },
   condName: { display: 'inline-flex', alignItems: 'center' },
+  // A condition's header: its cat / num chip above its name.
+  headStack: { display: 'inline-flex', flexDirection: 'column', alignItems: 'flex-start', gap: 3 },
+  // The empty column for adding a condition: dashed, faint, its name box in the header.
+  addColHead: { verticalAlign: 'bottom', borderLeft: `1px dashed ${UI.border}` },
+  addColCell: { borderLeft: `1px dashed ${UI.border}`, background: 'transparent' },
+  addColInput: {
+    width: '100%',
+    boxSizing: 'border-box',
+    fontSize: 12,
+    padding: '3px 6px',
+    border: `1px dashed ${UI.border}`,
+    borderRadius: 4,
+    background: 'transparent',
+    color: UI.text
+  },
+  addColErr: { display: 'block', fontSize: 11, fontWeight: 400, color: UI.err, marginTop: 2 },
   // The Columns step's "Set column type" label, left of the type chips.
   paintLabel: {
     display: 'inline-flex',

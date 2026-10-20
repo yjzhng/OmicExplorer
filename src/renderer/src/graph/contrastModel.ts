@@ -10,6 +10,7 @@ import {
   orderConds,
   type CondSelector,
   type ConditionKey,
+  type NumericConds,
   type PairFix,
   type StandardRow
 } from '../engine'
@@ -69,11 +70,12 @@ export function contrastModel(
   RA: readonly StandardRow[],
   RB: readonly StandardRow[],
   conds: readonly ConditionKey[],
+  numeric: NumericConds,
   defMode: SliceMode = 'match'
 ): ContrastModel {
   const rows: SliceInfo[] = orderConds(conds).map((c) => {
-    const va = valuesOf(RA, c)
-    const vb = valuesOf(RB, c)
+    const va = valuesOf(RA, c, numeric)
+    const vb = valuesOf(RB, c, numeric)
     const single = va.length <= 1 && vb.length <= 1 && va[0] === vb[0]
     let m: SliceInfo['m'] = single ? 'single' : (state.cmode[c] ?? defMode)
     if (m === 'match' && !va.some((v) => vb.includes(v))) m = 'slice'
@@ -144,12 +146,13 @@ export function compileInter(m: ContrastModel): { match: ConditionKey[]; pairFix
  *  has two values) contrasted between its first two values. */
 export function defaultIntra(
   rows: readonly StandardRow[],
-  conds: readonly ConditionKey[]
+  conds: readonly ConditionKey[],
+  numeric: NumericConds
 ): ContrastState {
-  const multi = orderConds(conds).filter((c) => valuesOf(rows, c).length > 1)
+  const multi = orderConds(conds).filter((c) => valuesOf(rows, c, numeric).length > 1)
   const c = multi.includes('cmpd') ? 'cmpd' : multi[0]
   if (!c) return { cmode: {}, sl: {}, drop: {} }
-  const [a, b] = valuesOf(rows, c)
+  const [a, b] = valuesOf(rows, c, numeric)
   const state: ContrastState = { cmode: {}, sl: {}, drop: {} }
   state.cmode[c] = 'slice'
   state.sl[c] = { a, b }
@@ -164,20 +167,21 @@ const leftOut = (vals: string[], keep?: string[] | null): string[] =>
 export function readIntra(
   cfg: { num?: CondSelector; den?: CondSelector; match?: ConditionKey[] },
   rows: readonly StandardRow[],
-  conds: readonly ConditionKey[]
+  conds: readonly ConditionKey[],
+  numeric: NumericConds
 ): ContrastState {
   const num = cfg.num ?? {}
   const den = cfg.den ?? {}
   const pinned =
     Object.values(num).some((v) => v?.length) || Object.values(den).some((v) => v?.length)
-  if (!pinned) return defaultIntra(rows, conds)
+  if (!pinned) return defaultIntra(rows, conds, numeric)
   const state: ContrastState = { cmode: {}, sl: {}, drop: {} }
   for (const c of conds) {
     const n = num[c]
     const d = den[c]
     if (cfg.match?.includes(c)) {
       state.cmode[c] = 'match'
-      const out = leftOut(valuesOf(rows, c), n)
+      const out = leftOut(valuesOf(rows, c, numeric), n)
       if (out.length) state.drop[c] = out
     } else if (n?.length === 1 && d?.length === 1) {
       state.cmode[c] = 'slice'
@@ -193,7 +197,8 @@ export function readInter(
   cfg: { match?: ConditionKey[]; pairFix?: PairFix },
   RA: readonly StandardRow[],
   RB: readonly StandardRow[],
-  conds: readonly ConditionKey[]
+  conds: readonly ConditionKey[],
+  numeric: NumericConds
 ): ContrastState {
   const state: ContrastState = { cmode: {}, sl: {}, drop: {} }
   const one = (v: string | string[] | undefined): string | undefined =>
@@ -204,7 +209,10 @@ export function readInter(
     if (!cfg.match || cfg.match.includes(c)) {
       state.cmode[c] = 'match'
       const keep = Array.isArray(fa) ? fa : null
-      const out = leftOut([...new Set([...valuesOf(RA, c), ...valuesOf(RB, c)])], keep)
+      const out = leftOut(
+        [...new Set([...valuesOf(RA, c, numeric), ...valuesOf(RB, c, numeric)])],
+        keep
+      )
       if (out.length) state.drop[c] = out
     } else {
       state.cmode[c] = 'slice'

@@ -3,6 +3,7 @@
  * describes, the three framings of one analysis read and run the same, and saved configs read back.
  */
 import { describe, expect, it } from 'vitest'
+import { numericConds } from '../engine'
 
 import {
   compareSlices,
@@ -22,6 +23,9 @@ import {
   sampleRows,
   type CompareState
 } from './compareModel'
+
+/** dose and time numeric, no custom condition declared (the schema of these tests' data) */
+const numeric = numericConds()
 
 const active = ['cell', 'cmpd', 'dose', 'time']
 // cmpd A, B at doses 1, 10, and a control: DMSO at dose 0 (shared) or each compound's own dose 0.
@@ -51,7 +55,7 @@ const shared = design(false)
 const own = design(true)
 
 const inputOf = (rows: StandardRow[], s: CompareState): CompareInput => {
-  const m = compareModel(s, sampleRows(rows, active), active)
+  const m = compareModel(s, sampleRows(rows, active), active, numeric)
   return {
     rows,
     activeConditions: active,
@@ -80,20 +84,25 @@ const state = (s: Partial<CompareState>): CompareState => ({
 
 /** A condition switched to compared, as the dialog does: its control defaultControl's pick. */
 const compareOn = (rows: StandardRow[], c: ConditionKey): CompareState => {
-  const r = defaultControl(rows, c)
-  return state({ cmp: { [c]: { r, T: valuesOf(rows, c).filter((v) => v !== r) } } })
+  const r = defaultControl(rows, c, numeric)
+  return state({ cmp: { [c]: { r, T: valuesOf(rows, c, numeric).filter((v) => v !== r) } } })
 }
 
 describe('a fresh comparison', () => {
   it('starts with nothing compared', () => {
-    const s = readCompareState({ num: {}, den: {}, match: [] }, sampleRows(shared, active), active)
+    const s = readCompareState(
+      { num: {}, den: {}, match: [] },
+      sampleRows(shared, active),
+      active,
+      numeric
+    )
     expect(s).toEqual(state({}))
-    expect(compareModel(s, sampleRows(shared, active), active).CMP).toEqual([])
+    expect(compareModel(s, sampleRows(shared, active), active, numeric).CMP).toEqual([])
   })
 
   it('DMSO design, cmpd switched on: every compound against the vehicle, dose locked to shared, cell and time matched', () => {
     const s = compareOn(sampleRows(shared, active), 'cmpd')
-    const m = compareModel(s, sampleRows(shared, active), active)
+    const m = compareModel(s, sampleRows(shared, active), active, numeric)
     expect(m.CMP).toEqual(['cmpd'])
     expect(m.num).toEqual({ cmpd: ['A', 'B'] })
     expect(m.den).toEqual({ cmpd: ['DMSO'] })
@@ -107,7 +116,7 @@ describe('a fresh comparison', () => {
 
   it('own-dose-0 design, dose switched on: compared against each compound’s own dose 0', () => {
     const s = compareOn(sampleRows(own, active), 'dose')
-    const m = compareModel(s, sampleRows(own, active), active)
+    const m = compareModel(s, sampleRows(own, active), active, numeric)
     expect(m.CMP).toEqual(['dose'])
     expect(controlLine(m)).toBe('dose 0 of each cmpd for every cmpd, per cell per time')
     expect(previewCompare(inputOf(own, s)).warnings).toEqual([])
@@ -121,7 +130,7 @@ describe('one analysis, three framings', () => {
   const C = state({ cmp: { dose: { T: ['1', '10'], r: '0' } } })
 
   it('read the same Control line, as a tip, with no confound', () => {
-    const lines = [A, B, C].map((s) => compareModel(s, rows, active))
+    const lines = [A, B, C].map((s) => compareModel(s, rows, active, numeric))
     for (const m of lines) {
       expect(controlLine(m)).toBe(
         'shared DMSO control for every cmpd at every dose, per cell per time'
@@ -149,7 +158,7 @@ describe('context modes and values left out compile to what runs', () => {
       fixedVal: { time: '0' },
       drop: { time: ['0'] }
     })
-    const m = compareModel(s, sampleRows(shared, active), active)
+    const m = compareModel(s, sampleRows(shared, active), active, numeric)
     expect(m.num.time).toEqual(['8'])
     expect(m.den.time).toEqual(['0'])
     expect(controlKind(m)).toBe('warn') // shared by choice
@@ -160,7 +169,7 @@ describe('context modes and values left out compile to what runs', () => {
 
   it('cell pooled with cell W left out: both sides at cell M only, not split or matched by cell', () => {
     const s = state({ ...base, modes: { cell: 'pool' }, drop: { cell: ['W'] } })
-    const m = compareModel(s, sampleRows(shared, active), active)
+    const m = compareModel(s, sampleRows(shared, active), active, numeric)
     expect(m.pool).toEqual(['cell'])
     expect(m.num.cell).toEqual(['M'])
     expect(m.den.cell).toEqual(['M'])
@@ -184,7 +193,8 @@ describe('several compared conditions', () => {
     const m = compareModel(
       state({ cmp: { cmpd: { T: ['A'], r: 'DMSO' }, cell: { T: ['W'], r: 'M' } } }),
       rows,
-      active
+      active,
+      numeric
     )
     expect(confounded(m, rows)).toEqual({ conds: ['cell', 'cmpd'], example: 'cell W · DMSO' })
   })
@@ -200,15 +210,17 @@ describe('saved configs read back', () => {
       fixedVal: { time: '0' },
       drop: { cell: ['W'], time: ['0'] }
     })
-    const m = compareModel(s, rows, active)
+    const m = compareModel(s, rows, active, numeric)
     const back = compareModel(
       readCompareState(
         { num: m.num, den: m.den, match: m.match, compared: m.CMP, pool: m.pool },
         rows,
-        active
+        active,
+        numeric
       ),
       rows,
-      active
+      active,
+      numeric
     )
     expect([back.num, back.den, back.match, back.pool, back.CMP]).toEqual([
       m.num,
@@ -223,7 +235,8 @@ describe('saved configs read back', () => {
     const s = readCompareState(
       { num: { cmpd: ['A'] }, den: { cmpd: ['DMSO'] }, match: ['cell'] },
       rows,
-      active
+      active,
+      numeric
     )
     expect(Object.keys(s.cmp)).toEqual(['cmpd'])
     expect(s.modes).toEqual({ cell: 'match', dose: 'fixed', time: 'pool' })

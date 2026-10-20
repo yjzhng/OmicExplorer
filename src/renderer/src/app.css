@@ -429,3 +429,31 @@ button.oe-palette-builder:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
 }
+
+/* A running tile's accent strip (graph/GraphNode.tsx ProgressStrip): it fills with the run's
+   progress; a run that reports no fraction sweeps a segment across it instead. */
+@keyframes oe-strip-sweep {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(340%);
+  }
+}
+.oe-strip-sweep {
+  animation: oe-strip-sweep 1.4s ease-in-out infinite;
+}
+.oe-strip-fill {
+  transition: width 0.25s ease-out;
+}
+@media (prefers-reduced-motion: reduce) {
+  .oe-strip-sweep {
+    animation: none;
+    transform: none;
+    width: 100% !important;
+    opacity: 0.55;
+  }
+  .oe-strip-fill {
+    transition: none;
+  }
+}

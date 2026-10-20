@@ -18,9 +18,11 @@
  *    and a time curve at each dose, from the same model. The level means as points.
  *  - heatmap (2-D): the measured log₂ effect over dose × time, on the value colour scale.
  *
- * The Time & Dose-response plot draws a Compare's measured log₂FC (`measured`) the same way, with
- * no model behind it: the lines and the surface join the measured values with straight lines (on
- * the log axes), and the value axis is the fold change's own (log₂FC · A | B).
+ * The two-condition Response plot draws a Compare's measured log₂FC (`measured`) the same way,
+ * with no model behind it, over any two numeric conditions — the first in the dose slot (x), the
+ * second in the time slot (the lines), each axis log or linear (`scales`): the lines and the
+ * surface join the measured values with straight lines (on those axes), and the value axis is the
+ * fold change's own (log₂FC · A | B).
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
@@ -28,10 +30,10 @@ import Plotly, { type PlotlyGraphDiv } from 'plotly.js-dist-min'
 
 import { useNearView } from '../dashboard/useInView'
 
-import { jointPredict, logistic, type CompareResultRow } from '../engine'
+import { condLabel, descValue, jointAt, type CompareResultRow } from '../engine'
 import type { ResponseLook } from '../graph/types'
 import { AUTO } from './ColorPicker'
-import { paletteScale, paletteSeries, type PaletteRef } from './palettes'
+import { paletteScale, paletteSeries, type PaletteRef, type PaletteRole } from './palettes'
 import { useRolePalette } from './useAppSettings'
 import { tooltip } from './condTooltip'
 import { PlotlyChart } from './PlotlyChart'
@@ -43,6 +45,24 @@ import { axisBase, PALETTES, plotBase, plotFontCss, withAlpha } from './theme'
 import { useUiTheme } from './useUiTheme'
 
 export type ResponseShow = 'line' | 'surface' | 'heatmap'
+
+/** A fitted surface's cells with a log axis's base level at 0 (a cell against one position: dose 0
+ *  at a higher temperature) moved to where the fit placed it — a step below the lowest level
+ *  (SurfaceAxisMap.zeroX) — so a log axis can draw it. */
+function placeZero<T extends { dose: number; time: number }>(
+  cells: T[],
+  maps: NonNullable<CompareResultRow['rs']>['maps']
+): T[] {
+  const za = maps?.[0].scale !== 'linear' ? maps?.[0].zeroX : undefined
+  const zb = maps?.[1].scale !== 'linear' ? maps?.[1].zeroX : undefined
+  if (za == null && zb == null) return cells
+  const offB = maps?.[1].timeOffset ?? 0
+  return cells.map((c) => ({
+    ...c,
+    ...(za != null && !(c.dose > 0) ? { dose: 10 ** za } : null),
+    ...(zb != null && !(c.time + offB > 0) ? { time: 10 ** zb - offB } : null)
+  }))
+}
 
 /** Evenly spaced points along each time's 4PL (2-D), and per axis of the 3-D grid (97 × 97
  *  vertices: visibly smooth, still light for WebGL). */
@@ -371,7 +391,11 @@ export function ResponseSurfaceView({
   projection = 'orthographic',
   doseLabel = 'dose',
   timeLabel = 'time',
-  valueRange
+  scales,
+  xRole = 'dose',
+  yRole = 'time',
+  valueRange,
+  shiftRange
 }: {
   /** the gene's surface row (rs.axis 'surface') in the facet on show */
   row?: CompareResultRow
@@ -385,7 +409,7 @@ export function ResponseSurfaceView({
   /** the global role palettes this plot's Automatic follows: `value` (fold change — the surface
    *  and heatmap) and `points` (fold change on objects — the level means) */
   rolePalettes: { value: PaletteRef; points: PaletteRef }
-  /** 3-D lines from a joint description, the spline surface or measured values: slices at each
+  /** lines (2-D or 3-D) from a joint description, the spline surface or measured values: slices at each
    *  time or at each dose */
   slice?: 'time' | 'dose'
   /** 3-D: the camera's projection */
@@ -393,9 +417,17 @@ export function ResponseSurfaceView({
   /** the axes' titles, with their units */
   doseLabel?: string
   timeLabel?: string
+  /** measured values only: each axis's scale (default log for both, as a fitted surface's) */
+  scales?: { x: 'log' | 'linear'; y: 'log' | 'linear' }
+  /** the palette roles the lines per x level / per y level follow (default dose / time) */
+  xRole?: PaletteRole
+  yRole?: PaletteRole
   /** the value axis fixed to this range — and the value colours to ± its larger end — so paging
    *  genes keeps one scale (scale: global); unset = fitted to this gene's own values */
   valueRange?: [number, number]
+  /** testing response changes: the shift colours fixed to ± this — so paging genes keeps one
+   *  scale (scale: global); unset = fitted to this gene's own shifts */
+  shiftRange?: number
 }) {
   const mode = useUiTheme((s) => s.mode)
   // A 3-D scene holds a WebGL context while mounted (Chromium keeps ~16 a page, and a hidden
@@ -436,9 +468,10 @@ export function ResponseSurfaceView({
   useEffect(() => {
     if (cameraRef.current) setResume(cameraRef.current)
   }, [projection])
-  // Lines per time / per dose run along those levels' palette roles unless the plot picked one.
-  const timeRole = useRolePalette('time')
-  const doseRole = useRolePalette('dose')
+  // Lines per time / per dose (per y / x level) run along those levels' palette roles unless the
+  // plot picked one.
+  const timeRole = useRolePalette(yRole)
+  const doseRole = useRolePalette(xRole)
   const {
     data: plotData,
     layout: plotLayout,
@@ -452,13 +485,19 @@ export function ResponseSurfaceView({
     axes3?: Parameters<typeof strokeAxes3d>
   } => {
     const p = PALETTES[mode]
-    // Measured levels only: each is its own "fit", so the lines join the values themselves. Log
-    // axes, so a level at 0 (or below) has no place on them.
+    // Each axis log or linear: a fitted surface's always log; measured values' as set.
+    // A fitted surface's own axes (rs.maps: any pair, log or linear; absent — dose × time — log on
+    // both); measured values' as set.
+    const fm = measured ? undefined : row?.rs?.maps
+    const xLog = measured ? (scales?.x ?? 'log') === 'log' : fm?.[0].scale !== 'linear'
+    const yLog = measured ? (scales?.y ?? 'log') === 'log' : fm?.[1].scale !== 'linear'
+    // Measured levels only: each is its own "fit", so the lines join the values themselves. A level
+    // at 0 (or below) has no place on a log axis.
     const cells: Array<MeasuredCell & { fitted: number }> = measured
       ? measured.cells
-          .filter((c) => c.dose > 0 && c.time > 0 && Number.isFinite(c.y))
+          .filter((c) => (!xLog || c.dose > 0) && (!yLog || c.time > 0) && Number.isFinite(c.y))
           .map((c) => ({ ...c, fitted: c.y }))
-      : (row?.rs?.cells ?? [])
+      : placeZero(row?.rs?.cells ?? [], row?.rs?.maps)
     // The points drawn for cells: measured, each one's replicates where the Clean data gives them
     // (as the Dose/time-response plot's focused view); else its value — a fit's level mean.
     const spread = (cs: typeof cells): Array<{ dose: number; time: number; y: number }> =>
@@ -473,14 +512,61 @@ export function ResponseSurfaceView({
     const doses = [...new Set(cells.map((c) => c.dose))].sort((a, b) => a - b)
     const times = [...new Set(cells.map((c) => c.time))].sort((a, b) => a - b)
     const at = new Map(cells.map((c) => [`${c.dose}|${c.time}`, c]))
-    const grid = (pick: (c: (typeof cells)[number]) => number): Array<Array<number | null>> =>
-      times.map((t) => doses.map((d) => (at.has(`${d}|${t}`) ? pick(at.get(`${d}|${t}`)!) : null)))
+    // The reference: the vehicle's replicates and the treated samples at a baseline level (t₀) —
+    // not cells. Shown where the reference reads (the heatmap, 3-D); the 2-D curves leave it out,
+    // as response curves do (their log axis has no 0).
+    const controls =
+      !measured && (dim === '3d' || show === 'heatmap') ? (row?.rs?.controls ?? []) : []
+    // Where a log axis puts a level it can't (0): the fit's own place for it (one position), else a
+    // median step below its lowest level — labelled 0.
+    const below = (levels: number[]): number => {
+      const L = levels.filter((v) => v > 0).map(Math.log10)
+      const st = L.slice(1)
+        .map((v, i) => v - L[i])
+        .sort((a, b) => a - b)
+      return 10 ** ((L[0] ?? 0) - (st.length ? st[st.length >> 1] : 1))
+    }
+    const zx = fm?.[0].zeroX
+    const zy = fm?.[1].zeroX != null ? 10 ** fm[1].zeroX - (fm[1].timeOffset ?? 0) : undefined
+    const xZero = zx != null ? 10 ** zx : below(doses)
+    const yZero = zy != null && zy > 0 ? zy : below(times)
+    const placeX = (d: number): number => (xLog && !(d > 0) ? xZero : d)
+    const placeY = (t: number): number => (yLog && !(t > 0) ? yZero : t)
+    // Testing response changes: coloured by each point's shift from the reference curve — the
+    // compared axis's base level (dose 0: the vehicle's own curve) at the same response level —
+    // rather than by its value; the height still shows the curves themselves (the melt).
+    const shift = !measured ? row?.rs?.shift : undefined
+    // the curves run along the second axis (time / temperature), compared across the first
+    const shiftAlongB = !!shift && shift.response === (row?.rs?.pair?.[1] ?? 'time')
+    const posA = placeX(fm?.[0].base ?? 0)
+    const posB = placeY(fm?.[1].base ?? 0)
+    // the reference curve's value at a point's response level: its base-level cell there — or the
+    // position itself (the reference's first point, the vehicle: 0)
+    // the reference curve's level on the compared axis: its control level as the Curve fit set it
+    // (placed as the cells are), else its lowest
+    const ctlDose = placeX(fm?.[0].base ?? doses[0])
+    const ctlTime = placeY(fm?.[1].base ?? times[0])
+    const refDose = doses.includes(ctlDose) ? ctlDose : doses[0]
+    const refTime = times.includes(ctlTime) ? ctlTime : times[0]
+    const refAt = (c: { dose: number; time: number }): number | null => {
+      if (!shift) return null
+      const r = shiftAlongB ? at.get(`${refDose}|${c.time}`) : at.get(`${c.dose}|${refTime}`)
+      if (r) return r.y
+      return (shiftAlongB ? c.time === posB : c.dose === posA) ? 0 : null
+    }
+    // named by the reference: the compared axis at its base level (dose 0)
+    const shiftName = shift
+      ? `shift from ${condLabel(shift.across)} ${shiftAlongB ? (fm?.[0].base ?? 0) : (fm?.[1].base ?? 0)}`
+      : ''
+    // A level's name as the data has it — a log axis's placed 0 reads 0 (a slice's legend entry and
+    // hover), not the place it's drawn at.
+    const sliceName = (g: number, per: 'dose' | 'time'): string =>
+      (per === 'dose' ? xLog && g === xZero : yLog && g === yZero) ? '0' : `${g}`
     // A line's colour: one per slice, low → high (early → late for times), along the palette.
     const sliceColor = (i: number, n: number, per: 'time' | 'dose'): string =>
       look.lineColor !== AUTO
         ? look.lineColor
         : paletteSeries(look.linePalette ?? (per === 'dose' ? doseRole : timeRole), i, n)
-    const tColor = (i: number): string => sliceColor(i, times.length, 'time')
     const zAbs = valueRange
       ? Math.max(Math.abs(valueRange[0]), Math.abs(valueRange[1]), 0.1)
       : Math.max(...spread(cells).map((c) => Math.abs(c.y)), 0.1)
@@ -553,6 +639,55 @@ export function ResponseSurfaceView({
       if (hi - lo < 1e-6) return [lo - 0.5, hi + 0.5]
       return [lo, hi]
     }
+    // The reference in 3-D: each sample as an open marker at its levels — the vehicle's in the
+    // muted ink, a baseline level's treated samples coloured by value as the points. With the points.
+    const controlTraces = (legend: boolean): Record<string, unknown>[] =>
+      !look.points
+        ? []
+        : ([true, false] as const).flatMap((veh) => {
+            const cs = controls.filter((c) => !!c.vehicle === veh)
+            if (!cs.length) return []
+            const smp = cs.flatMap((c) =>
+              (c.reps.length ? c.reps : [c.y]).map((y) => ({ dose: c.dose, time: c.time, y }))
+            )
+            const what = veh ? 'control' : 'baseline level'
+            return [
+              {
+                type: 'scatter3d',
+                mode: 'markers',
+                name: what,
+                showlegend: legend,
+                meta: { oeRole: 'controls' },
+                x: smp.map((c) => placeX(c.dose)),
+                y: smp.map((c) => placeY(c.time)),
+                z: smp.map((c) => c.y),
+                customdata: smp.map((c) => [c.dose, c.time]),
+                marker: {
+                  ...(veh
+                    ? { color: p.textMuted }
+                    : pointColor(
+                        smp.map((c) => c.y),
+                        zAbs
+                      )),
+                  symbol: 'circle-open',
+                  size: pointSize + 1,
+                  opacity: look.pointOpacity
+                },
+                hovertemplate: tooltip(
+                  {
+                    title: what,
+                    conds: [
+                      [doseLabel, '%{customdata[0]}'],
+                      [timeLabel, '%{customdata[1]}']
+                    ],
+                    values: [['log₂ vs control', '%{z:.3f}']]
+                  },
+                  p.textMuted,
+                  { template: true }
+                )
+              }
+            ]
+          })
     // A 3-D view: the traces, the layout around them, and its axes — drawn in the scene (labels
     // lying in the box's planes — see strokeAxes3d) once the side it's seen from is known.
     const finish3 = (
@@ -569,8 +704,12 @@ export function ResponseSurfaceView({
       const zt = niceTicks(ze[0], ze[1])
       const zStep = zt.ticks.length > 1 ? zt.ticks[1] - zt.ticks[0] : (ze[1] - ze[0]) / 4
       const zr: [number, number] = valueRange ? ze : [ze[0] - zStep / 2, ze[1] + zStep / 2]
-      const logAxis = (title: string, vals: number[]): StrokeAxis => {
-        const ticks = logTicks(vals)
+      const logAxis = (title: string, vals: number[], zero?: number): StrokeAxis => {
+        // a placed 0 (a control's level, a position's base) is a tick of its own, labelled 0
+        const real = vals.filter((v) => v !== zero)
+        const decadeTicks = logTicks(real.length ? real : vals)
+        const hasZero = zero != null && vals.includes(zero)
+        const ticks = hasZero ? [zero, ...decadeTicks.filter((t) => t > zero)] : decadeTicks
         const lo = Math.min(...vals)
         const hi = Math.max(...vals)
         // half the first and last tick intervals (in log units), or half a decade for one tick
@@ -580,17 +719,35 @@ export function ResponseSurfaceView({
         return {
           title,
           ticks,
-          labels: ticks.map((v) => String(v)),
+          labels: ticks.map((v) => (hasZero && v === zero ? '0' : String(v))),
           range: [lo / 10 ** padLo, hi * 10 ** padHi],
           log: true
+        }
+      }
+      // A linear axis at nice ticks, half a tick interval past the data at either end.
+      const linAxis = (title: string, vals: number[]): StrokeAxis => {
+        const lo = Math.min(...vals)
+        const hi = Math.max(...vals)
+        const t = niceTicks(lo, hi === lo ? lo + 1 : hi)
+        const step = t.ticks.length > 1 ? t.ticks[1] - t.ticks[0] : (hi - lo || 1) / 4
+        return {
+          title,
+          ticks: t.ticks,
+          labels: t.labels,
+          range: [lo - step / 2, hi + step / 2],
+          log: false
         }
       }
       return {
         data: traces,
         axes3: [
           {
-            x: logAxis(doseLabel, doses),
-            y: logAxis(timeLabel, times),
+            x: xLog
+              ? logAxis(doseLabel, [...doses, ...controls.map((c) => placeX(c.dose))], xZero)
+              : linAxis(doseLabel, [...doses, ...controls.map((c) => c.dose)]),
+            y: yLog
+              ? logAxis(timeLabel, [...times, ...controls.map((c) => placeY(c.time))], yZero)
+              : linAxis(timeLabel, [...times, ...controls.map((c) => c.time)]),
             z: { title: valueTitle, ticks: zt.ticks, labels: zt.labels, range: zr, log: false }
           },
           { line: p.textMuted, grid: grid3, ink: p.textMuted }
@@ -636,19 +793,28 @@ export function ResponseSurfaceView({
 
     // ── the model the 3-D views draw (see the file comment) ──
     const desc = row?.rs?.surface
-    const off = row?.rs?.timeOffset ?? 0
-    const slices = new Map((desc?.byTime ?? []).map((s) => [s.at, s]))
-    const uOf = (t: number): number => Math.log10(t + off)
+    const off = (fm ? fm[1].timeOffset : row?.rs?.timeOffset) ?? 0
+    const offA = fm?.[0].timeOffset ?? 0
+    // a fitted linear axis counts in steps of its spacing (the fit's x)
+    const stepA = fm?.[0].step ?? 1
+    const stepB = fm?.[1].step ?? 1
+    // Each slice by the level it's drawn at: a log axis's 0 (against one position, dose 0 — the
+    // control's own melt) sits at its placed level, as its cells do (placeZero).
+    const slices = new Map((desc?.byTime ?? []).map((s) => [placeY(s.at), s]))
+    // The x and y axes' own coordinates (log dose, log(t + offset); a linear axis its values) and back.
+    const tx = (d: number): number =>
+      xLog ? (offA ? Math.log10(d + offA) : Math.log10(d)) : d / stepA
+    const itx = (v: number): number => (xLog ? 10 ** v - offA : v * stepA)
+    const uOf = (t: number): number => (yLog ? Math.log10(t + off) : t / stepB)
+    const iu = (u: number): number => (yLog ? 10 ** u - off : u * stepB)
     const jp = desc?.method === 'joint' ? desc.joint : undefined
     // ū: stored with the description; recomputed for results from before it was (the same mean).
     const ubar = desc?.jointUbar ?? cells.reduce((a, c) => a + uOf(c.time), 0) / cells.length
-    const joint = jp ? (d: number, t: number): number => jointPredict(jp, ubar, d, t, off) : null
-    const doseSlices = new Map((desc?.byDose ?? []).map((s) => [s.at, s]))
+    const joint = jp ? (d: number, t: number): number => jointAt(jp, ubar, tx(d), uOf(t)) : null
+    const doseSlices = new Map((desc?.byDose ?? []).map((s) => [placeX(s.at), s]))
     // A slices description viewed per dose when so sliced — or when only the dose direction could
-    // be described (too few doses at some time); else per time. The 2-D line view has no slice
-    // switch: its lines are each time's dose curve, so it reads the dose curves whatever the slice.
-    const sliceBy = show === 'line' && dim === '2d' ? 'time' : slice
-    const perDose = !joint && doseSlices.size > 0 && (sliceBy === 'dose' || slices.size === 0)
+    // be described (too few doses at some time); else per time.
+    const perDose = !joint && doseSlices.size > 0 && (slice === 'dose' || slices.size === 0)
     const perTime = !joint && !perDose && slices.size > 0
     // No description (q beyond the describe cutoff, or none could be fitted): drawn flat at 0 —
     // no response. The spline surface is the detector, not the representation.
@@ -667,16 +833,27 @@ export function ResponseSurfaceView({
       const kept = fine.filter((v) => !levels.some((l) => near(v, l)))
       return [...new Set([...kept, ...levels])].sort((a, b) => a - b)
     }
+    // The control, where an axis's reference is its level 0 (dose 0) on a log axis that can't hold
+    // it: the views that show it (3-D, the heatmap — at its placed 0) run the fit down to it — the
+    // ratio to the control is 0 there by definition, and the model carries on to it from the first
+    // level. (Measured values stop at the data: nothing was measured there; the 2-D curves leave
+    // the control out, see `controls`.)
+    const showsControl = !measured && (dim === '3d' || show === 'heatmap')
+    const ctrlX =
+      showsControl && xLog && (fm?.[0].baseline ?? 'reference') === 'reference' ? xZero : null
+    const ctrlY = showsControl && yLog && fm?.[1].baseline === 'reference' ? yZero : null
+    const gridDoses = ctrlX != null && ctrlX < doses[0] ? [ctrlX, ...doses] : doses
+    const gridTimes = ctrlY != null && ctrlY < times[0] ? [ctrlY, ...times] : times
     const fineDoses = withLevels(
-      span(Math.log10(doses[0]), Math.log10(doses[doses.length - 1])).map((v) => 10 ** v),
-      doses
+      span(tx(gridDoses[0]), tx(gridDoses[gridDoses.length - 1])).map(itx),
+      gridDoses
     )
     // Times spaced on the surface's own time axis, log(t + offset).
     const fineTimes = withLevels(
-      span(uOf(times[0]), uOf(times[times.length - 1])).map((u) => 10 ** u - off),
-      times
+      span(uOf(gridTimes[0]), uOf(gridTimes[gridTimes.length - 1])).map(iu),
+      gridTimes
     )
-    const lx = (ds: number[]): number[] => ds.map((d) => Math.log10(d))
+    const lx = (ds: number[]): number[] => ds.map(tx)
     const fineLx = lx(fineDoses)
     const fineU = fineTimes.map(uOf)
     const timesU = times.map(uOf)
@@ -688,40 +865,50 @@ export function ResponseSurfaceView({
       if (joint) return joint(d, t)
       if (flat) return 0
       const st = perTime ? slices.get(t) : undefined
-      if (st) return logistic(Math.log10(d), st)
+      if (st) return descValue(st, tx(d))
       const sd = perDose ? doseSlices.get(d) : undefined
-      if (sd) return logistic(uOf(t), sd)
+      if (sd) return descValue(sd, uOf(t))
       return measured ? (cells.find((c) => c.time === t && c.dose === d)?.fitted ?? null) : null
     }
     const lxDoses = lx(doses)
     // How values are joined between levels: straight for measured values (no model behind them),
     // else smoothly by the monotone cubic.
     const join = measured ? linear : pchip
+    // Joined across doses (or times) from the levels' values — and from the control's 0, where
+    // the view runs down to it (see ctrlX).
+    const joinDoses = (vals: Array<number | null>, at: number[]): Array<number | null> =>
+      gridDoses !== doses
+        ? join([tx(gridDoses[0]), ...lxDoses], [0, ...vals], at)
+        : join(lxDoses, vals, at)
+    const joinTimes = (vals: Array<number | null>, at: number[]): Array<number | null> =>
+      gridTimes !== times
+        ? join([uOf(gridTimes[0]), ...timesU], [0, ...vals], at)
+        : join(timesU, vals, at)
     // The drawn surface along dose at a measured time, at log doses `at` (the fine ones by
     // default): the model's dose curve (joint, or that time's 4PL); flat with no description;
     // per-dose, across the doses' 4PLs at that time; measured, the values — the joins smoothed by
     // the monotone cubic (null beyond the data).
     const doseCurve = (t: number, at: number[] = fineLx): Array<number | null> => {
-      if (joint) return at.map((v) => joint(10 ** v, t))
+      if (joint) return at.map((v) => joint(itx(v), t))
       if (flat) return at.map(() => 0)
       const sl = perTime ? slices.get(t) : undefined
-      if (sl) return at.map((v) => logistic(v, sl))
-      return join(
-        lxDoses,
+      if (sl) return at.map((v) => descValue(sl, v))
+      return joinDoses(
         doses.map((d) => cellValue(d, t)),
         at
       )
     }
-    // …and along time at a measured dose, on the fine times (by log time).
-    const timeCurve = (d: number): Array<number | null> => {
-      if (joint) return fineTimes.map((t) => joint(d, t))
-      if (flat) return fineTimes.map(() => 0)
+    // …and along time at a measured dose, at times `at` on the time axis (the fine ones by default).
+    const timeCurve = (d: number, at: number[] = fineU): Array<number | null> => {
+      if (joint) return at.map((u) => joint(d, iu(u)))
+      if (flat) return at.map(() => 0)
       const sl = perDose ? doseSlices.get(d) : undefined
-      if (sl) return fineU.map((u) => logistic(u, sl))
-      return join(
-        timesU,
+      if (sl) return at.map((u) => descValue(sl, u))
+      // the control's own column, per dose (no slice of its own): 0, the ratio to itself
+      if (perDose && gridDoses !== doses && d === gridDoses[0]) return at.map(() => 0)
+      return joinTimes(
         times.map((t) => cellValue(d, t)),
-        fineU
+        at
       )
     }
 
@@ -733,7 +920,7 @@ export function ResponseSurfaceView({
       const groups = byDose ? doses : times
       groups.forEach((g, i) => {
         const col = sliceColor(i, groups.length, byDose ? 'dose' : 'time')
-        const name = `${g}`
+        const name = sliceName(g, byDose ? 'dose' : 'time')
         // Each slice drawn at its own time (dose curves) or dose (time curves).
         const line = byDose
           ? { x: fineTimes.map(() => g), y: fineTimes, z: timeCurve(g) }
@@ -742,7 +929,7 @@ export function ResponseSurfaceView({
           tooltip(
             {
               conds: [
-                ['dose', '%{x:.3g}'],
+                [doseLabel, '%{x:.3g}'],
                 [timeLabel, '%{y:.3g}']
               ],
               values: [[label, '%{z:.3f}']]
@@ -812,7 +999,7 @@ export function ResponseSurfaceView({
             hovertemplate: tooltip(
               {
                 conds: [
-                  ['dose', '%{x:.3g}'],
+                  [doseLabel, '%{x:.3g}'],
                   [timeLabel, '%{y:.3g}']
                 ],
                 values: [
@@ -848,39 +1035,55 @@ export function ResponseSurfaceView({
           })
         }
       })
+      // (the reference's markers stay out of the legend: it lists the slices)
+      traces.push(...controlTraces(false))
       return finish3(true, byDose ? doseLabel : timeLabel)
     }
 
     if (show === 'line') {
-      times.forEach((t, i) => {
-        const pts = cells.filter((c) => c.time === t).sort((a, b) => a.dose - b.dose)
-        const col = tColor(i)
-        const name = `${t}`
-        // The description's dose curve at this time over its measured doses (flat with none);
-        // measured values, joined straight.
-        const lx0 = Math.log10(pts[0].dose)
-        const lx1 = Math.log10(pts[pts.length - 1].dose)
+      // Dose curves, one line per time (dose along x) — or, sliced by dose, time curves, one line
+      // per dose (time along x). The same pick as the 3-D lines'.
+      const byDose = perDose || (!perTime && slice === 'dose')
+      const groups = byDose ? doses : times
+      // a cell's place along x, that axis's own coordinate and back, its title and scale
+      const along = (c: { dose: number; time: number }): number => (byDose ? c.time : c.dose)
+      const fwd = byDose ? uOf : tx
+      const inv = byDose ? iu : itx
+      const xLabel = byDose ? timeLabel : doseLabel
+      const xIsLog = byDose ? yLog : xLog
+      groups.forEach((g, i) => {
+        const pts = cells
+          .filter((c) => (byDose ? c.dose : c.time) === g)
+          .sort((a, b) => along(a) - along(b))
+        const col = sliceColor(i, groups.length, byDose ? 'dose' : 'time')
+        const name = sliceName(g, byDose ? 'dose' : 'time')
+        // The description's curve at this level over its measured levels along x (flat with
+        // none); measured values, joined straight.
+        const lx0 = fwd(along(pts[0]))
+        const lx1 = fwd(along(pts[pts.length - 1]))
         const lxs = Array.from({ length: SAMPLES + 1 }, (_, k) => lx0 + ((lx1 - lx0) * k) / SAMPLES)
         // Measured: straight between the levels, sampled along them (as a model's curve is) so the
         // line answers the hover anywhere on it, not only near a level.
-        const lineX = lxs.map((v) => 10 ** v)
+        const lineX = lxs.map(inv)
         const lineY = measured
           ? linear(
-              pts.map((c) => Math.log10(c.dose)),
+              pts.map((c) => fwd(along(c))),
               pts.map((c) => c.fitted),
               lxs
             )
-          : doseCurve(t, lxs)
+          : byDose
+            ? timeCurve(g, lxs)
+            : doseCurve(g, lxs)
         const conds: [string, string | number][] = [
-          [timeLabel, t],
-          ['dose', '%{x:.3g}']
+          [byDose ? doseLabel : timeLabel, name],
+          [xLabel, '%{x:.3g}']
         ]
         const val = '%{y:.3f}'
         // The fold change's SE, under the line: a band along it or whiskers at each dose.
         if (showErrors)
           traces.push(
             ...errorTraces(
-              pts.map((c) => c.dose),
+              pts.map(along),
               pts.map((c) => c.y),
               pts.map((c) => c.y - (c.se ?? 0)),
               pts.map((c) => c.y + (c.se ?? 0)),
@@ -914,7 +1117,7 @@ export function ResponseSurfaceView({
             name,
             legendgroup: name,
             showlegend: false,
-            x: reps.map((c) => c.dose),
+            x: reps.map(along),
             y: reps.map((c) => c.y),
             marker: {
               ...pointColor(
@@ -931,13 +1134,34 @@ export function ResponseSurfaceView({
             })
           })
       })
+      // A log x axis at its decades — and, where its 0 is a data level (against one position, dose
+      // 0: drawn a median step below the lowest level), a tick there labelled 0, as in 3-D.
+      const logZeroTicks = (): Record<string, unknown> => {
+        const zero = byDose ? yZero : xZero
+        const xs = [...new Set(cells.map(along))].filter((v) => v > 0)
+        if (!xs.includes(zero)) return { dtick: 1 }
+        const lo = Math.min(...xs)
+        const hi = Math.max(...xs)
+        const decades: number[] = []
+        for (let e = Math.ceil(Math.log10(lo)); e <= Math.floor(Math.log10(hi)); e++)
+          if (10 ** e > zero) decades.push(10 ** e)
+        // as Plotly labels decades: 1000 in full, 10k on
+        const fmt = (v: number): string => (v >= 10000 ? `${v / 1000}k` : String(v))
+        return {
+          tickmode: 'array',
+          tickvals: [zero, ...decades],
+          ticktext: ['0', ...decades.map(fmt)]
+        }
+      }
       return {
         data: traces,
         layout: {
           ...base,
           showlegend: true,
-          legend: { title: { text: timeLabel }, yanchor: 'middle', y: 0.5 },
-          xaxis: { ...axisBase(p), title: doseLabel, type: 'log', dtick: 1 },
+          legend: { title: { text: byDose ? doseLabel : timeLabel }, yanchor: 'middle', y: 0.5 },
+          xaxis: xIsLog
+            ? { ...axisBase(p), title: xLabel, type: 'log', ...logZeroTicks() }
+            : { ...axisBase(p), title: xLabel, type: 'linear' },
           yaxis: {
             ...axisBase(p),
             title: valueTitle,
@@ -958,10 +1182,9 @@ export function ResponseSurfaceView({
         ? fineTimes.map((t) => fineDoses.map((d) => joint(d, t)))
         : perDose
           ? (() => {
-              const byD = doses.map(timeCurve)
+              const byD = doses.map((d) => timeCurve(d))
               return fineTimes.map((_, i) =>
-                join(
-                  lxDoses,
+                joinDoses(
                   byD.map((r) => r[i]),
                   fineLx
                 )
@@ -970,8 +1193,7 @@ export function ResponseSurfaceView({
           : (() => {
               const byT = times.map((t) => doseCurve(t))
               const cols = fineDoses.map((_, j) =>
-                join(
-                  timesU,
+                joinTimes(
                   byT.map((r) => r[j]),
                   fineU
                 )
@@ -983,6 +1205,30 @@ export function ResponseSurfaceView({
         zAbs,
         ...surf.z.flat().map((v) => (v == null || !Number.isFinite(v) ? 0 : Math.abs(v)))
       )
+      // testing changes: each grid point's shift from the reference curve at its response level
+      const refJ = fineDoses.indexOf(refDose)
+      const refI = fineTimes.indexOf(refTime)
+      const shiftGrid = shift
+        ? z.map((zr, i) =>
+            zr.map((v, j) => {
+              const ref = shiftAlongB
+                ? refJ >= 0
+                  ? z[i][refJ]
+                  : null
+                : refI >= 0
+                  ? z[refI][j]
+                  : null
+              return v == null || ref == null ? null : v - ref
+            })
+          )
+        : null
+      const sMax = shiftGrid
+        ? (shiftRange ??
+          Math.max(
+            0.1,
+            ...shiftGrid.flat().map((v) => (v == null || !Number.isFinite(v) ? 0 : Math.abs(v)))
+          ))
+        : zMax
       // The surface's curves in both directions, from the same model: the dose curve at each time,
       // and the time curve at each dose (per-time: across the times' 4PLs, as the surface joins
       // them; no description: flat).
@@ -993,7 +1239,7 @@ export function ResponseSurfaceView({
       const curveHover = tooltip(
         {
           conds: [
-            ['dose', '%{x:.3g}'],
+            [doseLabel, '%{x:.3g}'],
             [timeLabel, '%{y:.3g}']
           ],
           values: [[lineLabel, '%{z:.3f}']]
@@ -1005,7 +1251,7 @@ export function ResponseSurfaceView({
         ? []
         : [
             ...times.map((t) => ({ x: fineDoses, y: fineDoses.map(() => t), z: doseCurve(t) })),
-            ...doses.map((d) => ({ x: fineTimes.map(() => d), y: fineTimes, z: timeCurve(d) }))
+            ...gridDoses.map((d) => ({ x: fineTimes.map(() => d), y: fineTimes, z: timeCurve(d) }))
           ].map((xyz) => ({
             type: 'scatter3d',
             mode: 'lines',
@@ -1021,9 +1267,10 @@ export function ResponseSurfaceView({
         x: surf.x,
         y: surf.y,
         z: surf.z,
+        ...(shiftGrid ? { surfacecolor: shiftGrid, customdata: shiftGrid } : null),
         colorscale: scale,
-        cmin: -zMax,
-        cmax: zMax,
+        cmin: -sMax,
+        cmax: sMax,
         opacity: look.surfaceOpacity,
         // No hover highlight of Plotly's own: the hovered point's dose and time curves are drawn
         // as their own traces (below — thick, coloured by value), not its one-colour contours.
@@ -1034,14 +1281,23 @@ export function ResponseSurfaceView({
         },
         meta: { oeRole: 'surface' },
         // inside the plot's right edge (see finish3's legend)
-        colorbar: { title: { text: valueName }, thickness: 12, len: 0.5, x: 1, xanchor: 'right' },
+        colorbar: {
+          title: { text: valueName },
+          thickness: 12,
+          len: 0.5,
+          x: 1,
+          xanchor: 'right'
+        },
         hovertemplate: tooltip(
           {
             conds: [
-              ['dose', '%{x:.3g}'],
+              [doseLabel, '%{x:.3g}'],
               [timeLabel, '%{y:.3g}']
             ],
-            values: [[lineLabel, '%{z:.3f}']]
+            values: [
+              [lineLabel, '%{z:.3f}'],
+              ...(shift ? [[shiftName, '%{customdata:.3f}'] as [string, string]] : [])
+            ]
           },
           p.textMuted,
           { template: true }
@@ -1073,10 +1329,15 @@ export function ResponseSurfaceView({
       })
       traces.push(hlLine('hlDose'), hlLine('hlTime'))
       const pts = spread(cells)
-      const ptMarker = pointColor(
-        pts.map((c) => c.y),
-        zMax
-      )
+      // testing changes: the points too by their shift from the reference curve (as spread lays
+      // them out: each cell's replicates, or its value)
+      const ptShift = shift
+        ? cells.flatMap((c) => {
+            const ref = refAt(c)
+            return (c.reps?.length ? c.reps : [c.y]).map((y) => (ref == null ? NaN : y - ref))
+          })
+        : null
+      const ptMarker = pointColor(ptShift ?? pts.map((c) => c.y), sMax)
       // A 3-D point trace takes one opacity for all its points, so the points the hover fades
       // move into a trace of their own (hidden until then; see bindSurfaceHover).
       const pointTrace = (role: string, opacity: number): Record<string, unknown> => ({
@@ -1092,7 +1353,7 @@ export function ResponseSurfaceView({
         hovertemplate: tooltip(
           {
             conds: [
-              ['dose', '%{x:.3g}'],
+              [doseLabel, '%{x:.3g}'],
               [timeLabel, '%{y}']
             ],
             values: [[pointLabel, '%{z:.3f}']]
@@ -1106,6 +1367,7 @@ export function ResponseSurfaceView({
           pointTrace('points', look.pointOpacity),
           pointTrace('pointsDim', look.pointOpacity * HOVER_DIM)
         )
+      traces.push(...controlTraces(false))
       return {
         ...finish3(false),
         hl: {
@@ -1121,7 +1383,7 @@ export function ResponseSurfaceView({
             y: c.time,
             z: c.y,
             color: Array.isArray(ptMarker.color) ? (ptMarker.color as number[])[k] : undefined,
-            lx: Math.log10(c.dose),
+            lx: tx(c.dose),
             u: uOf(c.time)
           })),
           surfaceOpacity: look.surfaceOpacity,
@@ -1130,37 +1392,94 @@ export function ResponseSurfaceView({
       }
     }
 
-    // heatmap: measured effect, dose across, time down (earliest at the top)
-    // Beside each measured mean, the description's value there (none with no description).
-    const fitted = grid((c) => cellValue(c.dose, c.time) ?? NaN)
+    // heatmap: measured effect, dose across, time down (earliest at the top) — with the reference:
+    // the vehicle's column (dose 0) and a baseline level's row (t₀), each cell its samples' mean vs
+    // its level's vehicle (the vehicle's own scattering about 0: its replicates in the hover).
+    // Levels a log axis had to place (0) keep that place here, labelled 0.
+    const ctl = new Map(controls.map((c) => [`${placeX(c.dose)}|${placeY(c.time)}`, c]))
+    const hd = [...new Set([...doses, ...controls.map((c) => placeX(c.dose))])].sort(
+      (a, b) => a - b
+    )
+    const ht = [...new Set([...times, ...controls.map((c) => placeY(c.time))])].sort(
+      (a, b) => a - b
+    )
+    const levelName = (v: number, zero: number, log: boolean): string =>
+      log && v === zero ? '0' : String(v)
+    const xs = hd.map((d) => levelName(d, xZero, xLog))
+    const ys = ht.map((t) => levelName(t, yZero, yLog))
+    const f3 = (v: number): string => v.toFixed(3)
+    const z: Array<Array<number | null>> = []
+    const text: string[][] = []
+    ht.forEach((t, i) => {
+      z.push([])
+      text.push([])
+      hd.forEach((d, j) => {
+        const conds: [string, string][] = [
+          [doseLabel, xs[j]],
+          [timeLabel, ys[i]]
+        ]
+        const c = at.get(`${d}|${t}`)
+        const k = ctl.get(`${d}|${t}`)
+        if (c) {
+          const fit = cellValue(c.dose, c.time)
+          // testing changes: the cell's shift from the reference curve (its colour)
+          const ref = refAt(c)
+          const sh = shift ? (ref == null ? null : c.y - ref) : null
+          z[i].push(shift ? sh : c.y)
+          text[i].push(
+            tooltip(
+              {
+                conds,
+                // measured values have no fit beside them
+                values: [
+                  [pointLabel, f3(c.y)],
+                  ...(measured || flat || fit == null || !Number.isFinite(fit)
+                    ? []
+                    : [[what, f3(fit)] as [string, string]]),
+                  ...(sh != null ? [[shiftName, f3(sh)] as [string, string]] : [])
+                ]
+              },
+              p.textMuted
+            )
+          )
+        } else if (k) {
+          z[i].push(k.y)
+          text[i].push(
+            tooltip(
+              {
+                title: k.vehicle ? 'control' : 'baseline level',
+                conds,
+                values: [
+                  ['mean log₂ vs control', f3(k.y)],
+                  ['replicates', k.reps.map(f3).join(', ')]
+                ]
+              },
+              p.textMuted
+            )
+          )
+        } else {
+          z[i].push(null)
+          text[i].push('')
+        }
+      })
+    })
     traces.push({
       type: 'heatmap',
-      x: doses.map(String),
-      y: times.map(String),
-      z: grid((c) => c.y),
-      customdata: fitted,
+      x: xs,
+      y: ys,
+      z,
+      text,
+      hoverongaps: false,
       colorscale: scale,
-      zmin: -zAbs,
-      zmax: zAbs,
+      // testing changes: the shifts' own range, else the values'
+      ...(() => {
+        const m = shift
+          ? (shiftRange ?? Math.max(0.1, ...z.flat().map((v) => (v == null ? 0 : Math.abs(v)))))
+          : zAbs
+        return { zmin: -m, zmax: m }
+      })(),
       colorbar: { title: { text: valueName }, thickness: 12 },
-      hovertemplate: tooltip(
-        {
-          conds: [
-            ['dose', '%{x}'],
-            [timeLabel, '%{y}']
-          ],
-          // measured values have no fit beside them
-          values:
-            measured || flat
-              ? [[pointLabel, '%{z:.3f}']]
-              : [
-                  [pointLabel, '%{z:.3f}'],
-                  [what, '%{customdata:.3f}']
-                ]
-        },
-        p.textMuted,
-        { template: true }
-      )
+      hovertemplate: '%{text}<extra></extra>'
     })
     return {
       data: traces,
@@ -1182,7 +1501,9 @@ export function ResponseSurfaceView({
     slice,
     doseLabel,
     timeLabel,
+    scales,
     valueRange,
+    shiftRange,
     mode
   ])
 
@@ -1308,7 +1629,7 @@ export function ResponseSurfaceView({
       {!data.length ? (
         <div style={{ padding: 16, fontSize: 12, color: 'var(--text-muted, #888)' }}>
           {measured
-            ? 'No dose × time response for this gene here (needs dose and time active).'
+            ? `No ${doseLabel} × ${timeLabel} response for this gene here (needs both active).`
             : 'No surface for this gene here.'}
         </div>
       ) : dim !== '3d' ? (

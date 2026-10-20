@@ -48,7 +48,7 @@ describe('derivePages', () => {
 
   it('titles a dose/time-response page by its axis, as the tile does', () => {
     const nodes = [node('c1', 'compare'), node('d1', 'dr', { axis: 'time' })]
-    expect(derivePages(nodes, [edge('c1', 'd1')] as never)[0].title).toBe('Time-response')
+    expect(derivePages(nodes, [edge('c1', 'd1')] as never)[0].title).toBe('Time response')
   })
 
   it('keeps each analysis contiguous, so the nav heads it once', () => {

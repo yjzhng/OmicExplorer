@@ -96,9 +96,97 @@ async function pngToPdf(
 }
 
 /**
+ * Run in the page before printing: rewrite every dashed stroke (a threshold line, a dashed fit)
+ * as its dashes, each an open sub-path of one plain stroked path. Chromium's PDF writer turns a
+ * dashed stroke into filled outlines — every dash a tiny rectangle, which Illustrator pastes as
+ * shapes — while an undashed stroke stays a line. Dashes restart at each sub-path (as the SVG
+ * renderer does); curved dashes are traced in ≤2-unit steps.
+ */
+const EXPAND_DASHES = `(() => {
+  const NS = 'http://www.w3.org/2000/svg'
+  const els = [...document.querySelectorAll('svg path, svg line, svg polyline, svg polygon')]
+  for (const el of els) {
+    const cs = getComputedStyle(el)
+    if (!cs.strokeDasharray || cs.strokeDasharray === 'none' || cs.stroke === 'none') continue
+    let pat = cs.strokeDasharray.split(/[\\s,]+/).map(parseFloat).filter((v) => v >= 0)
+    if (!pat.length || pat.every((v) => v === 0)) continue
+    if (pat.length % 2) pat = pat.concat(pat)
+    const period = pat.reduce((a, b) => a + b, 0)
+    const offset = ((parseFloat(cs.strokeDashoffset) || 0) % period + period) % period
+    // The shape's outline as sub-path strings (only absolute moves split cleanly).
+    const probe = document.createElementNS(NS, 'path')
+    let subs
+    if (el.tagName === 'path') {
+      const d = el.getAttribute('d') || ''
+      subs = /m/.test(d) ? [d] : d.split(/(?=M)/).filter((s) => s.trim())
+    } else {
+      const g = el
+      const total = g.getTotalLength()
+      const p0 = g.getPointAtLength(0)
+      const p1 = g.getPointAtLength(total)
+      if (el.tagName === 'line') subs = ['M' + p0.x + ',' + p0.y + 'L' + p1.x + ',' + p1.y]
+      else {
+        const pts = (el.getAttribute('points') || '').trim()
+        subs = ['M' + pts.replace(/\\s+/g, ' L') + (el.tagName === 'polygon' ? 'Z' : '')]
+      }
+    }
+    el.parentNode.appendChild(probe)
+    let out = ''
+    for (const sub of subs) {
+      probe.setAttribute('d', sub)
+      const len = probe.getTotalLength()
+      // walk the pattern from the offset: on-runs are dashes, off-runs gaps
+      let s = -offset
+      let k = 0
+      while (s < len) {
+        const on = k % 2 === 0
+        const e = s + pat[k % pat.length]
+        if (on && e > 0) {
+          const a = Math.max(0, s)
+          const b = Math.min(len, e)
+          if (b > a) {
+            const n = Math.max(1, Math.ceil((b - a) / 2))
+            const pts = []
+            for (let i = 0; i <= n; i++) pts.push(probe.getPointAtLength(a + ((b - a) * i) / n))
+            // keep only the corners: a straight dash is just its two ends
+            const keep = pts.filter((q, i) => {
+              if (i === 0 || i === pts.length - 1) return true
+              const p = pts[i - 1]
+              const r = pts[i + 1]
+              return Math.abs((q.x - p.x) * (r.y - p.y) - (q.y - p.y) * (r.x - p.x)) > 0.01
+            })
+            keep.forEach((q, i) => {
+              out += (i ? 'L' : 'M') + +q.x.toFixed(2) + ',' + +q.y.toFixed(2)
+            })
+          }
+        }
+        s = e
+        k++
+      }
+    }
+    probe.remove()
+    const path = document.createElementNS(NS, 'path')
+    for (const at of el.attributes)
+      if (!['d', 'points', 'x1', 'y1', 'x2', 'y2'].includes(at.name))
+        path.setAttribute(at.name, at.value)
+    path.setAttribute('d', out || 'M0,0')
+    path.setAttribute('stroke-dasharray', 'none')
+    path.style.strokeDasharray = 'none'
+    path.style.fill = 'none'
+    // A filled dashed shape keeps its fill, unstroked, under the dashes.
+    const filled = cs.fill !== 'none' && parseFloat(cs.fillOpacity) !== 0 && !/rgba\\(.*,\\s*0\\)$/.test(cs.fill)
+    if (filled) {
+      el.style.stroke = 'none'
+      el.after(path)
+    } else el.replaceWith(path)
+  }
+})()`
+
+/**
  * Lay an SVG onto a single page of its own size as a VECTOR PDF: Chromium's print engine draws
  * the inline SVG as paths and real (embedded) text, unlike pngToPdf's bitmap. Sized from the
- * SVG's own width/height (CSS px, 96 per inch).
+ * SVG's own width/height (CSS px, 96 per inch). Dashed strokes are first split into their dashes
+ * (EXPAND_DASHES), so they stay lines in an editor.
  */
 async function svgToPdf(win: BrowserWindow, svg: string): Promise<Buffer> {
   const open = /<svg\b[^>]*>/.exec(svg)?.[0] ?? ''
@@ -115,6 +203,7 @@ async function svgToPdf(win: BrowserWindow, svg: string): Promise<Buffer> {
   await writeFile(htmlPath, html, 'utf8')
   try {
     await win.loadFile(htmlPath)
+    await win.webContents.executeJavaScript(EXPAND_DASHES).catch(() => {})
     return await win.webContents.printToPDF({
       printBackground: true,
       preferCSSPageSize: true,

@@ -1,12 +1,15 @@
 import { useContext, useMemo, type CSSProperties } from 'react'
 
 import {
+  CLUSTER_COLOR,
   condLabel,
+  isNumericCond,
   metaValue,
   type ClusterData,
   type ClusterMeta,
   type ClusterPoint,
-  type ConditionKey
+  type ConditionKey,
+  type NumericConds
 } from '../engine'
 import { clusterStyle, type AxisStyle, type ClusterStyle, type PlotAxes } from '../graph/types'
 import { AUTO } from './ColorPicker'
@@ -22,6 +25,7 @@ import { axisBase, CATEGORICAL, PALETTES, plotBase, UI, withAlpha, type Palette 
 import { useUiTheme } from './useUiTheme'
 import { sectionKey, SECTIONED_LEGEND } from './legendSections'
 import { groupMeta } from './traceFocus'
+import { DEFAULT_OUTLINE } from './pointStyle'
 
 /** What marks the data: every replicate, or one centroid per condition. */
 type Mode = 'replicate' | 'centroid'
@@ -60,8 +64,11 @@ export function ClusterView({
   look = DEFAULT_STYLE,
   scheme = NO_SCHEME,
   categorical = CATEGORICAL,
-  condTitle = condLabel
+  condTitle = condLabel,
+  numeric
 }: {
+  /** the dataset's numeric conditions (its schema): ordered colour, shade and arrows */
+  numeric: NumericConds
   /** a condition's legend heading — with its unit for dose / time (default: its name) */
   condTitle?: (c: ConditionKey) => string
   cluster: ClusterData
@@ -115,7 +122,8 @@ export function ClusterView({
         look,
         scheme,
         categorical,
-        condTitle
+        condTitle,
+        numeric
       )
       if (complex) {
         lay.legend = complex.legend
@@ -135,11 +143,13 @@ export function ClusterView({
       }
       arr.push(pt)
     }
-    // Dose/time are quantitative: colour their groups in shades of the palette's primary colour,
-    // dark = high value, light = low (as the shade channel and QC / the gene bar do) — instead of
-    // unordered categorical colours. Groups are then ordered by value so the legend reads low→high.
+    // A numeric condition (dose, time, any declared numeric) is quantitative: colour its groups in
+    // shades of the palette's primary colour, dark = high value, light = low (as the shade channel
+    // and QC / the gene bar do) — instead of unordered categorical colours. Groups are then ordered
+    // by value so the legend reads low→high.
     const quant =
-      (cluster.colorBy === 'dose' || cluster.colorBy === 'time') &&
+      cluster.colorBy !== CLUSTER_COLOR &&
+      isNumericCond(cluster.colorBy, numeric) &&
       [...groups.keys()].every((g) => g === '' || Number.isFinite(Number(g)))
     const nums = [...new Set([...groups.keys()].map(Number).filter(Number.isFinite))].sort(
       (a, b) => a - b
@@ -177,7 +187,19 @@ export function ClusterView({
     if (cluster.colorBy !== 'cluster')
       lay.legend = { title: { text: condTitle(cluster.colorBy as ConditionKey) } }
     return { data: territoriesBehind(traces), layout: lay, xLabel, yLabel }
-  }, [cluster, title, display, territory, legend, mode, look, scheme, categorical, condTitle])
+  }, [
+    cluster,
+    title,
+    display,
+    territory,
+    legend,
+    mode,
+    look,
+    scheme,
+    categorical,
+    condTitle,
+    numeric
+  ])
 
   // Minimal axes take only the tile's title size and axis-line width (drawn into the corner L
   // here); every other override is for axes that aren't drawn, so none is passed on to the chart.
@@ -430,7 +452,7 @@ function condGroupTraces(
         color,
         size: look.centroidSize,
         opacity: look.centroidOpacity,
-        line: { color: outlineInk(look, p), width: look.outlineWidth ?? 1.5 }
+        line: { color: outlineInk(look, p), width: look.outlineWidth ?? DEFAULT_OUTLINE }
       }
     })
     return out
@@ -451,7 +473,7 @@ function condGroupTraces(
       color,
       size: look.markerSize,
       opacity: look.markerOpacity,
-      line: { color: outlineInk(look, p), width: look.outlineWidth ?? 0 }
+      line: { color: outlineInk(look, p), width: look.outlineWidth ?? DEFAULT_OUTLINE }
     }
   })
   return out
@@ -480,7 +502,8 @@ function buildComplex(
   look: ClusterStyle,
   scheme: PlanOverrides,
   categorical: readonly string[],
-  condTitle: (c: ConditionKey) => string
+  condTitle: (c: ConditionKey) => string,
+  numeric: NumericConds
 ): ComplexBuild | null {
   // Distinct conditions (replicates of a condition share meta), in first-seen order.
   const condOrder: string[] = []
@@ -507,7 +530,12 @@ function buildComplex(
   }
   const varying = new Set<ConditionKey>(conds.filter((c) => distinct(c).size > 1))
   // The user's channel choices; arrows switched off take the arrow channel away entirely.
-  const plan = planAesthetics(varying, conds, look.arrows ? scheme : { ...scheme, arrow: 'none' })
+  const plan = planAesthetics(
+    varying,
+    conds,
+    numeric,
+    look.arrows ? scheme : { ...scheme, arrow: 'none' }
+  )
   if (!plan.grouped && !plan.colorKey) return null // nothing varies → let simple mode handle it
 
   const sortedVals = (c: ConditionKey, numeric: boolean): string[] => {

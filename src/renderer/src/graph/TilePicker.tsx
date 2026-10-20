@@ -7,11 +7,10 @@ import {
   CATEGORIES,
   entryKey,
   NODE_SPECS,
-  plotEntriesFor,
   PLOT_SECTIONS,
   type PlotMenuEntry
 } from './registry'
-import { gatePlotEntries, UNWIRED, type UpstreamFacts } from './requirements'
+import { entriesFor, gatePlotEntries, UNWIRED, type UpstreamFacts } from './requirements'
 import type { NodeCategory, NodeKind } from './types'
 
 /** What the picker commits: a kind plus any config override (e.g. dr's axis). */
@@ -52,11 +51,20 @@ export function TilePicker({
     cat,
     ops: ops.filter((o) => o !== 'plotGroup' && categoryOf(o) === cat)
   })).filter((g) => g.ops.length > 0)
+  // What a category's row counts: its steps — for the plots, the entries the list below offers
+  // (gated by the upstream's data, Response plots fanned out per condition), not the kinds.
+  const countOf = (g: (typeof byCat)[number]): number =>
+    g.cat === 'plotting'
+      ? gatePlotEntries(
+          g.ops.flatMap((k) => entriesFor(k, avail)),
+          avail
+        ).length
+      : g.ops.length
   // If only one category is offered, drop straight to its operations.
   const [cat, setCat] = useState<NodeCategory | null>(byCat.length === 1 ? byCat[0].cat : null)
   const [hovered, setHovered] = useState<string | null>(null)
   // Multi-select is offered only in the plotting category (to build a group tile). Keyed by
-  // entryKey (not kind), so dr's Dose-response and Time-response can be checked independently.
+  // entryKey (not kind), so each Response plot (Dose response, Time response, …) checks on its own.
   const [chosen, setChosen] = useState<Set<string>>(new Set())
   const toggle = (key: string): void =>
     setChosen((prev) => {
@@ -128,7 +136,9 @@ export function TilePicker({
 
   // The visualisation list is grouped into the SAME sections as the plot-selector menu (shared
   // PLOT_SECTIONS), with any uncategorised op falling into a trailing "Other" section. Each kind is
-  // fanned into its menu entries (dr → Dose-response / Time-response) via the shared plotEntriesFor.
+  // fanned into its menu entries over the upstream's numeric conditions (dr → one Response plot per
+  // condition, tdr → one per pair) via the shared plotEntriesFor.
+  const entriesOf = (k: NodeKind): PlotMenuEntry[] => entriesFor(k, avail)
   const plotSections = ((): { label: string; entries: PlotMenuEntry[] }[] => {
     if (!plotting || !current) return []
     const present = new Set(current.ops)
@@ -136,16 +146,16 @@ export function TilePicker({
     const secs = PLOT_SECTIONS.map((s) => {
       const kinds = s.kinds.filter((k) => present.has(k))
       kinds.forEach((k) => used.add(k))
-      return { label: s.label, entries: gatePlotEntries(kinds.flatMap(plotEntriesFor), avail) }
+      return { label: s.label, entries: gatePlotEntries(kinds.flatMap(entriesOf), avail) }
     }).filter((s) => s.entries.length > 0)
     const rest = current.ops.filter((k) => !used.has(k))
     if (rest.length)
-      secs.push({ label: 'Other', entries: gatePlotEntries(rest.flatMap(plotEntriesFor), avail) })
+      secs.push({ label: 'Other', entries: gatePlotEntries(rest.flatMap(entriesOf), avail) })
     return secs.filter((s) => s.entries.length > 0)
   })()
   // All present plotting entries in declared order (gated) — to resolve the checked keys on commit.
   const allEntries =
-    plotting && current ? gatePlotEntries(current.ops.flatMap(plotEntriesFor), avail) : []
+    plotting && current ? gatePlotEntries(current.ops.flatMap(entriesOf), avail) : []
   // Every offered plot is checked: Select all turns into Clear.
   const allChosen = allEntries.length > 0 && allEntries.every((en) => chosen.has(entryKey(en)))
 
@@ -233,7 +243,7 @@ export function TilePicker({
                   )
                 )
             : byCat.map((g) =>
-                row(g.cat, accentOf(g.cat), CATEGORIES[g.cat].label, g.ops.length, () => {
+                row(g.cat, accentOf(g.cat), CATEGORIES[g.cat].label, countOf(g), () => {
                   if (g.ops.length === 1) onPick([{ kind: g.ops[0] }])
                   else setCat(g.cat)
                 })

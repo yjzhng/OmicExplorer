@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
-import { decodeValue, encodeValue } from './wire'
+import { compactRows, firstRow, holderTable, rowCount, rowsTable } from './lazyRows'
+import { decodeRowAt, decodeTable, decodeValue, encodeValue } from './wire'
 
 /** A strict structural fingerprint: key ORDER, absent vs undefined, NaN / ±Infinity / −0, and
  *  which objects are the same object (shared references) all show up in it. */
@@ -135,5 +136,76 @@ describe('wire format', () => {
         })
       )
     }
+  })
+})
+
+/** A curve-fit-like row: a surface with a list of cells and slices, and a short list of maps. */
+const surfaceRow = (i: number): Record<string, unknown> => ({
+  uniqID: `g${i}`,
+  log2FC: i / 3,
+  rs:
+    i % 7 === 0
+      ? null
+      : {
+          axis: 'surface',
+          F: i * 1.5,
+          maps: [{ zeroX: 2 }, { scale: 'linear', step: 3.1 }],
+          cells: Array.from({ length: 6 }, (_, c) => ({ dose: c, time: c % 3, y: i - c, n: 3 })),
+          surface: {
+            byTime: [
+              { at: 1, mid: 0.5 },
+              { at: 2, mid: NaN }
+            ],
+            byDose: []
+          }
+        }
+})
+
+describe('wire format: lists and lazy tables', () => {
+  it('round-trips lists of records (a surface’s cells) exactly', () => {
+    expectSame(rows(300, surfaceRow))
+  })
+
+  it('a lazily decoded table reads the same as an eager one', () => {
+    const src = { rows: rows(3000, surfaceRow), other: 1 }
+    const enc = encodeValue(src, [])
+    const lazy = decodeValue(structuredClone(enc), true) as typeof src
+    expect(fingerprint(lazy.rows)).toBe(fingerprint(src.rows))
+    // the same array while it's held — memoised views see no change
+    expect(lazy.rows).toBe(lazy.rows)
+    // a list read twice is the same array too
+    const rs = lazy.rows[1].rs as { cells: unknown[] }
+    expect(rs.cells).toBe(rs.cells)
+    // spread and JSON see every field
+    expect(JSON.stringify({ ...lazy })).toBe(JSON.stringify(src))
+  })
+
+  it('peeks without building the rows, and sends a lazy table as it is', () => {
+    const src = { rows: rows(3000, surfaceRow) }
+    const lazy = decodeValue(structuredClone(encodeValue(src, [])), true) as typeof src
+    expect(holderTable(lazy)?.n).toBe(3000)
+    expect(rowCount(lazy)).toBe(3000)
+    expect(fingerprint(firstRow(lazy))).toBe(fingerprint(src.rows[0]))
+    expect(fingerprint(decodeRowAt(holderTable(lazy)!, 8))).toBe(fingerprint(src.rows[8]))
+    // re-sent without being decoded again: the very same table
+    const again = encodeValue(lazy, []) as { rows: unknown }
+    expect(again.rows).toBe(holderTable(lazy))
+    // writing rows replaces the lazy view
+    lazy.rows = []
+    expect(lazy.rows).toEqual([])
+    expect(holderTable(lazy)).toBeUndefined()
+  })
+
+  it('compacts a plain table in place, keeping the array handed out', () => {
+    const holder: { rows: Record<string, unknown>[] } = { rows: rows(2500, surfaceRow) }
+    const before = holder.rows
+    const want = fingerprint(before)
+    expect(compactRows(holder, true)).toBe(true)
+    expect(holder.rows).toBe(before)
+    expect(rowsTable(before)).toBe(holderTable(holder))
+    // and rebuilt from the table, it's the same rows
+    expect(fingerprint(decodeTable(holderTable(holder)!, true))).toBe(want)
+    // too small: left as it is
+    expect(compactRows({ rows: rows(10, surfaceRow) })).toBe(false)
   })
 })

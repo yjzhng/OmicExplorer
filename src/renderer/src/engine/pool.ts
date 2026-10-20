@@ -143,34 +143,55 @@ function drop(keys: string[]): void {
 
 /** The pool, or null where sub-workers aren't available (then compute in place). */
 export function pool(): {
-  fit: (batch: FitBatch) => Promise<Array<CurveFit | null>>
-  joint: (batch: JointBatch) => Promise<JointFit[]>
+  fit: (batch: FitBatch, done?: (n: number) => void) => Promise<Array<CurveFit | null>>
+  joint: (batch: JointBatch, done?: (n: number) => void) => Promise<JointFit[]>
   enrich: (jobs: EnrichJob[]) => Promise<EnrichData[]>
 } | null {
   if (slots === undefined || (slots === null && SIZE >= 2)) slots = create()
   if (!slots) return null
   return {
-    /** Fit a batch across the pool: split into a few chunks per worker, answered in order. */
-    fit: async (batch) => {
-      if (batch.length < 64) return fitBatch(batch)
+    /** Fit a batch across the pool: split into a few chunks per worker, answered in order —
+     *  `done` told each chunk's size as it comes back (progress). */
+    fit: async (batch, done) => {
+      if (batch.length < 64) {
+        const out = fitBatch(batch)
+        done?.(batch.length)
+        return out
+      }
       const n = Math.min(batch.length, SIZE * 4)
       const size = Math.ceil(batch.length / n)
       const parts: Array<Promise<Array<CurveFit | null>>> = []
       for (let i = 0; i < batch.length; i += size) {
         const chunk = batch.slice(i, i + size)
-        parts.push(submit([], (id) => ({ op: 'fit', id, batch: chunk })))
+        parts.push(
+          submit<Array<CurveFit | null>>([], (id) => ({ op: 'fit', id, batch: chunk })).then(
+            (r) => {
+              done?.(chunk.length)
+              return r
+            }
+          )
+        )
       }
       return (await Promise.all(parts)).flat()
     },
     /** Fit a batch of 4PL surfaces across the pool, as `fit` (each surface's fit is its own). */
-    joint: async (batch) => {
-      if (batch.length < 16) return fitJointBatch(batch)
+    joint: async (batch, done) => {
+      if (batch.length < 16) {
+        const out = fitJointBatch(batch)
+        done?.(batch.length)
+        return out
+      }
       const n = Math.min(batch.length, SIZE * 4)
       const size = Math.ceil(batch.length / n)
       const parts: Array<Promise<JointFit[]>> = []
       for (let i = 0; i < batch.length; i += size) {
         const chunk = batch.slice(i, i + size)
-        parts.push(submit([], (id) => ({ op: 'joint', id, batch: chunk })))
+        parts.push(
+          submit<JointFit[]>([], (id) => ({ op: 'joint', id, batch: chunk })).then((r) => {
+            done?.(chunk.length)
+            return r
+          })
+        )
       }
       return (await Promise.all(parts)).flat()
     },

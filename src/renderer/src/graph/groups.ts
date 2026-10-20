@@ -7,7 +7,7 @@
  */
 import type { Edge } from '@xyflow/react'
 
-import { categoryOf, NODE_SPECS, outputKindOf, stepTitle } from './registry'
+import { categoryOf, NODE_SPECS, outputKindOf, stepTitle, wiredKindOf } from './registry'
 import { isStep, type GraphNode, type NodeKind, type PlotGroupConfig } from './types'
 
 /** Separator between a group id and a subcard id in an expanded panel id. */
@@ -145,6 +145,8 @@ export function deriveGroups(nodes: GraphNode[], edges: Edge[]): AnalysisGroup[]
   const groups: AnalysisGroup[] = []
   for (const root of steps) {
     if (!ROOT_KINDS.includes(root.data.kind)) continue
+    // A Subset off Load data filters the import for the Clean data below — that step is the root.
+    if (wiredKindOf({ nodes, edges }, root.id) === 'load') continue
     const members: string[] = [root.id]
     const seen = new Set<string>([root.id])
     const queue = [...(out.get(root.id) ?? [])]

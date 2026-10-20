@@ -21,6 +21,8 @@ import {
   normalPpf,
   stdByGene,
   thinPoints,
+  xUnits,
+  type StoredScale,
   type ResidualPoint,
   type CompareResultRow,
   type StandardRow,
@@ -61,8 +63,10 @@ const capShare = (n: number, total: number, cap: number): number =>
 const cmpLine = (comparisons: string[], i: number, p: { textMuted: string }): string =>
   comparisons.length > 1 ? `<br>${condLine('comparison', comparisons[i], p.textMuted)}` : ''
 
-/** A log₁₀ dose as the dose itself, three significant figures. */
-const doseLabel = (x: number): string => String(Number((10 ** x).toPrecision(3)))
+/** A fit's x (log₁₀ dose, or steps on a linear axis: `sc`) as the dose itself, three significant
+ *  figures. */
+const doseLabel = (x: number, sc: StoredScale): string =>
+  String(Number(xUnits(sc, x).toPrecision(3)))
 
 /** A colour at an alpha, for a violin's fill (a #rrggbb colour; anything else as it is). */
 const withAlpha = (c: string, a: number): string =>
@@ -146,8 +150,7 @@ export function CurveMadView({
       rows.map((r) => {
         const c = r.curve
         if (!c || (c.x && c.rep) || !byGene) return r
-        const axis = c.axis === 'time' ? 'time' : 'dose'
-        const got = curvePointsFromStd(r, byGene.get(r.uniqID) ?? [], axis)
+        const got = curvePointsFromStd(r, byGene.get(r.uniqID) ?? [], c.axis)
         return got ? { ...r, curve: { ...c, ...got } } : r
       }),
     [rows, byGene]
@@ -156,6 +159,8 @@ export function CurveMadView({
     const p = PALETTES[mode]
     const comparisons = [...new Set(curves.map((r) => r.comparison))]
     const axis = curves.find((r) => r.curve)?.curve?.axis ?? 'dose'
+    // the run's scale: every curve of a run shares it
+    const sc: StoredScale = curves.find((r) => r.curve)?.curve ?? {}
     const curvesOf = (c: string) =>
       curves
         .filter((r) => r.comparison === c && r.curve)
@@ -183,7 +188,7 @@ export function CurveMadView({
       const pts = comparisons.map((c) => curveResidualPoints(curvesOf(c)))
       const built =
         check === 'fitted'
-          ? fittedCheck(pts, comparisons, axis, displayMap, p, style, yScale, maxPoints)
+          ? fittedCheck(pts, comparisons, axis, displayMap, p, style, yScale, maxPoints, sc)
           : normalityCheck(pts, comparisons, p, style)
       return {
         data: built.data,
@@ -196,7 +201,7 @@ export function CurveMadView({
     }
     // By dose: each dose's replicates pooled; by sample: one group per dose × replicate.
     const perCmp = comparisons.map((c) => curveResidualMad(curvesOf(c), check !== 'sample'))
-    const cat = (x: number | null): string => (x == null ? 'control' : doseLabel(x))
+    const cat = (x: number | null): string => (x == null ? 'control' : doseLabel(x, sc))
     // A group's category: its dose, and its replicate when split by sample.
     const lab = (d: { x: number | null; rep: number | null }): string =>
       d.rep == null ? cat(d.x) : `${cat(d.x)} r${d.rep}`
@@ -258,7 +263,7 @@ export function CurveMadView({
             })
             // the quartile box over the dots, and its median (layout shapes, over the SVG dots)
             const half = SLOT * 0.3
-            const edge = { ...guideLine(p), dash: 'solid' }
+            const edge = { ...guideLine(p, 1.5), dash: 'solid' }
             const box = { xref: 'x', yref: 'y', layer: 'above', line: edge }
             shapes.push(
               { ...box, type: 'rect', x0: mid - half, x1: mid + half, y0: d.q1, y1: d.q3 },
@@ -624,7 +629,8 @@ function fittedCheck(
   p: Palette,
   style: PointStyle | undefined,
   yScale: 'fit' | 'range',
-  maxPoints: number
+  maxPoints: number,
+  sc: StoredScale
 ): Built {
   const many = comparisons.length > 1
   const groups = resolveGroups(style, 'curveMad')
@@ -645,7 +651,7 @@ function fittedCheck(
         where: tooltip(
           {
             conds: [
-              [axis, q.x == null ? 'control' : doseLabel(q.x)],
+              [axis, q.x == null ? 'control' : doseLabel(q.x, sc)],
               ...(q.rep == null ? [] : [['rep', q.rep] as [string, number]])
             ]
           },
@@ -826,7 +832,7 @@ function normalityCheck(
               y0: r[0],
               x1: r[1],
               y1: r[1],
-              line: guideLine(p)
+              line: guideLine(p, style?.guideWidth)
             }
           ]
         : []

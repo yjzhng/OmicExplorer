@@ -41,6 +41,7 @@ describe('runResponseSurface — one axis', () => {
     den: { cmpd: ['DMSO'] },
     match: [],
     activeConditions: ['cmpd', 'dose'],
+    numericConditions: [],
     curveAxis: 'dose',
     threshold: RESPONSE_THRESHOLD
   })
@@ -107,6 +108,7 @@ describe('runResponseSurface — dose × time surface', () => {
       den,
       match: [],
       activeConditions: ['cmpd', 'dose', 'time'],
+      numericConditions: [],
       curveAxis: 'surface',
       threshold: RESPONSE_THRESHOLD
     })
@@ -127,6 +129,30 @@ describe('runResponseSurface — dose × time surface', () => {
     expect(x.dose).toBeNull()
     expect(x.time).toBeNull()
   })
+  it('keeps the reference for drawing: the vehicle’s replicates and the t₀ samples', () => {
+    // A at t₀ too: a matched time's baseline level — not cells, kept as samples
+    const rows = build('vehicle')
+    const r = rng(9)
+    for (let rep = 1; rep <= 3; rep++)
+      for (const d of [1, 10, 100, 1000, 3000])
+        rows.push(row('g0', 'A', d, 0, rep, 21 + 0.2 * normal(r)))
+    const x = run(rows, { cmpd: ['DMSO'] }).rows.find((y) => y.uniqID === 'g0')!
+    const ctl = x.rs?.controls ?? []
+    const veh = ctl.filter((c) => c.vehicle)
+    // the vehicle at each of its times, at dose 0, three replicates scattering about its mean
+    expect(veh.map((c) => c.time)).toEqual([0, ...TIMES])
+    for (const c of veh) {
+      expect(c.dose).toBe(0)
+      expect(c.reps).toHaveLength(3)
+      expect(Math.abs(c.y)).toBeLessThan(1e-9)
+      expect(c.reps.some((v) => Math.abs(v) > 1e-6)).toBe(true)
+    }
+    // the treated samples at t₀: one per dose, not among the cells
+    const base = ctl.filter((c) => !c.vehicle)
+    expect(base.map((c) => c.dose)).toEqual([1, 10, 100, 1000, 3000])
+    expect(base.every((c) => c.time === 0 && c.reps.length === 3)).toBe(true)
+    expect(x.rs?.cells?.some((c) => c.time === 0)).toBe(false)
+  })
   it('with the 4PL surface detector: adjusted-F p and BH q, the 4PL’s fit and peak', () => {
     const rows = build('vehicle')
     const run4 = (): ReturnType<typeof runResponseSurface> =>
@@ -136,6 +162,7 @@ describe('runResponseSurface — dose × time surface', () => {
         den: { cmpd: ['DMSO'] },
         match: [],
         activeConditions: ['cmpd', 'dose', 'time'],
+        numericConditions: [],
         curveAxis: 'surface',
         detector: '4pl',
         threshold: RESPONSE_THRESHOLD
@@ -160,6 +187,7 @@ describe('runResponseSurface — dose × time surface', () => {
       den: { cmpd: ['DMSO'] },
       match: [],
       activeConditions: ['cmpd', 'dose', 'time'],
+      numericConditions: [],
       curveAxis: 'surface',
       detector: '4pl',
       surfaceDescription: 'joint',
@@ -198,6 +226,7 @@ describe('runResponseSurface — dose × time surface', () => {
       den: { cmpd: ['DMSO'] },
       match: [],
       activeConditions: ['cmpd', 'dose', 'time'],
+      numericConditions: [],
       curveAxis: 'surface',
       detector: '4pl',
       threshold: { ...cc, ccCallBy: 'fdr' }
@@ -233,6 +262,7 @@ describe('runResponseSurface — dose × time surface', () => {
       den: { cmpd: ['DMSO'] },
       match: [],
       activeConditions: ['cmpd', 'dose', 'time'],
+      numericConditions: [],
       curveAxis: 'surface',
       threshold: RESPONSE_THRESHOLD
     })

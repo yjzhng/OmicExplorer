@@ -48,3 +48,31 @@ describe('contrast replicates', () => {
     expect(bare.rows[0].FC1reps).toBeNull()
   })
 })
+
+describe('contrast names', () => {
+  // both sides of one cell line (a Subset kept just it), contrasted at dose 5
+  const side = (cmpd: string, value: number): ContrastSideRow => ({
+    uniqID: 'g',
+    cell: 'RPMI8226',
+    cmpd,
+    dose: 5,
+    value
+  })
+  const run = (nameConds?: Parameters<typeof runContrastPair>[0]['nameConds']) =>
+    runContrastPair({
+      sideA: [side('Bortezomib', 1)],
+      sideB: [side('Carfilzomib', 2)],
+      match: [],
+      labelA: 'Bortezomib',
+      labelB: 'Carfilzomib',
+      driverMask: false,
+      ...(nameConds ? { nameConds } : null)
+    }).comparisons[0]
+
+  it('state each fixed slice', () => {
+    expect(run()).toBe('Bortezomib (cell RPMI8226 · dose 5) | Carfilzomib (cell RPMI8226 · dose 5)')
+  })
+  it("but not of a condition the datasets don't carry as active (a Subset narrowed it)", () => {
+    expect(run(['cmpd', 'dose'])).toBe('Bortezomib (dose 5) | Carfilzomib (dose 5)')
+  })
+})

@@ -3,12 +3,16 @@
  * to call directly or from a Web Worker (see worker.ts / client.ts).
  */
 export {
+  manualSheetConditions,
   manualSheetIssues,
   previewScale,
   samplesheetIssues,
   sheetIssueLines,
+  sheetSamples,
   sheetIssueText,
   standardize,
+  recleanStandardized,
+  type RecleanInput,
   type ScalePreview,
   type SheetIssue
 } from './ingest'
@@ -21,8 +25,31 @@ export {
   unionValues
 } from './accession'
 export { combineStandardize } from './combine'
-export { conditionLevels, keptBy, subsetStandardize } from './subset'
-export { jointPredict } from './surfaceJoint'
+export {
+  conditionLevels,
+  filterActive,
+  keptBy,
+  sampleLevels,
+  samplePasses,
+  subsetStandardize,
+  type SampleFilter
+} from './subset'
+export { jointAt, jointPredict } from './surfaceJoint'
+export { descValue } from './splineFit'
+export type { Progress } from './progress'
+export {
+  axisModelFor,
+  detectAxisScale,
+  driftsByDefault,
+  presetModel,
+  xUnits,
+  type AxisBaseline,
+  type AxisFit,
+  type AxisScale,
+  type AxisShape,
+  type ScaleGuess,
+  type StoredScale
+} from './axisModel'
 export {
   parseMatrix,
   guessRoles,
@@ -77,13 +104,15 @@ export {
   curveSampleX,
   curveDescribed,
   relevanceScore,
+  PEC50_DELTA,
+  Y_LIMITS_LOG2,
   type CurveFit
 } from './curveFit'
 export { samBoundary } from './sam'
 export { curvePointsFromStd, replicateLog2FCs, stdByGene, type CurvePoints } from './curvePoints'
 export type { ComparePreview } from './direct'
-export { runTwoWayAnova, previewTwoWay, crossPairs } from './twoWay'
-export type { TwoWayPreview } from './twoWay'
+export { runFactorAnova, previewFactorAnova, crossPairs } from './twoWay'
+export type { FactorAnovaPreview } from './twoWay'
 export {
   runContrast,
   runContrastPair,
@@ -95,6 +124,7 @@ export {
   reclassifyContrast,
   contrastStatDrag,
   contrastFeatureLabel,
+  CURVE_FC_FEATURE,
   rowsOfFeature,
   rowsOfFeatureNamed
 } from './contrast'
@@ -160,8 +190,11 @@ export {
   facetPaired,
   facetSides,
   ctxValue,
+  ctxNum,
   metaValue,
   facetKeyLabel,
+  rowsOfKind,
+  SHOW_KINDS,
   sortSamples,
   CLUSTER_COLOR
 } from './plotData'
@@ -184,11 +217,17 @@ export {
   customSlug,
   isCustomCond,
   isNumericCond,
+  numericConds,
+  numericOf,
   orderConds,
-  validCondName
+  validCondName,
+  isTermRow,
+  isInteractionRow,
+  isSlopeRow,
+  termless
 } from './types'
-export type { CustomConditionKey, PresetConditionKey } from './types'
-export { condValue, condPresent } from './compare'
+export type { CustomConditionKey, NumericConds, PresetConditionKey } from './types'
+export { condValue, condPresent, numValue } from './compare'
 export {
   analysisUnmet,
   CURVE_MIN_TREATED,
@@ -224,7 +263,7 @@ export type {
   CompareResultRow
 } from './types'
 export type { DirectInput, CompareTableResult } from './direct'
-export type { TwoWayInput, TwoWayFactor } from './twoWay'
+export type { FactorAnovaInput, AnovaFactorPick } from './twoWay'
 export type { ContrastInput, ContrastResult, ContrastResultRow } from './contrast'
 export type {
   VolcanoData,
@@ -309,3 +348,6 @@ export {
   runResponseSurface
 } from './responseSurface'
 export type { ResponseInput } from './responseSurface'
+export { anovaSliceFor, geneShares, interactionAxes, interactionGene, rankByQ } from './anovaPlots'
+export type { AnovaSliceResult, GeneShares, InteractionGene } from './anovaPlots'
+export type { AnovaResult } from './anova'

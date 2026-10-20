@@ -2,10 +2,14 @@
  *  "10 | 0"). Faceting a dose-response / bubble plot on those labels left one dose per tab, so the
  *  curves (which need two) drew nothing. Labels that are only the plot's own axis aren't a facet. */
 import { describe, expect, it } from 'vitest'
+import { numericConds } from './types'
 
 import { runCompare } from './direct'
 import { buildDR, facetCompareRows, facetDims } from './plotData'
 import type { StandardRow } from './types'
+
+/** dose and time numeric, no custom condition declared (the schema of these tests' data) */
+const numeric = numericConds()
 
 const rows: StandardRow[] = []
 for (const g of ['g1', 'g2'])
@@ -26,7 +30,8 @@ const onDose = runCompare({
   num: { dose: ['5', '10'] },
   den: { dose: ['0'] },
   match: ['cmpd'],
-  activeConditions: ['cmpd', 'dose']
+  activeConditions: ['cmpd', 'dose'],
+  numericConditions: []
 }).rows
 
 describe('comparison labels that are the plot axis', () => {
@@ -37,7 +42,7 @@ describe('comparison labels that are the plot axis', () => {
   it('are not a facet of a plot drawn along dose: one tab holds every dose', () => {
     const dims = facetDims(onDose, ['dose'])
     expect(dims).not.toContain('comparison')
-    const [first] = facetCompareRows(onDose, dims)
+    const [first] = facetCompareRows(onDose, dims, numeric)
     expect(new Set(first.rows.map((r) => r.dose))).toEqual(new Set([5, 10]))
     expect(buildDR(first.rows, { axis: 'dose', topGenes: 0 }).series).toHaveLength(2)
   })

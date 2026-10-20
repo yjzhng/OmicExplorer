@@ -19,8 +19,9 @@ import {
   type ConditionKey
 } from './types'
 import { COLUMN_ALIASES, groupMembers, matchKey, pairsOf, unionRecords } from './accession'
-import { condPresent } from './compare'
-import { imputeMissing } from './impute'
+import { condPresent, condValue } from './compare'
+import { filterActive, keptBy, narrowedConds, samplePasses } from './subset'
+import { imputeMissing, sampleKey } from './impute'
 import { normalizeSamples } from './normalize'
 import {
   detectScale,
@@ -75,6 +76,31 @@ function measured(v: string | undefined | null): number | null {
   return n === 0 ? null : n
 }
 
+/** A samplesheet row's conditions, read as the run reads them (dose and time as numbers). */
+function sheetConds(r: Row, customConds: string[]): SampleConds {
+  return {
+    sample: String(r.sample ?? ''),
+    cell: r.cell ?? '',
+    cmpd: r.cmpd ?? '',
+    dose: num(r.dose),
+    time: num(r.time),
+    rep: num(r.rep),
+    extra: Object.fromEntries(customConds.map((c) => [c, String(r[c] ?? '').trim()]))
+  }
+}
+
+/** The samples a samplesheet lists, with their conditions — what a Subset off Load data picks
+ *  values from, before any run. Custom conditions as Clean data reads them: those declared, else
+ *  auto-detected. */
+export function sheetSamples(samplesheetText: string, customConditions?: string[]): SampleConds[] {
+  const ss = readSamplesheet(samplesheetText)
+  const customConds = (
+    customConditions?.map((n) => n.trim().toLowerCase()).filter(validCondName) ??
+    detectCustomConditions(ss)
+  ).filter((n) => ss.some((r) => String(r[n] ?? '').trim() !== ''))
+  return ss.filter((r) => r.sample != null).map((r) => sheetConds(r, customConds))
+}
+
 /** Read the samplesheet: lowercase headers; its `sample` column names each sample.
  *  `strain` (the pre-rename name of the `cell` condition) is accepted as an alias so older
  *  samplesheets keep working; `cell` wins when both are present. */
@@ -110,12 +136,14 @@ const NUMERIC_FIELDS = new Set<string>(['dose', 'time'])
 /**
  * What blocks a samplesheet, for the import's gate and the run's error alike: every condition in
  * use — cell, cmpd, dose, time and the custom ones, wherever ANY sample has a value — must have a
- * value for every sample, and dose and time must be numbers. A condition no sample uses is simply
- * absent, and fine. `rows` are the included samples, keyed by field name (custom ones by theirs).
+ * value for every sample, and dose, time and the custom ones declared numeric (`numeric`) must be
+ * numbers. A condition no sample uses is simply absent, and fine. `rows` are the included samples, keyed by field name (custom ones by theirs).
  */
 export function samplesheetIssues(
   rows: Array<{ sample: string } & Record<string, unknown>>,
-  custom: string[] = []
+  custom: string[] = [],
+  /** the custom conditions declared numeric: their values must be numbers, as dose and time */
+  numeric: string[] = []
 ): SheetIssue[] {
   const text = (v: unknown): string => (v == null ? '' : String(v).trim())
   const issues: SheetIssue[] = []
@@ -123,7 +151,7 @@ export function samplesheetIssues(
     if (!rows.some((r) => text(r[field]) !== '')) continue
     const empty = rows.filter((r) => text(r[field]) === '').map((r) => r.sample)
     if (empty.length) issues.push({ field, kind: 'empty', values: [], samples: empty })
-    if (!NUMERIC_FIELDS.has(field)) continue
+    if (!NUMERIC_FIELDS.has(field) && !numeric.includes(field)) continue
     const bad = new Map<string, string[]>()
     for (const r of rows) {
       const v = text(r[field])
@@ -146,11 +174,13 @@ export function samplesheetIssues(
 /** A manual samplesheet checked as the run will check it, for a warning before any run: whether it
  *  lacks the `sample` column (the run's hard stop), else its issues (samplesheetIssues) over the
  *  samples the data file carries — all of the sheet's when the data isn't given — with its custom
- *  conditions detected as the run detects them. */
+ *  conditions detected as the run detects them, and those of them declared numeric (`numeric`, the
+ *  Load tile's choice) checked as numbers. */
 export function manualSheetIssues(
   sheetText: string,
   dataText?: string | null,
-  dataFilename?: string | null
+  dataFilename?: string | null,
+  numeric: readonly string[] = []
 ): { noSample: boolean; issues: SheetIssue[] } {
   let ss: Row[]
   try {
@@ -169,7 +199,30 @@ export function manualSheetIssues(
   const rows = ss
     .filter((r) => r.sample != null && r.sample !== '' && (!inData || inData.has(String(r.sample))))
     .map((r) => ({ ...r, sample: String(r.sample) }))
-  return { noSample: false, issues: samplesheetIssues(rows, detectCustomConditions(ss)) }
+  const custom = detectCustomConditions(ss)
+  return {
+    noSample: false,
+    issues: samplesheetIssues(
+      rows,
+      custom,
+      custom.filter((n) => numeric.includes(n))
+    )
+  }
+}
+
+/** The conditions a manual samplesheet carries, as the run will read them: the presets (cell —
+ *  or its `strain` alias — cmpd, dose, time) whose column holds a value, then the custom ones
+ *  (detectCustomConditions) — what the Load tile lists, to declare their type and unit. A column
+ *  that's there but empty isn't a condition. [] when the sheet can't be read. */
+export function manualSheetConditions(sheetText: string): string[] {
+  let ss: Row[]
+  try {
+    ss = readSamplesheet(sheetText)
+  } catch {
+    return []
+  }
+  const used = (c: string): boolean => ss.some((r) => String(r[c] ?? '').trim() !== '')
+  return [...SHEET_FIELDS.filter(used), ...detectCustomConditions(ss)]
 }
 
 /** A samplesheet issue in a line: which field, what's wrong, and a few of the samples — at most
@@ -360,6 +413,59 @@ function arrivedValues(
 /**
  * Full standardization pipeline. Produces the tidy long table and a display map.
  */
+/** Clean-up: drop genes identified (a non-null value) in fewer than `minSamplePct` of the samples.
+ *  Pooled (`grouped` off), coverage is over every sample. Grouped, it's measured WITHIN each group
+ *  (`sampleGroup`: sample → its group) and a gene goes only when it falls short in EVERY group —
+ *  one clearing the bar in any group is kept whole, values in the other groups included (absent
+ *  there may just be below the detection limit, a real difference, not a bad identification).
+ *  `presence`: gene → the samples it has a value in. */
+function dropLowCoverage(
+  rows: StandardRow[],
+  presence: Map<string, Set<string>>,
+  sampleGroup: Map<string, string>,
+  sampleCount: number,
+  minSamplePct: number,
+  grouped: boolean
+): { rows: StandardRow[]; droppedGenes: number } {
+  if (!(minSamplePct > 0) || sampleCount === 0) return { rows, droppedGenes: 0 }
+  const dropped = new Set<string>()
+  if (grouped) {
+    // Distinct samples per group (the denominators), and per-(gene, group) hit counts.
+    const groupTotal = new Map<string, number>()
+    for (const g of sampleGroup.values()) groupTotal.set(g, (groupTotal.get(g) ?? 0) + 1)
+    const hitsByGene = new Map<string, Map<string, number>>()
+    for (const [uniqID, samples] of presence) {
+      const perGroupHits = new Map<string, number>()
+      for (const s of samples) {
+        const g = sampleGroup.get(s) ?? ''
+        perGroupHits.set(g, (perGroupHits.get(g) ?? 0) + 1)
+      }
+      hitsByGene.set(uniqID, perGroupHits)
+    }
+    // A (gene, group) clears when its coverage within that group reaches the threshold.
+    const clears = (uniqID: string, g: string): boolean => {
+      const total = groupTotal.get(g) ?? 0
+      const hits = hitsByGene.get(uniqID)?.get(g) ?? 0
+      return total > 0 && (hits / total) * 100 >= minSamplePct
+    }
+    // Kept iff it clears in at least one group; a gene with no value anywhere isn't in
+    // `presence` and so is dropped.
+    const groups = [...groupTotal.keys()]
+    const geneIds = new Set(rows.map((r) => r.uniqID))
+    for (const uniqID of geneIds) {
+      if (!groups.some((g) => clears(uniqID, g))) dropped.add(uniqID)
+    }
+  } else {
+    for (const [uniqID, samples] of presence) {
+      if ((samples.size / sampleCount) * 100 < minSamplePct) dropped.add(uniqID)
+    }
+    // A uniqID with no non-null value anywhere never enters `presence`; treat it as 0%.
+    for (const r of rows) if (!presence.has(r.uniqID)) dropped.add(r.uniqID)
+  }
+  if (dropped.size === 0) return { rows, droppedGenes: 0 }
+  return { rows: rows.filter((r) => !dropped.has(r.uniqID)), droppedGenes: dropped.size }
+}
+
 export function standardize(input: StandardizeInput): StandardizeResult {
   const parsed = parseCsv(input.dataText)
   const fmt = detectFormat(input.dataFilename, parsed.fields)
@@ -392,18 +498,31 @@ export function standardize(input: StandardizeInput): StandardizeResult {
     input.customConditions?.map((n) => n.trim().toLowerCase()).filter(validCondName) ??
     detectCustomConditions(ss)
   ).filter((n) => ss.some((r) => String(r[n] ?? '').trim() !== ''))
+  // Of those, the ones declared numeric: checked as numbers below, and listed on the result.
+  const declared = new Set((input.numericConditions ?? []).map((n) => n.trim().toLowerCase()))
+  const numericCustoms = customConds.filter((n) => declared.has(n))
   const ssBySample = new Map<string, Row>()
-  for (const r of ss) if (r.sample != null) ssBySample.set(String(r.sample), r)
+  // A Subset before Clean data (input.subsets): the samples it drops aren't read at all — by
+  // condition here; by replicate and by name once replicates are numbered (below), so leaving one
+  // out never renumbers the rest of its condition.
+  const subsets = (input.subsets ?? []).filter(filterActive)
+  const condPass = subsets.map((f) => keptBy(f.keep ?? {}))
+  const dropped = new Set(subsets.flatMap((f) => f.drop ?? []))
+  for (const r of ss)
+    if (r.sample != null && condPass.every((pass) => pass(sheetConds(r, customConds))))
+      ssBySample.set(String(r.sample), r)
   const validSamples = new Set(ssBySample.keys())
   // The samplesheet must be complete for the samples the data carries: every condition in use
   // filled, dose and time numbers — else the import stops here, with what to fix.
+  const inDataSamples = new Set(dataRows.map((r) => String(r.sample ?? '')))
   {
-    const inData = new Set(dataRows.map((r) => String(r.sample ?? '')))
     const issues = samplesheetIssues(
       ss
-        .filter((r) => r.sample != null && inData.has(String(r.sample)))
+        .filter((r) => r.sample != null && inDataSamples.has(String(r.sample)))
+        .filter((r) => ssBySample.has(String(r.sample)) && !dropped.has(String(r.sample)))
         .map((r) => ({ ...r, sample: String(r.sample) })),
-      customConds
+      customConds,
+      numericCustoms
     )
     if (issues.length) throw new Error(`Samplesheet: ${sheetIssueLines(issues).join(' · ')}.`)
   }
@@ -423,7 +542,7 @@ export function standardize(input: StandardizeInput): StandardizeResult {
     extra: Record<string, string>
     peptides: number | null
   }
-  const merged: Merged[] = []
+  let merged: Merged[] = []
   for (const r of dataRows) {
     const sample = String(r.sample ?? '')
     if (!validSamples.has(sample)) continue
@@ -467,6 +586,13 @@ export function standardize(input: StandardizeInput): StandardizeResult {
       perCond.set(condKey, n)
       repOf.set(m.sample, m.rep != null ? m.rep : n)
     }
+  }
+  // …and the Subsets' replicates and samples left out, now each sample has its replicate
+  if (subsets.length) {
+    const passes = subsets.map(samplePasses)
+    merged = merged.filter((m) =>
+      passes.every((pass) => pass({ ...m, rep: repOf.get(m.sample) ?? m.rep }))
+    )
   }
 
   // ── optional ID mapping (feature ID → uniqID) ───────────────────────────────
@@ -577,47 +703,9 @@ export function standardize(input: StandardizeInput): StandardizeResult {
   const sampleCount = allSamples.size
   const minSamplePct = Math.min(100, Math.max(0, input.minSamplePct ?? 0))
   const grouped = groupBy.length > 0
-  let droppedGenes = 0
-  if (minSamplePct > 0 && sampleCount > 0) {
-    const dropped = new Set<string>()
-    if (grouped) {
-      // Distinct samples per group (the denominators), and per-(gene, group) hit counts.
-      const groupTotal = new Map<string, number>()
-      for (const g of sampleGroup.values()) groupTotal.set(g, (groupTotal.get(g) ?? 0) + 1)
-      const hitsByGene = new Map<string, Map<string, number>>()
-      for (const [uniqID, samples] of presence) {
-        const perGroupHits = new Map<string, number>()
-        for (const s of samples) {
-          const g = sampleGroup.get(s) ?? ''
-          perGroupHits.set(g, (perGroupHits.get(g) ?? 0) + 1)
-        }
-        hitsByGene.set(uniqID, perGroupHits)
-      }
-      // A (gene, group) clears when its coverage within that group reaches the threshold.
-      const clears = (uniqID: string, g: string): boolean => {
-        const total = groupTotal.get(g) ?? 0
-        const hits = hitsByGene.get(uniqID)?.get(g) ?? 0
-        return total > 0 && (hits / total) * 100 >= minSamplePct
-      }
-      // Kept iff it clears in at least one group; a gene with no value anywhere isn't in
-      // `presence` and so is dropped.
-      const groups = [...groupTotal.keys()]
-      const geneIds = new Set(rows.map((r) => r.uniqID))
-      for (const uniqID of geneIds) {
-        if (!groups.some((g) => clears(uniqID, g))) dropped.add(uniqID)
-      }
-    } else {
-      for (const [uniqID, samples] of presence) {
-        if ((samples.size / sampleCount) * 100 < minSamplePct) dropped.add(uniqID)
-      }
-      // A uniqID with no non-null value anywhere never enters `presence`; treat it as 0%.
-      for (const r of rows) if (!presence.has(r.uniqID)) dropped.add(r.uniqID)
-    }
-    if (dropped.size > 0) {
-      droppedGenes = dropped.size
-      rows = rows.filter((r) => !dropped.has(r.uniqID))
-    }
-  }
+  const kept = dropLowCoverage(rows, presence, sampleGroup, sampleCount, minSamplePct, grouped)
+  rows = kept.rows
+  const droppedGenes = kept.droppedGenes
 
   // ── normalisation: median-centre the samples (and their spread), on the kept genes ──
   // Before imputation, which draws each gap from its sample's distribution — so that draws from
@@ -639,7 +727,21 @@ export function standardize(input: StandardizeInput): StandardizeResult {
 
   // ── which conditions are active (present with any non-empty value) ──────────
   const requested = input.activeConditions ?? condsIn(rows)
-  const activeConditions = requested.filter((c) => condPresent(rows, c))
+  // …less those a Subset before Clean data narrowed to one value (narrowedConds), over the
+  // samplesheet's samples in the data
+  const narrowed = subsets.length
+    ? narrowedConds(
+        ss
+          .filter((r) => r.sample != null && inDataSamples.has(String(r.sample)))
+          .map((r) => sheetConds(r, customConds)),
+        samples,
+        requested
+      )
+    : new Set<ConditionKey>()
+  const activeConditions = requested.filter((c) => !narrowed.has(c) && condPresent(rows, c))
+  const numericConditions = numericCustoms
+    .map(customCond)
+    .filter((c) => activeConditions.includes(c))
 
   const compounds = [...new Set(rows.map((r) => r.cmpd).filter((c) => c !== ''))].sort()
 
@@ -658,6 +760,7 @@ export function standardize(input: StandardizeInput): StandardizeResult {
     // map an older import handed over.
     keggCategories: { ...input.keggCategories, ...pairsOf(annotationMap, 'KEGG', 'KEGG_cat') },
     activeConditions,
+    ...(numericConditions.length ? { numericConditions } : {}),
     compounds,
     cleanup: { droppedGenes, sampleCount, minSamplePct, ...(grouped ? { by: groupBy } : {}) },
     ...(normalization ? { normalization } : {}),
@@ -666,5 +769,82 @@ export function standardize(input: StandardizeInput): StandardizeResult {
     inputScale,
     scaleEvidence,
     inputHistogram
+  }
+}
+
+/** What a Clean data step reading another one's table needs: that table, and its own clean-up,
+ *  normalisation, imputation and presented scale. */
+export type RecleanInput = Pick<
+  StandardizeInput,
+  'minSamplePct' | 'minSamplePctBy' | 'normalize' | 'impute' | 'logTransform'
+> & { std: StandardizeResult }
+
+/**
+ * Clean data again, on a Clean data table rather than an import: its clean-up (the coverage
+ * filter), normalisation and imputation run on the rows as they arrive — values linear, as every
+ * Clean data result keeps them — and everything the import settled (conditions, samples, names,
+ * annotations, the scale the data arrived on) carries over. Values the first step imputed count
+ * as measured here: they're values now.
+ */
+export function recleanStandardized(input: RecleanInput): StandardizeResult {
+  const prev = input.std
+  let rows = prev.rows
+  // Per-gene presence, and each sample's clean-up group (the tuple of the `minSamplePctBy`
+  // conditions; '' pooled), as standardize builds them from the import.
+  const groupBy = (input.minSamplePctBy ?? []).filter((c) => prev.activeConditions.includes(c))
+  const presence = new Map<string, Set<string>>()
+  const sampleGroup = new Map<string, string>()
+  for (const r of rows) {
+    const sk = sampleKey(r)
+    if (!sampleGroup.has(sk))
+      sampleGroup.set(sk, groupBy.map((c) => String(condValue(r, c) ?? '')).join('¦'))
+    if (r.value != null) {
+      let s = presence.get(r.uniqID)
+      if (!s) presence.set(r.uniqID, (s = new Set()))
+      s.add(sk)
+    }
+  }
+  const sampleCount = sampleGroup.size
+  const minSamplePct = Math.min(100, Math.max(0, input.minSamplePct ?? 0))
+  const grouped = groupBy.length > 0
+  const kept = dropLowCoverage(rows, presence, sampleGroup, sampleCount, minSamplePct, grouped)
+  rows = kept.rows
+
+  let normalization: StandardizeResult['normalization']
+  if (input.normalize) {
+    const res = normalizeSamples(rows, input.normalize)
+    rows = res.rows
+    normalization = res.summary
+  }
+  let imputation: StandardizeResult['imputation']
+  if (input.impute) {
+    const res = imputeMissing(rows, input.impute)
+    rows = res.rows
+    imputation = res.summary
+  }
+
+  // The genes left: their names and annotations (dropped ones go).
+  const genes = new Set(rows.map((r) => r.uniqID))
+  const only = <T>(m: Record<string, T>): Record<string, T> =>
+    Object.fromEntries(Object.entries(m).filter(([k]) => genes.has(k)))
+  // this step's own summaries, not the input's
+  const { normalization: _n, imputation: _i, cleanup: _c, ...carried } = prev
+  void _n
+  void _i
+  void _c
+  return {
+    ...carried,
+    rows,
+    displayMap: only(prev.displayMap),
+    annotationMap: only(prev.annotationMap),
+    cleanup: {
+      droppedGenes: kept.droppedGenes,
+      sampleCount,
+      minSamplePct,
+      ...(grouped ? { by: groupBy } : {})
+    },
+    ...(normalization ? { normalization } : {}),
+    ...(imputation ? { imputation } : {}),
+    scale: outputScale(input.logTransform, prev.inputScale ?? 'linear')
   }
 }

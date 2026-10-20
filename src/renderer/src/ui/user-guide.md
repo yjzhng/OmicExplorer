@@ -36,7 +36,7 @@
 ```steps
 Load data | Your data, samplesheet and DB — or one raw export, set up in the interactive import.
 Clean data | One tidy per-sample table: clean-up, optional imputation, display scale.
-Compare / Contrast | Treated vs vehicle, two-way ANOVA, or two comparisons side by side.
+Compare / Contrast | Treated vs vehicle, an ANOVA over any conditions, or two comparisons side by side.
 Plots | Volcano, MA, heatmap, cluster, enrichment, STRING… redrawn from results.
 ```
 
@@ -121,9 +121,12 @@ Pick the step | e.g. Clean data, Compare, Volcano.
 
 ### Compare and Contrast
 
-- **Compare** → **Configure…**: choose **t-test** or **2-way ANOVA**, and switch on the
-  condition(s) to **compare on**; the other conditions set the context each comparison runs in. A
-  preview lists every comparison before you **Apply**.
+- **Compare** → **Configure…**: switch on the condition(s) to **compare on**; the other conditions
+  set the context each comparison runs in. With several test values or several compared
+  conditions, pick the analysis: **t-test** (each test group against its control) or
+  **ANOVA** (the compared conditions as factors: an F-test per factor and
+  interaction). In an ANOVA a numeric condition (dose, time …) is a **slope** by default — a trend
+  over its levels, on a log or linear scale — or switch it to a **factor** (a level each). A preview lists every comparison before you **Apply**.
 - **Contrast** sets two comparisons side by side — within one dataset, or across two wired inputs
   (dataset A on the y-axis, B on the x-axis) matched on shared conditions.
 
@@ -211,7 +214,7 @@ cmpd | optional | Compound, text
 dose | optional | Dose, a number (0 is the vehicle)
 time | optional | Time point, a number
 rep | optional | Replicate number; numbered automatically when absent
-your own (e.g. medium) | optional | A custom condition, always categorical
+your own (e.g. medium) | optional | A custom condition: categorical, or numeric (with a unit) when its chip is switched to num in the Load tile's Conditions
 ```
 
 - **Samples:** only samples listed here are kept.
@@ -333,12 +336,18 @@ upstream steps:
 Plot | Clean data | Compare | Contrast
 QC · Correlation · Cluster · Bar | ✓ | |
 Heatmap | ✓ | ✓ |
-Volcano · MA · Bubble · Dose & Time response | | ✓ |
+Volcano · MA · Bubble · two-condition Response (e.g. Dose & Time response) | | ✓ |
 Enrichment · STRING | | ✓ |
-Scatter · Dose/time-response | | ✓ | ✓
+Scatter · one-condition Response (e.g. Dose response) | | ✓ | ✓
 Dumbbell | | | ✓
 Data table | ✓ | ✓ | ✓
 ```
+
+- **Response plots:** the plot list offers one per numeric condition in the data (*Dose response*,
+  *Time response*, *Temperature response*…) and one per pair of them (*Dose & Time response*,
+  *Dose & Temperature response*…), each its own tile, so several can be on view at once. A pair's
+  first condition runs along x, with one line per level of the second. Each axis is log or linear by
+  its levels' spacing (linear when it can't tell).
 
 - **Plot group:** tick several plots in the picker and choose **Add N visualisations as a group**
   — one tile with one upstream, its plots stacked inside. **Select plots** adds or removes plots

@@ -370,7 +370,8 @@ export function registerFileIo(): void {
   ipcMain.handle('proj:pickDataDir', async (): Promise<string | null> => {
     const res = await dialog.showOpenDialog({
       title: 'Select data folder',
-      properties: ['openDirectory']
+      // macOS shows a New Folder button only when asked: a new project often wants a new folder
+      properties: ['openDirectory', 'createDirectory']
     })
     return res.canceled || res.filePaths.length === 0 ? null : res.filePaths[0]
   })

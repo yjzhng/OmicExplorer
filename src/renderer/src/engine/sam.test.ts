@@ -114,6 +114,7 @@ describe('runCompare with SAM', () => {
       den: { cmpd: ['dmso'] },
       match: [],
       activeConditions: ['cmpd'],
+      numericConditions: [],
       threshold: { ...DEFAULT_THRESHOLD, type: 'sam_fdr', statMin: -Math.log10(0.05) }
     })
     // Every planted change called; a 5% FDR allows the odd null gene just past the cutoff.

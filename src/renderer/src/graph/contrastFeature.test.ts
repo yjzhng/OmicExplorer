@@ -1,6 +1,7 @@
 /** A Contrast's features: what each input offers, each feature's per-gene value, and the switcher
  *  (a `feature` facet first, in the Contrast's own order). */
 import { describe, expect, it } from 'vitest'
+import { numericConds } from '../engine'
 
 import {
   facetCompareRows,
@@ -16,6 +17,9 @@ import {
   surfaceSideRows
 } from './contrastPair'
 import type { NodeResult } from './types'
+
+/** dose and time numeric, no custom condition declared (the schema of these tests' data) */
+const numeric = numericConds()
 
 const cmpRow = (over: Partial<CompareResultRow>): CompareResultRow => ({
   uniqID: 'g1',
@@ -97,9 +101,14 @@ describe('contrast features', () => {
       } as unknown as CompareResultRow['rs']
     })
     expect(contrastFeatures(compare([surface])).map((f) => f.label)).toEqual([
-      'peak log₂FC',
+      'curve log₂FC',
       'pEC50'
     ])
+    // named with the dose's unit: molar → pEC50 in molar; another unit → −log₁₀ of it
+    expect(contrastFeatures(compare([surface]), { dose: 'nM' })[1].label).toBe('pEC50 (M)')
+    expect(contrastFeatures(compare([surface]), { dose: 'ng/mL' })[1].label).toBe(
+      'pEC50 (−log₁₀ ng/mL)'
+    )
     const ctx = { statType: 'pQ' as const, doseScale: 1e-6 }
     // the fit's signed peak at each time
     expect(surfaceSideRows(surface, 'value', ctx).map((r) => [r.time, r.value])).toEqual([
@@ -110,6 +119,60 @@ describe('contrast features', () => {
     const p = surfaceSideRows(surface, 'pec50', ctx)
     expect(p.map((r) => r.time)).toEqual([24])
     expect(p[0].value).toBeCloseTo(6)
+  })
+
+  it('contrasts a surface along its own axes — never assumed time', () => {
+    // dose × @temp, tested for changes along @temp: temperature curves at each dose
+    const surface = cmpRow({
+      rs: {
+        axis: 'surface',
+        F: 1,
+        df1: 1,
+        df2: 1,
+        pair: ['dose', '@temp'],
+        maps: [
+          { baseline: 'reference', base: 0 },
+          { scale: 'linear', step: 3, baseline: 'reference', base: 42 }
+        ],
+        shift: {
+          response: '@temp',
+          across: 'dose',
+          drift: 0,
+          shape: 0,
+          driftShare: 0,
+          kind: 'shape'
+        },
+        cells: [
+          { dose: 0, time: 50, y: 0, fitted: -1 },
+          { dose: 0, time: 60, y: 0, fitted: -3 },
+          { dose: 10, time: 50, y: 0, fitted: -0.5 },
+          { dose: 10, time: 60, y: 0, fitted: -1 }
+        ],
+        surface: { byTime: [], byDose: [{ at: 10, mid: 57 }] }
+      } as unknown as CompareResultRow['rs']
+    })
+    const fs = contrastFeatures(compare([surface]))
+    // a linear temperature axis: EC50 itself — in its unit, else named by its axis
+    expect(fs.map((f) => f.label)).toEqual(['curve log₂FC', 'EC50 (temp)'])
+    expect(contrastFeatures(compare([surface]), { '@temp': '°C' })[1].label).toBe('EC50 (°C)')
+    const ctx = { statType: 'pQ' as const, doseScale: 1e-9 }
+    // per dose (the slices), the shift from the dose-0 curve at its largest: dose 10 at 60° (+2)
+    const v = surfaceSideRows(surface, 'value', ctx)
+    expect(v.map((r) => [r.dose, r.time, r.value])).toEqual([
+      [0, null, 0],
+      [10, null, 2]
+    ])
+    // the potency: each dose's temperature curve's midpoint, as it is (°)
+    const p = surfaceSideRows(surface, 'pec50', ctx)
+    expect(p.map((r) => [r.dose, r.value])).toEqual([[10, 57]])
+    // capturing the shape instead: dose curves at each temperature — the slices carry @temp (in
+    // the rows' custom values), not time
+    const shape = cmpRow({ rs: { ...surface.rs!, shift: undefined } })
+    const t = surfaceSideRows(shape, 'value', ctx)
+    expect(t.map((r) => [r.extra?.temp, r.time, r.value])).toEqual([
+      ['50', null, -1],
+      ['60', null, -3]
+    ])
   })
 
   it('switches by a feature facet, first, in its own order', () => {
@@ -129,7 +192,7 @@ describe('contrast features', () => {
     const rows = [row('log₂FC', 'WT'), row('log₂FC', 'KO'), row('−log₁₀ q', 'WT')]
     expect(facetDims(rows)).toEqual(['feature', 'cell'])
     // the Contrast's order (its own value first), not A–Z
-    expect(facetCompareRows(rows, ['feature']).map((g) => g.values[0].value)).toEqual([
+    expect(facetCompareRows(rows, ['feature'], numeric).map((g) => g.values[0].value)).toEqual([
       'log₂FC',
       '−log₁₀ q'
     ])

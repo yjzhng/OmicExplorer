@@ -12,6 +12,17 @@
  *
  * The in-memory results never change shape; this is only the file's representation.
  */
+import { attachLazyRows, LAZY_MIN_ROWS } from '../engine/lazyRows'
+import {
+  encodeColumn,
+  encodeTable as encodeTableImpl,
+  T_MAIN,
+  T_NULL,
+  T_OTHER,
+  type Column as WireColumn,
+  type Pool,
+  type Table as WireTable
+} from '../engine/wire'
 import type { NodeResult } from './types'
 
 /** Marks a workflow's `results` as packed (absent = the plain objects of older files). */
@@ -136,6 +147,121 @@ function unpackTable(t: Table): Obj[] {
   return rows
 }
 
+/** A packed table as the engine's columnar table (engine/wire.ts) — straight from its columns,
+ *  without building its rows: what a large table is kept as once open (lazyRows.ts). Its rows,
+ *  built from it, are exactly unpackTable's. */
+function wireTable(t: Table): WireTable {
+  const n = t.$rows
+  const keys = Object.keys(t.cols)
+  // Each row's keys in the columns' order, less the ones it lacks — one shape per pattern.
+  const lacks = new Map<number, Set<string>>()
+  for (const k of keys)
+    for (const i of t.cols[k].a ?? []) {
+      let s = lacks.get(i)
+      if (!s) lacks.set(i, (s = new Set()))
+      s.add(k)
+    }
+  const shapes: string[][] = [keys]
+  const shapeOf = new Map<string, number>([[keys.join('\u0000'), 0]])
+  const shape = new Uint32Array(n)
+  for (const [i, gone] of lacks) {
+    const ks = keys.filter((k) => !gone.has(k))
+    const sig = ks.join('\u0000')
+    let s = shapeOf.get(sig)
+    if (s === undefined) {
+      s = shapes.length
+      shapeOf.set(sig, s)
+      shapes.push(ks)
+    }
+    shape[i] = s
+  }
+  const pool: Pool = { list: [], at: new Map() }
+  const cols: Record<string, WireColumn> = {}
+  for (const k of keys) cols[k] = wireColumn(t.cols[k], n, pool)
+  const table: WireTable = {
+    $wire: 1,
+    n,
+    shapes,
+    shape: shapes.length <= 0xffff ? Uint16Array.from(shape) : shape,
+    cols
+  }
+  // (the pool of any record a raw column holds — see encodeColumn)
+  if (pool.list.length) table.nest = encodeTableOf(pool.list)
+  return table
+}
+
+/** One packed column as a columnar one (rows the column lacks hold anything: their shape skips it). */
+function wireColumn(col: Column, n: number, pool: Pool): WireColumn {
+  if ('c' in col) {
+    const c = col.c
+    if (typeof c === 'number') return { k: 'f', v: new Float64Array(n).fill(c) }
+    if (typeof c === 'string') return { k: 's', d: [c], i: new Int32Array(n) }
+    if (typeof c === 'boolean') return { k: 'b', v: new Uint8Array(n).fill(c ? 1 : 0) }
+    if (c === null) return { k: 'f', v: new Float64Array(n), t: new Uint8Array(n).fill(T_NULL) }
+    // the same object or array in every row, shared — as unpackTable shares it
+    return { k: 'a', v: new Array(n).fill(c) }
+  }
+  if ('s' in col) {
+    const i = Int32Array.from(col.i)
+    let t: Uint8Array | undefined
+    for (let r = 0; r < n; r++)
+      if (i[r] < 0) {
+        t ??= new Uint8Array(n)
+        t[r] = T_NULL
+        i[r] = 0
+      }
+    return t ? { k: 's', d: col.s, i, t } : { k: 's', d: col.s, i }
+  }
+  if ('o' in col) {
+    const i = new Int32Array(n)
+    const t = new Uint8Array(n).fill(T_NULL)
+    col.p.forEach((row, at) => {
+      i[row] = at
+      t[row] = T_MAIN
+    })
+    return { k: 'O', i, table: wireTable(col.o), t }
+  }
+  if ('v' in col) {
+    // numbers or booleans (and nulls): the commoner kind as the column, the rest tagged
+    let nums = 0
+    let bools = 0
+    for (const v of col.v) {
+      if (typeof v === 'number') nums++
+      else if (typeof v === 'boolean') bools++
+    }
+    const isNum = nums >= bools
+    const v = isNum ? new Float64Array(n) : new Uint8Array(n)
+    let t: Uint8Array | undefined
+    const x: unknown[] = []
+    for (let r = 0; r < n; r++) {
+      const val = col.v[r]
+      if (isNum ? typeof val === 'number' : typeof val === 'boolean') v[r] = Number(val)
+      else {
+        t ??= new Uint8Array(n)
+        if (val === null || val === undefined) t[r] = T_NULL
+        else {
+          t[r] = T_OTHER
+          x.push(val)
+        }
+      }
+    }
+    const extra = t ? (x.length ? { t, x } : { t }) : {}
+    return isNum
+      ? { k: 'f', v: v as Float64Array, ...extra }
+      : { k: 'b', v: v as Uint8Array, ...extra }
+  }
+  // anything else (a surface's cells — lists of records — among them): columnised as the engine
+  // would (encodeColumn), so long lists become list columns
+  return encodeColumn(
+    col.j.map((v) => (v === null ? null : v)),
+    [],
+    pool
+  )
+}
+
+/** Records as a columnar table, their buffers kept (nothing is transferred). */
+const encodeTableOf = (rows: Obj[]): WireTable => encodeTableImpl(rows, [])
+
 /** Pack every large array of row objects inside a value (any depth). */
 function packValue(v: unknown, pool: AnnotationPool): unknown {
   if (Array.isArray(v)) {
@@ -157,7 +283,17 @@ function unpackValue(v: unknown, pool: Obj[]): unknown {
   if ('$table' in v) return unpackTable(v.$table as Table)
   if ('$pool' in v && typeof v.$pool === 'number') return pool[v.$pool]
   const out: Obj = {}
-  for (const [k, x] of Object.entries(v)) out[k] = unpackValue(x, pool)
+  let lazy: Table | null = null
+  for (const [k, x] of Object.entries(v)) {
+    // A large `rows` table stays columnar: its rows are built when read (lazyRows.ts).
+    if (k === 'rows' && isObj(x) && '$table' in x && (x.$table as Table).$rows >= LAZY_MIN_ROWS) {
+      lazy = x.$table as Table
+      out[k] = null
+      continue
+    }
+    out[k] = unpackValue(x, pool)
+  }
+  if (lazy) attachLazyRows(out, wireTable(lazy))
   return out
 }
 

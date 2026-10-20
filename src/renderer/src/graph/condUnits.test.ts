@@ -50,6 +50,11 @@ describe('condUnitsFor (units set at import, read downstream)', () => {
     expect(condUnitsFor({ nodes, edges }, 'merge-1')).toEqual({ dose: 'nM', time: 'min' })
   })
 
+  it('carries a custom condition’s unit, keyed by its condition', () => {
+    const nodes = [step('load-1', 'load', { units: { dose: 'nM', '@temp': '°C' } })]
+    expect(condUnitsFor({ nodes, edges: [] }, 'load-1')).toEqual({ dose: 'nM', '@temp': '°C' })
+  })
+
   it('nothing upstream ⇒ no units', () => {
     expect(condUnitsFor({ nodes: [], edges: [] }, undefined)).toEqual({})
   })
@@ -76,6 +81,24 @@ describe('curveDoseUnit', () => {
       scale: 1
     })
   })
+  it('a custom axis: its own unit, molar only when the unit is', () => {
+    expect(curveDoseUnit(curve({ curveAxis: '@temp' }), { '@temp': '°C' })).toEqual({
+      unit: '°C',
+      scale: 1
+    })
+    expect(curveDoseUnit(curve({ curveAxis: '@conc' }), { '@conc': 'mM' })).toEqual({
+      unit: 'mM',
+      scale: 1e-3,
+      molar: true
+    })
+    // a legacy Compare-level unit is a dose's only
+    expect(curveDoseUnit(curve({ curveAxis: '@conc', doseUnit: 'nM' }), {})).toEqual({ scale: 1 })
+  })
+  it('a unit is free text: a molar one only scales pEC50 to M', () => {
+    expect(curveDoseUnit(curve(), { dose: 'mg/mL' })).toEqual({ unit: 'mg/mL', scale: 1 })
+    expect(curveDoseUnit(curve(), { dose: 'uM' })).toEqual({ unit: 'uM', scale: 1e-6, molar: true })
+    expect(curveDoseUnit(curve(), { dose: 'μM' }).scale).toBe(1e-6)
+  })
   it('not a curve fit ⇒ nothing', () => {
     expect(curveDoseUnit(curve({ analysis: 'compare' }), { dose: 'nM' })).toEqual({ scale: 1 })
   })
@@ -85,5 +108,9 @@ describe('axisTitle', () => {
   it('appends the unit when one is set', () => {
     expect(axisTitle('dose', { dose: 'nM' })).toBe('dose (nM)')
     expect(axisTitle('time', {})).toBe('time')
+  })
+  it('titles a custom condition by its name, with its unit', () => {
+    expect(axisTitle('@temp', { '@temp': '°C' })).toBe('temp (°C)')
+    expect(axisTitle('@temp', {})).toBe('temp')
   })
 })

@@ -2,8 +2,12 @@
 import type { Node } from '@xyflow/react'
 
 import type {
+  AxisBaseline,
+  AxisFit,
+  AxisScale,
   CondSelector,
   ClusterColorBy,
+  CustomConditionKey,
   ClusterData,
   ConditionKey,
   ContrastResult,
@@ -18,11 +22,25 @@ import type {
   InteractiveSampleCond,
   SampleOrder,
   MatrixPreset,
+  Pair,
   StandardizeResult,
   ThresholdConfig,
   VehNormResult
 } from '../engine'
-import { condValue, isNumericCond, VALID_CONDITIONS, type LeafOrder, type Linkage } from '../engine'
+import {
+  condLabel,
+  condValue,
+  crossPairs,
+  axisModelFor,
+  isCustomCond,
+  isNumericCond,
+  VALID_CONDITIONS,
+  numericConds,
+  numericOf,
+  type LeafOrder,
+  type Linkage,
+  type NumericConds
+} from '../engine'
 import type { StringAll } from '../ui/stringModel'
 import { ROLE_DEFAULTS, paletteEffectColors, toPaletteRef, type PaletteRef } from '../ui/palettes'
 export type { StringAll }
@@ -44,6 +62,9 @@ export type NodeKind =
   | 'ma'
   | 'dr'
   | 'potency'
+  | 'metrics'
+  | 'variance'
+  | 'interaction'
   | 'curveMad'
   | 'response'
   | 'bubble'
@@ -69,6 +90,10 @@ export type MergeConfig = Record<string, never>
  *  condition absent or empty is unfiltered, so the default passes the dataset through. */
 export interface SubsetConfig {
   keep: CondSelector
+  /** the replicates kept ("1", "2", …), across every condition; unset or empty = all */
+  reps?: string[]
+  /** samples left out by name (a bad replicate of one condition) */
+  drop?: string[]
 }
 
 export interface FileEntry {
@@ -98,9 +123,19 @@ export interface LoadConfig {
    *  Display-only — axis titles, EC50 and a dose curve's molar pEC50; never stales a result (see
    *  setLoadUnits). */
   units?: CondUnits
+  /** the custom conditions declared numeric (their cat/num chip) — one declaration for both modes,
+   *  as `units` is: set in the interactive import's Conditions step or the manual panel's
+   *  Conditions, and kept when the tile switches mode. Read it through declaredNumeric (a project
+   *  from before kept the import's in InteractiveImport.numericConditions). */
+  numericConditions?: string[]
   /** interactive mode: the import spec built across the 4-step wizard. */
   interactive?: InteractiveImport
 }
+
+/** A Load tile's custom conditions declared numeric — whichever mode it is in (one declaration, as
+ *  its units), falling back to where an import saved before kept them. */
+export const declaredNumeric = (c: LoadConfig | undefined): string[] =>
+  c?.numericConditions ?? c?.interactive?.numericConditions ?? []
 
 /** Resolve a Load tile's effective mode, tolerating older saved values:
  *  - `manual` / `interactive` → themselves
@@ -113,6 +148,23 @@ export function resolveLoadMode(c: LoadConfig): LoadMode {
   if (m != null) return 'interactive'
   return c.data || c.samplesheet || c.db ? 'manual' : 'interactive'
 }
+
+/** The samplesheet columns Clean data reads as custom conditions off this Load tile: the ones the
+ *  interactive import defined, less those switched off; undefined for a hand-written samplesheet
+ *  (manual mode), whose customs ingest auto-detects. */
+export const loadCustomConditions = (c: LoadConfig): string[] | undefined =>
+  c.interactive?.customConditions?.filter((n) => !c.interactive?.hiddenConditions?.includes(n))
+
+/** …and of those, the ones declared numeric (the import's cat/num chip; a manual tile's on its
+ *  panel). */
+export const loadNumericConditions = (c: LoadConfig): string[] =>
+  resolveLoadMode(c) === 'manual'
+    ? declaredNumeric(c)
+    : declaredNumeric(c).filter(
+        (n) =>
+          c.interactive?.customConditions?.includes(n) &&
+          !c.interactive?.hiddenConditions?.includes(n)
+      )
 
 /** Why a Load tile isn't ready to feed a Clean data step — null when it is. Both standard files
  *  must be set: Clean data reads them in either mode (interactive materialises them on convert),
@@ -137,9 +189,13 @@ export interface InteractiveImport {
   /** sample header → assigned conditions */
   conditions: Record<string, InteractiveSampleCond>
   /** custom condition axes the user added beyond the five presets, in display order. Each becomes
-   *  a samplesheet column of the same name, and a `@name` condition key downstream. Always
-   *  categorical — see the engine's CustomConditionKey. */
+   *  a samplesheet column of the same name, and a `@name` condition key downstream. Categorical
+   *  unless listed in `numericConditions`. */
   customConditions?: string[]
+  /** Legacy: where the import first kept its declared numeric conditions — now on the Load tile
+   *  (LoadConfig.numericConditions, shared by both modes). Only read, by declaredNumeric, for a
+   *  project saved before. */
+  numericConditions?: string[]
   /** conditions switched off that still carry values: kept (switching one back on restores them),
    *  but left out of the samplesheet and the checks while off */
   hiddenConditions?: string[]
@@ -197,8 +253,11 @@ export interface StandardizeConfig {
   logTransform?: 'none' | 'log2' | 'log10'
   /** median normalisation on/off (absent = off) */
   normalizeEnabled?: boolean
-  /** the genes each sample's median is taken over (absent = 'shared': genes in every sample) */
+  /** the genes each sample's median is taken over (absent = 'shared': genes in every sample), or
+   *  one reference protein ('protein': normalizeProtein) */
   normalizeReference?: NormalizeReference
+  /** normalizeReference 'protein': the reference protein's uniqID */
+  normalizeProtein?: string
   /** also equalise each sample's spread, Perseus width adjustment (absent = off) */
   normalizeSpread?: boolean
   /** imputation on/off (absent = off) */
@@ -222,15 +281,43 @@ export const cleanupOn = (c: StandardizeConfig): boolean =>
 export const imputeOn = (c: StandardizeConfig): boolean => !!c.imputeEnabled && cleanupOn(c)
 
 export interface CompareConfig {
-  /** which comparison analysis to run. On a Compare tile: 'compare' (the explicit numerator /
-   *  denominator model) or 'two_way_anova' (its own factors). A Curve fit tile is always
+  /** which comparison analysis to run. On a Compare tile, the goal the Compare window picks:
+   *  'compare' — the t-test, the explicit numerator / denominator model (a t-test per test group)
+   *  — or 'anova' — the compared conditions as the factors of one ANOVA (any
+   *  number; one is a one-way ANOVA). A saved 'two_way_anova' reads as 'anova' (see
+   *  normalizeCompareConfig). A Curve fit tile is always
    *  'curve_fit' — the same config with `num` as the treatments (one curve per numerator group)
    *  and `den` as the control, the curve's baseline. A Compare saved in curve-fit mode opens as a
    *  Curve fit tile (see migrateCurveCompare). */
-  analysis: 'compare' | 'two_way_anova' | 'curve_fit'
+  analysis: 'compare' | 'anova' | 'curve_fit'
   method: 'ttest'
   /** curve_fit only: the numeric condition the curve runs over (absent = dose) */
   curveAxis?: ConditionKey
+  /** curve_fit: an axis's scale as the user set it in the Curve fit window, per condition; absent =
+   *  the one its levels' spacing shows (engine detectAxisScale), else its preset's. Set only where
+   *  the user overrode the detection, so the rest keeps following the data. Both methods follow it
+   *  (one-axis curves; a surface is log on both axes). An ANOVA's slopes read it too (set in the
+   *  Compare window). */
+  axisScale?: Partial<Record<ConditionKey, AxisScale>>
+  /** anova: the compared numeric conditions taken as factors (one level each); every other
+   *  compared numeric condition is a slope — the default */
+  asFactor?: ConditionKey[]
+  /** curve_fit: what an axis's baseline is to its curves, as the user set it in the Curve fit
+   *  window, per condition — 'reference' (a control off the curve: the vehicle) or 'matched' (its
+   *  own first point: t₀, the lowest temperature — ratio to the lowest level). Absent = the axis's
+   *  preset (dose reference, time matched, any other reference); set only where the user picked the
+   *  other. Both methods follow it (one-axis curves; a surface keeps the presets'). */
+  axisBaseline?: Partial<Record<ConditionKey, AxisBaseline>>
+  /** curve_fit: each axis's models as the user set them (a custom method) — the detector's shape,
+   *  the descriptor's and on a surface the coupling (engine AxisFit; graph/axisFits.ts resolves
+   *  them). Absent: the method preset's (`detection`'s detector everywhere, the 4PL descriptor; on
+   *  a surface each axis's drift as its baseline gives — a reference axis drifts along a matched
+   *  one, two of a kind both drift: engine driftsByDefault). `detection` is kept as what they amount
+   *  to (detectionOf). */
+  axisFits?: Partial<Record<ConditionKey, AxisFit>>
+  /** curve_fit, surfaces: the two numeric conditions — the first runs from the baseline (dose), the
+   *  baseline matched at each level of the second (time). Absent: dose × time. */
+  surfacePair?: [ConditionKey, ConditionKey]
   /** curve_fit only: the detection model — '4pl' (absent): the CurveCurator method; 'spline': the
    *  response surface method (spline detection, moderated F, 4PL description) */
   detection?: '4pl' | 'spline'
@@ -245,9 +332,21 @@ export interface CompareConfig {
   /** curve_fit, spline only: one dose × time surface per gene × compound instead of curves over
    *  `curveAxis` */
   surface?: boolean
-  /** curve_fit, surfaces only: describe slice by slice — drawn per time (absent / 'slices') or per
-   *  dose ('doseSlices') — or by one joint model ('joint') */
+  /** curve_fit, surfaces only (legacy — now surfaceIntent decides): describe slice by slice —
+   *  drawn per time (absent / 'slices') or per dose ('doseSlices') — or by one joint model
+   *  ('joint'). No longer written; a run with surfaceIntent ignores it. */
   surfaceDescription?: 'slices' | 'doseSlices' | 'joint'
+  /** curve_fit, surfaces only: what the fit is for — capture the response's shape (absent /
+   *  'shape': the surface against flat, the joint description) or test response changes
+   *  ('changes': curves along the response axis compared across the other — engine runSliceShift) */
+  surfaceIntent?: 'shape' | 'changes'
+  /** curve_fit, testing response changes: the axis the curves run along (the other is compared
+   *  across) — the user's pick; absent: not picked yet, the run asks for it */
+  responseAxis?: ConditionKey
+  /** curve_fit, testing response changes with a 4PL along the response axis: the F's null —
+   *  the adjusted F (absent / 'adjusted': simulated) or NPARC's df estimated across the genes
+   *  ('nparc' — degenerate on log₂ single-replicate data such as the TPP example; parked) */
+  changesStat?: 'nparc' | 'adjusted'
   /** curve_fit: describe (4PL — EC50, top) every gene (true), or the responders only (false:
    *  q ≤ DESCRIBE_Q). Unset = every gene under the 4PL detector over one axis (its 4PL is its
    *  test), responders otherwise — see describesAll. Every gene is slower with a separate
@@ -274,7 +373,8 @@ export interface CompareConfig {
    *  = inferred from the pins, and nothing pooled. */
   compared?: ConditionKey[]
   pool?: ConditionKey[]
-  /** two_way_anova only: the two factors and their numerator/denominator levels */
+  /** Legacy (a 2-way ANOVA saved before the compared conditions named its factors): the two factors
+   *  and their numerator/denominator levels — read into num / den / compared on load */
   condition: ConditionKey
   pairNum: string
   pairDen: string
@@ -290,10 +390,18 @@ export interface CompareConfig {
   effectColors?: Partial<EffectColors>
 }
 
-/** Dose units a dataset's doses can be in, with their size in molar. */
+/** The molar units the app knows, with their size in molar. A unit is free text (CondUnits); one
+ *  of these only puts a log axis's pEC50 in molar — pEC50 (M), whatever the doses were given in. */
 export const DOSE_UNITS = { M: 1, mM: 1e-3, µM: 1e-6, nM: 1e-9, pM: 1e-12 } as const
 export type DoseUnit = keyof typeof DOSE_UNITS
-/** Time units a dataset's time points can be in. */
+const MOLAR_UNITS: Record<string, number> = {
+  ...DOSE_UNITS,
+  // micro typed as the Greek mu or a u; femtomolar
+  μM: 1e-6,
+  uM: 1e-6,
+  fM: 1e-15
+}
+/** Common time units — suggestions only, as DOSE_UNIT_SUGGESTIONS. */
 export const TIME_UNITS = ['s', 'min', 'h', 'd', 'wk'] as const
 export type TimeUnit = (typeof TIME_UNITS)[number]
 
@@ -302,78 +410,131 @@ export type TimeUnit = (typeof TIME_UNITS)[number]
 export const AU = 'a.u.'
 export type ArbitraryUnit = typeof AU
 
-/** The units of the numeric conditions, as picked at import. Absent = not picked yet (the import
- *  asks for one before it goes on; an older project shows it unitless, like a.u.). */
-export interface CondUnits {
-  dose?: DoseUnit | ArbitraryUnit
-  time?: TimeUnit | ArbitraryUnit
+/** What the unit boxes offer as you type (any other text is a unit too). */
+export const DOSE_UNIT_SUGGESTIONS: readonly string[] = [
+  AU,
+  ...Object.keys(DOSE_UNITS),
+  'mg/mL',
+  'µg/mL',
+  '%',
+  'X',
+  'MIC'
+]
+export const TIME_UNIT_SUGGESTIONS: readonly string[] = [AU, ...TIME_UNITS]
+
+/** The units of the numeric conditions, as named at import, keyed by condition: free text (nM,
+ *  mg/mL, MIC, %, h, …) — labels, except that a molar unit puts a log axis's pEC50 in molar
+ *  (isMolar). a.u. = none. Absent = not named yet (the import asks for one before it goes on; an
+ *  older project shows it unitless, like a.u.). */
+export type CondUnits = {
+  dose?: string
+  time?: string
+} & { [K in CustomConditionKey]?: string }
+
+/** A condition's unit, if it has one (only numeric conditions do). */
+export function unitOf(units: CondUnits | undefined, c: ConditionKey): string | undefined {
+  if (!units) return undefined
+  if (c === 'dose' || c === 'time') return units[c]
+  return isCustomCond(c) ? units[c] : undefined
 }
 
+/** Whether a unit is a molar one (M, mM, µM / μM / uM, nM, pM, fM), so a log axis's pEC50 is put in
+ *  molar. */
+export const isMolar = (u: string | undefined): boolean =>
+  u != null && Object.prototype.hasOwnProperty.call(MOLAR_UNITS, u.trim())
+/** A molar unit's size in molar (1 for any other unit). */
+export const molarScale = (u: string | undefined): number =>
+  u != null && isMolar(u) ? MOLAR_UNITS[u.trim()] : 1
+
 /** The units the data feeding `id` was imported with: walks upstream (through every input of a
- *  Merge) to the Load tile(s); the first one to name a unit wins it. */
+ *  Merge) to the Load tile(s); the first one to name a condition's unit wins it. */
 export function condUnitsFor(
   g: { nodes: GraphNode[]; edges: { source: string; target: string }[] },
   id: string | undefined
 ): CondUnits {
-  const out: CondUnits = {}
+  const out: Record<string, string> = {}
   const seen = new Set<string>()
   const queue = id ? [id] : []
-  while (queue.length && !(out.dose && out.time)) {
+  while (queue.length) {
     const cur = queue.shift()!
     if (seen.has(cur)) continue
     seen.add(cur)
     const n = g.nodes.find((x) => x.id === cur)
     if (n && isStep(n) && n.data.kind === 'load') {
       const u = (n.data.config as LoadConfig).units
-      out.dose ??= u?.dose
-      out.time ??= u?.time
+      for (const [c, v] of Object.entries(u ?? {})) if (v) out[c] ??= v
       continue
     }
     for (const e of g.edges) if (e.target === cur) queue.push(e.source)
   }
-  return out
+  return out as CondUnits
 }
 
-/** A numeric axis's title with its unit: `dose (nM)`, or just `dose` when none is set. */
+/** A numeric axis's title with its unit: `dose (nM)`, or just `dose` when none is set. `axis` is a
+ *  condition key (a custom one titled by its name). */
 export function axisTitle(axis: string, units: CondUnits): string {
-  const u = axis === 'dose' ? units.dose : axis === 'time' ? units.time : undefined
-  return u ? `${axis} (${u})` : axis
+  const c = axis as ConditionKey
+  const u = unitOf(units, c)
+  return u ? `${condLabel(c)} (${u})` : condLabel(c)
 }
 
-/** A curve fit's axis unit and, over dose, its molar scale (for pEC50): the imported dose unit,
- *  else a legacy Compare-level one; none (a.u.) = no molar scale. Time or a custom axis has no
- *  molar scale — scale 1, with its unit (if any) for the EC50's label only. */
+/** A curve fit's axis unit and, when it is molar, its molar scale (for pEC50): the imported unit
+ *  of its axis (a dose axis: else a legacy Compare-level one); none or a.u. = no molar scale. A
+ *  unit that isn't molar (time's, a custom condition's) has scale 1 — its unit for the EC50's label
+ *  only. */
 export function curveDoseUnit(
   cfg: CompareConfig | undefined,
   units: CondUnits
 ): { unit?: string; scale: number; molar?: boolean } {
   if (!cfg || cfg.analysis !== 'curve_fit') return { scale: 1 }
   const axis = cfg.curveAxis ?? 'dose'
-  if (axis === 'time') return { unit: units.time, scale: 1 }
-  if (axis !== 'dose') return { scale: 1 }
-  const unit = units.dose ?? cfg.doseUnit
-  if (unit === AU) return { unit, scale: 1 }
-  return unit ? { unit, scale: DOSE_UNITS[unit], molar: true } : { scale: 1 }
+  const unit = unitOf(units, axis) ?? (axis === 'dose' ? cfg.doseUnit : undefined)
+  if (!unit) return { scale: 1 }
+  return isMolar(unit) ? { unit, scale: molarScale(unit), molar: true } : { unit, scale: 1 }
 }
 
-/** CurveCurator's default significance (its example config): α = 0.05, |curve log₂FC| ≥ 0.45, on
- *  raw p. */
+/** The axis a curve fit's curves run along, with its unit and molar scale — a one-axis curve's
+ *  axis; a surface's response axis when testing changes, else its first (its dose curves): what a
+ *  potency is read along (EC50 in its units; pEC50 when molar). curveDoseUnit stays the dose's. */
+export function curveAxisUnit(
+  cfg: CompareConfig | undefined,
+  units: CondUnits
+): { axis: ConditionKey; unit?: string; scale: number; molar?: boolean } {
+  const pair = cfg?.surfacePair ?? ['dose', 'time']
+  const axis: ConditionKey = !cfg
+    ? 'dose'
+    : cfg.surface
+      ? cfg.surfaceIntent === 'changes' && cfg.responseAxis && pair.includes(cfg.responseAxis)
+        ? cfg.responseAxis
+        : pair[0]
+      : (cfg.curveAxis ?? 'dose')
+  const unit = unitOf(units, axis) ?? (axis === 'dose' ? cfg?.doseUnit : undefined)
+  if (!unit) return { axis, scale: 1 }
+  return isMolar(unit)
+    ? { axis, unit, scale: molarScale(unit), molar: true }
+    : { axis, unit, scale: 1 }
+}
+
+/** CurveCurator's default significance: α = 0.05, |curve log₂FC| ≥ 0.5 (as every curve fit's
+ *  default fold-change limit), on raw p. */
 export const CURVECURATOR_THRESHOLD: Partial<ThresholdConfig> = {
   type: 'curvecurator',
   statType: 'pP',
   statMin: -Math.log10(0.05),
-  fcHigh: 0.45,
-  fcLow: -0.45
+  fcHigh: 0.5,
+  fcLow: -0.5
 }
 
-/** The response surface method's default call (as the engine's RESPONSE_THRESHOLD): q ≤ 5%, no
- *  fold-change limit. */
+/** The response surface method's default call (as the engine's RESPONSE_THRESHOLD): the
+ *  hyperbolic boundary on q, P asymptote q = 5%, FC asymptote |log₂FC| = 0.5. */
 export const RESPONSE_THRESHOLD_DEFAULT: Partial<ThresholdConfig> = {
-  type: 'linear',
+  type: 'non-linear',
   statType: 'pQ',
   statMin: -Math.log10(0.05),
-  fcHigh: 0,
-  fcLow: 0
+  b: 1,
+  s0: -0.5,
+  fcHigh: 0.5,
+  fcLow: -0.5
 }
 
 /** The threshold a Curve fit should carry for its detection model `to` (and, `surface`, over
@@ -534,37 +695,62 @@ function normalizeAnalysis(c: CompareConfig): CompareConfig {
       match: VALID_CONDITIONS.filter((k) => k !== cond)
     }
   }
-  // Legacy two-way (factor fields only) → mirror the two factors into num/den selectors so the
-  // dialog can show them; the two-way run path still reads the factor fields.
-  if (
-    analysis === 'two_way_anova' &&
-    !(c.num && Object.keys(c.num).length) &&
-    c.pairNum &&
-    c.pairDen &&
-    c.pair2Num &&
-    c.pair2Den
-  ) {
+  // Legacy 2-way ANOVA → the ANOVA, its two factors the compared conditions; one saved with the
+  // factor fields only has them mirrored into num/den selectors.
+  if (analysis === 'two_way_anova') {
+    const legacy =
+      !(c.num && Object.keys(c.num).length) && c.pairNum && c.pairDen && c.pair2Num && c.pair2Den
     return {
       ...c,
-      num: { [c.condition]: [c.pairNum], [c.condition2]: [c.pair2Num] },
-      den: { [c.condition]: [c.pairDen], [c.condition2]: [c.pair2Den] },
-      match: c.match ?? []
+      analysis: 'anova',
+      num: legacy ? { [c.condition]: [c.pairNum], [c.condition2]: [c.pair2Num] } : (c.num ?? {}),
+      den: legacy ? { [c.condition]: [c.pairDen], [c.condition2]: [c.pair2Den] } : (c.den ?? {}),
+      match: c.match ?? [],
+      compared: c.compared?.length ? c.compared : [c.condition, c.condition2].filter(Boolean),
+      // it ran its numeric conditions as factors: keep them so (a slope is the ANOVA's default)
+      asFactor: c.asFactor ?? (c.compared?.length ? c.compared : [c.condition, c.condition2])
     }
   }
-  // Already explicit (or two-way): return unchanged when the new fields exist, else backfill.
+  // Already explicit: return unchanged when the new fields exist, else backfill.
   if (c.num && c.den && c.match) return c
   return { ...c, num: c.num ?? {}, den: c.den ?? {}, match: c.match ?? [] }
 }
 
-/** Whether a Compare tile's comparison is fully defined (numerator + denominator pinned, or both
- *  factor pairs for a legacy two-way). Drives the tile's ready/blocked state. */
+/** Whether a Compare tile's comparison is fully defined (numerator + denominator pinned; for an
+ *  ANOVA, a test level and a control for each factor). Drives the tile's ready/blocked state. */
 export function isCompareConfigured(config: CompareConfig): boolean {
   const cfg = normalizeCompareConfig(config)
   const pinned = (s: CondSelector): boolean =>
     Object.values(s).some((v) => v != null && v.length > 0)
   if (cfg.analysis === 'compare' || cfg.analysis === 'curve_fit')
     return pinned(cfg.num) && pinned(cfg.den)
-  return !!(cfg.pairNum && cfg.pairDen && cfg.pair2Num && cfg.pair2Den)
+  return anovaFactorsOf(cfg, numericConds()).length > 0
+}
+
+/** An ANOVA's factors: each compared condition with its test × control level pairs — a numeric
+ *  one (`numeric`, the dataset's schema) a slope unless taken as a factor (`asFactor`), on its
+ *  scale (slopeScaleOf). None when one has no pair (nothing picked on a side). */
+export function anovaFactorsOf(
+  cfg: Pick<CompareConfig, 'compared' | 'num' | 'den' | 'asFactor' | 'axisScale'>,
+  numeric: NumericConds
+): Array<{ condition: ConditionKey; pairs: Pair[]; slope?: AxisScale }> {
+  const factors = (cfg.compared ?? []).map((c) => {
+    const pairs = crossPairs(cfg.num[c] ?? [], cfg.den[c] ?? [])
+    return isNumericCond(c, numeric) && !cfg.asFactor?.includes(c)
+      ? { condition: c, pairs, slope: slopeScaleOf(cfg, c) }
+      : { condition: c, pairs }
+  })
+  return factors.length && factors.every((f) => f.pairs.length) ? factors : []
+}
+
+/** A slope's axis scale: as the user set it (`axisScale`), else what its picked levels' spacing
+ *  shows — linear when it can't tell — as the Curve fit decides it. */
+export function slopeScaleOf(
+  cfg: Pick<CompareConfig, 'num' | 'den' | 'axisScale'>,
+  c: ConditionKey
+): AxisScale {
+  const levels = [...(cfg.num[c] ?? []), ...(cfg.den[c] ?? [])].map(Number)
+  return axisModelFor(c, undefined, cfg.axisScale?.[c], levels).scale
 }
 
 /** Contrast forms two sides (FC1/FC2) and scores per-gene divergence between them. */
@@ -740,11 +926,18 @@ export interface PointStyle {
   highlight?: HighlightStyle
   /** show the legend (default on) */
   legend?: boolean
+  /** the threshold / reference guide lines' width, px (unset = GUIDE_WIDTH, 1) */
+  guideWidth?: number
 }
 
 /** Heatmap: genes × samples log10 intensity (from Standardize) OR genes × comparisons log2FC
  *  (from Compare) — the tile picks the rendering from its upstream. */
 export interface HeatmapConfig extends FcPaletteConfig {
+  /** from a two-way ANOVA, outside a group (in one, it follows the group's `show` pick): its
+   *  overall rows — the signed 2×2 interaction fold changes (default, the diverging palette) — or
+   *  its factors rows (unsigned effect sizes, the palette's upper half from 0) — one at a time, as
+   *  they can't share a colour scale */
+  fcRows?: 'overall' | 'factors'
   /** from Clean data: the value palette (unset = viridis). From a Compare it draws log₂FC on
    *  `fcPalette` instead. */
   valuePalette?: PaletteRef
@@ -789,31 +982,37 @@ export interface HeatmapConfig extends FcPaletteConfig {
 
 /** The condition a by-condition colouring starts from when none is picked yet: the data's first
  *  categorical condition, else its first condition at all. */
-export function defaultColorConds(active: readonly ConditionKey[]): ConditionKey[] {
-  const cats = active.filter((c) => !isNumericCond(c))
+export function defaultColorConds(
+  active: readonly ConditionKey[],
+  numeric: NumericConds
+): ConditionKey[] {
+  const cats = active.filter((c) => !isNumericCond(c, numeric))
   return (cats.length ? cats : active).slice(0, 1)
 }
 
 /** The conditions a cluster colours by: `colorConds` while colorBy is a categorical condition
  *  that it still includes (a later pick of colorBy alone — the tile's switch — supersedes it), else
  *  colorBy alone; none for the cluster colouring. */
-export function clusterColorConds(c: ClusterConfig): ConditionKey[] {
+export function clusterColorConds(c: ClusterConfig, numeric: NumericConds): ConditionKey[] {
   if (c.colorBy === 'cluster') return []
   const by = c.colorBy as ConditionKey
   // the shade is added to a categorical colour only (the picker shows for those alone)
-  return !isNumericCond(by) && c.colorConds?.includes(by) ? c.colorConds.slice(0, 2) : [by]
+  return !isNumericCond(by, numeric) && c.colorConds?.includes(by) ? c.colorConds.slice(0, 2) : [by]
 }
 
 /** A cluster coloured by two conditions (`colorConds`: a colour and a shade): the scheme its
  *  multi-condition drawing takes (ClusterView's complex build) — the colour by the one, the shade
  *  by the other, no arrows. Null for one condition (colorBy alone) or the cluster colouring. */
-export function clusterTwoConds(c: ClusterConfig): {
+export function clusterTwoConds(
+  c: ClusterConfig,
+  numeric: NumericConds
+): {
   color: ConditionKey[]
   shade: ConditionKey
   arrow: 'none'
 } | null {
-  const picks = clusterColorConds(c)
-  const shade = picks.find((k) => isNumericCond(k))
+  const picks = clusterColorConds(c, numeric)
+  const shade = picks.find((k) => isNumericCond(k, numeric))
   const color = picks.find((k) => k !== shade)
   return picks.length === 2 && shade && color ? { color: [color], shade, arrow: 'none' } : null
 }
@@ -828,9 +1027,9 @@ export const MAX_COLOR_LEVELS = 10
  *  plot colours by (defaultColorConds: the first categorical one, e.g. cell or cmpd). Read off the
  *  samples (the rows when an older result has none); 0 with no condition at all. */
 export function primaryColorLevels(
-  std: Pick<StandardizeResult, 'activeConditions' | 'samples' | 'rows'>
+  std: Pick<StandardizeResult, 'activeConditions' | 'samples' | 'rows' | 'numericConditions'>
 ): number {
-  const [c] = defaultColorConds(std.activeConditions)
+  const [c] = defaultColorConds(std.activeConditions, numericOf(std))
   if (!c) return 0
   const seen = new Set<string>()
   for (const s of std.samples ?? std.rows) {
@@ -849,7 +1048,7 @@ export const condColorByDefault = (levels: number): boolean => levels <= MAX_COL
 export const SAMPLE_ORDERS: readonly SampleOrder[] = ['natural', 'original']
 /** What each order means, for the settings select's options. */
 export const SAMPLE_ORDER_HINT: Record<SampleOrder, string> = {
-  natural: 'natural (by condition: cell, cmpd, dose, time)',
+  natural: 'natural (by condition, grouped with the fewest breaks)',
   original: 'original (the data’s sample order)'
 }
 /** A plot's sample order: as set, else natural. */
@@ -884,10 +1083,11 @@ export const HEATMAP_LEAF_ORDERS: Record<LeafOrder, string> = {
 export function barColorConds(
   c: BarConfig,
   active: readonly ConditionKey[],
-  levels: number
+  levels: number,
+  numeric: NumericConds
 ): ConditionKey[] {
   const by = c.colorBy ?? (condColorByDefault(levels) ? 'condition' : 'value')
-  if (by === 'condition') return (c.colorConds ?? defaultColorConds(active)).slice(0, 2)
+  if (by === 'condition') return (c.colorConds ?? defaultColorConds(active, numeric)).slice(0, 2)
   if (by !== 'value') return [by]
   return []
 }
@@ -947,8 +1147,50 @@ export const quickOn = (
   kind?: NodeKind
 ): boolean => cfg?.quick?.[field] ?? (kind ? QUICK_DEFAULTS[kind]?.[field] : undefined) ?? true
 
+/** Variance plot (from an ANOVA): how each gene's variation splits among the model's factors
+ *  (main effects and interaction) and the residual — its shares of the gene's sum of squares. */
+export interface VarianceConfig {
+  /** every gene's share per factor as a violin each ('overview', shown as "global"; default), the
+   *  selected genes' (else the top genes') share bars ('detail'), or one gene's ('focus') */
+  view?: 'overview' | 'detail' | 'focus'
+  /** detailed: how many genes when none are selected — the most significant ones */
+  topGenes: number
+  quick?: QuickAccess
+  /** x / y axis overrides (title, fonts, range, ticks, grid, line); unset = the view's layout */
+  axes?: PlotAxes
+}
+
+/** Interaction plot (from an ANOVA): one gene at a time — its cell means (the model's fit, in
+ *  abundance) across one factor's levels, a line per level of the other, its replicates as points
+ *  and each mean's standard error as a band or whiskers. Its look is the DR plot's (drLook): the
+ *  line, the points and the error, each with its colour ('auto' = one per line), size and opacity. */
+export interface InteractionConfig extends Pick<
+  DRConfig,
+  | 'lineWidth'
+  | 'lineColor'
+  | 'lineOpacity'
+  | 'points'
+  | 'pointSize'
+  | 'pointColor'
+  | 'pointOpacity'
+  | 'errors'
+  | 'errorStyle'
+  | 'errorColor'
+  | 'errorOpacity'
+> {
+  /** the factor along x (a condition key); unset = the model's first factor */
+  xFactor?: ConditionKey
+  /** the factor drawn as lines (three or more factors; the rest are averaged); unset, or x = the
+   *  first factor other than x */
+  lineFactor?: ConditionKey
+  quick?: QuickAccess
+  /** x / y axis overrides (title, fonts, range, ticks, grid, line); unset = the view's layout */
+  axes?: PlotAxes
+}
+
 export interface DRConfig extends FcPaletteConfig {
-  axis: 'dose' | 'time'
+  /** the numeric condition along x — the tile's own (one Response plot per numeric condition) */
+  axis: ConditionKey
   /** a response surface method curve fit: draw its description 4PL ('curve', default) or the
    *  spline its detection fitted ('spline') */
   model?: 'spline' | 'curve'
@@ -1054,6 +1296,17 @@ function resolveDRLook(c: Partial<DRConfig>, curveFit: boolean): DRLook {
     ec50Line: c.ec50Line ?? false
   }
 }
+/** Curve metrics plot (a Curve fit's): one gene's fitted parameter as a bar chart — a surface's per
+ *  slice level (graph/metricBars.ts). Genes from the gene picker, the metric from a switch. */
+export interface MetricsConfig {
+  /** the metric drawn (unset: the potency — graph/metricBars.ts METRIC_IDS) */
+  metric?: 'potency' | 'slope' | 'front' | 'back'
+  /** a 2-D fit's per-slice values as they are (unset / 'value') or as their difference from the
+   *  reference slice's ('delta': the lowest level — dose 0, the vehicle's curve) */
+  show?: 'value' | 'delta'
+  /** which settings the tile surfaces as quick-access switch bars (unset = all) */
+  quick?: QuickAccess
+}
 /** Potency plot (curve-fit Compare, as CurveCurator draws it): each curve's potency (pEC50)
  *  against its curve fold change. */
 export interface PotencyConfig extends FcPaletteConfig {
@@ -1069,12 +1322,17 @@ export interface PotencyConfig extends FcPaletteConfig {
   style?: PointStyle
   /** x / y axis overrides (title, fonts, range, ticks, grid, line); unset = the view's layout */
   axes?: PlotAxes
+  /** tile orientation (persisted); undefined = portrait default — the potency up the side, the
+   *  fold change across (landscape: CurveCurator's layout, the potency across) */
+  orient?: PlotOrient
 }
 /** Response plot: a Curve fit's dose × time surfaces (the response surface method), one gene at a
  *  time, in 2-D or 3-D. 2-D: dose curves with a line per time ('line') or a dose × time heatmap
  *  ('heatmap'). 3-D: the fitted surface ('surface'), or its dose curves as lines along each time
  *  point ('line') — the surface without the surface. */
 export interface ResponseConfig extends FcPaletteConfig {
+  /** a Curve fit's surface plot: the pair it is for (its fit's — absent: dose × time) */
+  pair?: [ConditionKey, ConditionKey]
   /** the value axis fitted to each gene's own values ('gene', default — shown as "adjusted") or
    *  to every gene's in the facet, so paging genes keeps one scale */
   yScale?: 'gene' | 'global'
@@ -1147,16 +1405,17 @@ export function responseSlice(
   return cfg.slice ?? (rows?.some((r) => r.rs?.surface?.method === 'doseSlices') ? 'dose' : 'time')
 }
 
-/** Whether a Response plot's view can be switched between time and dose slices: every 3-D line view
- *  can; a 3-D surface or 2-D heatmap only from a slices description (separate dose and time curves
- *  — a joint model or measured values are the same whichever way they're sliced). */
+/** Whether a Response plot's view can be switched between time and dose slices: every line view
+ *  (2-D or 3-D) can; a 3-D surface only from a slices description (separate dose and time curves
+ *  — a joint model or measured values are the same whichever way they're sliced). Never the 2-D
+ *  heatmap: it draws the measured cells, so there are no curves to switch. */
 export function responseSliceable(
   dim: '2d' | '3d',
   show: string,
   rows: ReadonlyArray<{ rs?: { axis?: string; surface?: { method?: string } } }> | undefined
 ): boolean {
-  if (dim === '3d' && show === 'line') return true
-  if (show === 'line') return false
+  if (show === 'line') return true
+  if (show === 'heatmap') return false
   return !!rows?.some((r) => r.rs?.surface && r.rs.surface.method !== 'joint')
 }
 
@@ -1336,7 +1595,7 @@ export interface CurveMadConfig {
 }
 /** Bubble grid (compare) over dose or time, one gene per row. */
 export interface BubbleConfig extends FcPaletteConfig {
-  axis: 'dose' | 'time'
+  axis: ConditionKey
   /** the up / down / none colours, this plot's own; unset (or 'auto') = the upstream Compare's */
   effectColors?: PlotEffectColors
   /** cap genes: explicit switch (undefined on older configs → inferred from topGenes > 0) */
@@ -1390,9 +1649,10 @@ export interface DumbbellConfig {
 export const geneCapOn = (c: BubbleConfig | DumbbellConfig | DRConfig): boolean =>
   capOn(c.capEnabled, c.topGenes)
 
-/** Time & Dose-response (compare, dose × time): one gene's measured log₂FC over dose × time, drawn
- *  as the Response plot draws a surface — 2-D lines per time or a heatmap, 3-D lines (per time or
- *  per dose, `slice`) or a surface — with the same settings. */
+/** Two-condition Response plot (compare; dose × time, or any pair of numeric conditions — `pair`):
+ *  one gene's measured log₂FC over the two, drawn as the Response plot draws a surface — 2-D lines
+ *  per level of the second or a heatmap, 3-D lines (per level of either, `slice`) or a surface —
+ *  with the same settings. */
 export interface TdrConfig extends ResponseConfig {
   /** the line views' error — each level's fold change SE, as the Dose/time-response plot's
    *  focused view draws it: shown (default), as a shaded band (default) or
@@ -1403,7 +1663,15 @@ export interface TdrConfig extends ResponseConfig {
   errorOpacity?: number
   /** earlier versions' x / y axis overrides (a 2-D dose plot); no longer applied */
   axes?: PlotAxes
+  /** the two numeric conditions it's over — the first along x, the second one line (slice) per
+   *  level; the tile's own (one plot per pair). Unset (configs from before): dose × time. Its
+   *  `slice` names them by slot: 'time' = a line per level of the second, 'dose' = of the first. */
+  pair?: [ConditionKey, ConditionKey]
 }
+
+/** A Time & Dose-response (tdr) plot's two numeric conditions (see TdrConfig.pair). */
+export const tdrPair = (c: Partial<TdrConfig> | null | undefined): [ConditionKey, ConditionKey] =>
+  c?.pair ?? ['dose', 'time']
 
 /** Gene bar (standardize): each selected gene's value across every condition. */
 export interface BarConfig {
@@ -1484,10 +1752,21 @@ export interface StringConfig extends FcPaletteConfig {
   addInteractors?: boolean
   /** manual NCBI taxon override; 0/undefined = use the species from the annotation fetch */
   species?: number
+  /** the query genes' node outline width, px (unset = STRING_OUTLINE) */
+  queryOutline?: number
+  /** the query genes' node outline colour (unset or AUTO = black) */
+  queryOutlineColor?: string
+  /** the first-shell interactors' node outline width, px (unset = STRING_OUTLINE) */
+  interactorOutline?: number
+  /** the interactors' node outline colour (unset or AUTO = the plot background) */
+  interactorOutlineColor?: string
   /** which of this plot's settings the tile surfaces as quick-access switch bars (unset = all;
    *  the gear always carries every setting). Keyed by config field. */
   quick?: QuickAccess
 }
+
+/** A STRING node's default outline width, px — query genes and interactors alike. */
+export const STRING_OUTLINE = 0.5
 
 /** Sample QC plot (standardize): a per-sample distribution of one quality metric, drawn as
  *  a violin, box, or bar. */
@@ -1527,10 +1806,11 @@ export const qcColorBy = (c: QcConfig, levels: number): 'single' | 'condition' =
 export const qcColorConds = (
   c: QcConfig,
   active: readonly ConditionKey[],
-  levels: number
+  levels: number,
+  numeric: NumericConds
 ): ConditionKey[] =>
   qcColorBy(c, levels) === 'condition'
-    ? (c.colorConds ?? defaultColorConds(active)).slice(0, 2)
+    ? (c.colorConds ?? defaultColorConds(active, numeric)).slice(0, 2)
     : []
 
 /** Sample correlation matrix (standardize): all-samples × all-samples Pearson r heatmap. */
@@ -1764,7 +2044,7 @@ export interface ClusterStyle {
   markerOpacity: number
   centroidSize: number
   centroidOpacity: number
-  /** undefined = the mark's own default (0 on replicates, 1.5 on centroids) */
+  /** undefined = the default, DEFAULT_OUTLINE (0.5 px) */
   outlineWidth?: number
   outlineColor: string
   arrows: boolean
@@ -1825,6 +2105,9 @@ export type NodeConfig =
   | MAConfig
   | DRConfig
   | PotencyConfig
+  | MetricsConfig
+  | VarianceConfig
+  | InteractionConfig
   | CurveMadConfig
   | ResponseConfig
   | BubbleConfig
@@ -1907,8 +2190,17 @@ export type NodeResult =
       annotationMap: Record<string, Record<string, string>>
       /** pathway name → KEGG category, carried from Standardize for grouping enrichment terms */
       keggCategories: Record<string, string>
+      /** the custom conditions declared numeric, carried from Clean data (its schema, with dose and
+       *  time: numericOfResult). Absent on results from before declarations = none. */
+      numericConditions?: CustomConditionKey[]
     }
-  | { kind: 'contrast'; ctr: ContrastResult; displayMap: Record<string, string> }
+  | {
+      kind: 'contrast'
+      ctr: ContrastResult
+      displayMap: Record<string, string>
+      /** the declared numeric custom conditions of every input it read (numericOfResult) */
+      numericConditions?: CustomConditionKey[]
+    }
   // ── a plot's run: what it needs to be viewed (see graph/plotRun.ts) ──
   /** a plot drawn straight from its upstream: the run checked it can be (no data of its own) */
   | { kind: 'plot' }
@@ -1921,6 +2213,28 @@ export type NodeResult =
    *  (`ran`, see clusterRunOf) — its view settings (colour by a condition, plot, territory, look)
    *  draw from it without another run */
   | { kind: 'cluster'; cluster: ClusterData; ran: ClusterRun }
+
+/** The numeric conditions of a data result's dataset — its condition schema (dose and time, plus
+ *  the custom ones declared numeric at import), as Clean data recorded it and Compare / Contrast
+ *  carried it on. Anything else (no result, a plot's own run) has dose and time only. */
+export function numericOfResult(r: NodeResult | undefined): NumericConds {
+  if (r?.kind === 'standardize') return numericOf(r.std)
+  if (r?.kind === 'compare' || r?.kind === 'contrast') return numericConds(r.numericConditions)
+  return numericConds()
+}
+
+/** The declared numeric custom conditions of several results at once (a Contrast's inputs). */
+export const numericUnion = (rs: ReadonlyArray<NodeResult | undefined>): CustomConditionKey[] => [
+  ...new Set(
+    rs.flatMap((r) =>
+      r?.kind === 'standardize'
+        ? (r.std.numericConditions ?? [])
+        : r?.kind === 'compare' || r?.kind === 'contrast'
+          ? (r.numericConditions ?? [])
+          : []
+    )
+  )
+]
 
 /** A step's data result — what a downstream step or plot reads (not a plot's own run result). */
 export type DataResult = Extract<NodeResult, { kind: 'standardize' | 'compare' | 'contrast' }>

@@ -6,7 +6,7 @@ import type { Edge } from '@xyflow/react'
 
 import { facetCompareRows, facetDims, facetPaired } from '../engine'
 import type { ConditionKey, ContextRow } from '../engine'
-import type { NodeKind, NodeResult } from '../graph/types'
+import { numericOfResult, type NodeKind, type NodeResult } from '../graph/types'
 import type { ExportSpec } from './specs'
 
 /** Plot kinds wrapped in FacetedPlot (draw per context tuple); others render once. */
@@ -15,6 +15,9 @@ const FACETED_KINDS = new Set<NodeKind>([
   'ma',
   'dr',
   'potency',
+  'metrics',
+  'variance',
+  'interaction',
   'curveMad',
   'response',
   'bubble',
@@ -53,7 +56,9 @@ export function facetViews(
   if (dims.length === 0) return SINGLE
   // One-sided contrast tuples (outer-join rows with nothing to pair) are greyed out in the
   // tabs, so they get no file either — the plot would be empty.
-  const groups = facetCompareRows(rows, dims).filter((g) => facetPaired(g.rows))
+  const groups = facetCompareRows(rows, dims, numericOfResult(upstream)).filter((g) =>
+    facetPaired(g.rows)
+  )
   if (groups.length <= 1) return SINGLE
   // Filename-safe token (the `comparison` value can hold spaces / "|").
   const safe = (v: string): string => v.replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/^-+|-+$/g, '')

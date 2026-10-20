@@ -32,6 +32,10 @@ export function combineStandardize(stds: StandardizeResult[]): StandardizeResult
   // runCompare derives its context dims from activeConditions, the custom axis then vanished from
   // the merged dataset's plots and result switchers entirely.
   const activeConditions = orderConds([...activeSet])
+  // Numeric where any input declared it (a custom condition is one schema across the merge).
+  const numericConditions = [...new Set(stds.flatMap((s) => s.numericConditions ?? []))].filter(
+    (c) => activeSet.has(c)
+  )
   const compounds = [...new Set(stds.flatMap((s) => s.compounds))]
 
   const cleanup = {
@@ -51,6 +55,7 @@ export function combineStandardize(stds: StandardizeResult[]): StandardizeResult
     annotationMap,
     keggCategories,
     activeConditions,
+    ...(numericConditions.length ? { numericConditions } : {}),
     compounds,
     cleanup,
     ...(stds[0]?.scale ? { scale: stds[0].scale } : {})

@@ -33,7 +33,9 @@ try {
   if (!existsSync(stockApp)) process.exit(0) // deps not installed yet
 
   const pkg = JSON.parse(readFileSync(resolve(repo, 'package.json'), 'utf8'))
-  const name = pkg.productName || pkg.name || 'App'
+  // "<productName> Dev", with the red-dot icon: told apart from an installed copy by name and
+  // logo (the main process takes the same name, so its userData is its own too)
+  const name = `${pkg.productName || pkg.name || 'App'} Dev`
   const ns = pkg.appConfig?.appIdNamespace || 'tech.yjzhng'
   // `.dev` so this from-source clone never claims the packaged app's bundle id —
   // Launch Services would otherwise resolve the two to whichever it saw last.
@@ -50,7 +52,7 @@ try {
   const relExe = `${name}.app/Contents/MacOS/Electron` // path.txt is relative to dist/
   const pathTxt = resolve(repo, 'node_modules/electron/path.txt')
   const marker = resolve(distDir, '.branded') // in dist/ → wiped on reinstall, re-clones
-  const REV = '2' // bump to force a re-clone
+  const REV = '3' // bump to force a re-clone
   const want = `${name}:${brandId}:${electronVer}:${REV}`
 
   const upToDate =
@@ -61,20 +63,22 @@ try {
     readFileSync(pathTxt, 'utf8').trim() === relExe
   if (upToDate) process.exit(0)
 
-  // (Re)build the branded clone at a fresh path.
+  // (Re)build the branded clone at a fresh path — and drop the one from before the Dev name.
   execFileSync('rm', ['-rf', brandedApp])
+  const legacyApp = resolve(distDir, `${pkg.productName || pkg.name || 'App'}.app`)
+  if (legacyApp !== brandedApp) execFileSync('rm', ['-rf', legacyApp])
   execFileSync('cp', ['-Rc', stockApp, brandedApp]) // APFS copy-on-write clone
   execFileSync(
     '/usr/libexec/PlistBuddy',
     [
-      '-c', `Set :CFBundleName ${name}`,
-      '-c', `Set :CFBundleDisplayName ${name}`,
+      '-c', `Set :CFBundleName "${name}"`,
+      '-c', `Set :CFBundleDisplayName "${name}"`,
       '-c', `Set :CFBundleIdentifier ${brandId}`,
       resolve(brandedApp, 'Contents/Info.plist')
     ],
     { stdio: 'ignore' }
   )
-  const icns = ensureIcns(repo)
+  const icns = ensureIcns(repo, 'dev') ?? ensureIcns(repo)
   if (icns) copyFileSync(icns, resolve(brandedApp, 'Contents/Resources/electron.icns'))
   // Editing the bundle invalidates its signature; arm64 macOS then refuses to
   // launch it, so ad-hoc re-sign.

@@ -12,12 +12,20 @@
  */
 import { useMemo, type CSSProperties, type ReactNode } from 'react'
 
-import { facetDims, facetKeyLabel, type ContextRow } from '../engine'
+import { facetDims, type ContextRow } from '../engine'
 import type { AnalysisGroup } from '../graph/groups'
-import type { NodeResult } from '../graph/types'
+import { numericOfResult, type NodeResult } from '../graph/types'
 import { UI } from '../ui/theme'
 import { ChoiceSwitch, PILL_CAP } from '../ui/ChoiceSwitch'
-import { EMPTY_SEL, resolveFacets, useFacet } from './facet'
+import {
+  EMPTY_SEL,
+  facetBarLabel,
+  facetChoice,
+  isNumericFacet,
+  pickFacet,
+  resolveFacets,
+  useFacet
+} from './facet'
 
 export function FacetContextBar({
   group,
@@ -29,40 +37,42 @@ export function FacetContextBar({
   const r = results[group.rootId]
   const rows: ContextRow[] | null =
     r?.kind === 'compare' ? r.cmp.rows : r?.kind === 'contrast' ? r.ctr.rows : null
+  const numeric = useMemo(() => numericOfResult(r), [r])
   const sel = useFacet((s) => s.sel[group.id]) ?? EMPTY_SEL
-  const setLevel = useFacet((s) => s.setLevel)
-  const bars = useMemo(() => {
-    if (!rows) return []
-    const dims = facetDims(rows)
-    return dims.length ? resolveFacets(rows, dims, sel).bars : []
-  }, [rows, sel])
+  const setSel = useFacet((s) => s.setSel)
+  const dims = useMemo(() => (rows ? facetDims(rows) : []), [rows])
+  const bars = useMemo(
+    () => (rows && dims.length ? resolveFacets(rows, dims, sel, numeric).bars : []),
+    [rows, dims, sel, numeric]
+  )
   if (!bars.length) return null
   return (
     <div style={styles.facetBar}>
-      {bars.map(({ dim, value, options }) => (
-        <div key={dim} style={styles.facetGroup}>
-          <span style={styles.facetLabel}>{facetKeyLabel(dim)}</span>
-          {/* Pills, or a searchable dropdown past PILL_CAP levels — categorical conditions only;
-              dose and time stay pills (ordered levels, stepped through). */}
-          <ChoiceSwitch
-            cap={dim === 'dose' || dim === 'time' ? Infinity : PILL_CAP}
-            counter
-            label={facetKeyLabel(dim)}
-            value={String(value)}
-            // One-sided contrast level (outer-join rows with nothing to pair): greyed, not
-            // selectable — the tooltip says which side has the data.
-            options={options.map(({ value: v, onlyOn }) => ({
-              value: String(v),
-              label: String(v),
-              disabled: !!onlyOn,
-              title: onlyOn
-                ? `${facetKeyLabel(dim)} = ${v} is only on ${onlyOn} — no partner to contrast`
-                : undefined
-            }))}
-            onChange={(v) => setLevel(group.id, dim, v)}
-          />
-        </div>
-      ))}
+      {bars.map((bar) => {
+        const { dim, value, options } = bar
+        return (
+          <div key={dim} style={styles.facetGroup}>
+            <span style={styles.facetLabel}>{facetBarLabel(bar)}</span>
+            {/* Pills, or a searchable dropdown past PILL_CAP levels — categorical conditions only;
+              numeric ones (dose, time, any declared numeric) stay pills (ordered levels, stepped
+              through). */}
+            <ChoiceSwitch
+              cap={isNumericFacet(dim, numeric) ? Infinity : PILL_CAP}
+              counter
+              label={facetBarLabel(bar)}
+              value={String(value)}
+              // One-sided contrast level (outer-join rows with nothing to pair): greyed, not
+              // selectable — the tooltip says which side has the data.
+              options={options.map((o) => facetChoice(dim, o, bars))}
+              // A level not alongside the picks to its left moves those (pickFacet): a compound
+              // brings its comparison.
+              onChange={(v) =>
+                rows && setSel(group.id, pickFacet(rows, dims, sel, dim, v, numeric))
+              }
+            />
+          </div>
+        )
+      })}
     </div>
   )
 }

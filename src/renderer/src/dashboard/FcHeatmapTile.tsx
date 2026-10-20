@@ -24,9 +24,12 @@ export function FcHeatmapTile({
   condMax = 0,
   condModules = false,
   condTree = false,
-  condColors = CATEGORICAL
+  condColors = CATEGORICAL,
+  unsigned = false
 }: {
   rows: CompareResultRow[]
+  /** the rows are a two-way ANOVA's terms (unsigned effect sizes; see FcHeatmapView) */
+  unsigned?: boolean
   displayMap: Record<string, string>
   maxGenes: number
   /** selected genes (uniqIDs); when non-empty, show exactly these rows */
@@ -88,6 +91,7 @@ export function FcHeatmapTile({
       palette={palette}
       geneSide={geneSide}
       condSide={condSide}
+      unsigned={unsigned}
     />
   )
 }

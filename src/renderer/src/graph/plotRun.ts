@@ -19,6 +19,8 @@ import {
   facetDims,
   plotScaleOf,
   resolveEnrichSource,
+  termless,
+  type ConditionKey,
   type EnrichSource,
   type LogTransform
 } from '../engine'
@@ -33,6 +35,7 @@ import { dominantTaxon, factsOf, unmetRequirement } from './requirements'
 import {
   clusterRunOf,
   isDataResult,
+  numericOfResult,
   type ClusterConfig,
   type EnrichConfig,
   type NodeConfig,
@@ -57,8 +60,15 @@ export async function runPlot(
   upstream: NodeResult | undefined,
   cancelled: () => boolean,
   /** the Clean data step's log transform — what the scale plots show its data on follows it */
-  cleanTransform?: LogTransform
+  cleanTransform?: LogTransform,
+  /** the numeric conditions the upstream carries as the graph sees them (axisAvailFor) — a
+   *  Contrast of Curve fits has its inputs' curve axes, which its own rows don't show */
+  axes?: ConditionKey[]
 ): Promise<NodeResult> {
+  const facts = (): ReturnType<typeof factsOf> => ({
+    ...factsOf(upstream),
+    ...(axes ? { axes } : null)
+  })
   if (!isDataResult(upstream)) throw new Error('Run the step this plot reads from first.')
   if (kind === 'pca') {
     if (upstream.kind !== 'standardize') throw new Error('Needs a Clean data upstream.')
@@ -95,7 +105,15 @@ export async function runPlot(
     const why = unmetRequirement(kind, { ...cfg, source }, factsOf(upstream))
     if (why) throw new Error(why)
     if (sources.length === 0) throw new Error('No GO / KEGG / COG … terms on these genes.')
-    const facets = await engine.enrichmentAll(upstream.cmp.rows, {
+    // (a two-way ANOVA's term rows have no up / down — kept out, as from every directional reader)
+    // Sent without a curve fit's curves (`curve`, `rs`), which enrichment never reads: they are
+    // most of a row (10k curve-fit rows ≈ 70 MB), and copying them to the worker blocked the UI
+    // for seconds on every threshold change.
+    const rows = termless(upstream.cmp.rows).map((r) =>
+      r.curve || r.rs ? { ...r, curve: undefined, rs: undefined } : r
+    )
+    const facets = await engine.enrichmentAll(rows, {
+      numericConditions: upstream.numericConditions ?? [],
       annotationMap: ann,
       displayMap: upstream.displayMap,
       keggCategories: cats,
@@ -104,7 +122,7 @@ export async function runPlot(
     })
     return { kind: 'enrich', facets }
   }
-  const why = unmetRequirement(kind, config, factsOf(upstream))
+  const why = unmetRequirement(kind, config, facts())
   if (why) throw new Error(why)
   if (kind === 'string') {
     if (upstream.kind !== 'compare') throw new Error('Needs a Compare upstream.')
@@ -114,7 +132,8 @@ export async function runPlot(
     if (!species) throw new Error('No species detected — set one in the settings.')
     const caps = stringCapOptions(cfg.maxGenes > 0 ? cfg.maxGenes : 40)
     const facets: Record<string, StringAll> = {}
-    for (const g of facetCompareRows(upstream.cmp.rows, facetDims(upstream.cmp.rows))) {
+    const signed = termless(upstream.cmp.rows)
+    for (const g of facetCompareRows(signed, facetDims(signed), numericOfResult(upstream))) {
       if (cancelled()) throw new Error('cancelled')
       // The widest query; a facet without 2 significant genes has no network to read.
       const widest = stringQueryGenes(

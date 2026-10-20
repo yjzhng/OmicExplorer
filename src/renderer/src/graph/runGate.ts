@@ -8,7 +8,7 @@
  * Steps that never run are not prerequisites: a Load tile holds file references rather than a
  * computed result, so it stays `idle` forever and would otherwise block everything behind it.
  */
-import { NODE_SPECS } from './registry'
+import { runsIn } from './registry'
 import { isStep, type GraphNode, type StepNode } from './types'
 
 /** The upstream steps of `id` that still have to run, in graph order. Empty = clear to run. */
@@ -23,7 +23,7 @@ export function pendingInputs(
     if (e.target !== id) continue
     const up = byId.get(e.source)
     if (!up || out.includes(up)) continue
-    if (NODE_SPECS[up.data.kind].hasRun && up.data.status !== 'done') out.push(up)
+    if (runsIn({ nodes, edges }, up.id) && up.data.status !== 'done') out.push(up)
   }
   return out
 }

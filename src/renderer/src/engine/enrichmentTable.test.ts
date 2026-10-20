@@ -32,7 +32,12 @@ const rows = [1, 10].flatMap((dose) =>
 
 describe('enrichmentTable', () => {
   it('covers every facet, labelling each row with it', () => {
-    const t = enrichmentTable(rows, { method: 'gsea', source: 'go', annotationMap: ann })
+    const t = enrichmentTable(rows, {
+      method: 'gsea',
+      source: 'go',
+      annotationMap: ann,
+      numericConditions: []
+    })
     const facets = new Set(t.map((r) => r.facet))
     expect(facets).toEqual(new Set(['cmpd=X · dose=1', 'cmpd=X · dose=10']))
     const a = t.filter((r) => r.term === 'pathway A')
@@ -43,7 +48,7 @@ describe('enrichmentTable', () => {
   it('labels one already-split facet as given', () => {
     const t = enrichmentTable(
       rows.filter((r) => r.dose === 1),
-      { method: 'gsea', source: 'go', annotationMap: ann },
+      { method: 'gsea', source: 'go', annotationMap: ann, numericConditions: [] },
       'dose=1'
     )
     expect(new Set(t.map((r) => r.facet))).toEqual(new Set(['dose=1']))

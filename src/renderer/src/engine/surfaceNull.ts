@@ -15,18 +15,21 @@
  * the units.
  */
 import { rng } from './sam'
-import type { JointBatch, JointFit } from './surfaceJoint'
+import { jointParamCount, type JointBatch, type JointFit, type JointSpec } from './surfaceJoint'
 
 export interface SurfaceDesign {
-  treated: Array<{ dose: number; time: number; group: number }>
-  /** vehicle groups (one per vehicle time; the treated cells' `group` indexes them) */
+  /** each treated cell's position on the fit's two axes and its vehicle group */
+  treated: Array<{ xa: number; xb: number; group: number }>
+  /** vehicle groups (one per level of the second axis the vehicle was measured at; the treated
+   *  cells' `group` indexes them) */
   nGroups: number
-  timeOffset: number
+  /** the joint model's shapes the null is fitted with */
+  spec: JointSpec
 }
 
-/** A design's identity: its treated cells (dose, time, vehicle group) in order, and time offset. */
+/** A design's identity: its treated cells (positions, vehicle group) in order, and the model. */
 export function designKey(d: SurfaceDesign): string {
-  return `${d.timeOffset}|${d.treated.map((t) => `${t.dose}:${t.time}:${t.group}`).join(',')}`
+  return `${JSON.stringify(d.spec)}|${d.treated.map((t) => `${t.xa}:${t.xb}:${t.group}`).join(',')}`
 }
 
 /** A standard normal and a χ²(k) draw (k > 0, any real) from a uniform source. */
@@ -62,33 +65,35 @@ export function nullSurfaces(d: SurfaceDesign, m: number, seed: number): JointBa
     const veh = Array.from({ length: d.nGroups }, () => sd * normal())
     out.push({
       cells: d.treated.map((t) => ({
-        dose: t.dose,
-        time: t.time,
+        xa: t.xa,
+        xb: t.xb,
         e: sd * normal() - veh[t.group]
       })),
-      timeOffset: d.timeOffset
+      spec: d.spec
     })
   }
   return out
 }
 
-/** A surface's F against flat from its effects' RSS₀ (every effect 0) and joint-fit RSS₁, with its
- *  residual variance s² = RSS₁/(N − 6) moderated: post = (d0·s0² + d·s²)/(d0 + d). */
+/** A surface's F against flat from its effects' RSS₀ (every effect 0) and joint-fit RSS₁ (a model
+ *  of `k` parameters — the preset's 6), with its residual variance s² = RSS₁/(N − k) moderated:
+ *  post = (d0·s0² + d·s²)/(d0 + d). */
 export function jointF(
   rss0: number,
   rss1: number,
   n: number,
   d0: number,
-  s0sq: number
+  s0sq: number,
+  k = 6
 ): {
   F: number
   df2: number
 } {
-  const d = n - 6
+  const d = n - k
   const r1 = Math.min(rss0, rss1)
   const post =
     d0 === Infinity ? s0sq : d0 > 0 && Number.isFinite(s0sq) ? (d0 * s0sq + r1) / (d0 + d) : r1 / d
-  return { F: post > 0 ? (rss0 - r1) / 6 / post : 0, df2: d0 === Infinity ? 1e6 : d0 + d }
+  return { F: post > 0 ? (rss0 - r1) / k / post : 0, df2: d0 === Infinity ? 1e6 : d0 + d }
 }
 
 /** The null F's of a design's simulated surfaces (nullSurfaces, then fitted), scored as a real
@@ -100,7 +105,8 @@ export function nullF(batch: JointBatch, fits: JointFit[], d0: number, seed: num
     rss1: fits[i].rss,
     n: b.cells.length
   }))
-  const kappa = rs.reduce((a, r) => a + Math.min(r.rss0, r.rss1) / (r.n - 6), 0) / rs.length
+  const k = batch.length ? jointParamCount(batch[0].spec) : 6
+  const kappa = rs.reduce((a, r) => a + Math.min(r.rss0, r.rss1) / (r.n - k), 0) / rs.length
   return rs.map(
     (r) =>
       jointF(
@@ -108,7 +114,8 @@ export function nullF(batch: JointBatch, fits: JointFit[], d0: number, seed: num
         r.rss1,
         r.n,
         d0,
-        d0 === Infinity ? kappa : d0 > 0 ? (kappa * chi2(d0)) / d0 : NaN
+        d0 === Infinity ? kappa : d0 > 0 ? (kappa * chi2(d0)) / d0 : NaN,
+        k
       ).F
   )
 }

@@ -7,6 +7,7 @@
  * anywhere that assumes an order.
  */
 import { describe, expect, it } from 'vitest'
+import { numericConds } from './types'
 
 import { runVehNorm } from './compare'
 import { runDirect } from './direct'
@@ -14,6 +15,9 @@ import { detectCustomConditions, standardize } from './ingest'
 import { buildStandardInputs } from './interactive'
 import { buildFcHeatmap, buildHeatmap, facetCompareRows, facetContextDims } from './plotData'
 import { condsIn, customCond, isNumericCond, orderConds, validCondName } from './types'
+
+/** dose and time numeric, no custom condition declared (the schema of these tests' data) */
+const NUMERIC = numericConds()
 
 // 4 samples: two genotypes × two compounds, one replicate each.
 const DATA = ['id,s1,s2,s3,s4', 'g1,10,20,30,40', 'g2,11,21,31,41'].join('\n')
@@ -40,12 +44,12 @@ describe('custom condition names', () => {
     expect(validCondName('')).toBe(false)
   })
 
-  it('is never numeric, so ordered channels can exclude it by type alone', () => {
-    expect(isNumericCond('dose')).toBe(true)
-    expect(isNumericCond('time')).toBe(true)
-    expect(isNumericCond(customCond('genotype'))).toBe(false)
+  it('undeclared, it is never numeric, so ordered channels exclude it by type alone', () => {
+    expect(isNumericCond('dose', NUMERIC)).toBe(true)
+    expect(isNumericCond('time', NUMERIC)).toBe(true)
+    expect(isNumericCond(customCond('genotype'), NUMERIC)).toBe(false)
     // Even when its values happen to be numbers.
-    expect(isNumericCond(customCond('batch'))).toBe(false)
+    expect(isNumericCond(customCond('batch'), NUMERIC)).toBe(false)
   })
 
   it('sorts after the presets in canonical order', () => {
@@ -164,7 +168,7 @@ describe('a custom condition as a comparison axis and as context', () => {
     })
     expect(r.rows.every((x) => x.extra?.genotype != null)).toBe(true)
     expect(facetContextDims(r.rows)).toContain('@genotype')
-    const groups = facetCompareRows(r.rows, [customCond('genotype')])
+    const groups = facetCompareRows(r.rows, [customCond('genotype')], NUMERIC)
     expect(groups.map((g) => g.key)).toEqual(['@genotype=mutant', '@genotype=parent'])
   })
 })
@@ -177,12 +181,12 @@ describe('facet ordering treats a custom condition as categorical', () => {
   const numeric = (v: number) => ({ cmp_cond: 'cmpd', dose: v })
 
   it('orders a custom dim by code point', () => {
-    const groups = facetCompareRows([mk('10'), mk('2'), mk('1')], [customCond('batch')])
+    const groups = facetCompareRows([mk('10'), mk('2'), mk('1')], [customCond('batch')], NUMERIC)
     expect(groups.map((g) => g.values[0].value)).toEqual(['1', '10', '2'])
   })
 
   it('still orders dose numerically', () => {
-    const groups = facetCompareRows([numeric(10), numeric(2), numeric(1)], ['dose'])
+    const groups = facetCompareRows([numeric(10), numeric(2), numeric(1)], ['dose'], NUMERIC)
     expect(groups.map((g) => g.values[0].value)).toEqual([1, 2, 10])
   })
 })

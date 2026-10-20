@@ -1,4 +1,5 @@
-// Generate a double-clickable <productName>.app that launches Path B (live dev).
+// Generate a double-clickable "<productName> Dev.app" that launches Path B (live dev) — named
+// and badged (the red-dot icon) apart from an installed copy.
 // Reads name/version from package.json so a renamed derived app regenerates its
 // own launcher. Run: `npm run make:launcher`.
 //
@@ -20,7 +21,7 @@ import { ensureIcns } from './lib/icns.mjs'
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const pkg = JSON.parse(readFileSync(resolve(repo, 'package.json'), 'utf8'))
-const name = pkg.productName || pkg.name || 'OneProduction'
+const name = `${pkg.productName || pkg.name || 'OneProduction'} Dev`
 const ns = pkg.appConfig?.appIdNamespace || 'tech.yjzhng'
 const id = `${ns}.${(pkg.name || 'oneproduction').toLowerCase()}.launcher`
 
@@ -44,7 +45,7 @@ chmodSync(exe, 0o755)
 
 // Give the launcher the app icon, derived from the single-source-of-truth master.
 let iconLine = ''
-const icns = ensureIcns(repo)
+const icns = ensureIcns(repo, 'dev') ?? ensureIcns(repo)
 if (icns) {
   const resources = resolve(app, 'Contents/Resources')
   mkdirSync(resources, { recursive: true })

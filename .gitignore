@@ -7,7 +7,7 @@ out
 .vite
 *.tsbuildinfo
 build-resources/*.iconset
-build-resources/icon.icns
+build-resources/icon*.icns
 
 # Capacitor native projects — generated per app via `npm run cap:add:*`
 /ios
@@ -26,13 +26,16 @@ demo.omicexplorer
 test_project/
 test.omicexplorer
 test_examples/pressure_test/
-test_examples/decryptE/
 test_examples/kinobeads
 test_examples/decryptM/
 # CurveCurator paper's input data (Zenodo 10.5281/zenodo.8399823) + matrices built from it
 test_examples/CurveCurator/
 # Synthetic curve-fit benchmark — kept local (generator, calibration, generated data)
 test_examples/SynthData/
+# TPP (Mateus 2018 E. coli 2D-TPP, Europe PMC) + matrices built from it
+test_examples/TPP/
+# Degrader test datasets (public supplements) + matrices built from them
+test_examples/Degrader/
 # Test dataset catalogue + shared test compound/cell list — kept local
 test_examples/datasets.csv
 test_examples/test_list.json

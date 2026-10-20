@@ -96,3 +96,46 @@ describe('normalizeSamples', () => {
     expect(log(2, 0)).toBeCloseTo(10 - 2.5, 6) // the lower half kept its width
   })
 })
+
+describe('normalizeSamples on a reference protein', () => {
+  it('brings that protein to the same level in every sample, shifting each sample by it', () => {
+    // g0 loaded as every gene is (1×, 4×, ½×): normalising on it removes the loading exactly
+    const { rows, summary } = normalizeSamples(table(10), { reference: 'protein', protein: 'g0' })
+    const g0 = rows.filter((r) => r.uniqID === 'g0').map((r) => r.value!)
+    expect(g0[1]).toBeCloseTo(g0[0], 6)
+    expect(g0[2]).toBeCloseTo(g0[0], 6)
+    // …at the median of its own values (1000 · {1, 4, ½} → 1000)
+    expect(g0[0]).toBeCloseTo(1000, 6)
+    for (const rep of [2, 3])
+      valuesOf(rows, rep).forEach((v, i) => expect(v).toBeCloseTo(valuesOf(rows, 1)[i], 6))
+    expect(summary).toMatchObject({
+      reference: 'protein',
+      used: 'protein',
+      protein: 'g0',
+      samples: 3,
+      missingSamples: 0
+    })
+    expect(summary.spread).toBeUndefined()
+  })
+
+  it('leaves a sample without the protein as it is, and ignores the spread option', () => {
+    const input = table(10).filter((r) => !(r.uniqID === 'g0' && r.rep === 3))
+    const { rows, summary } = normalizeSamples(input, {
+      reference: 'protein',
+      protein: 'g0',
+      spread: true
+    })
+    expect(summary).toMatchObject({ samples: 2, missingSamples: 1 })
+    expect(summary.spread).toBeUndefined()
+    // sample 3 untouched
+    const before = input.filter((r) => r.rep === 3).map((r) => r.value)
+    expect(rows.filter((r) => r.rep === 3).map((r) => r.value)).toEqual(before)
+  })
+
+  it('does nothing when the protein is nowhere', () => {
+    const input = table(10)
+    const { rows, summary } = normalizeSamples(input, { reference: 'protein', protein: 'nope' })
+    expect(rows.map((r) => r.value)).toEqual(input.map((r) => r.value))
+    expect(summary).toMatchObject({ samples: 0, missingSamples: 3, maxFold: 1 })
+  })
+})

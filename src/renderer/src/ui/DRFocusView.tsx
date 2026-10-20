@@ -14,6 +14,8 @@ import { useMemo } from 'react'
 
 import {
   comparisonOf,
+  condLabel,
+  ctxNum,
   curveBand,
   curvePointsFromStd,
   curveSampleX,
@@ -22,7 +24,9 @@ import {
   replicateLog2FCs,
   responseCurve,
   stdByGene,
+  xUnits,
   type CompareResultRow,
+  type ConditionKey,
   type StandardRow
 } from '../engine'
 import { drLook, type DRLook, type EffectColors } from '../graph/types'
@@ -66,7 +70,7 @@ function fitError(
   }
   const lo = mid.map((_, i) => clampTo(band?.lo[i], cap[0]))
   const hi = mid.map((_, i) => clampTo(band?.hi[i], cap[1]))
-  return { x: at.map((lx) => 10 ** lx), mid, lo, hi, unbounded }
+  return { x: at.map((lx) => xUnits(c, lx)), mid, lo, hi, unbounded }
 }
 
 /** A curve fit's measured points: those kept with the fit — exactly what it was fitted to — else,
@@ -74,7 +78,7 @@ function fitError(
 function curvePoints(
   r: CompareResultRow,
   geneStd: StandardRow[],
-  axis: 'dose' | 'time'
+  axis: ConditionKey
 ): { x?: number[]; y?: number[] } {
   const c = r.curve!
   return c.x && c.rep ? c : (curvePointsFromStd(r, geneStd, axis) ?? c)
@@ -97,7 +101,7 @@ function widenExtent(
   acc: [number, number],
   rows: CompareResultRow[],
   geneStd: StandardRow[],
-  axis: 'dose' | 'time',
+  axis: ConditionKey,
   look: DRLook,
   model: 'spline' | 'curve'
 ): void {
@@ -134,7 +138,7 @@ function widenExtent(
     return
   }
   for (const r of rows) {
-    if (r[axis] == null || r.log2FC == null) continue
+    if (ctxNum(r, axis) == null || r.log2FC == null) continue
     const se = look.errors ? (r.fcSE ?? 0) : 0
     add(r.log2FC - se)
     add(r.log2FC + se)
@@ -159,7 +163,7 @@ export function DRFocusView({
   /** the gene's rows in the facet on show (one comparison or several) — or, with `genes`, those
    *  genes' rows */
   rows: CompareResultRow[]
-  axis: 'dose' | 'time'
+  axis: ConditionKey
   /** the dose/time axis's title, with its unit (absent = the bare axis name) */
   axisLabel?: string
   /** the gene (for its replicates in `std`) */
@@ -295,7 +299,7 @@ export function DRFocusView({
                   ...who,
                   conds: [
                     ['comparison', r.comparison],
-                    [axis, '%{x:.3g}']
+                    [condLabel(axis), '%{x:.3g}']
                   ],
                   values: [[`${what} log₂ vs control`, '%{y:.3f}']]
                 },
@@ -322,7 +326,7 @@ export function DRFocusView({
                     ...who,
                     conds: [
                       ['comparison', r.comparison],
-                      [axis, '%{x:.3g}']
+                      [condLabel(axis), '%{x:.3g}']
                     ],
                     values: [['mean log₂ vs control', '%{y:.3f}']]
                   },
@@ -348,11 +352,11 @@ export function DRFocusView({
           // with no band and no EC50 — as a response surface method curve without a description.
           const described = curveDescribed(c)
           const at = curveSampleX(c, SAMPLES)
-          const xs = at.map((lx) => 10 ** lx)
+          const xs = at.map((lx) => xUnits(c, lx))
           const ys = at.map((lx) => (described ? Math.log2(logistic(lx, c)) : 0))
           // The measured points — every replicate — the fit was made on (see curvePoints).
           const got = curvePoints(r, geneStd, axis)
-          const pts = (got.x ?? []).map((x, i) => ({ x: 10 ** x, ratio: got.y?.[i] ?? NaN }))
+          const pts = (got.x ?? []).map((x, i) => ({ x: xUnits(c, x), ratio: got.y?.[i] ?? NaN }))
           // The 4PL's 95% confidence band, under the curve: a shaded band along it, or whiskers on
           // it at the tested doses, capped (fitError); an unbounded stretch is said in the hover.
           const e =
@@ -381,7 +385,7 @@ export function DRFocusView({
                   ...who,
                   conds: [
                     ['comparison', r.comparison],
-                    [axis, '%{x:.3g}']
+                    [condLabel(axis), '%{x:.3g}']
                   ],
                   values: [['fit log₂ ratio', '%{y:.3f}']]
                 },
@@ -419,7 +423,7 @@ export function DRFocusView({
                     ...who,
                     conds: [
                       ['comparison', r.comparison],
-                      [axis, '%{x:.3g}']
+                      [condLabel(axis), '%{x:.3g}']
                     ],
                     values: [['log₂ ratio', '%{y:.3f}']]
                   },
@@ -431,8 +435,8 @@ export function DRFocusView({
           if (described && look.ec50Line && ec50 >= c.xMin && ec50 <= c.xMax)
             shapes.push({
               type: 'line',
-              x0: 10 ** ec50,
-              x1: 10 ** ec50,
+              x0: xUnits(c, ec50),
+              x1: xUnits(c, ec50),
               yref: 'paper',
               y0: 0,
               y1: 1,
@@ -443,11 +447,11 @@ export function DRFocusView({
         // A t-test: its fold change at each level, joined, with the fold change's SE as its error.
         for (const c of comparisons) {
           const pts = gRows
-            .filter((r) => r.comparison === c && r[axis] != null && r.log2FC != null)
-            .sort((a, b) => (a[axis] as number) - (b[axis] as number))
+            .filter((r) => r.comparison === c && ctxNum(r, axis) != null && r.log2FC != null)
+            .sort((a, b) => ctxNum(a, axis)! - ctxNum(b, axis)!)
           if (!pts.length) continue
           const col = color(id, gRows, c)
-          const xs = pts.map((r) => String(r[axis]))
+          const xs = pts.map((r) => String(ctxNum(r, axis)))
           // The fold change's SE, under the line.
           if (look.errors && pts.some((r) => r.fcSE != null))
             traces.push(
@@ -474,7 +478,7 @@ export function DRFocusView({
                   ...who,
                   conds: [
                     ['comparison', c],
-                    [axis, '%{x}']
+                    [condLabel(axis), '%{x}']
                   ],
                   values: [['log₂FC', '%{y:.3f}']]
                 },
@@ -486,7 +490,7 @@ export function DRFocusView({
           const ry: number[] = []
           for (const r of pts)
             for (const y of replicateLog2FCs(r, geneStd)) {
-              rx.push(String(r[axis]))
+              rx.push(String(ctxNum(r, axis)))
               ry.push(y)
             }
           if (look.points && rx.length)
@@ -509,7 +513,7 @@ export function DRFocusView({
                     ...who,
                     conds: [
                       ['comparison', c],
-                      [axis, '%{x}']
+                      [condLabel(axis), '%{x}']
                     ],
                     values: [['replicate log₂FC', '%{y:.3f}']]
                   },
@@ -520,7 +524,9 @@ export function DRFocusView({
       }
     }
     // A t-test's levels as categories, numerically ordered across every gene drawn.
-    const cats = [...new Set(rows.map((r) => r[axis]).filter((v): v is number => v != null))]
+    const cats = [
+      ...new Set(rows.map((r) => ctxNum(r, axis)).filter((v): v is number => v != null))
+    ]
       .sort((a, b) => a - b)
       .map(String)
     const lay: Record<string, unknown> = {
@@ -531,10 +537,13 @@ export function DRFocusView({
       // Log dose: one tick per decade (Plotly would otherwise label 2s and 5s in between).
       xaxis:
         curves.length || responses.length
-          ? { ...axisBase(p), title: axisLabel ?? axis, type: 'log', dtick: 1 }
+          ? responses.some((r) => r.rs?.scale === 'linear') ||
+            curves.some((r) => r.curve?.scale === 'linear')
+            ? { ...axisBase(p), title: axisLabel ?? condLabel(axis) }
+            : { ...axisBase(p), title: axisLabel ?? condLabel(axis), type: 'log', dtick: 1 }
           : {
               ...axisBase(p),
-              title: axisLabel ?? axis,
+              title: axisLabel ?? condLabel(axis),
               type: 'category',
               categoryorder: 'array',
               categoryarray: cats

@@ -1,6 +1,6 @@
 import { useMemo, type ReactNode } from 'react'
 
-import type { ContrastResultRow } from '../engine'
+import { condLabel, ctxNum, type ConditionKey, type ContrastResultRow } from '../engine'
 import { drLook, type DRLook } from '../graph/types'
 import { AUTO } from './ColorPicker'
 import { tooltip } from './condTooltip'
@@ -29,7 +29,7 @@ export function ResponseCompareView({
 }: {
   rows: ContrastResultRow[]
   displayMap: Record<string, string>
-  axis: 'dose' | 'time'
+  axis: ConditionKey
   /** the dose/time axis's title, with its unit (absent = the bare axis name) */
   axisLabel?: string
   /** the uniqID to plot (the pager picks it) */
@@ -48,7 +48,7 @@ export function ResponseCompareView({
 
   const series = useMemo(() => {
     if (!gene) return null
-    const mine = rows.filter((r) => r.uniqID === gene && r[axis] != null)
+    const mine = rows.filter((r) => r.uniqID === gene && ctxNum(r, axis) != null)
     if (mine.length === 0) return null
     // Mean per axis value (collapses any residual within-facet duplicates into one point per x).
     // ae/be collect each side's uncertainty (fold-change SE or abundance SD) for the error band,
@@ -58,8 +58,8 @@ export function ResponseCompareView({
       { a: number[]; b: number[]; ae: number[]; be: number[]; ar: number[]; br: number[] }
     >()
     for (const r of mine) {
-      const x = Number(r[axis])
-      if (!Number.isFinite(x)) continue
+      const x = ctxNum(r, axis)
+      if (x == null) continue
       let g = byX.get(x)
       if (!g) byX.set(x, (g = { a: [], b: [], ae: [], be: [], ar: [], br: [] }))
       if (r.FC1 != null && Number.isFinite(r.FC1)) g.a.push(r.FC1)
@@ -139,7 +139,7 @@ export function ResponseCompareView({
       margin: { l: 52, r: 16, t: heading ? 34 : 14, b: 44 },
       xaxis: {
         ...axisBase(p),
-        title: { text: axisLabel ?? axis },
+        title: { text: axisLabel ?? condLabel(axis) },
         type: 'category',
         categoryorder: 'array',
         categoryarray: cats
@@ -200,7 +200,7 @@ export function ResponseCompareView({
       line: { color, width: look.lineWidth },
       opacity: look.lineOpacity,
       hovertemplate: tooltip(
-        { title: name, conds: [[axis, '%{x}']], values: [[yLabel, '%{y:.3f}']] },
+        { title: name, conds: [[condLabel(axis), '%{x}']], values: [[yLabel, '%{y:.3f}']] },
         p.textMuted,
         { template: true }
       )
@@ -225,7 +225,11 @@ export function ResponseCompareView({
         line: { color: p.panel, width: 1 }
       },
       hovertemplate: tooltip(
-        { title: name, conds: [[axis, '%{x}']], values: [[`replicate ${yLabel}`, '%{y:.3f}']] },
+        {
+          title: name,
+          conds: [[condLabel(axis), '%{x}']],
+          values: [[`replicate ${yLabel}`, '%{y:.3f}']]
+        },
         p.textMuted,
         { template: true }
       )
@@ -333,7 +337,8 @@ export function ResponseCompareView({
   if (!series)
     return (
       <Center>
-        This gene has no {axis} values in the contrast — match the contrast on {axis}.
+        This gene has no {condLabel(axis)} values in the contrast — match the contrast on{' '}
+        {condLabel(axis)}.
       </Center>
     )
 

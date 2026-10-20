@@ -2,6 +2,7 @@
 import { describe, expect, it } from 'vitest'
 
 import {
+  manualSheetConditions,
   manualSheetIssues,
   samplesheetIssues,
   sheetIssueLines,
@@ -134,5 +135,39 @@ describe('issue messages stay short on a large sheet', () => {
     const lines = sheetIssueLines(issues)
     expect(lines).toHaveLength(6)
     expect(lines[5]).toBe('+3 more issues')
+  })
+})
+
+describe('a custom condition declared numeric', () => {
+  const rows = [
+    { sample: 's1', cmpd: 'A', temp: '37' },
+    { sample: 's2', cmpd: 'A', temp: 'hot' }
+  ]
+  it('must hold numbers, as dose and time', () => {
+    expect(samplesheetIssues(rows, ['temp'], ['temp'])).toEqual([
+      { field: 'temp', kind: 'notNumber', values: [{ value: 'hot', samples: ['s2'] }], samples: [] }
+    ])
+  })
+  it('categorical, any value goes', () => {
+    expect(samplesheetIssues(rows, ['temp'])).toEqual([])
+  })
+})
+
+describe('a manual samplesheet’s conditions, declared on the Load panel', () => {
+  // 4 samples; temp groups them (2 values), notes identifies them (not a condition)
+  const sheet = 'sample,cmpd,temp,notes\ns1,A,37,a\ns2,A,hot,b\ns3,B,37,c\ns4,B,44,d\n'
+  it('lists the conditions the run will read: presets with a value, then the custom ones', () => {
+    expect(manualSheetConditions(sheet)).toEqual(['cmpd', 'temp'])
+    expect(manualSheetConditions('')).toEqual([])
+  })
+  it('leaves out a column that is there but empty; reads `strain` as cell', () => {
+    const empty = 'sample,cmpd,dose,time,strain\ns1,A,,,WT\ns2,B,,,KO\n'
+    expect(manualSheetConditions(empty)).toEqual(['cell', 'cmpd'])
+  })
+  it('checks a declared numeric one as numbers; categorical, anything goes', () => {
+    expect(manualSheetIssues(sheet, null, null, ['temp']).issues).toEqual([
+      { field: 'temp', kind: 'notNumber', values: [{ value: 'hot', samples: ['s2'] }], samples: [] }
+    ])
+    expect(manualSheetIssues(sheet).issues).toEqual([])
   })
 })

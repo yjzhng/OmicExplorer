@@ -210,6 +210,15 @@ describe('fitTemplateSpec', () => {
       })
     )
   })
+
+  it('keeps which custom conditions were declared numeric', () => {
+    const tpl = buildTemplate(project(), DEFAULT_TEMPLATE_SECTIONS, 'T')
+    const kept = nodeCfg<LoadConfig>(tpl.folders[0].workflows[0].doc, 'load-1').interactive!
+    const read: InteractiveImport = { columns: ['PG.ProteinGroups'], roles: {}, conditions: {} }
+    expect(
+      fitTemplateSpec({ ...kept, numericConditions: ['batch'] }, read).numericConditions
+    ).toEqual(['batch'])
+  })
 })
 
 describe('relative folder paths', () => {

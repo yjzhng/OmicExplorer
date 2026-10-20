@@ -164,6 +164,8 @@ const api = {
     ipcRenderer.invoke('tpl:open'),
   /** Read a project file's text by path. */
   readProject: (path: string): Promise<string> => ipcRenderer.invoke('proj:read', path),
+  /** The project this window was opened for (from Finder / the command line), once; else null. */
+  takeLaunchProject: (): Promise<string | null> => ipcRenderer.invoke('proj:takeLaunch'),
   /** Park an inactive workflow's packed results on disk (its JSON text, in pieces). */
   parkWrite: (key: string, pieces: string[]): Promise<void> =>
     ipcRenderer.invoke('park:write', key, pieces),

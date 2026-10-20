@@ -5,6 +5,7 @@ import { useMemo } from 'react'
 import {
   buildQc,
   isNumericCond,
+  numericOf,
   type ConditionKey,
   type QcMetric,
   type SampleOrder,
@@ -52,8 +53,8 @@ export function QcTile({
       data={data}
       plot={plot}
       color={color}
-      colorCat={colorConds.find((c) => !isNumericCond(c))}
-      colorNum={colorConds.find((c) => isNumericCond(c))}
+      colorCat={colorConds.find((c) => !isNumericCond(c, numericOf(std)))}
+      colorNum={colorConds.find((c) => isNumericCond(c, numericOf(std)))}
       fit={fit}
       categorical={categorical}
       condTitle={condTitle}

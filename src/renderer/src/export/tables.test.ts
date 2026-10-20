@@ -81,7 +81,7 @@ describe('collectTableExports', () => {
   })
 
   it('labels a two-way comparison log2FC column as "interaction"', () => {
-    const twoWay = [step('load-1', 'load'), step('cmp-9', 'compare', { analysis: 'two_way_anova' })]
+    const twoWay = [step('load-1', 'load'), step('cmp-9', 'compare', { analysis: 'anova' })]
     const twoEdges = [edge('load-1', 'cmp-9')]
     const twoResults: Record<string, NodeResult> = {
       'cmp-9': {
@@ -89,7 +89,16 @@ describe('collectTableExports', () => {
         displayMap: {},
         cmp: {
           rows: [
-            { uniqID: 'g1', comparison: 'X', log2FC: 1, pP: 0, pQ: 0, signf: false, effect: 'up' }
+            {
+              uniqID: 'g1',
+              cmp_cond: 'cmpd:cell',
+              comparison: 'X',
+              log2FC: 1,
+              pP: 0,
+              pQ: 0,
+              signf: false,
+              effect: 'up'
+            }
           ],
           comparisons: ['X']
         }

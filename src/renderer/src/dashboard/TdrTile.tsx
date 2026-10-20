@@ -1,13 +1,17 @@
-/** Time & Dose-response panel body: one gene's measured log₂FC over dose × time, drawn by the
- *  Response plot's views (ResponseSurfaceView) — 2-D lines per time or a heatmap, 3-D lines or a
- *  surface. */
+/** Two-condition Response panel body: one gene's measured log₂FC over a pair of numeric conditions
+ *  (dose × time, or any two), drawn by the Response plot's views (ResponseSurfaceView) — 2-D lines
+ *  per level of the second or a heatmap, 3-D lines or a surface. The first condition takes the
+ *  view's dose slot (x), the second its time slot (the lines). */
 import { useMemo } from 'react'
 
 import {
   comparisonOf,
+  ctxNum,
+  detectAxisScale,
   replicateLog2FCs,
   stdByGene,
   type CompareResultRow,
+  type ConditionKey,
   type StandardRow
 } from '../engine'
 import type { ResponseLook } from '../graph/types'
@@ -20,22 +24,28 @@ import {
 
 export function TdrBody({
   rows,
+  pair,
   gene,
   std,
   global,
+  scaleGenes,
   ...view
 }: {
-  /** the facet's rows (dose and time left free) */
+  /** the facet's rows (the pair's two conditions left free) */
   rows: CompareResultRow[]
+  /** the two numeric conditions: along x, and one line per level */
+  pair: [ConditionKey, ConditionKey]
   gene: string
   /** the Clean data rows the Compare ran on — each level's replicates are drawn from them */
   std?: StandardRow[]
   /** scale: global — the value axis spans every gene in the facet, so paging keeps one scale */
   global?: boolean
+  /** a global scale over just these genes (the selection on show); unset = every gene */
+  scaleGenes?: readonly string[]
   dim: '2d' | '3d'
   show: ResponseShow
   look: ResponseLook
-  /** 3-D lines: a dose curve at each time, or a time curve at each dose */
+  /** lines (2-D or 3-D): a curve along the first at each level of the second ('time'), or the reverse */
   slice?: 'time' | 'dose'
   /** 3-D: the camera's projection */
   projection?: 'perspective' | 'orthographic'
@@ -43,32 +53,59 @@ export function TdrBody({
   doseLabel?: string
   timeLabel?: string
 }) {
-  // Each dose × time level of the gene: its log₂FC, the fold change's SE and its replicates.
+  const [ax, ay] = pair
+  // Each level pair of the gene: its log₂FC, the fold change's SE and its replicates.
   const measured = useMemo(() => {
     const geneStd = (std && stdByGene(std).get(gene)) ?? []
     const mine = rows.filter((r) => r.uniqID === gene)
     const cells: MeasuredCell[] = []
     for (const r of mine) {
-      if (r.dose == null || r.time == null || r.log2FC == null || !Number.isFinite(r.log2FC))
-        continue
+      const x = ctxNum(r, ax)
+      const y = ctxNum(r, ay)
+      if (x == null || y == null || r.log2FC == null || !Number.isFinite(r.log2FC)) continue
       cells.push({
-        dose: r.dose,
-        time: r.time,
+        dose: x,
+        time: y,
         y: r.log2FC,
         ...(r.fcSE != null ? { se: r.fcSE } : null),
         reps: replicateLog2FCs(r, geneStd)
       })
     }
     return { cells, comparison: comparisonOf(mine) }
-  }, [rows, gene, std])
-  const range = useMemo(() => (global ? tdrValueRange(rows, std) : undefined), [global, rows, std])
-  return <ResponseSurfaceView measured={measured} valueRange={range} {...view} />
+  }, [rows, gene, std, ax, ay])
+  // Each axis log or linear by its levels' spacing (detectAxisScale) — over the facet's levels, so
+  // every gene is drawn on the same axes; linear where it can't tell, as a curve fit's.
+  const scales = useMemo(() => {
+    const scaleOf = (c: ConditionKey): 'log' | 'linear' => {
+      const levels = [
+        ...new Set(rows.map((r) => ctxNum(r, c)).filter((v): v is number => v != null))
+      ]
+      return detectAxisScale(levels).scale ?? 'linear'
+    }
+    return { x: scaleOf(ax), y: scaleOf(ay) }
+  }, [rows, ax, ay])
+  const range = useMemo(() => {
+    if (!global) return undefined
+    const keep = scaleGenes ? new Set(scaleGenes) : null
+    return tdrValueRange(keep ? rows.filter((r) => keep.has(r.uniqID)) : rows, [ax, ay], std)
+  }, [global, scaleGenes, rows, ax, ay, std])
+  return (
+    <ResponseSurfaceView
+      measured={measured}
+      valueRange={range}
+      scales={scales}
+      xRole={ax === 'time' ? 'time' : 'dose'}
+      yRole={ay === 'time' ? 'time' : 'dose'}
+      {...view}
+    />
+  )
 }
 
-/** The value range every gene in the facet spans over dose × time — fold changes, their error
- *  bars and their replicates — padded a little, so a global scale clips none of them. */
+/** The value range the given genes (rows) span over the pair — fold changes, their error bars and
+ *  their replicates — padded a little, so a global scale clips none of them. */
 function tdrValueRange(
   rows: CompareResultRow[],
+  [ax, ay]: [ConditionKey, ConditionKey],
   std: StandardRow[] | undefined
 ): [number, number] | undefined {
   const byGene = std ? stdByGene(std) : undefined
@@ -80,7 +117,8 @@ function tdrValueRange(
     if (v > hi) hi = v
   }
   for (const r of rows) {
-    if (r.dose == null || r.time == null || r.log2FC == null || !Number.isFinite(r.log2FC)) continue
+    if (ctxNum(r, ax) == null || ctxNum(r, ay) == null) continue
+    if (r.log2FC == null || !Number.isFinite(r.log2FC)) continue
     const se = r.fcSE ?? 0
     take(r.log2FC - se)
     take(r.log2FC + se)

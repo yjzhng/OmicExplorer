@@ -18,7 +18,7 @@ import { useGraph } from '../graph/store'
 import { tooltip } from './condTooltip'
 import { PlotlyChart, type GuideDrag } from './PlotlyChart'
 import { legendOn, resolveGroups, resolveHighlight } from './pointStyle'
-import { axisBase, EFFECT_COLOR, guideLine, PALETTES, plotBase } from './theme'
+import { axisBase, EFFECT_COLOR, GUIDE_WIDTH, guideLine, PALETTES, plotBase } from './theme'
 import { useSelectedGeneSets } from './useSelection'
 import { useUiTheme } from './useUiTheme'
 
@@ -104,6 +104,7 @@ export function VolcanoView({
   const editable = !!onThresholdChange
   const emphasis = useMemo(() => resolveHighlight(style), [style])
   const showLegend = legendOn(style)
+  const gw = style?.guideWidth ?? GUIDE_WIDTH
 
   const { data, layout, labels, guides } = useMemo(() => {
     const p = PALETTES[mode]
@@ -133,8 +134,10 @@ export function VolcanoView({
       return {
         type: 'scatter',
         mode: 'markers',
-        name: `${g.name} (${pts.length})`,
-        showlegend: g.legend,
+        // One-sided (a two-way ANOVA term): significant genes have no direction — "up" reads
+        // "significant", and the empty "down" group leaves the legend.
+        name: `${volcano.unsigned && eff === 'up' ? 'significant' : g.name} (${pts.length})`,
+        showlegend: g.legend && !(volcano.unsigned && eff === 'down'),
         // This group's own highlight look (see PlotlyChart's EMPH_KEY): the emphasis overlay and
         // the dim read it per trace, so each group can bump/ring/label/fade differently.
         __oeEmph: g.highlight,
@@ -187,7 +190,7 @@ export function VolcanoView({
       x1,
       y0,
       y1,
-      line: guideLine(p)
+      line: guideLine(p, gw)
     })
     // A loop, not Math.max(...points): spreading every gene as an argument can overflow the stack.
     let yMax = 1
@@ -200,13 +203,15 @@ export function VolcanoView({
     // the enlarged overlay marker on an edge point shifts the whole cloud, sliding the point
     // out from under the cursor and bouncing between hover/unhover.
     // Loops, not Math.min(...xs): one argument per gene can overflow the stack.
-    let xLo = Math.min(volcano.fcLow, 0)
+    // (one-sided: from 0 — an unsigned effect size is never negative)
+    let xLo = volcano.unsigned ? 0 : Math.min(volcano.fcLow, 0)
     let xHi = Math.max(volcano.fcHigh, 0)
     for (const pt of volcano.points) {
       xLo = Math.min(xLo, pt.x)
       xHi = Math.max(xHi, pt.x)
     }
     const xPad = (xHi - xLo || 2) * 0.05
+    const hideDown = volcano.unsigned ? { visible: false } : null
 
     // Guide geometry follows the threshold TYPE. Non-linear (SAM): a hyperbola boundary
     //   stat = P_lim + b/(|log₂FC| − FC_lim)     (stored as statMin=P_lim, s0=−FC_lim)
@@ -276,13 +281,13 @@ export function VolcanoView({
           .reverse()
         return `${toPath(left)}${toPath(right)}`
       }
-      samShapes.push({ type: 'path', path: samPath(b), line: guideLine(p) }) // [0] curve
+      samShapes.push({ type: 'path', path: samPath(b), line: guideLine(p, gw) }) // [0] curve
       // The anchors are SMALL tick marks sitting just OUTSIDE their axis line (not full asymptote
       // lines) — a solid "grab" style that reads as a handle against the dashed curve. The cross-axis
       // extent is PAPER-referenced from the axis (paper 0) OUT into the margin (paper −TICK), so it's
       // clipped to the figure (not the plot area); the drag-axis coordinate (statMin / ±asym) stays
       // in data space.
-      const handle = { ...guideLine(p), width: 2, dash: 'solid' }
+      const handle = { ...guideLine(p, gw), dash: 'solid' }
       const TICK = 0.025 // paper length of each tick, into the margin
       // [1] P limit: tick just left of the y-axis (paper x ∈ [−TICK, 0]) at y = statMin.
       samShapes.push({
@@ -401,7 +406,7 @@ export function VolcanoView({
         pts.map(([x, y], i) => `${i ? 'L' : 'M'}${x},${y}`).join('')
       const right = branch(need.wallUp, xHi + xPad)
       const left = branch(need.wallDown, -(xLo - xPad)).map(([x, y]) => [-x, y] as [number, number])
-      const look = need.faint ? { ...guideLine(p), width: 1 } : guideLine(p)
+      const look = guideLine(p, need.faint ? (gw * 2) / 3 : gw)
       const extra = need.faint ? { opacity: 0.45 } : null
       if (right.length) ccShapes.push({ type: 'path', path: toPath(right), line: look, ...extra })
       if (left.length) ccShapes.push({ type: 'path', path: toPath(left), line: look, ...extra })
@@ -441,9 +446,13 @@ export function VolcanoView({
           : isSam
             ? samShapes
             : [
-                line(volcano.fcLow, volcano.fcLow, volcano.statMin, yMax),
+                // (one-sided: the down side's guides kept in their places for the drags, hidden)
+                { ...line(volcano.fcLow, volcano.fcLow, volcano.statMin, yMax), ...hideDown },
                 line(volcano.fcHigh, volcano.fcHigh, volcano.statMin, yMax),
-                line(xLo - xPad, volcano.fcLow, volcano.statMin, volcano.statMin),
+                {
+                  ...line(xLo - xPad, volcano.fcLow, volcano.statMin, volcano.statMin),
+                  ...hideDown
+                },
                 line(volcano.fcHigh, xHi + xPad, volcano.statMin, volcano.statMin)
               ]
     }
@@ -653,7 +662,8 @@ export function VolcanoView({
     showLegend,
     nsKey,
     samCut,
-    ccAlpha
+    ccAlpha,
+    gw
   ])
 
   // Route a dragged guide's new value to the right threshold field (called once, on release).

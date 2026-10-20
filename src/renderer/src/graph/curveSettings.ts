@@ -1,42 +1,57 @@
 /**
- * A Curve fit's three settings — model, axis, and (on a dose × time surface) how each surface is
- * described — shared by the tile panel and the Configure dialog so both offer the same choices.
+ * A Curve fit's three settings — model, axis (any numeric condition, or a dose × time surface), and
+ * (on a surface) how each surface is described — shared by the tile panel and the Configure dialog
+ * so both offer the same choices.
  */
-import { CURVE_MIN_TREATED, type DataShape } from '../engine'
+import { condLabel, CURVE_MIN_TREATED, type ConditionKey, type DataShape } from '../engine'
 
 export type CurveModel = '4pl' | 'spline'
-export type CurveAxisPick = 'dose' | 'time' | 'surface'
+/** what a curve runs over: a numeric condition, or the dose × time surface */
+export type CurveAxisPick = ConditionKey | 'surface'
 export type SurfaceFit = 'slices' | 'doseSlices' | 'joint'
 
 /** Why the data can't fit a curve over an axis (too few levels) — null when it can, or when the
  *  shape isn't known yet (before Clean data has run). */
 export const curveAxisWhy = (
   shape: DataShape | null | undefined,
-  a: 'dose' | 'time'
+  a: ConditionKey
 ): string | null =>
   !shape || ((shape.levels[a] ?? 0) >= 2 && (shape.treated[a] ?? 0) >= CURVE_MIN_TREATED)
     ? null
-    : `Needs at least ${CURVE_MIN_TREATED} ${a} levels beyond the lowest`
+    : `Needs at least ${CURVE_MIN_TREATED} ${condLabel(a)} levels beyond the lowest`
 
-export const curveSurfaceWhy = (shape: DataShape | null | undefined): string | null =>
-  curveAxisWhy(shape, 'dose') || curveAxisWhy(shape, 'time')
-    ? 'Needs both dose and time to vary in the data'
+export const curveSurfaceWhy = (
+  shape: DataShape | null | undefined,
+  pair: readonly [ConditionKey, ConditionKey] = ['dose', 'time']
+): string | null =>
+  curveAxisWhy(shape, pair[0]) || curveAxisWhy(shape, pair[1])
+    ? `Needs both ${condLabel(pair[0])} and ${condLabel(pair[1])} to vary in the data`
     : null
 
-/** The method presets, and the two models' choices — the tile panel's and the Configure window's
- *  Model rows alike. The descriptor's spline isn't built yet, so it's offered greyed. */
+/** A surface's entry in an axis switch: `surface:a|b` (the pair, first axis first). */
+export const surfaceValue = (pair: readonly [ConditionKey, ConditionKey]): string =>
+  `surface:${pair[0]}|${pair[1]}`
+/** An axis switch's value read back: one axis, or a surface's pair. */
+export function readAxisValue(
+  v: string
+): { axis: ConditionKey } | { pair: [ConditionKey, ConditionKey] } {
+  if (!v.startsWith('surface:')) return { axis: v as ConditionKey }
+  const [a, b] = v.slice('surface:'.length).split('|') as [ConditionKey, ConditionKey]
+  return { pair: [a, b] }
+}
+/** The pairs a surface can run over: every two numeric conditions, in order (dose before time). */
+export function surfacePairs(axes: readonly ConditionKey[]): Array<[ConditionKey, ConditionKey]> {
+  return axes.flatMap((a, i) =>
+    axes.slice(i + 1).map((b) => [a, b] as [ConditionKey, ConditionKey])
+  )
+}
+
+/** The method presets — the tile panel's and the Configure window's Model rows alike (each axis's
+ *  own models: graph/axisFits.ts). */
 export const CURVE_METHOD_OPTIONS: { value: 'hybrid' | '4pl' | 'custom'; label: string }[] = [
   { value: 'hybrid', label: 'Hybrid' },
   { value: '4pl', label: '4PL' },
   { value: 'custom', label: 'custom' }
-]
-export const DETECTOR_OPTIONS: { value: CurveModel; label: string }[] = [
-  { value: '4pl', label: '4PL' },
-  { value: 'spline', label: 'spline' }
-]
-export const DESCRIPTOR_OPTIONS = [
-  { value: '4pl' as const, label: '4PL' },
-  { value: 'spline' as const, label: 'spline', disabled: true, title: 'Not built yet' }
 ]
 /** A model switch while a method preset holds it: faded (still usable — picking another value
  *  makes the method custom). */
@@ -59,30 +74,54 @@ export const CURVE_MODEL_OPTIONS: { value: CurveModel; label: string; title: str
   }
 ]
 
+/** The axes a curve can run over: every numeric condition in the data (dose and time before its
+ *  data is known), each greyed with the reason when it has too few levels, and a surface over
+ *  every pair of them (value: surfaceValue). */
 export function curveAxisOptions(
   shape: DataShape | null | undefined,
   model: CurveModel
-): { value: CurveAxisPick; label: string; disabled: boolean; title: string }[] {
-  const surfaceWhy = curveSurfaceWhy(shape)
+): { value: string; label: string; disabled: boolean; title: string }[] {
+  const axes: ConditionKey[] = shape?.numeric.length ? shape.numeric : ['dose', 'time']
   return [
-    ...(['dose', 'time'] as const).map((a) => ({
-      value: a,
-      label: a,
+    ...axes.map((a) => ({
+      value: a as string,
+      label: condLabel(a),
       disabled: !!curveAxisWhy(shape, a),
-      title: curveAxisWhy(shape, a) ?? `One curve per gene over ${a}`
+      title: curveAxisWhy(shape, a) ?? `One curve per gene over ${condLabel(a)}`
     })),
-    {
-      value: 'surface' as const,
-      label: 'dose × time',
-      disabled: !!surfaceWhy,
-      title:
-        surfaceWhy ??
-        (model === 'spline'
-          ? 'One dose × time surface per gene × compound'
-          : 'One 4PL surface per gene × compound, its adjusted F-test (slower)')
-    }
+    ...surfacePairs(axes).map((p) => {
+      const why = curveSurfaceWhy(shape, p)
+      const name = `${condLabel(p[0])} × ${condLabel(p[1])}`
+      return {
+        value: surfaceValue(p),
+        label: name,
+        disabled: !!why,
+        title:
+          why ??
+          (model === 'spline'
+            ? `One ${name} surface per gene × compound`
+            : `One 4PL ${name} surface per gene × compound, its adjusted F-test (slower)`)
+      }
+    })
   ]
 }
+
+/** What a two-axis fit is for (CompareConfig.surfaceIntent). */
+export type SurfaceIntent = 'shape' | 'changes'
+export const INTENT_OPTIONS: { value: SurfaceIntent; label: string; title: string }[] = [
+  {
+    value: 'shape',
+    label: 'capture shape',
+    title:
+      'Is there a response, and what is its shape? One surface over every cell (noise evened out across neighbouring levels), tested against flat and described by one joint model (EC50 and top changing smoothly along the other axis). E.g. decryptM.'
+  },
+  {
+    value: 'changes',
+    label: 'test changes',
+    title:
+      'Does the response along one axis change with the other? A curve along the response axis at each level of the other, each fitted on its own, tested against one curve shared by all — what every level shares (a melt curve) is not a change. Described by how the curves differ: consistent drift or a change of shape. E.g. TPP.'
+  }
+]
 
 export const SURFACE_FIT_OPTIONS: { value: SurfaceFit; label: string; title: string }[] = [
   {

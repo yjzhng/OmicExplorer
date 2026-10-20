@@ -1,6 +1,21 @@
 /** Static metadata for node operations, grouped under high-level categories. */
-import { DEFAULT_THRESHOLD } from '../engine'
-import { clusterRunMatches, CURVECURATOR_THRESHOLD, isStep } from './types'
+import {
+  condLabel,
+  ctxNum,
+  customCond,
+  DEFAULT_THRESHOLD,
+  numericConds,
+  type ConditionKey,
+  type SampleFilter
+} from '../engine'
+import {
+  clusterRunMatches,
+  CURVECURATOR_THRESHOLD,
+  isStep,
+  loadNumericConditions,
+  numericOfResult,
+  tdrPair
+} from './types'
 import type {
   BarConfig,
   BubbleConfig,
@@ -16,6 +31,7 @@ import type {
   MAConfig,
   MergeConfig,
   SubsetConfig,
+  StepNode,
   NodeCategory,
   NodeConfig,
   NodeKind,
@@ -25,6 +41,9 @@ import type {
   CorrConfig,
   PlotGroupConfig,
   PotencyConfig,
+  MetricsConfig,
+  VarianceConfig,
+  InteractionConfig,
   CurveMadConfig,
   ResponseConfig,
   QcConfig,
@@ -72,7 +91,9 @@ export const NODE_SPECS: Record<NodeKind, NodeSpec> = {
     kind: 'standardize',
     label: 'Clean data',
     category: 'processing',
-    acceptsFrom: ['load'],
+    // Load data (an import to read), or Clean data (a Merge, a Subset of one): a second Clean data
+    // runs its clean-up, normalisation and imputation on the table it's given
+    acceptsFrom: ['load', 'standardize'],
     hasRun: true,
     defaultConfig: (): StandardizeConfig => ({
       activeConditions: null,
@@ -95,8 +116,9 @@ export const NODE_SPECS: Record<NodeKind, NodeSpec> = {
     label: 'Subset',
     subtitle: 'keep chosen conditions',
     category: 'processing',
-    // Like Merge, it emits a Clean-data result (see outputKindOf), so it chains off either.
-    acceptsFrom: ['standardize'],
+    // Like Merge, it emits a Clean-data result (see outputKindOf), so it chains off either. Off Load
+    // data it filters the raw import instead, before Clean data cleans it (see wiredKindOf).
+    acceptsFrom: ['load', 'standardize'],
     hasRun: true,
     defaultConfig: (): SubsetConfig => ({ keep: {} })
   },
@@ -221,6 +243,33 @@ export const NODE_SPECS: Record<NodeKind, NodeSpec> = {
     acceptsFrom: ['curveFit'],
     hasRun: true,
     defaultConfig: (): PotencyConfig => ({ show: 'all', capEnabled: false, labelTop: 20 })
+  },
+  metrics: {
+    kind: 'metrics',
+    label: 'Curve metrics',
+    category: 'plotting',
+    // A curve fit's parameters per gene as bar charts (a surface's per slice level).
+    acceptsFrom: ['curveFit'],
+    hasRun: true,
+    defaultConfig: (): MetricsConfig => ({})
+  },
+  variance: {
+    kind: 'variance',
+    label: 'Variance',
+    category: 'plotting',
+    // An ANOVA's per-gene shares of variation, per factor (its model, kept with the result).
+    acceptsFrom: ['compare'],
+    hasRun: true,
+    defaultConfig: (): VarianceConfig => ({ topGenes: 20 })
+  },
+  interaction: {
+    kind: 'interaction',
+    label: 'Interaction',
+    category: 'plotting',
+    // An ANOVA's per-gene cell means across one factor, a line per level of another (others averaged).
+    acceptsFrom: ['compare'],
+    hasRun: true,
+    defaultConfig: (): InteractionConfig => ({})
   },
   curveMad: {
     kind: 'curveMad',
@@ -420,6 +469,9 @@ export const CATEGORIES: Record<NodeCategory, CategorySpec> = {
       'ma',
       'dr',
       'potency',
+      'metrics',
+      'variance',
+      'interaction',
       'curveMad',
       'response',
       'bubble',
@@ -446,7 +498,8 @@ export const PLOT_SECTIONS: { label: string; kinds: NodeKind[] }[] = [
   { label: 'Data', kinds: ['table'] },
   { label: 'Global', kinds: ['qc', 'curveMad', 'heatmap', 'corr', 'pca', 'geneBar'] },
   { label: 'Differential', kinds: ['volcano', 'ma'] },
-  { label: 'Conditions', kinds: ['bubble', 'dr', 'response', 'potency', 'tdr'] },
+  { label: 'Factors', kinds: ['variance', 'interaction'] },
+  { label: 'Conditions', kinds: ['bubble', 'dr', 'response', 'potency', 'metrics', 'tdr'] },
   { label: 'Contrast', kinds: ['scatter', 'dumbbell'] },
   { label: 'Function', kinds: ['enrich', 'string'] }
 ]
@@ -464,6 +517,9 @@ export const ALL_OPS: NodeKind[] = [
   'ma',
   'dr',
   'potency',
+  'metrics',
+  'variance',
+  'interaction',
   'curveMad',
   'response',
   'bubble',
@@ -491,6 +547,9 @@ export const PLOT_CONFIG_KINDS: ReadonlySet<NodeKind> = new Set<NodeKind>([
   'ma',
   'dr',
   'potency',
+  'metrics',
+  'variance',
+  'interaction',
   'curveMad',
   'response',
   'bubble',
@@ -528,14 +587,28 @@ export function nothingToRerun(data: {
 export function accentOf(category: NodeCategory): string {
   return CATEGORIES[category].accent
 }
-/** Display label for a plotting tile. Like NODE_SPECS[kind].label, but a `dr` tile shows its axis
- *  (Dose- vs Time-response) so the two dr variants read distinctly wherever a tile is labelled —
- *  group subcards, the canvas group tile, and result panels. */
+/** A numeric condition as a Response plot's title names it: capitalised (`Dose`, `Temperature`). */
+const condTitle = (c: ConditionKey): string => {
+  const l = condLabel(c)
+  return l.charAt(0).toUpperCase() + l.slice(1)
+}
+/** A Response plot's name from the numeric conditions it's over: "Dose response",
+ *  "Dose & Time response". */
+export const responseLabel = (conds: readonly ConditionKey[]): string =>
+  `${conds.map(condTitle).join(' & ')} response`
+
+/** Display label for a plotting tile. Like NODE_SPECS[kind].label, but a Response plot names the
+ *  numeric conditions it's over (`dr`: its axis — "Dose response"; `tdr`: its pair — "Dose & Time
+ *  response"), so the per-condition variants read distinctly wherever a tile is labelled — group
+ *  subcards, the canvas group tile, and result panels. */
 export function plotLabel(kind: NodeKind, config?: unknown): string {
   if (kind === 'dr') {
-    const axis = (config as { axis?: unknown } | null | undefined)?.axis
-    return axis === 'time' ? 'Time-response' : 'Dose-response'
+    const axis = (config as { axis?: ConditionKey } | null | undefined)?.axis
+    return responseLabel([axis ?? 'dose'])
   }
+  if (kind === 'tdr') return responseLabel(tdrPair(config as TdrConfig | undefined))
+  if (kind === 'response')
+    return responseLabel((config as ResponseConfig | undefined)?.pair ?? ['dose', 'time'])
   return NODE_SPECS[kind].label
 }
 
@@ -554,47 +627,157 @@ export function stepTitle(node: {
 }
 
 /** One selectable entry in a plot picker. Usually one per plotting kind, but a kind with a
- *  meaningful config variant appears as several — the `dr` plot is offered as separate
- *  Dose-response and Time-response entries, each seeding its `axis` via `override`. Shared by the
- *  new-step TilePicker and the add-plot menu (NodeConfigPanel) so the two stay in sync. */
+ *  meaningful config variant appears as several — the Response plots are offered one per numeric
+ *  condition (`dr`, seeding its `axis`) and one per pair of them (`tdr`, seeding its `pair`) via
+ *  `override`. Shared by the new-step TilePicker and the add-plot menu (NodeConfigPanel) so the two
+ *  stay in sync. */
 export interface PlotMenuEntry {
   kind: NodeKind
   label: string
   override?: Record<string, unknown>
 }
-/** Fan one plotting kind out into its menu entries: `dr` splits into dose/time, all else is 1:1. */
-export function plotEntriesFor(kind: NodeKind): PlotMenuEntry[] {
-  return kind === 'dr'
-    ? [
-        { kind: 'dr', label: 'Dose-response', override: { axis: 'dose' } },
-        { kind: 'dr', label: 'Time-response', override: { axis: 'time' } }
-      ]
-    : [{ kind, label: NODE_SPECS[kind].label }]
+/** The numeric conditions assumed where the data isn't known (no upstream, Settings' defaults). */
+export const DEFAULT_AXES: ConditionKey[] = ['dose', 'time']
+/** Fan one plotting kind out into its menu entries over the data's numeric conditions (`axes`, in
+ *  order): `dr` → one per condition ("Dose response", "Time response", "Temp response"), `tdr` →
+ *  one per pair, the earlier along x ("Dose & Time response", "Dose & Temp response", …); all else
+ *  is 1:1. Each is its own tile, so several can be on view at once. */
+export function plotEntriesFor(
+  kind: NodeKind,
+  axes: readonly ConditionKey[] = DEFAULT_AXES
+): PlotMenuEntry[] {
+  if (kind === 'dr')
+    return axes.map((a) => ({ kind, label: responseLabel([a]), override: { axis: a } }))
+  if (kind === 'tdr' || kind === 'response')
+    return axes.flatMap((a, i) =>
+      axes.slice(i + 1).map((b) => ({
+        kind,
+        label: responseLabel([a, b]),
+        override: { pair: [a, b] }
+      }))
+    )
+  return [{ kind, label: NODE_SPECS[kind].label }]
 }
 /** A stable key per entry (kind + any override), so React keys and "already added" checks are
- *  unambiguous when one kind yields several entries. */
+ *  unambiguous when one kind yields several entries. A pair joins with `&`. */
 export function entryKey(e: PlotMenuEntry): string {
   return e.override
     ? `${e.kind}:${Object.entries(e.override)
-        .map(([k, v]) => `${k}=${v}`)
+        .map(([k, v]) => `${k}=${Array.isArray(v) ? v.join('&') : v}`)
         .join(',')}`
     : e.kind
 }
+/** The entry key a tile of `kind` with `config` answers to — its variant read from its config, so a
+ *  tile saved before its kind had variants (a tdr with no pair) matches the entry it now is. */
+export function tileEntryKey(kind: NodeKind, config: unknown): string {
+  const label = plotLabel(kind, config)
+  if (kind === 'dr')
+    return entryKey({ kind, label, override: { axis: (config as DRConfig)?.axis ?? 'dose' } })
+  if (kind === 'tdr')
+    return entryKey({ kind, label, override: { pair: tdrPair(config as TdrConfig) } })
+  if (kind === 'response')
+    return entryKey({
+      kind,
+      label,
+      override: { pair: (config as ResponseConfig)?.pair ?? ['dose', 'time'] }
+    })
+  return kind
+}
 
-/** Which response axes the upstream data actually carries — for gating dose/time plot options. */
-export type AxisAvail = { dose: boolean; time: boolean }
+/** Which numeric conditions the upstream data actually carries, in the schema's order (dose, time,
+ *  then the declared custom ones) — the Response plots are offered one per condition and one per
+ *  pair of them. */
+export type AxisAvail = ConditionKey[]
 /** Derive it from the plot's upstream result: a Standardize's `activeConditions` is authoritative;
- *  Compare/Contrast are read from their rows. Unknown upstream (not yet run) ⇒ allow both, so we
+ *  Compare/Contrast are read from their rows. Unknown upstream (not yet run) ⇒ dose and time, so we
  *  never hide an option we can't rule out. */
 export function axisAvailFromResult(r: NodeResult | undefined): AxisAvail {
-  if (!r) return { dose: true, time: true }
+  if (!r) return DEFAULT_AXES
+  const hit = availByResult.get(r)
+  if (hit) return [...hit]
+  const avail = scanAxisAvail(r)
+  availByResult.set(r, avail)
+  return [...avail]
+}
+/** A result's response axes, scanned once: a result is never changed once made (a re-run makes a
+ *  new one), and the scan walks every row — on a million-row Contrast, ~0.4 s. It runs inside
+ *  store selectors (useUpstreamFacts), which re-run on every store change, once per tile asking. */
+const availByResult = new WeakMap<NodeResult, AxisAvail>()
+function scanAxisAvail(r: NodeResult): AxisAvail {
+  const numeric = numericOfResult(r)
   if (r.kind === 'standardize') {
     const ac = r.std.activeConditions ?? []
-    return { dose: ac.includes('dose'), time: ac.includes('time') }
+    return [...numeric].filter((c) => ac.includes(c))
   }
   const rows = r.kind === 'compare' ? r.cmp.rows : r.kind === 'contrast' ? r.ctr.rows : null
-  if (!rows) return { dose: true, time: true }
-  return { dose: rows.some((x) => x.dose != null), time: rows.some((x) => x.time != null) }
+  if (!rows) return DEFAULT_AXES
+  return [...numeric].filter((c) => rows.some((x) => ctxNum(x, c) != null))
+}
+/**
+ * The numeric conditions this result actually varies over: at least TWO distinct levels.
+ *
+ * A single-dose experiment (one concentration plus its vehicle, say) has `dose` as a condition but
+ * no dose *series*, so a dose–response curve or a bubble plot over it has nothing to show — one
+ * point per gene, and a category axis with a single level. Kept apart from `axisAvailFromResult`,
+ * which answers the different question of which conditions are present at all (plots read it to
+ * label and facet, and a one-level condition still belongs there).
+ *
+ * Unknown when the rows aren't in hand (not run yet, or a kind without per-level rows): every
+ * available axis is returned, so a plot is never blocked on a guess.
+ */
+const multiByResult = new WeakMap<NodeResult, AxisAvail>()
+export function multiLevelAxes(r: NodeResult | undefined): AxisAvail {
+  if (!r) return DEFAULT_AXES
+  const hit = multiByResult.get(r)
+  if (hit) return [...hit]
+  const rows = r.kind === 'compare' ? r.cmp.rows : r.kind === 'contrast' ? r.ctr.rows : null
+  const avail = axisAvailFromResult(r)
+  const found = !rows
+    ? avail
+    : avail.filter((c) => {
+        const seen = new Set<number>()
+        for (const x of rows) {
+          const v = ctxNum(x, c)
+          if (v != null) seen.add(v)
+          if (seen.size > 1) return true
+        }
+        return false
+      })
+  multiByResult.set(r, found)
+  return [...found]
+}
+
+/** The axes a plot over one numeric condition (Bubble) can switch between, and the one it draws:
+ *  of the conditions present, those with a series (multiLevelAxes) — all present ones when none
+ *  has — and its chosen axis when that's among them, else the first. So a saved axis the data
+ *  doesn't vary over (a default dose on time-only data) never blanks the plot. */
+export function seriesAxes(
+  want: ConditionKey | undefined,
+  present: readonly ConditionKey[],
+  r: NodeResult | undefined
+): { axes: ConditionKey[]; axis: ConditionKey | undefined } {
+  const multi = r ? multiLevelAxes(r) : present
+  const series = present.filter((c) => multi.includes(c))
+  const axes = series.length ? series : [...present]
+  return { axes, axis: want != null && axes.includes(want) ? want : axes[0] }
+}
+
+/** The axes a Curve fit's rows were fitted over (a surface's pair aside), scanned once per result
+ *  as axisAvailFromResult is. */
+const fittedByResult = new WeakMap<NodeResult, ConditionKey[]>()
+function fittedAxes(r: NodeResult): ConditionKey[] {
+  if (r.kind !== 'compare') return []
+  let hit = fittedByResult.get(r)
+  if (!hit) {
+    const found = new Set<ConditionKey>()
+    for (const x of r.cmp.rows) {
+      const a = x.curve?.axis ?? (x.rs?.axis === 'surface' ? undefined : x.rs?.axis)
+      if (a != null) found.add(a)
+    }
+    hit = [...found]
+    fittedByResult.set(r, hit)
+  }
+  return hit
 }
 /** The graph slice `axisAvailFor` walks: nodes, edges, and whatever results exist. */
 export interface AxisGraph {
@@ -609,37 +792,55 @@ export interface AxisGraph {
  *  than options the data may not support (a stale menu would otherwise contradict the pipeline's
  *  "needs re-run" state). No upstream at all (unwired) ⇒ allow both. */
 export function axisAvailFor(g: AxisGraph, upstreamId: string | undefined): AxisAvail {
-  if (!upstreamId) return { dose: true, time: true }
+  if (!upstreamId) return DEFAULT_AXES
   const seen = new Set<string>()
   const walk = (id: string | undefined): AxisAvail => {
     while (id && !seen.has(id)) {
       seen.add(id)
       const r = g.results[id]
-      if (r) return axisAvailFromResult(r)
+      if (r) {
+        const axes = axisAvailFromResult(r)
+        // A Contrast of Curve fits: its rows are the curves' summaries (no level of their axis),
+        // so the axes its inputs fit over count too — its Response plot draws their curves.
+        if (r.kind !== 'contrast') return axes
+        const at = id
+        const fitted = g.edges
+          .filter((e) => e.target === at)
+          .flatMap((e) => {
+            const up = g.results[e.source]
+            return up ? fittedAxes(up) : []
+          })
+        return orderAxes([...new Set([...axes, ...fitted])])
+      }
       const n = g.nodes.find((x) => x.id === id)
       if (n && isStep(n) && n.data.kind === 'standardize') {
         const ac = (n.data.config as StandardizeConfig).activeConditions
-        if (ac) return { dose: ac.includes('dose'), time: ac.includes('time') }
-        return { dose: false, time: false }
+        if (!ac) return []
+        // the Load data it cleans declares which of its custom conditions are numeric
+        const load = loadAbove(g, id)?.load
+        const numeric = load
+          ? numericConds(loadNumericConditions(load.data.config as LoadConfig).map(customCond))
+          : numericConds()
+        return [...numeric].filter((c) => ac.includes(c))
       }
       // A Merge pools several inputs and its conditions are their union, so an unrun one has to
       // branch rather than follow whichever edge happens to be first.
       if (n && isStep(n) && n.data.kind === 'merge') {
         const ups = g.edges.filter((e) => e.target === id).map((e) => e.source)
-        return ups.reduce<AxisAvail>(
-          (acc, u) => {
-            const a = walk(u)
-            return { dose: acc.dose || a.dose, time: acc.time || a.time }
-          },
-          { dose: false, time: false }
-        )
+        const found = new Set(ups.flatMap((u) => walk(u)))
+        return orderAxes([...found])
       }
       id = g.edges.find((e) => e.target === id)?.source
     }
-    return { dose: false, time: false }
+    return []
   }
   return walk(upstreamId)
 }
+/** Numeric conditions in the schema's order: dose, time, then the custom ones as first seen. */
+const orderAxes = (cs: ConditionKey[]): ConditionKey[] => [
+  ...DEFAULT_AXES.filter((c) => cs.includes(c)),
+  ...cs.filter((c) => !DEFAULT_AXES.includes(c))
+]
 /** The node kind an op's OUTPUT behaves as, for wiring. Merge pools Clean data into one more
  *  Clean-data result (and Subset filters one down to another), so anything that accepts
  *  `standardize` accepts either — expressing that here rather than adding them to a dozen
@@ -650,6 +851,64 @@ const OUTPUT_KIND: Partial<Record<NodeKind, NodeKind>> = {
 }
 export function outputKindOf(op: NodeKind): NodeKind {
   return OUTPUT_KIND[op] ?? op
+}
+/** What a step's output wires as in this graph: outputKindOf its kind — except a Subset fed (through
+ *  any Subsets) by Load data. That one filters the raw import, so its output is still Load data,
+ *  which only Clean data takes. Undefined for a node that isn't a step. */
+export function wiredKindOf(
+  g: { nodes: GraphNode[]; edges: { source: string; target: string }[] },
+  id: string
+): NodeKind | undefined {
+  const seen = new Set<string>()
+  let cur: string | undefined = id
+  let first: NodeKind | undefined
+  while (cur && !seen.has(cur)) {
+    seen.add(cur)
+    const n = g.nodes.find((x) => x.id === cur)
+    if (!n || !isStep(n)) return first
+    const kind = n.data.kind
+    first ??= kind
+    // the first step that isn't a Subset: Load data passes through as Load data
+    if (kind !== 'subset') return kind === 'load' ? 'load' : outputKindOf(first)
+    const at: string = cur
+    cur = g.edges.find((e) => e.target === at)?.source
+  }
+  return first && outputKindOf(first)
+}
+/** Whether step `id` has a run of its own in this graph: its spec's hasRun — but a Subset off Load
+ *  data hasn't (wiredKindOf): Clean data applies its filter as it reads the import, so, like Load
+ *  data, it's ready once the import is configured and an edit to it stales what's below. */
+export function runsIn(
+  g: { nodes: GraphNode[]; edges: { source: string; target: string }[] },
+  id: string
+): boolean {
+  const n = g.nodes.find((x) => x.id === id)
+  if (!n || !isStep(n) || !NODE_SPECS[n.data.kind].hasRun) return false
+  return !(n.data.kind === 'subset' && wiredKindOf(g, id) === 'load')
+}
+
+/** The Load data step `id` reads (its input, or the one above any Subsets in between) and the
+ *  filters of those Subsets (conditions, replicates, samples left out) — what a Clean data step
+ *  cleans. Undefined when no Load data is there. */
+export function loadAbove(
+  g: { nodes: GraphNode[]; edges: { source: string; target: string }[] },
+  id: string
+): { load: StepNode; keep: SampleFilter[] } | undefined {
+  const keep: SampleFilter[] = []
+  const seen = new Set<string>([id])
+  let cur = g.edges.find((e) => e.target === id)?.source
+  while (cur && !seen.has(cur)) {
+    seen.add(cur)
+    const at: string = cur
+    const n = g.nodes.find((x) => x.id === at)
+    if (!n || !isStep(n)) return undefined
+    if (n.data.kind === 'load') return { load: n, keep }
+    if (n.data.kind !== 'subset') return undefined
+    const c = n.data.config as SubsetConfig
+    keep.push({ keep: c.keep ?? {}, reps: c.reps, drop: c.drop })
+    cur = g.edges.find((e) => e.target === at)?.source
+  }
+  return undefined
 }
 /** True if an edge from `source` op into `target` op is allowed. */
 export function canConnect(source: NodeKind, target: NodeKind): boolean {

@@ -10,10 +10,12 @@ import { useMemo, useState, type ReactNode } from 'react'
 import {
   condLabel,
   condsIn,
+  numericConds,
   orderConds,
   previewContrastPair,
   type CondSelector,
   type ConditionKey,
+  type NumericConds,
   type PairFix,
   type StandardRow
 } from '../engine'
@@ -46,7 +48,7 @@ import {
 } from './contrastModel'
 import { DatasetPick, type PairInput } from './PairContrastDialog'
 import { useGraph } from './store'
-import type { ContrastConfig } from './types'
+import { numericOfResult, numericUnion, type ContrastConfig } from './types'
 
 type Source = 'select' | 'pair'
 
@@ -69,6 +71,7 @@ export function ContrastDialog({
   id,
   rows: rowsProp,
   active: activeProp,
+  numeric: numericProp,
   initial,
   pair,
   onClose
@@ -77,6 +80,8 @@ export function ContrastDialog({
   /** the input's rows (intra-dataset, one input wired) */
   rows: StandardRow[]
   active: ConditionKey[]
+  /** that input's numeric conditions (its schema: numericOfResult) */
+  numeric: NumericConds
   initial: {
     num: CondSelector
     den: CondSelector
@@ -111,7 +116,14 @@ export function ContrastDialog({
     return { rows: r.rows, active: r.present }
   }, [pair, selectInput, rowsProp, activeProp])
   const samples = useMemo(() => sampleRows(rows, active), [rows, active])
-  const [intra, setIntra] = useState<ContrastState>(() => readIntra(initial, samples, active))
+  // the picked input's numeric conditions (its schema)
+  const intraNumeric = useMemo(
+    () => (pair && pair.length >= 2 ? numericOfResult(selectInput?.result) : numericProp),
+    [pair, selectInput, numericProp]
+  )
+  const [intra, setIntra] = useState<ContrastState>(() =>
+    readIntra(initial, samples, active, intraNumeric)
+  )
 
   // ── inter-dataset: two inputs ──
   const [pairPick, setPairPick] = useState<{ a?: string; b?: string }>(() => {
@@ -129,6 +141,8 @@ export function ContrastDialog({
     () => orderConds(condsIn([...asRows(sideA), ...asRows(sideB)])),
     [sideA, sideB]
   )
+  // both datasets' numeric conditions (a condition numeric in either)
+  const interNumeric = useMemo(() => numericConds(numericUnion([resA, resB])), [resA, resB])
   const sA = useMemo(() => sampleRows(asRows(sideA), interConds), [sideA, interConds])
   const sB = useMemo(() => sampleRows(asRows(sideB), interConds), [sideB, interConds])
   const [inter, setInter] = useState<ContrastState>(() =>
@@ -136,7 +150,8 @@ export function ContrastDialog({
       { match: initial.matchSet ? initial.match : undefined, pairFix: initial.pairFix },
       sA,
       sB,
-      interConds
+      interConds,
+      interNumeric
     )
   )
   const pairOk =
@@ -149,9 +164,9 @@ export function ContrastDialog({
   const m: ContrastModel = useMemo(
     () =>
       isPair
-        ? contrastModel(inter, sA, sB, interConds)
-        : contrastModel(intra, samples, samples, active),
-    [isPair, inter, sA, sB, interConds, intra, samples, active]
+        ? contrastModel(inter, sA, sB, interConds, interNumeric)
+        : contrastModel(intra, samples, samples, active, intraNumeric),
+    [isPair, inter, sA, sB, interConds, interNumeric, intra, samples, active, intraNumeric]
   )
   const setState = isPair ? setInter : setIntra
   const labels = isPair
@@ -395,6 +410,7 @@ export function ContrastDialog({
                       rows={m.ga.get(k) ?? []}
                       conds={isPair ? interConds : active}
                       units={units}
+                      numeric={isPair ? interNumeric : intraNumeric}
                     />,
                     'vs',
                     <SideCell
@@ -402,6 +418,7 @@ export function ContrastDialog({
                       rows={m.gb.get(k) ?? []}
                       conds={isPair ? interConds : active}
                       units={units}
+                      numeric={isPair ? interNumeric : intraNumeric}
                     />
                   ])}
                 more={m.keys.length - 50}

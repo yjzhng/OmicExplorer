@@ -11,19 +11,26 @@
  */
 import { useMemo, useState, type CSSProperties, type ReactNode } from 'react'
 
-import { facetDims, facetKeyLabel, type ContextRow, type ConditionKey } from '../engine'
+import { facetDims, type ContextRow, type ConditionKey, type NumericConds } from '../engine'
 import { UI } from '../ui/theme'
 import { ChoiceSwitch, PILL_CAP } from '../ui/ChoiceSwitch'
-import { resolveFacets } from './facet'
+import { facetBarLabel, facetChoice, isNumericFacet, pickFacet, resolveFacets } from './facet'
 
 export function FacetedPlot<T extends ContextRow>({
   rows,
+  numeric,
   exclude,
+  together,
   children,
   facetSel
 }: {
   rows: T[]
+  /** the dataset's numeric conditions (numericOfResult of the upstream): their levels are ordered */
+  numeric: NumericConds
   exclude?: ConditionKey[]
+  /** the comparisons are drawn together by the plot (one series each, in its legend), not a facet
+   *  to switch between — e.g. a Contrast's two sides' curves */
+  together?: boolean
   /** the facet on show: its rows, and its key (FacetGroup key, '' unfaceted) — what a plot's run
    *  keys its per-facet results by */
   children: (contextRows: T[], facetKey: string) => ReactNode
@@ -32,14 +39,17 @@ export function FacetedPlot<T extends ContextRow>({
    *  Undefined = standalone, with its own interactive tabs. */
   facetSel?: Record<string, string>
 }) {
-  const dims = useMemo(() => facetDims(rows, exclude), [rows, exclude])
+  const dims = useMemo(
+    () => facetDims(rows, exclude).filter((d) => !(together && d === 'comparison')),
+    [rows, exclude, together]
+  )
   const [selState, setSel] = useState<Record<string, string>>({})
   const sel = facetSel ?? selState
   const {
     bars,
     rows: groupRows,
     key: facetKey
-  } = useMemo(() => resolveFacets(rows, dims, sel), [rows, dims, sel])
+  } = useMemo(() => resolveFacets(rows, dims, sel, numeric), [rows, dims, sel, numeric])
 
   if (dims.length === 0) return <div style={styles.single}>{children(rows, '')}</div>
 
@@ -50,31 +60,27 @@ export function FacetedPlot<T extends ContextRow>({
   return (
     <div style={styles.root}>
       <div className="oe-switch-strip" style={styles.bars}>
-        {bars.map(({ dim, value, options }) => (
-          <div key={dim} style={styles.bar}>
-            <span style={styles.barLabel}>{facetKeyLabel(dim)}</span>
-            {/* The plot tiles' switch (as in SwitchBar). A one-sided contrast level (outer-join
+        {bars.map((bar) => {
+          const { dim, value, options } = bar
+          return (
+            <div key={dim} style={styles.bar}>
+              <span style={styles.barLabel}>{facetBarLabel(bar)}</span>
+              {/* The plot tiles' switch (as in SwitchBar). A one-sided contrast level (outer-join
                 rows with nothing to pair) is greyed, not selectable — the tooltip says which side
                 has the data. Past PILL_CAP levels of a categorical condition, a searchable
                 dropdown. */}
-            <ChoiceSwitch
-              size="sm"
-              cap={dim === 'dose' || dim === 'time' ? Infinity : PILL_CAP}
-              counter
-              label={facetKeyLabel(dim)}
-              value={String(value)}
-              options={options.map(({ value: v, onlyOn }) => ({
-                value: String(v),
-                label: String(v),
-                disabled: !!onlyOn,
-                title: onlyOn
-                  ? `${facetKeyLabel(dim)} = ${v} is only on ${onlyOn} — no partner to contrast`
-                  : undefined
-              }))}
-              onChange={(v) => setSel((s) => ({ ...s, [dim]: v }))}
-            />
-          </div>
-        ))}
+              <ChoiceSwitch
+                size="sm"
+                cap={isNumericFacet(dim, numeric) ? Infinity : PILL_CAP}
+                counter
+                label={facetBarLabel(bar)}
+                value={String(value)}
+                options={options.map((o) => facetChoice(dim, o, bars))}
+                onChange={(v) => setSel((s) => pickFacet(rows, dims, s, dim, v, numeric))}
+              />
+            </div>
+          )
+        })}
       </div>
       <div style={styles.body}>{children(groupRows, facetKey)}</div>
     </div>

@@ -26,9 +26,11 @@ import {
   presentScaleOf,
   replicateLog2FCs,
   stdByGene,
-  crossPairs,
+  termless,
+  numericConds,
   condsIn,
   ctxValue,
+  CURVE_FC_FEATURE,
   snapStatMin,
   reclassifyContrast,
   thresholdLabel
@@ -41,7 +43,7 @@ import type {
   ContrastResult,
   ContrastSideRow,
   ContrastStat,
-  Pair,
+  Progress,
   ScalePreview,
   StandardRow,
   ThresholdConfig
@@ -59,9 +61,12 @@ import {
   ParkedRef,
   PROJECT_VERSION,
   projectHeader,
+  upgradesDue,
   type ProjectHeader,
   savedByVersion,
   serializeProjectChunks,
+  storedResultsChunks,
+  unpackResults,
   unpackParked,
   relocateFolders,
   withRelPaths,
@@ -91,13 +96,24 @@ import {
 import { diskWrite, exclusiveDisk } from './diskWrites'
 import { childPanelId } from './groups'
 import { loadRecents, pushRecent, removeRecent, saveRecents, type RecentProject } from './recents'
-import { canConnect, categoryOf, maxInputsFor, NODE_SPECS, stepTitle } from './registry'
+import {
+  axisAvailFor,
+  canConnect,
+  categoryOf,
+  maxInputsFor,
+  NODE_SPECS,
+  loadAbove,
+  runsIn,
+  stepTitle,
+  wiredKindOf
+} from './registry'
 import {
   compareFeatureValue,
   contrastFeatures,
   isPairable,
   isSurfaceRow,
   surfaceSideRows,
+  surfaceSliceCond,
   pairSides,
   selectSource,
   stdFeatureValue,
@@ -113,8 +129,13 @@ import {
   isContrastConfigured,
   isStep,
   normalizeCompareConfig,
+  anovaFactorsOf,
+  numericUnion,
   resolveContrastSource,
   resolveLoadMode,
+  declaredNumeric,
+  loadCustomConditions,
+  loadNumericConditions,
   condUnitsFor,
   curveDoseUnit,
   type CompareConfig,
@@ -145,6 +166,8 @@ import {
   type StepStatus
 } from './types'
 import { runPlot } from './plotRun'
+import { rowCount } from '../engine/lazyRows'
+import { compactResult } from './compactResults'
 import { HistoryCache } from './historyCache'
 import { restoreResults, underConfig, type PendingLoad } from './undoResults'
 import {
@@ -288,6 +311,9 @@ interface GraphState {
   nodes: GraphNode[]
   edges: Edge[]
   results: Record<string, NodeResult>
+  /** a running step's progress as its engine run reports it (curve fits) — live only: never saved,
+   *  cleared when the run ends (the tile's accent strip fills with it) */
+  progress: Record<string, Progress>
   selectedId: string | null
   /** active subcard id within the selected group tile (null = whole tile / no group) */
   selectedSub: string | null
@@ -354,6 +380,15 @@ interface GraphState {
   /** Set a curve fit's dose unit (pEC50's molar scale). Display-only — never stales the result. */
   /** Set a Load tile's condition units. Display-only — downstream results stay current. */
   setLoadUnits: (id: string, units: CondUnits) => void
+  /** Declare a manual Load tile's custom condition numeric or not (its cat/num chip). Unlike its
+   *  units this changes the data — Clean data's schema — so everything below goes stale. */
+  setLoadNumeric: (
+    id: string,
+    name: string,
+    numeric: boolean,
+    /** false: don't stale what's below yet (the interactive import does on Apply) */
+    opts?: { stale?: boolean }
+  ) => void
   /** Set Clean data's log-transform — the scale its values are PRESENTED on, and the scale a
    *  Compare downstream tests on (log or not). Its own rows stay linear and its result stays as it
    *  is; the Compares (and what follows them) go stale, to be re-run on the new scale. */
@@ -483,6 +518,9 @@ interface GraphState {
   /** each recent project file's header (format, saved by, created with), read from disk for the
    *  home page's version tags; a path missing here hasn't been read (or couldn't be) */
   recentHeaders: Record<string, ProjectHeader>
+  /** of those saved before the last upgrade (upgradesDue), whether the upgrades change them
+   *  (upgradeChanges) — only one that changes is flagged older; a path missing here isn't known */
+  recentUpgrades: Record<string, boolean>
   /** last error from opening a project (shown on the Home screen); null when none */
   openError: string | null
   /** why the last save failed (cleared by the next successful one) */
@@ -768,6 +806,62 @@ export function locationOf(
   return root
     ? { dir: folder.path, scope: { base: workflowDirOf(root, wf), legacy: wf.name } }
     : null
+}
+
+/** Whether each of these recent files saved before the last upgrade is changed by it — read in
+ *  full, off the UI thread (upgradeCheck.worker), one at a time, into recentUpgrades. The answer is
+ *  kept per file and the release that saved it (localStorage), so a file is read once. */
+const UPGRADE_CHECK_KEY = 'omicexplorer-upgrade-check'
+let upgradeWorker: Worker | null = null
+let upgradeSeq = 0
+async function checkUpgrades(
+  get: Getter,
+  set: Setter,
+  headers: Record<string, ProjectHeader>
+): Promise<void> {
+  let cache: Record<string, { sig: string; changes: boolean }> = {}
+  try {
+    cache = JSON.parse(localStorage.getItem(UPGRADE_CHECK_KEY) ?? '{}')
+  } catch {
+    // unreadable: checked afresh
+  }
+  const put = (path: string, changes: boolean): void =>
+    set({ recentUpgrades: { ...get().recentUpgrades, [path]: changes } })
+  for (const [path, h] of Object.entries(headers)) {
+    if (!upgradesDue(h)) continue
+    const sig = `${h.format ?? ''}|${h.savedBy ?? ''}|${h.createdWith ?? ''}`
+    if (cache[path]?.sig === sig) {
+      put(path, cache[path].changes)
+      continue
+    }
+    try {
+      const text = await window.api.readProject(path)
+      upgradeWorker ??= new Worker(new URL('./upgradeCheck.worker.ts', import.meta.url), {
+        type: 'module'
+      })
+      const w = upgradeWorker
+      const id = ++upgradeSeq
+      const changes = await new Promise<boolean | null>((resolve) => {
+        const on = (e: MessageEvent<{ id: number; changes: boolean | null }>): void => {
+          if (e.data.id !== id) return
+          w.removeEventListener('message', on)
+          resolve(e.data.changes)
+        }
+        w.addEventListener('message', on)
+        w.postMessage({ id, text })
+      })
+      if (changes == null) continue
+      put(path, changes)
+      cache[path] = { sig, changes }
+      try {
+        localStorage.setItem(UPGRADE_CHECK_KEY, JSON.stringify(cache))
+      } catch {
+        // best-effort, like recents
+      }
+    } catch {
+      // unreadable now: no answer, so no amber tag
+    }
+  }
 }
 
 /** Pin output/ folder names for these processing steps of a workflow (the active one by default;
@@ -1173,9 +1267,14 @@ function clearPlotResults(
   }
   return {
     results: out,
+    // (a plot queued on its input keeps running: it goes on once the input is done)
     nodes: nodes.map((n) =>
       ids.has(n.id) && isStep(n) && n.data.kind === 'plotGroup'
-        ? withChildStatuses(n, () => ({ status: 'idle' }))
+        ? withChildStatuses(n, (c) =>
+            waitingRuns.has(plotResultKey(n.id, c.id))
+              ? { status: c.status ?? 'running', error: c.error }
+              : { status: 'idle' }
+          )
         : n
     )
   }
@@ -1230,10 +1329,12 @@ function loadSlot(get: Getter, set: Setter, folderId: string, workflowId?: strin
     future: []
   })
   liveMask = slot.mask
+  // Only the open workflow's results stay in memory: the one just left (and any other) is parked
+  // FIRST, then the open one's come back (the park queue runs in order) — so two large workflows
+  // are never in memory together, which ran a project of several out of memory.
+  parkInactive(get, set)
   if (slot.parked) unparkActive(get, set, folderId, slot.id, slot.parked)
   else syncGeneMask(get, set)
-  // Only the open workflow's results stay in memory; the one just left (and any other) is parked.
-  parkInactive(get, set)
 }
 
 // ── parking: only the open workflow's results are kept in memory ─────────────────────────────
@@ -1245,6 +1346,8 @@ function loadSlot(get: Getter, set: Setter, folderId: string, workflowId?: strin
 const fromPark = new Map<string, { key: string; results: Record<string, NodeResult> }>()
 let parkQueue: Promise<void> = Promise.resolve()
 let parkSeq = 0
+/** This window's prefix on its park keys: every window shares the app's one park folder. */
+const PARK_SESSION = Math.random().toString(36).slice(2, 10)
 const queuePark = (job: () => Promise<void>): void => {
   parkQueue = parkQueue.then(job).catch(() => undefined)
 }
@@ -1263,7 +1366,7 @@ function parkInactive(get: Getter, set: Setter): void {
         let key: string
         if (prior && prior.results === results) key = prior.key
         else {
-          key = `wf${++parkSeq}`
+          key = `wf-${PARK_SESSION}-${++parkSeq}`
           try {
             await window.api.parkWrite(key, packedResultsChunks(results))
           } catch {
@@ -1463,6 +1566,7 @@ export const useGraph = create<GraphState>()((set, get) => ({
   nodes: SEED_NODES,
   edges: SEED_EDGES,
   results: {},
+  progress: {},
   selectedId: 'load-1',
   selectedSub: null,
   canvasSelection: [],
@@ -1520,6 +1624,7 @@ export const useGraph = create<GraphState>()((set, get) => ({
   activeWorkflowId: null,
   recentProjects: [],
   recentHeaders: {},
+  recentUpgrades: {},
   openError: null,
   saveError: null,
   saving: false,
@@ -1599,7 +1704,8 @@ export const useGraph = create<GraphState>()((set, get) => ({
     const src = nodes.find((n) => n.id === conn.source)
     const tgt = nodes.find((n) => n.id === conn.target)
     if (!src || !tgt || !conn.source || !conn.target) return
-    if (!isStep(src) || !isStep(tgt) || !canConnect(src.data.kind, tgt.data.kind)) return
+    if (!isStep(src) || !isStep(tgt) || !canConnect(wiredKindOf(get(), src.id)!, tgt.data.kind))
+      return
     // contrast and compare take two inputs; every other node takes one.
     const maxInputs = maxInputsFor(tgt.data.kind)
     const existing = edges.filter((e) => e.target === conn.target)
@@ -1621,7 +1727,8 @@ export const useGraph = create<GraphState>()((set, get) => ({
     const src = nodes.find((n) => n.id === conn.source)
     const tgt = nodes.find((n) => n.id === conn.target)
     if (!src || !tgt || !conn.source || !conn.target) return
-    if (!isStep(src) || !isStep(tgt) || !canConnect(src.data.kind, tgt.data.kind)) return
+    if (!isStep(src) || !isStep(tgt) || !canConnect(wiredKindOf(get(), src.id)!, tgt.data.kind))
+      return
     const maxInputs = maxInputsFor(tgt.data.kind)
     const others = edges.filter((e) => e.id !== oldEdge.id && e.target === conn.target)
     if (others.some((e) => e.source === conn.source)) return // no duplicate input
@@ -1653,7 +1760,13 @@ export const useGraph = create<GraphState>()((set, get) => ({
     const { nodes } = get()
     const src = nodes.find((n) => n.id === conn.source)
     const tgt = nodes.find((n) => n.id === conn.target)
-    return !!src && !!tgt && isStep(src) && isStep(tgt) && canConnect(src.data.kind, tgt.data.kind)
+    return (
+      !!src &&
+      !!tgt &&
+      isStep(src) &&
+      isStep(tgt) &&
+      canConnect(wiredKindOf(get(), src.id)!, tgt.data.kind)
+    )
   },
 
   addNode: (op, opts) => {
@@ -1675,7 +1788,7 @@ export const useGraph = create<GraphState>()((set, get) => ({
     const from = opts?.connectFrom
     if (from) {
       const src = get().nodes.find((n) => n.id === from)
-      if (src && isStep(src) && canConnect(src.data.kind, op)) {
+      if (src && isStep(src) && canConnect(wiredKindOf(get(), src.id)!, op)) {
         set((s) => ({
           edges: [
             ...s.edges.filter((e) => e.target !== id),
@@ -1865,8 +1978,11 @@ export const useGraph = create<GraphState>()((set, get) => ({
     const kind = get().nodeKind(id)
     const spec = kind ? NODE_SPECS[kind] : undefined
     const after = get().nodes.find((n) => n.id === id)
+    // A Subset off Load data has no run (runsIn): like Load data, its edit stales what's below.
+    if (kind === 'subset' && !runsIn(get(), id)) get().invalidateDownstream(id)
     const stale =
       !!spec?.hasRun &&
+      runsIn(get(), id) &&
       (!spec.staleOn ||
         (!!prevConfig &&
           !!after &&
@@ -1944,7 +2060,8 @@ export const useGraph = create<GraphState>()((set, get) => ({
     if (!node || !isStep(node) || node.data.kind !== 'load') return
     const cfg = node.data.config as LoadConfig
     const next: CondUnits = { ...cfg.units, ...units }
-    if (next.dose === cfg.units?.dose && next.time === cfg.units?.time) return
+    const was: Record<string, string | undefined> = cfg.units ?? {}
+    if (Object.entries(next).every(([c, v]) => v === was[c])) return
     get().commit()
     // Display-only, so patch the config directly (updateConfig would stale everything below).
     set((s) => ({
@@ -1956,11 +2073,33 @@ export const useGraph = create<GraphState>()((set, get) => ({
       dirty: true
     }))
   },
+  setLoadNumeric: (id, name, numeric, opts) => {
+    const node = get().nodes.find((n) => n.id === id)
+    if (!node || !isStep(node) || node.data.kind !== 'load') return
+    const cfg = node.data.config as LoadConfig
+    const was = declaredNumeric(cfg)
+    if (was.includes(name) === numeric) return
+    const next = numeric ? [...was, name] : was.filter((n) => n !== name)
+    // the one declaration on the tile (kept, even empty, so an older import's copy no longer reads)
+    const config: LoadConfig = { ...cfg, numericConditions: next }
+    if (cfg.interactive?.numericConditions) {
+      const { numericConditions: _legacy, ...rest } = cfg.interactive
+      void _legacy
+      config.interactive = rest
+    }
+    get().commit()
+    set((s) => ({
+      nodes: s.nodes.map((n) =>
+        n.id === id && isStep(n) ? { ...n, data: { ...n.data, config: config as NodeConfig } } : n
+      ),
+      dirty: true
+    }))
+    // Load has no run of its own: what reads it (Clean data and below) goes stale
+    if (opts?.stale !== false) get().invalidateDownstream(id)
+  },
   previewStdScale: async (id) => {
     const state = get()
-    const upId = state.upstreamId(id)
-    const up = upId ? state.nodes.find((n) => n.id === upId) : undefined
-    const load = up && isStep(up) && up.data.kind === 'load' ? (up.data.config as LoadConfig) : null
+    const load = (loadAbove(state, id)?.load.data.config as LoadConfig | undefined) ?? null
     const dir = state.dataDir
     if (!load?.data || !dir) return null
     const wf = locationOf(state)?.scope
@@ -2578,11 +2717,8 @@ export const useGraph = create<GraphState>()((set, get) => ({
     delete results[id]
     set({ results })
     // prune edges no longer type-valid for the new op (either direction)
-    const nodes = get().nodes
-    const opOf = (nid: string): NodeKind | undefined => {
-      const n = nodes.find((x) => x.id === nid)
-      return n && isStep(n) ? n.data.kind : undefined
-    }
+    // (as wired: a Subset's output depends on what feeds it — wiredKindOf)
+    const opOf = (nid: string): NodeKind | undefined => wiredKindOf(get(), nid)
     set((s) => ({
       edges: s.edges.filter((e) => {
         if (e.target === id) {
@@ -2590,8 +2726,9 @@ export const useGraph = create<GraphState>()((set, get) => ({
           return !!so && canConnect(so, op)
         }
         if (e.source === id) {
-          const to = opOf(e.target)
-          return !!to && canConnect(op, to)
+          const n = get().nodes.find((x) => x.id === e.target)
+          const self = wiredKindOf(get(), id)
+          return !!n && isStep(n) && !!self && canConnect(self, n.data.kind)
         }
         return true
       })
@@ -2628,12 +2765,25 @@ export const useGraph = create<GraphState>()((set, get) => ({
     // change: without marking it, Save stayed disabled ("All changes saved") after a run, and
     // closing didn't offer to save.
     const setStatus = (status: NodeData['status'], error?: string, note?: string) =>
-      set((s) => ({
-        nodes: s.nodes.map((n) =>
-          n.id === id && isStep(n) ? { ...n, data: { ...n.data, status, error, note } } : n
-        ),
-        ...(status === 'done' ? { dirty: true } : {})
-      }))
+      set((s) => {
+        // a run ended (or restarted): its progress goes
+        const { [id]: _gone, ...progress } = s.progress
+        void _gone
+        return {
+          nodes: s.nodes.map((n) =>
+            n.id === id && isStep(n) ? { ...n, data: { ...n.data, status, error, note } } : n
+          ),
+          ...(id in s.progress ? { progress } : null),
+          ...(status === 'done' ? { dirty: true } : {})
+        }
+      })
+    // the engine's progress for this run, while it's still the one running
+    const onProgress = (p: Progress): void =>
+      set((s) =>
+        s.nodes.find((n) => n.id === id)?.data.status === 'running'
+          ? { progress: { ...s.progress, [id]: p } }
+          : {}
+      )
 
     const upId = state.upstreamId(id)
 
@@ -2666,7 +2816,8 @@ export const useGraph = create<GraphState>()((set, get) => ({
           node.data.config,
           upId ? get().results[upId] : undefined,
           () => get().nodes.find((n) => n.id === id)?.data.status !== 'running',
-          cleanTransformOf(get().nodes, upId)
+          cleanTransformOf(get().nodes, upId),
+          axisAvailFor(get(), upId)
         )
         if (get().nodes.find((n) => n.id === id)?.data.status !== 'running') return // cancelled
         if (plotRunSeq.get(id) !== seq) return // superseded by a newer run of this plot
@@ -2681,8 +2832,48 @@ export const useGraph = create<GraphState>()((set, get) => ({
     }
 
     try {
-      if (kind === 'standardize') {
-        const loadNode = upId ? state.nodes.find((n) => n.id === upId) : undefined
+      const upClean = (() => {
+        const up = state.upstreamId(id)
+        return kind === 'standardize' && up && wiredKindOf(state, up) === 'standardize' ? up : null
+      })()
+      if (kind === 'standardize' && upClean) {
+        // Fed by Clean data (another Clean data, a Merge, a Subset of one): no import to read —
+        // its clean-up, normalisation and imputation run again on the table it's given.
+        const upRes = state.results[upClean]
+        if (upRes?.kind !== 'standardize') {
+          setStatus('error', 'Run the Clean data it reads from first.')
+          return
+        }
+        setStatus('running')
+        const cfg = node.data.config as StandardizeConfig
+        const std = await engine.reclean({
+          std: upRes.std,
+          minSamplePct: cleanupOn(cfg) ? (cfg.minSamplePct ?? 0) : 0,
+          minSamplePctBy: cfg.minSamplePctBy ?? [],
+          normalize: cfg.normalizeEnabled
+            ? {
+                reference: cfg.normalizeReference ?? 'shared',
+                spread: !!cfg.normalizeSpread,
+                ...(cfg.normalizeReference === 'protein' ? { protein: cfg.normalizeProtein } : null)
+              }
+            : undefined,
+          impute: imputeOn(cfg)
+            ? {
+                method: cfg.imputeMethod ?? 'perseus',
+                shift: cfg.imputeShift,
+                width: cfg.imputeWidth
+              }
+            : undefined,
+          logTransform: cfg.logTransform
+        })
+        if (get().nodes.find((n) => n.id === id)?.data.status !== 'running') return // cancelled
+        set((s) => ({ results: { ...s.results, [id]: { kind: 'standardize', std } } }))
+        setStatus('done')
+        get().invalidateDownstream(id)
+      } else if (kind === 'standardize') {
+        // its Load data: the input, or above the Subsets that filter the import first
+        const above = loadAbove(state, id)
+        const loadNode = above?.load
         const dir = state.dataDir
         const load = loadNode && isStep(loadNode) ? (loadNode.data.config as LoadConfig) : undefined
         if (!loadNode || !isStep(loadNode) || loadNode.data.kind !== 'load' || !dir) {
@@ -2728,18 +2919,21 @@ export const useGraph = create<GraphState>()((set, get) => ({
           samplesheetText,
           dbText: dbText ?? undefined,
           activeConditions: cfg.activeConditions ?? undefined,
+          ...(above?.keep.length ? { subsets: above.keep } : null),
           // The interactive import knows exactly which samplesheet columns are custom conditions;
           // a hand-written samplesheet (manual mode) leaves this unset and ingest auto-detects. One
           // switched off isn't written, so isn't listed.
-          customConditions: load.interactive?.customConditions?.filter(
-            (n) => !load.interactive?.hiddenConditions?.includes(n)
-          ),
+          customConditions: loadCustomConditions(load),
+          // …and of those, the ones declared numeric: checked as numbers, and Clean data's schema
+          // from then on (numericConditions)
+          numericConditions: loadNumericConditions(load),
           minSamplePct: cleanupOn(cfg) ? (cfg.minSamplePct ?? 0) : 0,
           minSamplePctBy: cfg.minSamplePctBy ?? [],
           normalize: cfg.normalizeEnabled
             ? {
                 reference: cfg.normalizeReference ?? 'shared',
-                spread: !!cfg.normalizeSpread
+                spread: !!cfg.normalizeSpread,
+                ...(cfg.normalizeReference === 'protein' ? { protein: cfg.normalizeProtein } : null)
               }
             : undefined,
           impute: imputeOn(cfg)
@@ -2785,6 +2979,18 @@ export const useGraph = create<GraphState>()((set, get) => ({
         setStatus('done')
         get().invalidateDownstream(id)
       } else if (kind === 'subset') {
+        // Off Load data, the filter is Clean data's to apply as it reads the import (loadAbove):
+        // nothing to compute here, only that the import is there to filter.
+        if (wiredKindOf(state, id) === 'load') {
+          const cfg = loadAbove(state, id)?.load.data.config as LoadConfig | undefined
+          if (!cfg?.data || !cfg.samplesheet) {
+            setStatus('error', 'Configure the Load data tile first.')
+            return
+          }
+          setStatus('done')
+          get().invalidateDownstream(id)
+          return
+        }
         // Keep the samples whose conditions take the chosen values (Clean data or a Merge in —
         // either emits the same result kind — and Clean data out).
         const up = upId ? state.results[upId] : undefined
@@ -2792,8 +2998,9 @@ export const useGraph = create<GraphState>()((set, get) => ({
           setStatus('error', 'Connect and run a Clean data tile upstream.')
           return
         }
-        const std = subsetStandardize(up.std, (node.data.config as SubsetConfig).keep ?? {})
-        if (std.rows.length === 0) {
+        const sc = node.data.config as SubsetConfig
+        const std = subsetStandardize(up.std, sc.keep ?? {}, { reps: sc.reps, drop: sc.drop })
+        if (rowCount(std) === 0) {
           setStatus('error', 'No samples match the chosen values.')
           return
         }
@@ -2845,42 +3052,70 @@ export const useGraph = create<GraphState>()((set, get) => ({
           setStatus('running')
           // The response surface method: spline detection on log₂ level means vs the control,
           // over one axis or the dose × time surface.
-          // A dose × time surface (under either model) needs both axes in the data — a saved
-          // choice may outlive them.
-          const surface =
-            !!cfg.surface &&
-            std.activeConditions.includes('dose') &&
-            std.activeConditions.includes('time')
+          // A surface (under either model) needs both its axes in the data — a saved choice may
+          // outlive them.
+          const pair = cfg.surfacePair ?? ['dose', 'time']
+          const surface = !!cfg.surface && pair.every((c) => std.activeConditions.includes(c))
+          // testing changes: the axis the curves run along is the user's pick
+          if (
+            surface &&
+            cfg.surfaceIntent === 'changes' &&
+            !(cfg.responseAxis && pair.includes(cfg.responseAxis))
+          ) {
+            setStatus('error', 'Open “Configure curve fit” and pick the axis the curves run along.')
+            return
+          }
           if (cfg.detection === 'spline' || surface)
-            cmp = await engine.responseSurface({
-              rows: std.rows,
-              num: cfg.num,
-              den: cfg.den,
-              match: cfg.match,
-              activeConditions: std.activeConditions,
-              curveAxis: surface ? 'surface' : curveAxis,
-              // under the 4PL model, the 4PL surface detector (adjusted F)
-              detector: cfg.detection === 'spline' ? 'spline' : '4pl',
-              surfaceDescription: cfg.surfaceDescription,
-              describeAll: describesAll(cfg, surface),
-              threshold: cfg.threshold,
-              interpolation: !!cfg.interpolation
-            })
+            cmp = await engine.responseSurface(
+              {
+                rows: std.rows,
+                num: cfg.num,
+                den: cfg.den,
+                match: cfg.match,
+                activeConditions: std.activeConditions,
+                numericConditions: std.numericConditions ?? [],
+                curveAxis: surface ? 'surface' : curveAxis,
+                ...(surface && cfg.surfacePair ? { surfacePair: cfg.surfacePair } : null),
+                // under the 4PL model, the 4PL surface detector (adjusted F)
+                detector: cfg.detection === 'spline' ? 'spline' : '4pl',
+                // what a surface is for: its shape (the joint description) or its changes
+                intent: cfg.surfaceIntent ?? 'shape',
+                ...(cfg.surfaceIntent === 'changes'
+                  ? { responseAxis: cfg.responseAxis, changesStat: cfg.changesStat }
+                  : null),
+                axisScale: cfg.axisScale?.[curveAxis],
+                axisBaseline: surface ? undefined : cfg.axisBaseline?.[curveAxis],
+                // every axis's scale, baseline and models (a surface's two)
+                axisScales: cfg.axisScale,
+                axisBaselines: cfg.axisBaseline,
+                axisFits: cfg.axisFits,
+                describeAll: describesAll(cfg, surface),
+                threshold: cfg.threshold,
+                interpolation: !!cfg.interpolation
+              },
+              onProgress
+            )
           // The CurveCurator method: fitted on ratios to the control of the linear values (its
           // definition), so Clean data's log-transform setting doesn't enter.
           else
-            cmp = await engine.curveFit({
-              rows: std.rows,
-              num: cfg.num,
-              den: cfg.den,
-              match: cfg.match,
-              activeConditions: std.activeConditions,
-              curveAxis,
-              threshold: cfg.threshold,
-              interpolation: !!cfg.interpolation,
-              // responders only marks the rest undescribed (their 4PL is still their test)
-              describeAll: describesAll(cfg, false)
-            })
+            cmp = await engine.curveFit(
+              {
+                rows: std.rows,
+                num: cfg.num,
+                den: cfg.den,
+                match: cfg.match,
+                activeConditions: std.activeConditions,
+                numericConditions: std.numericConditions ?? [],
+                curveAxis,
+                axisScale: cfg.axisScale?.[curveAxis],
+                axisBaseline: cfg.axisBaseline?.[curveAxis],
+                threshold: cfg.threshold,
+                interpolation: !!cfg.interpolation,
+                // responders only marks the rest undescribed (their 4PL is still their test)
+                describeAll: describesAll(cfg, false)
+              },
+              onProgress
+            )
         } else if (cfg.analysis === 'compare') {
           const numPinned = Object.values(cfg.num).some((v) => v && v.length > 0)
           const denPinned = Object.values(cfg.den).some((v) => v && v.length > 0)
@@ -2898,6 +3133,7 @@ export const useGraph = create<GraphState>()((set, get) => ({
             compared: cfg.compared,
             pool: cfg.pool,
             activeConditions: std.activeConditions,
+            numericConditions: std.numericConditions ?? [],
             method: cfg.method,
             // Tested on Clean data's scale: in log space when it presents its values logged (a
             // log₂ or log₁₀ choice, or an already-logged input left as it arrived), on the values
@@ -2906,34 +3142,27 @@ export const useGraph = create<GraphState>()((set, get) => ({
             threshold: cfg.threshold
           })
         } else {
-          // Build each factor's level pairs from the multi-select numerator/denominator values
-          // (so "drugA, drugB vs DMSO" runs both 2×2 interactions); fall back to the single legacy
-          // pair fields for older configs.
-          const factorPairs = (c: ConditionKey, n1: string, d1: string): Pair[] => {
-            const cross = crossPairs(cfg.num[c] ?? [], cfg.den[c] ?? [])
-            return cross.length > 0 ? cross : n1 && d1 ? [[n1, d1]] : []
-          }
-          const p1 = factorPairs(cfg.condition, cfg.pairNum, cfg.pairDen)
-          const p2 = factorPairs(cfg.condition2, cfg.pair2Num, cfg.pair2Den)
-          if (p1.length === 0 || p2.length === 0) {
+          // "Does it matter": the compared conditions as the factors, each at its test levels and
+          // its control (so "drugA, drugB vs DMSO" models all three).
+          const factors = anovaFactorsOf(cfg, numericConds(std.numericConditions ?? []))
+          if (!factors.length) {
             setStatus(
               'error',
-              'Choose numerator and denominator level(s) for each of the two factors.'
+              'Open “Configure comparison” to pick test values and a control for each compared condition.'
             )
             return
           }
           setStatus('running')
-          cmp = await engine.twoWayAnova({
+          cmp = await engine.factorAnova({
             rows: std.rows,
-            factors: [
-              { condition: cfg.condition, pairs: p1 },
-              { condition: cfg.condition2, pairs: p2 }
-            ],
+            factors,
             activeConditions: std.activeConditions,
             threshold: cfg.threshold,
             // Context inclusion filters (non-factor conditions narrowed in the dialog).
             num: cfg.num,
-            den: cfg.den
+            den: cfg.den,
+            // On Clean data's scale, as the t-test: log₂ when it presents its values logged.
+            transform: testsLogged
           })
         }
         if (get().nodes.find((n) => n.id === id)?.data.status !== 'running') return // cancelled
@@ -2947,7 +3176,10 @@ export const useGraph = create<GraphState>()((set, get) => ({
               cmp,
               displayMap: std.displayMap,
               annotationMap: std.annotationMap ?? {},
-              keggCategories: std.keggCategories ?? {}
+              keggCategories: std.keggCategories ?? {},
+              ...(std.numericConditions?.length
+                ? { numericConditions: std.numericConditions }
+                : null)
             }
           }
         }))
@@ -2969,6 +3201,16 @@ export const useGraph = create<GraphState>()((set, get) => ({
             .map((r) => r.std)
           return stds.length ? combineStandardize(stds).rows : undefined
         }
+        // The active conditions of the Clean data a contrast input reads (itself, or above a
+        // Compare): what the sides' names may state a slice of (ContrastPairInput.nameConds).
+        const activeOf = (nid: string): ConditionKey[] => {
+          const r = state.results[nid]
+          if (r?.kind === 'standardize') return r.std.activeConditions
+          return state.upstreamIds(nid).flatMap((u) => {
+            const ru = state.results[u]
+            return ru?.kind === 'standardize' ? ru.std.activeConditions : []
+          })
+        }
         // How a Compare input reads its features: by p or q, as it calls; pEC50 in molar where its
         // dose unit says how (as the potency plot reads it).
         const featureCtx = (cid: string): CompareFeatureCtx => {
@@ -2980,9 +3222,10 @@ export const useGraph = create<GraphState>()((set, get) => ({
             doseScale: curveDoseUnit(cmpCfg, condUnitsFor(state, cid)).scale
           }
         }
-        // A surface's sides carry time (one row per time point): matched on it, never pinned.
-        const withTime = (match: ConditionKey[], surf: boolean): ConditionKey[] =>
-          surf && !match.includes('time') ? [...match, 'time'] : match
+        // A surface's sides carry the level of the axis it's sliced along (one row per slice — see
+        // surfaceSideRows): matched on it, never pinned.
+        const withSlice = (match: ConditionKey[], c: ConditionKey | undefined): ConditionKey[] =>
+          c && !match.includes(c) ? [...match, c] : match
         // Every feature the inputs offer, contrasted alike and stacked — each row tagged with its
         // feature, which the results page's switcher picks (one feature: untagged, nothing to
         // switch).
@@ -2990,7 +3233,14 @@ export const useGraph = create<GraphState>()((set, get) => ({
           features: ContrastFeature[],
           run: (f: ContrastFeature) => Promise<ContrastResult>
         ): Promise<ContrastResult> => {
-          if (features.length <= 1) return run(features[0] ?? { id: 'value', label: '' })
+          if (features.length <= 1) {
+            const f = features[0] ?? { id: 'value', label: '' }
+            const one = await run(f)
+            // a curve fit's one feature is still named (its axes read curve log₂FC); no switch
+            return f.label === CURVE_FC_FEATURE
+              ? { ...one, rows: one.rows.map((r) => ({ ...r, featureId: f.id, feature: f.label })) }
+              : one
+          }
           const parts: Array<{ f: ContrastFeature; ctr: ContrastResult }> = []
           for (const f of features) parts.push({ f, ctr: await run(f) })
           return {
@@ -3030,21 +3280,26 @@ export const useGraph = create<GraphState>()((set, get) => ({
           setStatus('running')
           // The features both inputs offer (A's names: its significance says p or q).
           const offerB = new Set(contrastFeatures(rb).map((f) => f.id))
-          const features = contrastFeatures(ra).filter((f) => offerB.has(f.id))
+          const features = contrastFeatures(ra, condUnitsFor(state, idA)).filter((f) =>
+            offerB.has(f.id)
+          )
           const ctxA = featureCtx(idA)
           const ctxB = featureCtx(idB)
-          // Dose × time surfaces are contrasted time by time: matched on time.
-          const surf = [ra, rb].some((r) => r.kind === 'compare' && r.cmp.rows.some(isSurfaceRow))
+          // Surfaces are contrasted slice by slice: matched on the slices' condition.
+          const surf = [ra, rb]
+            .map((r) => (r.kind === 'compare' ? surfaceSliceCond(r.cmp.rows) : undefined))
+            .find((c) => c != null)
           ctr = await stack(features, (f) =>
             engine.contrastPair({
               sideA: toContrastSide(ra, compareStd(idA), f.id, ctxA, true),
               sideB: toContrastSide(rb, compareStd(idB), f.id, ctxB, true),
-              match: withTime(cfg.match ?? [], surf),
+              match: withSlice(cfg.match ?? [], surf),
               fix: cfg.pairFix,
               relationship: cfg.relationship,
               stat: cfg.stat,
               labelA: label(idA, 'A'),
               labelB: label(idB, 'B'),
+              nameConds: [...new Set([...activeOf(idA), ...activeOf(idB)])],
               // No per-side significance for abundance pairs → the band is the only divergence
               // call.
               driverMask: ra.kind === 'compare'
@@ -3127,7 +3382,7 @@ export const useGraph = create<GraphState>()((set, get) => ({
                   }
                 )
               })()
-            : compares.flatMap((r) => r.cmp.rows)
+            : compares.flatMap((r) => termless(r.cmp.rows))
           // A Compare's rows: each replicate's log2 ratio to the control mean.
           if (!isAbundance)
             for (const cid of fromIds) {
@@ -3135,7 +3390,7 @@ export const useGraph = create<GraphState>()((set, get) => ({
               const cstd = compareStd(cid)
               if (r?.kind !== 'compare' || !cstd) continue
               const byGene = stdByGene(cstd)
-              for (const row of r.cmp.rows) {
+              for (const row of termless(r.cmp.rows)) {
                 const reps = replicateLog2FCs(row, byGene.get(row.uniqID) ?? [])
                 if (reps.length) repsOf.set(row, reps)
               }
@@ -3164,8 +3419,9 @@ export const useGraph = create<GraphState>()((set, get) => ({
           // A pooled row as a side, for one feature: its own value with its SE and replicates, or
           // another feature's value alone (an abundance group's spread from its replicates).
           const selCtx = from ? featureCtx(from) : { statType: 'pQ' as const, doseScale: 1 }
-          // A dose × time surface is contrasted time by time (surfaceSideRows), matched on time.
-          const surf = !isAbundance && pooled.some(isSurfaceRow)
+          // A surface is contrasted slice by slice (surfaceSideRows), matched on the slices'
+          // condition.
+          const surf = isAbundance ? undefined : surfaceSliceCond(pooled)
           const toSideRows = (row: CompareResultRow, f: ContrastFeature): ContrastSideRow[] =>
             isSurfaceRow(row) ? surfaceSideRows(row, f.id, selCtx) : [toSideRow(row, f)]
           const toSideRow = (row: CompareResultRow, f: ContrastFeature): ContrastSideRow => ({
@@ -3204,16 +3460,20 @@ export const useGraph = create<GraphState>()((set, get) => ({
             return
           }
           setStatus('running')
-          const features = contrastFeatures(isAbundance ? stds[0] : compares[0])
+          const features = contrastFeatures(
+            isAbundance ? stds[0] : compares[0],
+            from ? condUnitsFor(state, from) : undefined
+          )
           ctr = await stack(features, (f) =>
             engine.contrastPair({
               sideA: rowsA.flatMap((r) => toSideRows(r, f)),
               sideB: rowsB.flatMap((r) => toSideRows(r, f)),
-              match: withTime(cfg.match ?? [], surf),
+              match: withSlice(cfg.match ?? [], surf),
               relationship: cfg.relationship,
               stat: cfg.stat,
               labelA: selLabel(num),
               labelB: selLabel(den),
+              nameConds: [...new Set(fromIds.flatMap(activeOf))],
               // Abundance slices carry no per-side significance, so the band is the only
               // divergence call.
               driverMask: !isAbundance
@@ -3225,7 +3485,19 @@ export const useGraph = create<GraphState>()((set, get) => ({
         if (get().nodes.find((n) => n.id === id)?.data.status !== 'running') return // cancelled
         // Mask hidden-geneset genes non-significant (covers pair mode with no per-side driver signf).
         ctr = { ...ctr, rows: maskSignf(ctr.rows, hiddenGeneIds(get())) }
-        set((s) => ({ results: { ...s.results, [id]: { kind: 'contrast', ctr, displayMap } } }))
+        // the inputs' declared numeric conditions, carried on as Compare carries Clean data's
+        const numericConditions = numericUnion(ups.map((u) => get().results[u]))
+        set((s) => ({
+          results: {
+            ...s.results,
+            [id]: {
+              kind: 'contrast',
+              ctr,
+              displayMap,
+              ...(numericConditions.length ? { numericConditions } : null)
+            }
+          }
+        }))
         setStatus('done')
         get().invalidateDownstream(id)
       }
@@ -3326,7 +3598,8 @@ export const useGraph = create<GraphState>()((set, get) => ({
         child.config,
         upId ? get().results[upId] : undefined,
         () => childOf()?.status !== 'running',
-        cleanTransformOf(get().nodes, upId)
+        cleanTransformOf(get().nodes, upId),
+        axisAvailFor(get(), upId)
       )
       if (childOf()?.status !== 'running') return // cancelled
       if (plotRunSeq.get(key) !== seq) return // superseded by a newer run of this plot
@@ -3386,7 +3659,7 @@ export const useGraph = create<GraphState>()((set, get) => ({
       for (const n of get().nodes) {
         if (!downstream.has(n.id) || skipped.has(n.id)) continue
         const kind = get().nodeKind(n.id)
-        if (!kind || !NODE_SPECS[kind].hasRun) continue
+        if (!kind || !runsIn(get(), n.id)) continue
         await get().runNode(n.id)
         if (
           categoryOf(kind) !== 'plotting' &&
@@ -3414,7 +3687,7 @@ export const useGraph = create<GraphState>()((set, get) => ({
       if (!get().runningAll) break // stopped by the user
       if (skipped.has(id)) continue
       const kind = get().nodeKind(id)
-      if (!kind || !NODE_SPECS[kind].hasRun) continue
+      if (!kind || !runsIn(get(), id)) continue
       await get().runNode(id)
       // A plot's failure skips nothing — nothing reads from it.
       if (
@@ -3468,8 +3741,10 @@ export const useGraph = create<GraphState>()((set, get) => ({
     if (downstream.size === 0) return
     const clearedResults = { ...results }
     for (const d of downstream) delete clearedResults[d]
+    // A run queued on its input (waitForInputs) stays running: the input finishing is what it
+    // waits for — set back to idle, it read that as being stopped and never ran.
     const idled = nodes.map((n) =>
-      downstream.has(n.id) && isStep(n)
+      downstream.has(n.id) && isStep(n) && !waitingRuns.has(n.id)
         ? { ...n, data: { ...n.data, status: 'idle' as const, error: undefined } }
         : n
     )
@@ -3573,7 +3848,8 @@ export const useGraph = create<GraphState>()((set, get) => ({
         startFromTemplate(get, set, text)
         return
       }
-      const proj = deserializeProject(text)
+      // Results stay packed for now: only the workflow opened is unpacked (below).
+      const proj = deserializeProject(text, { packed: true })
       // Folders found next to the project by their saved relative paths (a project copied to
       // another machine with its folders) are used there — not an edit, so not dirty: the next
       // save writes their new full paths.
@@ -3602,6 +3878,27 @@ export const useGraph = create<GraphState>()((set, get) => ({
         last?.folderId === activeFolderId && folder?.workflows.some((w) => w.id === last.workflowId)
           ? (last.workflowId ?? undefined)
           : undefined
+      // Only the workflow opened is unpacked into memory; every other one is parked straight from
+      // the file's packed text, and comes back when it's opened (as a workflow left is parked). A
+      // project of several large workflows held all at once would run the renderer out of memory.
+      const openId = workflowId ?? folder?.activeWorkflowId
+      for (const f of folders)
+        for (const w of f.workflows) {
+          const stored = w.stored
+          if (stored === undefined) continue
+          delete w.stored
+          if (!(f.id === activeFolderId && w.id === openId)) {
+            const key = `wf-${PARK_SESSION}-${++parkSeq}`
+            try {
+              await window.api.parkWrite(key, storedResultsChunks(stored))
+              w.parked = key
+              continue
+            } catch {
+              // no park store (e.g. the screenshot harness): kept in memory, as before
+            }
+          }
+          w.results = unpackResults(stored)
+        }
       set({
         projectPath: p,
         projectName,
@@ -4015,6 +4312,7 @@ export const useGraph = create<GraphState>()((set, get) => ({
       const next: Record<string, ProjectHeader> = {}
       for (const [path, text] of Object.entries(heads)) if (text) next[path] = projectHeader(text)
       set({ recentHeaders: { ...get().recentHeaders, ...next } })
+      void checkUpgrades(get, set, next)
     } catch {
       // best-effort — rows just go without a version tag
     }
@@ -4262,6 +4560,23 @@ useGraph.subscribe((s, prev) => {
       for (const id of Object.values(snap.versions ?? {})) live.add(id)
     history.sync(g.results, live)
   }, 0)
+})
+
+// ── large row tables kept columnar ───────────────────────────────────────────
+// A results map can take tables built on this thread (a threshold re-call, a step re-run off the
+// worker's pool): once the UI is idle, any large one is compacted (compactResults.ts) — its rows
+// stay the same array for whatever holds them, and are released once nothing does. Tables that
+// arrive from the worker or from a file are columnar already.
+const COMPACT_MIN_ROWS = 50000
+let compactTimer: ReturnType<typeof setTimeout> | null = null
+useGraph.subscribe((s, prev) => {
+  if (s.results === prev.results) return
+  if (compactTimer) clearTimeout(compactTimer)
+  compactTimer = setTimeout(() => {
+    compactTimer = null
+    for (const r of Object.values(useGraph.getState().results))
+      compactResult(r, { keep: true, minRows: COMPACT_MIN_ROWS })
+  }, 2000)
 })
 
 // ── last-view tracker ─────────────────────────────────────────────────────────

@@ -406,9 +406,14 @@ export function GeneSelectMenu({ tabs }: { tabs: GeneGroupTab[] }): ReactNode {
       if (!btnRef.current?.contains(t) && !menuRef.current?.contains(t) && !inPopover)
         setOpen(false)
     }
+    // Only a scroll that moves the trigger detaches the menu from it. Any other scroll is left
+    // alone — notably a data table bringing the hovered gene's row into view, which hovering a
+    // gene here sets off (that used to close the menu mid-search).
     const onScroll = (e: Event): void => {
-      if (menuRef.current?.contains(e.target as Node) || editId) return
-      setOpen(false)
+      if (editId) return
+      const t = e.target
+      const moved = t === document || (t instanceof Node && !!t.contains(btnRef.current))
+      if (moved) setOpen(false)
     }
     const onResize = (): void => setOpen(false)
     document.addEventListener('mousedown', onDoc)
@@ -1428,11 +1433,19 @@ const headBtn: CSSProperties = {
 }
 /** Give a scrolling list a shrink floor: `floor` px, or its whole content when that's shorter (so a
  *  short list isn't padded out). Re-applied after every render, as the content changes with it;
- *  written straight to the element (React never sets its min-height), so it costs no re-render. */
+ *  written straight to the element (React never sets its min-height), so it costs no re-render.
+ *  The content is measured with the old floor lifted: read under it, a list whose content had
+ *  shrunk measured as the old floor (scrollHeight is at least the box), so the floor never came
+ *  down — and with a border (box-sizing: border-box) it crept down a pixel per render, the menu
+ *  visibly shrinking with each keystroke. */
 function useShrinkFloor(ref: { current: HTMLElement | null }, floor: number): void {
   useLayoutEffect(() => {
     const el = ref.current
-    if (el) el.style.minHeight = `${Math.min(floor, el.scrollHeight)}px`
+    if (!el) return
+    el.style.minHeight = ''
+    // scrollHeight leaves out the border; min-height (border-box) includes it
+    const border = el.offsetHeight - el.clientHeight
+    el.style.minHeight = `${Math.min(floor, el.scrollHeight + border)}px`
   })
 }
 

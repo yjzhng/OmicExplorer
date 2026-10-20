@@ -1,17 +1,32 @@
 /** Contrast-input helpers shared by the run path (store), the selector window, and the canvas. */
 import {
+  condLabel,
+  condValue,
   condPresent,
   condsIn,
+  CURVE_FC_FEATURE,
   curveDescribed,
+  customSlug,
+  isCustomCond,
   replicateLog2FCs,
   stdByGene,
+  termless,
+  xUnits,
   type CompareResultRow,
+  type CondSelector,
   type ConditionKey,
   type ContrastFeatureId,
   type ContrastSideRow,
   type StandardRow
 } from '../engine'
-import { resolveContrastSource, type ContrastConfig, type NodeResult } from './types'
+import {
+  isMolar,
+  resolveContrastSource,
+  unitOf,
+  type CondUnits,
+  type ContrastConfig,
+  type NodeResult
+} from './types'
 
 /** One feature a Contrast can compare (see ContrastFeatureId) and its name on the switcher. */
 export interface ContrastFeature {
@@ -29,49 +44,101 @@ export interface CompareFeatureCtx {
 
 /** A curve fit's row as a curve along one axis: CurveCurator's / the 4PL's, or the response
  *  surface method's (a surface — dose × time — is no one curve). */
-const curveAxisOf = (r: CompareResultRow): 'dose' | 'time' | null => {
-  const a = r.curve?.axis ?? (r.rs && r.rs.axis !== 'surface' ? r.rs.axis : undefined)
-  return a === 'dose' || a === 'time' ? a : null
-}
+const curveAxisOf = (r: CompareResultRow): ConditionKey | null =>
+  r.curve?.axis ?? (r.rs && r.rs.axis !== 'surface' ? r.rs.axis : null)
+
+/** A curve fit's row on a linear axis (see axisModel.ts): its potency is EC50, not pEC50. */
+const isLinearRow = (r: CompareResultRow): boolean =>
+  r.curve?.scale === 'linear' || r.rs?.scale === 'linear'
 
 /** A dose × time surface's row (the response surface method over dose × time): one gene, every
  *  dose and time at once. */
 export const isSurfaceRow = (r: CompareResultRow): boolean => r.rs?.axis === 'surface'
 
-/** A surface's row as one side row per time point, for one feature — a surface has no single
- *  fold change or EC50, so it's contrasted time by time (the run matches the sides on time):
- *  - its fold change: the surface fit's peak at that time — the largest fitted effect across the
- *    doses, signed — for every gene;
- *  - its pEC50: that time's dose curve's midpoint (the description's slices), for the genes the
- *    Curve fit described. */
+/** How a surface is contrasted slice by slice: along the axis its curves run along — testing
+ *  response changes, the response axis; else its first (its dose curves) — one slice per level of
+ *  the other axis, `at`, the condition its side rows carry and the run matches the sides on. */
+export function surfaceSlicing(r: CompareResultRow): {
+  k: 0 | 1
+  along: ConditionKey
+  at: ConditionKey
+} {
+  const pair = r.rs?.pair ?? (['dose', 'time'] as [ConditionKey, ConditionKey])
+  const k: 0 | 1 = r.rs?.shift && r.rs.shift.response === pair[1] ? 1 : 0
+  return { k, along: pair[k], at: pair[1 - k] }
+}
+
+/** The condition a set of rows' surfaces are contrasted per level of (surfaceSlicing), if any. */
+export const surfaceSliceCond = (rows: readonly CompareResultRow[]): ConditionKey | undefined => {
+  const r = rows.find(isSurfaceRow)
+  return r ? surfaceSlicing(r).at : undefined
+}
+
+/** A side row's condition set to a level: a preset's column, a custom one's `extra` text. */
+function withCond(row: ContrastSideRow, c: ConditionKey, v: number): ContrastSideRow {
+  if (isCustomCond(c)) return { ...row, extra: { ...row.extra, [customSlug(c)]: String(v) } }
+  return { ...row, [c]: v }
+}
+
+/** A surface's row as one side row per slice, for one feature — a surface has no single fold change
+ *  or EC50, so it's contrasted slice by slice (the run matches the sides on the slice's level):
+ *  - its fold change: at each level, the fit's largest effect along the curve, signed — against the
+ *    vehicle (capturing the shape), or, testing response changes, against the reference curve (the
+ *    base level's, so what every level shares — a melt — isn't counted);
+ *  - its pEC50: that level's curve's midpoint (the description's slices) — EC50 itself on a linear
+ *    axis — for the genes the Curve fit described. */
 export function surfaceSideRows(
   r: CompareResultRow,
   f: ContrastFeatureId,
   ctx: CompareFeatureCtx
 ): ContrastSideRow[] {
-  const base = {
+  const { k, at } = surfaceSlicing(r)
+  const base: ContrastSideRow = {
     uniqID: r.uniqID,
     cell: r.cell ?? null,
     cmpd: r.cmpd,
     dose: null,
+    time: null,
     ...(r.extra ? { extra: r.extra } : null),
+    value: null,
     signf: r.signf,
     effect: r.effect,
     pP: r.pP,
     pQ: r.pQ
   }
-  if (f === 'pec50')
-    return (r.rs?.surface?.byTime ?? []).map((sl) => {
-      const v = sl.mid > 0 ? -Math.log10(sl.mid * ctx.doseScale) : NaN
-      return { ...base, time: sl.at, value: Number.isFinite(v) ? v : null }
+  const rs = r.rs
+  if (f === 'pec50') {
+    const slices = (k === 1 ? rs?.surface?.byDose : rs?.surface?.byTime) ?? []
+    const linear = rs?.maps?.[k]?.scale === 'linear'
+    // the molar scale is the dose's (the first axis's unit) — any other axis in its own units
+    const scale = k === 0 ? ctx.doseScale : 1
+    return slices.map((sl) => {
+      const v = linear ? sl.mid : sl.mid > 0 ? -Math.log10(sl.mid * scale) : NaN
+      return withCond({ ...base, value: Number.isFinite(v) ? v : null }, at, sl.at)
     })
-  const peak = new Map<number, number>()
-  for (const c of r.rs?.cells ?? []) {
-    const cur = peak.get(c.time)
-    if (Number.isFinite(c.fitted) && (cur === undefined || Math.abs(c.fitted) > Math.abs(cur)))
-      peak.set(c.time, c.fitted)
   }
-  return [...peak].sort((a, b) => a[0] - b[0]).map(([time, value]) => ({ ...base, time, value }))
+  // a cell's level along the curve and of its slice (the cells' two slots)
+  const along = (c: { dose: number; time: number }): number => (k === 1 ? c.time : c.dose)
+  const level = (c: { dose: number; time: number }): number => (k === 1 ? c.dose : c.time)
+  const cells = rs?.cells ?? []
+  // testing changes: the reference curve — the fit along the curve at the compared axis's control
+  // level as the Curve fit set it (the lowest on a result from before it was kept)
+  const ref = new Map<number, number>()
+  if (rs?.shift && cells.length) {
+    const ctl = rs.maps?.[1 - k]?.base
+    const lo = cells.some((c) => level(c) === ctl) ? ctl! : Math.min(...cells.map(level))
+    for (const c of cells) if (level(c) === lo) ref.set(along(c), c.fitted)
+  }
+  const peak = new Map<number, number>()
+  for (const c of cells) {
+    const e = rs?.shift ? c.fitted - (ref.get(along(c)) ?? NaN) : c.fitted
+    const cur = peak.get(level(c))
+    if (Number.isFinite(e) && (cur === undefined || Math.abs(e) > Math.abs(cur)))
+      peak.set(level(c), e)
+  }
+  return [...peak]
+    .sort((a, b) => a[0] - b[0])
+    .map(([lv, value]) => withCond({ ...base, value }, at, lv))
 }
 
 /** A Compare row's value of one feature. */
@@ -83,16 +150,18 @@ export function compareFeatureValue(
   if (f === 'p') return ctx.statType === 'pQ' ? r.pQ : r.pP
   if (f === 'pec50') {
     // EC50 in the axis's units — the 4PL's, or the description midpoint — as the potency plot reads
-    // it; pEC50 = −log₁₀ EC50 (in molar over dose, where the unit says how).
+    // it; pEC50 = −log₁₀ EC50 (in molar where the axis's unit is molar: ctx.doseScale, from
+    // curveDoseUnit — 1 for any other unit). On a linear axis the EC50 itself.
     const axis = curveAxisOf(r)
     // (an undescribed 4PL curve — responders only, not one — has none)
     const ec50 = r.curve
       ? curveDescribed(r.curve)
-        ? 10 ** -r.curve.pec50
+        ? xUnits(r.curve, -r.curve.pec50)
         : undefined
       : r.rs?.desc?.mid
+    if (isLinearRow(r)) return axis && ec50 != null && Number.isFinite(ec50) ? ec50 : null
     if (!axis || ec50 == null || !(ec50 > 0)) return null
-    const v = -Math.log10(ec50 * (axis === 'dose' ? ctx.doseScale : 1))
+    const v = -Math.log10(ec50 * ctx.doseScale)
     return Number.isFinite(v) ? v : null
   }
   return r.log2FC
@@ -118,11 +187,23 @@ export function stdFeatureValue(logs: number[], f: ContrastFeatureId): number | 
   return mean(logs)
 }
 
+/** A curve fit's potency feature, named with its unit: EC50 in the axis's unit on a linear axis;
+ *  pEC50 on a log one — −log₁₀ molar where the unit is molar (as compareFeatureValue reads it),
+ *  else of the unit. Without a unit, named by its axis (unless that's dose). */
+function potencyLabel(linear: boolean, axis: ConditionKey, units: CondUnits | undefined): string {
+  const unit = unitOf(units, axis)
+  const what = linear ? 'EC50' : 'pEC50'
+  if (unit)
+    return linear ? `EC50 (${unit})` : isMolar(unit) ? 'pEC50 (M)' : `pEC50 (−log₁₀ ${unit})`
+  return axis === 'dose' ? what : `${what} (${condLabel(axis)})`
+}
+
 /** The features a Contrast of this input can switch between, in switcher order (the sides' own
  *  value first). Clean data: abundance, SD, CV. A Compare: log₂FC and its significance (p or q, as
- *  it calls by). A curve fit: its curve fold change — the peak, by the response surface method —
- *  and its pEC50, where any curve has one. */
-export function contrastFeatures(r: NodeResult | undefined): ContrastFeature[] {
+ *  it calls by). A curve fit: its curve fold change — the peak, by the response surface method;
+ *  the shift from the reference curve, testing changes — and its potency, where any curve has one
+ *  (named with its unit: `units`, the input's condition units). */
+export function contrastFeatures(r: NodeResult | undefined, units?: CondUnits): ContrastFeature[] {
   if (r?.kind === 'standardize')
     return [
       { id: 'value', label: 'abundance' },
@@ -130,22 +211,30 @@ export function contrastFeatures(r: NodeResult | undefined): ContrastFeature[] {
       { id: 'cv', label: 'CV %' }
     ]
   if (r?.kind !== 'compare') return []
-  const rows = r.cmp.rows
+  const rows = termless(r.cmp.rows)
   const axes = new Set(rows.map(curveAxisOf).filter((a) => a != null))
-  // Surfaces: both per time point (see surfaceSideRows) — pEC50 where any gene was described.
+  // Surfaces: both per slice (see surfaceSideRows) — the potency where any gene's curves along
+  // their axis were described: EC50 on a linear axis, pEC50 on a log one, named with its unit.
   if (rows.some(isSurfaceRow)) {
-    const fc: ContrastFeature = { id: 'value', label: 'peak log₂FC' }
-    return rows.some((x) => x.rs?.surface?.byTime.length)
-      ? [fc, { id: 'pec50', label: 'pEC50' }]
-      : [fc]
+    // one value per slice (the switcher picks it): the largest effect along that slice's curve —
+    // against the vehicle, or testing changes, the shift from the reference curve
+    const fc: ContrastFeature = { id: 'value', label: CURVE_FC_FEATURE }
+    const r0 = rows.find(
+      (x) =>
+        isSurfaceRow(x) &&
+        (surfaceSlicing(x).k === 1 ? x.rs?.surface?.byDose : x.rs?.surface?.byTime)?.length
+    )
+    if (!r0) return [fc]
+    const { k, along } = surfaceSlicing(r0)
+    const linear = r0.rs?.maps?.[k]?.scale === 'linear'
+    return [fc, { id: 'pec50', label: potencyLabel(linear, along, units) }]
   }
   if (rows.some((x) => x.curve || x.rs)) {
-    const fc: ContrastFeature = {
-      id: 'value',
-      label: rows.some((x) => x.rs) ? 'peak log₂FC' : 'curve log₂FC'
-    }
+    const fc: ContrastFeature = { id: 'value', label: CURVE_FC_FEATURE }
     if (!axes.size) return [fc]
-    return [fc, { id: 'pec50', label: axes.has('dose') ? 'pEC50' : 'pEC50 (time)' }]
+    // the potency: pEC50 on a log axis, EC50 on a linear one (see axisModel.ts)
+    const axis = [...axes][0]
+    return [fc, { id: 'pec50', label: potencyLabel(rows.some(isLinearRow), axis, units) }]
   }
   const q = (r.cmp.threshold?.statType ?? 'pQ') === 'pQ'
   return [
@@ -183,18 +272,18 @@ export function toContrastSide(
   cleanStd?: StandardRow[],
   feature: ContrastFeatureId = 'value',
   ctx: CompareFeatureCtx = { statType: 'pQ', doseScale: 1 },
-  /** the run: a dose × time surface's rows per time point (surfaceSideRows); the selector's
-   *  preview keeps one per gene */
-  surfacesPerTime = false
+  /** the run: a surface's rows per slice (surfaceSideRows); the selector's preview keeps one per
+   *  gene */
+  surfacesPerSlice = false
 ): ContrastSideRow[] {
-  if (r?.kind === 'compare' && surfacesPerTime && r.cmp.rows.some(isSurfaceRow))
-    return r.cmp.rows.flatMap((row) =>
+  if (r?.kind === 'compare' && surfacesPerSlice && cmpRows(r).some(isSurfaceRow))
+    return cmpRows(r).flatMap((row) =>
       isSurfaceRow(row) ? surfaceSideRows(row, feature, ctx) : []
     )
   if (r?.kind === 'compare' && feature !== 'value')
     // Another feature of the same rows: its value alone (no SE or replicates — those are the fold
     // change's), the side's own calls kept for the divergence mask.
-    return r.cmp.rows.map((row) => ({
+    return cmpRows(r).map((row) => ({
       uniqID: row.uniqID,
       cell: row.cell ?? null,
       cmpd: row.cmpd,
@@ -220,7 +309,7 @@ export function toContrastSide(
     }))
   if (r?.kind === 'compare') {
     const byGene = cleanStd ? stdByGene(cleanStd) : undefined
-    return r.cmp.rows.map((row) => {
+    return cmpRows(r).map((row) => {
       const reps = byGene ? replicateLog2FCs(row, byGene.get(row.uniqID) ?? []) : []
       return {
         uniqID: row.uniqID,
@@ -277,6 +366,49 @@ export function selectSource(cfg: ContrastConfig, upstreamIds: string[]): string
   return upstreamIds[0]
 }
 
+/**
+ * A Contrast's two sides as Curve fit curves over `axis`, when both are: each side's curve rows,
+ * renamed to the side (`names` — the contrast's own, its cmp1 / cmp2) so a plot tells them apart.
+ * Pair mode: the two inputs' results (each a Curve fit). Select mode: the one input's rows each
+ * side's selection picks (compound A vs B of one fit). Null when a side isn't curves over `axis`
+ * (a t-test, Clean data, a surface) — the plot then draws the contrast's own per-level values.
+ */
+export function contrastCurveSides(
+  cfg: ContrastConfig,
+  upstreamIds: string[],
+  results: Record<string, NodeResult | undefined>,
+  axis: ConditionKey,
+  names: [string, string]
+): [CompareResultRow[], CompareResultRow[]] | null {
+  const curvesOf = (r: NodeResult | undefined): CompareResultRow[] | null => {
+    if (r?.kind !== 'compare') return null
+    const rows = r.cmp.rows.filter((x) => curveAxisOf(x) === axis)
+    return rows.length ? rows : null
+  }
+  const named = (rows: CompareResultRow[], name: string): CompareResultRow[] =>
+    rows.map((x) => ({ ...x, comparison: name }))
+  if (resolveContrastSource(cfg, upstreamIds.length) === 'pair') {
+    const sides = pairSides(cfg, upstreamIds)
+    if (!sides) return null
+    const a = curvesOf(results[sides[0]])
+    const b = curvesOf(results[sides[1]])
+    return a && b ? [named(a, names[0]), named(b, names[1])] : null
+  }
+  const from = selectSource(cfg, upstreamIds)
+  const all = from ? curvesOf(results[from]) : null
+  if (!all || !cfg.num || !cfg.den) return null
+  // a row in a selection: every condition it pins takes one of its values
+  const pick = (sel: CondSelector): CompareResultRow[] =>
+    all.filter((x) =>
+      (Object.entries(sel) as Array<[ConditionKey, string[] | undefined]>).every(
+        ([c, vs]) => !vs?.length || vs.some((v) => String(condValue(x, c) ?? '') === String(v))
+      )
+    )
+  const a = pick(cfg.num)
+  const b = pick(cfg.den)
+  return a.length && b.length ? [named(a, names[0]), named(b, names[1])] : null
+}
+
 /** The wired inputs the tile actually consumes in its current mode — the rest are wired but idle
  *  (drawn dashed on the canvas). */
 export function usedInputs(cfg: ContrastConfig, upstreamIds: string[]): Set<string> {
@@ -288,6 +420,11 @@ export function usedInputs(cfg: ContrastConfig, upstreamIds: string[]): Set<stri
   return new Set(one ? [one] : [])
 }
 
+/** A Compare's rows a Contrast side reads: those with a signed fold change (a two-way ANOVA's
+ *  term rows are unsigned — see termless). */
+const cmpRows = (r: Extract<NodeResult, { kind: 'compare' }>): CompareResultRow[] =>
+  termless(r.cmp.rows)
+
 /** A result's rows in the shape the group selector reads (uniqID + conditions), plus which
  *  conditions carry values. Compare rows are one per gene × comparison context; Standardize rows
  *  one per gene × sample. */
@@ -297,7 +434,7 @@ export function selectorRowsOf(r: NodeResult | undefined): {
 } {
   const raw: Array<Record<string, unknown>> =
     r?.kind === 'compare'
-      ? r.cmp.rows.map((x) => ({
+      ? termless(r.cmp.rows).map((x) => ({
           uniqID: x.uniqID,
           cell: x.cell ?? '',
           cmpd: x.cmpd,

@@ -26,11 +26,18 @@ export type ResolvedHighlight = Required<Omit<HighlightStyle, 'ringColor' | 'siz
  *  alongside the hovered/pinned one rather than the plot fading almost to nothing. */
 export const DEFAULT_HIGHLIGHT: ResolvedHighlight = {
   bump: 5,
-  ring: 2,
+  ring: 1,
   dim: 0.28,
   label: true,
   labelSize: 10
 }
+
+/** A point's default outline width, px — every group of every point plot except 'none'. */
+export const DEFAULT_OUTLINE = 0.5
+
+/** The non-significant ('none') group's default opacity — faded behind the hits, and drawn
+ *  without an outline. */
+const NONE_OPACITY = 0.5
 
 // Marginal (independent) contrasts label each significant gene by which quadrant it falls in —
 // the composite "<FC1 dir>, <FC2 dir>" effect, where an em-dash means that axis wasn't itself
@@ -77,7 +84,7 @@ const effectGroups = (
     key: 'none',
     name: names.none ?? 'none',
     size: size.none,
-    opacity,
+    opacity: NONE_OPACITY,
     color: colors.none,
     label: false,
     legend: false,
@@ -92,7 +99,7 @@ const effectGroups = (
     color: colors.down,
     label: true,
     legend: true,
-    outline: 0,
+    outline: DEFAULT_OUTLINE,
     highlight: DEFAULT_HIGHLIGHT
   },
   {
@@ -103,7 +110,7 @@ const effectGroups = (
     color: colors.up,
     label: true,
     legend: true,
-    outline: 0,
+    outline: DEFAULT_OUTLINE,
     highlight: DEFAULT_HIGHLIGHT
   }
 ]
@@ -139,7 +146,7 @@ export function defaultGroups(
           color: RESIDUAL_CONTROL,
           label: false,
           legend: true,
-          outline: 0,
+          outline: DEFAULT_OUTLINE,
           highlight: DEFAULT_HIGHLIGHT
         },
         {
@@ -150,7 +157,7 @@ export function defaultGroups(
           color: CATEGORICAL[0],
           label: false,
           legend: true,
-          outline: 0,
+          outline: DEFAULT_OUTLINE,
           highlight: DEFAULT_HIGHLIGHT
         }
       ]
@@ -162,7 +169,7 @@ export function defaultGroups(
           key: 'none',
           name: 'none',
           size: 6,
-          opacity: 0.85,
+          opacity: NONE_OPACITY,
           color: colors?.none ?? EFFECT_COLOR.none,
           label: false,
           legend: false,
@@ -177,7 +184,7 @@ export function defaultGroups(
           color: QUAD_COLORS[k],
           label: true,
           legend: true,
-          outline: 0,
+          outline: DEFAULT_OUTLINE,
           highlight: DEFAULT_HIGHLIGHT
         }))
       ]

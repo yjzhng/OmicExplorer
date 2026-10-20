@@ -5,7 +5,7 @@
 import type { CSSProperties, ReactNode } from 'react'
 
 import { Select } from '../graph/NodeConfigPanel'
-import { canConnect, maxInputsFor, plotLabel } from '../graph/registry'
+import { canConnect, maxInputsFor, plotLabel, wiredKindOf } from '../graph/registry'
 import { eligibleInputs } from '../graph/sequence'
 import { useGraph } from '../graph/store'
 import { isStep, type StepNode } from '../graph/types'
@@ -31,7 +31,10 @@ function Inputs({ node }: { node: StepNode }): ReactNode {
   // of the wiring.
   const eligible = eligibleInputs(id, order, edges)
     .map((s) => byId.get(s))
-    .filter((n): n is StepNode => !!n && canConnect(n.data.kind, kind))
+    .filter(
+      (n): n is StepNode =>
+        !!n && canConnect(wiredKindOf({ nodes, edges }, n.id) ?? n.data.kind, kind)
+    )
 
   const slots: (string | null)[] = [...incoming.map((e) => e.source)]
   if (slots.length < cap) slots.push(null) // one empty slot to add the next input

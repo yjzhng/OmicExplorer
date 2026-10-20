@@ -5,7 +5,7 @@
 import type { CSSProperties, ReactNode } from 'react'
 
 import { UI } from '../ui/theme'
-import { NODE_SPECS, plotLabel } from './registry'
+import { loadAbove, NODE_SPECS, plotLabel, runsIn } from './registry'
 import { unmetRequirement } from './requirements'
 import { useGraph } from './store'
 import { unconfiguredLoad } from './types'
@@ -65,7 +65,17 @@ function runStatusInfo(status: StepStatus): StatusInfo {
 export function useStepStatus(id: string, data: NodeData): StatusInfo {
   const spec = NODE_SPECS[data.kind]
   const isPlot = spec.category === 'plotting'
-  const upId = useGraph((s) => (spec.hasRun && !isPlot ? undefined : s.upstreamId(id)))
+  // A Subset off Load data has no run of its own (runsIn): ready once the import above is, as Load
+  // data is — the reason it isn't, else null; undefined for every other step.
+  const subsetLoad = useGraph((s) => {
+    if (data.kind !== 'subset' || runsIn(s, id)) return undefined
+    const load = loadAbove(s, id)?.load
+    return load ? unconfiguredLoad(load.data.config as LoadConfig) : 'Waiting for data'
+  })
+  const runs = spec.hasRun && subsetLoad === undefined
+  // a running step's progress (curve fits report it): its stage and how far along
+  const progress = useGraph((s) => (data.status === 'running' ? s.progress[id] : undefined))
+  const upId = useGraph((s) => (runs && !isPlot ? undefined : s.upstreamId(id)))
   const facts = useUpstreamFacts(upId)
   // The upstream step re-running: its previous result stays on show until the new one lands, so a
   // plot drawn from it isn't "Ready" yet — it's about to change.
@@ -73,7 +83,19 @@ export function useStepStatus(id: string, data: NodeData): StatusInfo {
     const n = upId ? s.nodes.find((x) => x.id === upId) : undefined
     return !!n && n.type === 'step' && n.data.status === 'running'
   })
-  if (spec.hasRun && !isPlot) return runStatusInfo(data.status)
+  if (subsetLoad !== undefined)
+    return subsetLoad
+      ? { color: UI.textMuted, label: subsetLoad, pulse: false }
+      : { color: '#3fae5a', label: 'Ready', pulse: false, ok: true }
+  if (runs && !isPlot) {
+    const info = runStatusInfo(data.status)
+    return progress?.stage
+      ? {
+          ...info,
+          label: `${progress.stage}${progress.total > 0 ? ` · ${Math.round((100 * progress.done) / progress.total)}%` : '…'}`
+        }
+      : info
+  }
   if (upRunning && data.status === 'done')
     return { color: '#e2b93b', label: 'Updating — upstream re-running', pulse: true }
   const block = ((): string | null => {

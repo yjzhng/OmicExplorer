@@ -3,7 +3,7 @@
 import { describe, expect, it } from 'vitest'
 
 import { describeCurve, fitSplineCurve } from './splineFit'
-import { fitJointCells } from './surfaceJoint'
+import { fitJointCells, presetSpec } from './surfaceJoint'
 
 // a sigmoid over 8 half-log doses, the baseline a step below the lowest
 const x = [-1.5, -1, -0.5, 0, 0.5, 1, 1.5, 2, 2.5]
@@ -18,15 +18,17 @@ describe('interpolation (4PL fits)', () => {
     expect(on.r2).toBeLessThanOrEqual(off.r2 + 1e-9)
   })
   it('the joint surface: at the grid squares’ centres, its RSS over the real cells', () => {
+    // on the joint model's axes: log₁₀ dose, log₁₀(t + 30)
     const cells = [1, 3, 10, 30, 100].flatMap((dose) =>
       [30, 120, 480, 1440].map((time) => ({
-        dose,
-        time,
+        xa: Math.log10(dose),
+        xb: Math.log10(time + 30),
         e: (1.5 / (1 + 10 / dose)) * (1 - Math.exp(-time / 300))
       }))
     )
-    const off = fitJointCells(cells, 30)
-    const on = fitJointCells(cells, 30, true)
+    const spec = presetSpec(Math.log10(30))
+    const off = fitJointCells(cells, spec)
+    const on = fitJointCells(cells, spec, true)
     expect(on.rss).toBeGreaterThanOrEqual(off.rss - 1e-9)
   })
 })

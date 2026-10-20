@@ -1,6 +1,6 @@
 import { useMemo } from 'react'
 
-import { buildBubble, type CompareResultRow } from '../engine'
+import { buildBubble, condLabel, type CompareResultRow, type ConditionKey } from '../engine'
 import { tooltip } from './condTooltip'
 import { sizeKeyLevels } from './sizeKey'
 import { PlotlyChart } from './PlotlyChart'
@@ -179,7 +179,7 @@ export function BubbleView({
   sigPalette = BUBBLE_SIG_PALETTE
 }: {
   rows: CompareResultRow[]
-  axis: 'dose' | 'time'
+  axis: ConditionKey
   /** the dose/time axis's title, with its unit (absent = the bare axis name) */
   axisLabel?: string
   topGenes: number
@@ -272,7 +272,7 @@ export function BubbleView({
         tooltip(
           {
             title: pt.gene,
-            conds: [[bubble.axis, pt.x]],
+            conds: [[condLabel(bubble.axis), pt.x]],
             values: [
               ['log₂FC', pt.log2FC.toFixed(3)],
               [sigName, pt.sig.toFixed(2)]
@@ -339,7 +339,7 @@ export function BubbleView({
       ...axisBase(p),
       // held next to its tick labels: with automargin and no standoff Plotly sets the title out at
       // the margin's edge — portrait's top, under the control bar
-      title: { text: axisLabel ?? bubble.axis, standoff: 6 },
+      title: { text: axisLabel ?? condLabel(bubble.axis), standoff: 6 },
       // Linear axis with fixed, evenly-spaced ticks at each level's index (labelled with the
       // real value). Range mirrors the category convention ([-0.5, n-0.5]) so the dots keep
       // half-a-gap of padding at each end.

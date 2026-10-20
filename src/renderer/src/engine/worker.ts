@@ -9,8 +9,9 @@ import {
   runContrast,
   runContrastPair,
   runDirect,
-  runTwoWayAnova,
+  runFactorAnova,
   runVehNorm,
+  recleanStandardized,
   standardize,
   previewScale,
   enrichmentTable,
@@ -18,8 +19,9 @@ import {
   buildCluster
 } from './index'
 import type { ContrastInput, ContrastPairInput } from './contrast'
+import type { RecleanInput } from './ingest'
 import type { DirectInput } from './direct'
-import type { TwoWayInput } from './twoWay'
+import type { FactorAnovaInput } from './twoWay'
 import type {
   CompareInput,
   CompareResultRow,
@@ -28,21 +30,23 @@ import type {
   StandardRow,
   VehNormInput
 } from './types'
-import type { ClusterOptions, EnrichOptions } from './plotData'
+import type { ClusterOptions } from './plotData'
 import { curveFitSteps, driveAsync } from './direct'
 import { responseSurfaceSteps, runResponseSurface, type ResponseInput } from './responseSurface'
 import { enrichmentAllSteps } from './plotData'
 import { configurePool, pool, setUiBusy } from './pool'
 import { clusterRowGroups } from './cluster'
+import { progressTracker, type Progress, type ProgressTracker } from './progress'
 import { decodeValue, encodeValue } from './wire'
 
 export type EngineRequest =
   | { id: number; op: 'standardize'; payload: StandardizeInput }
+  | { id: number; op: 'reclean'; payload: RecleanInput }
   | { id: number; op: 'previewScale'; payload: { dataText: string; dataFilename: string } }
   | { id: number; op: 'vehNorm'; payload: VehNormInput }
   | { id: number; op: 'direct'; payload: DirectInput }
   | { id: number; op: 'compare'; payload: CompareInput }
-  | { id: number; op: 'twoWayAnova'; payload: TwoWayInput }
+  | { id: number; op: 'factorAnova'; payload: FactorAnovaInput }
   | { id: number; op: 'curveFit'; payload: CompareInput & { curveAxis: ConditionKey } }
   | { id: number; op: 'responseSurface'; payload: ResponseInput }
   | { id: number; op: 'contrast'; payload: ContrastInput }
@@ -55,7 +59,11 @@ export type EngineRequest =
   | {
       id: number
       op: 'enrichmentTable'
-      payload: { rows: CompareResultRow[]; opts: Omit<EnrichOptions, 'topTerms'>; facet?: string }
+      payload: {
+        rows: CompareResultRow[]
+        opts: Parameters<typeof enrichmentTable>[1]
+        facet?: string
+      }
     }
   | { id: number; op: 'buildCluster'; payload: { rows: StandardRow[]; opts: ClusterOptions } }
   | {
@@ -65,7 +73,10 @@ export type EngineRequest =
     }
 
 export type EngineResponse =
-  { id: number; ok: true; result: unknown } | { id: number; ok: false; error: string }
+  | { id: number; ok: true; result: unknown }
+  | { id: number; ok: false; error: string }
+  /** a long run's progress so far (the request still running) */
+  | { id: number; progress: Progress }
 
 // Cast the worker global to a minimal interface to avoid pulling the conflicting
 // webworker/DOM lib typings into this file.
@@ -77,6 +88,10 @@ const ctx = self as unknown as WorkerCtx
 
 /** Input tables kept from earlier requests (see the client's withDataset), by key. */
 const datasets = new Map<number, unknown[]>()
+
+/** A tracker posting a request's progress back to the page (throttled — see progressTracker). */
+const trackerFor = (id: number): ProgressTracker =>
+  progressTracker((progress) => ctx.postMessage({ id, progress }))
 
 ctx.addEventListener('message', async (e) => {
   const msg = e.data
@@ -109,6 +124,7 @@ ctx.addEventListener('message', async (e) => {
   try {
     let result: unknown
     if (msg.op === 'standardize') result = standardize(msg.payload)
+    else if (msg.op === 'reclean') result = recleanStandardized(msg.payload)
     else if (msg.op === 'clusterRowGroups') {
       // rows arrive as one flat (transferred) buffer; each row a view onto it
       const { flat, m, k } = msg.payload
@@ -120,17 +136,22 @@ ctx.addEventListener('message', async (e) => {
     else if (msg.op === 'vehNorm') result = runVehNorm(msg.payload)
     else if (msg.op === 'direct') result = runDirect(msg.payload)
     else if (msg.op === 'compare') result = runCompare(msg.payload)
-    else if (msg.op === 'twoWayAnova') result = runTwoWayAnova(msg.payload)
+    else if (msg.op === 'factorAnova') result = runFactorAnova(msg.payload)
     else if (msg.op === 'curveFit') {
-      // The fits shared out over the pool when there is one (same results, more cores).
+      // The fits shared out over the pool when there is one (same results, more cores), each
+      // chunk counted as it comes back (progress).
       const p = pool()
-      result = p ? await driveAsync(curveFitSteps(msg.payload), p.fit) : runCurveFit(msg.payload)
+      const pr = trackerFor(msg.id)
+      result = p
+        ? await driveAsync(curveFitSteps(msg.payload, pr), (b) => p.fit(b, pr.add))
+        : runCurveFit(msg.payload, pr)
     } else if (msg.op === 'responseSurface') {
       // The 4PL surface detector's fits shared out over the pool when there is one.
       const p = pool()
+      const pr = trackerFor(msg.id)
       result = p
-        ? await driveAsync(responseSurfaceSteps(msg.payload), p.joint)
-        : runResponseSurface(msg.payload)
+        ? await driveAsync(responseSurfaceSteps(msg.payload, pr), (b) => p.joint(b, pr.add))
+        : runResponseSurface(msg.payload, pr)
     } else if (msg.op === 'contrast') result = runContrast(msg.payload)
     else if (msg.op === 'contrastPair') result = runContrastPair(msg.payload)
     else if (msg.op === 'enrichmentAll') {

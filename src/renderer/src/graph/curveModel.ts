@@ -1,36 +1,59 @@
 /**
  * The Curve fit window's model, apart from its UI. Four parts:
- *  - Model: the curve model, its axis (dose, time, or a dose × time surface) and a surface's fit.
+ *  - Model: the curve model, its axis (any numeric condition, or a dose × time surface), a
+ *    surface's fit, and what the baseline is to the curve: a control off it (the vehicle) or its own
+ *    first point (t₀, the lowest temperature: "ratio to the lowest level").
  *  - Filter: each condition's values kept (the rest are gone from everything below).
- *  - Baseline: picked on the dose × time grid's header chips — a dose (its column: each time matched),
- *    a time (its row: each dose matched), or one dose and one time (that one position).
+ *  - Baseline: picked on a grid of the curve's axis and its partner (another numeric condition that
+ *    varies — time beside dose, dose beside time, or the next one), by their header chips: a level of
+ *    the axis (each level of the partner matched), or that and one level of the partner (that one
+ *    position). Without a partner, a row of the axis's chips.
  *  - Context: every other condition, its values' curves left out by clicking their chips.
  * It compiles to the num / den / match / curveAxis / surface config the engine already runs
  * (store.ts → curveFit / responseSurface), and offers only the baselines the engine supports there;
- * the rest (pooled baselines, a time row on a dose axis, one position on a surface) are disabled with
- * the reason.
+ * the rest (pooled baselines, a partner level on its own, one position on a surface) are disabled
+ * with the reason.
  */
 import {
   condLabel,
+  detectAxisScale,
+  isNumericCond,
   orderConds,
+  presetModel,
+  type AxisBaseline,
+  type AxisFit,
+  type AxisScale,
   type CondSelector,
+  type NumericConds,
   type ConditionKey,
+  type ScaleGuess,
   type StandardRow
 } from '../engine'
 import { cv, valuesOf } from './compareModel'
-import type { CurveAxisPick, CurveModel, SurfaceFit } from './curveSettings'
+import type { CurveAxisPick, CurveModel, SurfaceFit, SurfaceIntent } from './curveSettings'
 
 export interface CurveState {
   detection: CurveModel
   axis: CurveAxisPick
-  surfaceFit: SurfaceFit
+  /** a surface: capture its shape or test its changes */
+  intent: SurfaceIntent
+  /** testing changes: the axis the curves run along, as the user set it (absent: the default) */
+  responseAxis?: ConditionKey
   /** each condition's values filtered out */
   filter: Partial<Record<ConditionKey, string[]>>
   /** each context condition's values whose curves are left out */
   drop: Partial<Record<ConditionKey, string[]>>
-  /** the baseline's picked doses and times (see `baselineShape`) */
-  bDose: string[]
-  bTime: string[]
+  /** the baseline's picked levels, per condition — the curve's axis and its partner (see
+   *  `baselineShape`) */
+  base: Partial<Record<ConditionKey, string[]>>
+  /** each axis's scale as the user set it (absent: the detected one — scaleOf) */
+  scales?: Partial<Record<ConditionKey, AxisScale>>
+  /** each axis's baseline kind as the user set it (absent: its preset's — baselineOf) */
+  baselines?: Partial<Record<ConditionKey, AxisBaseline>>
+  /** a surface's two conditions (absent: dose × time) */
+  pair?: [ConditionKey, ConditionKey]
+  /** each axis's models as the user set them (absent: the method's — graph/axisFits.ts) */
+  fits?: Partial<Record<ConditionKey, AxisFit>>
 }
 
 /** Why a baseline header chip can't be picked now (null: it can). */
@@ -42,19 +65,33 @@ export interface HeadChip {
 
 export interface CurveModelOut {
   conds: ConditionKey[]
-  hasTime: boolean
   surface: boolean
-  /** the curve's axis (a surface's is dose) */
+  /** the axes the fit runs over: the curve's one, or the surface's two (first, second) */
+  axisConds: ConditionKey[]
+  /** the curve's axis (a surface's first) */
   refAx: ConditionKey
+  /** the grid's other numeric condition (a surface's second); null: none varies */
+  partner: ConditionKey | null
   /** the samples left by the Filter */
   rows: StandardRow[]
-  /** the grid: dose across, time down ([null] without time) */
+  /** the grid: `xCond` across, `yCond` down (the two in hierarchy order; [null] without a partner) */
+  xCond: ConditionKey
+  yCond: ConditionKey | null
   gx: string[]
   gy: Array<string | null>
-  doseChips: HeadChip[]
-  timeChips: HeadChip[]
+  xChips: HeadChip[]
+  yChips: HeadChip[]
   /** the picked baseline, per condition (absent: matched) */
-  pin: Partial<Record<'dose' | 'time', string[]>>
+  pin: Partial<Record<ConditionKey, string[]>>
+  /** the curve axis's scale (the user's, else detected from its kept levels, else its preset's)
+   *  and what the detection saw — a surface is log on both axes whatever these say */
+  scale: AxisScale
+  scaleGuess: ScaleGuess
+  /** what the baseline is to the curve: a control off it ('reference') or its own first point
+   *  ('matched') — the user's, else the axis's preset; a surface's is the presets' */
+  baseline: AxisBaseline
+  /** the dataset's numeric conditions (its schema), as the model was built with */
+  numeric: NumericConds
   /** some baseline is picked */
   picked: boolean
   /** whether a sample is the baseline */
@@ -69,26 +106,81 @@ export interface CurveModelOut {
 
 const numericLevel = (v: string | null): number => Number(v)
 const above0 = (v: string): boolean => numericLevel(v) > 0
+/** A level that is treated on this scale: above 0 on a log axis, any but 0 on a linear one. */
+const treatedOn = (scale: AxisScale, v: string | null): boolean =>
+  v != null &&
+  v !== '' &&
+  Number.isFinite(Number(v)) &&
+  (scale === 'log' ? above0(v) : Number(v) !== 0)
 
-/** The baseline the engine runs for each pick, and which picks it can't (yet): one dose (dose axis or
- *  surface) or one time (time axis), optionally with one of the other (one position — not on a surface). */
+/** A curve axis's scale from its levels (detectAxisScale), the user's pick overriding it, and
+ *  linear when it can't tell — what the Curve fit runs (see axisModelFor). */
+export function scaleOf(
+  levels: readonly string[],
+  set: AxisScale | undefined
+): { scale: AxisScale; guess: ScaleGuess } {
+  const guess = detectAxisScale(levels.map(Number).filter(Number.isFinite))
+  return { scale: set ?? guess.scale ?? 'linear', guess }
+}
+
+/** A curve axis's baseline kind: the user's pick, else its preset's (dose a control, time its own
+ *  first point, any other a control). */
+export const baselineOf = (axis: ConditionKey, set: AxisBaseline | undefined): AxisBaseline =>
+  set ?? presetModel(axis).baseline
+
+/** A surface's pair as picked (absent: dose × time). */
+export const pairOf = (state: Pick<CurveState, 'pair'>): [ConditionKey, ConditionKey] =>
+  state.pair ?? ['dose', 'time']
+/** The axis a pick makes the curve run over (a surface's first). */
+export const refAxisOf = (
+  axis: CurveAxisPick,
+  pair?: [ConditionKey, ConditionKey]
+): ConditionKey => (axis === 'surface' ? (pair ?? ['dose', 'time'])[0] : axis)
+
+/** The grid's partner for a curve over `refAx`: the numeric condition left varying beside it —
+ *  time first (the usual matched condition), then dose, then the rest in order. */
+function partnerOf(
+  refAx: ConditionKey,
+  conds: readonly ConditionKey[],
+  rows: readonly StandardRow[],
+  numeric: NumericConds
+): ConditionKey | null {
+  const varies = (c: ConditionKey): boolean =>
+    c !== refAx &&
+    conds.includes(c) &&
+    isNumericCond(c, numeric) &&
+    valuesOf(rows, c, numeric).length > 1
+  const order: ConditionKey[] = [
+    'time',
+    'dose',
+    ...conds.filter((c) => c !== 'time' && c !== 'dose')
+  ]
+  return order.find(varies) ?? null
+}
+
+/** The baseline the engine runs for each pick, and which picks it can't (yet): one level of the
+ *  curve's axis, optionally with one of its partner (one position — not on a surface). */
 function chipWhy(
-  c: 'dose' | 'time',
+  c: ConditionKey,
   v: string,
-  s: { refAx: ConditionKey; surface: boolean; dose: string[]; time: string[] }
+  s: {
+    refAx: ConditionKey
+    partner: ConditionKey | null
+    surface: boolean
+    pick: Partial<Record<ConditionKey, string[]>>
+  }
 ): string | null {
-  const mine = c === 'dose' ? s.dose : s.time
-  const theirs = c === 'dose' ? s.time : s.dose
+  const other = c === s.refAx ? s.partner : s.refAx
+  const mine = s.pick[c] ?? []
+  const theirs = other ? (s.pick[other] ?? []) : []
   if (mine.includes(v)) return null
   const name = `${condLabel(c)} ${v}`
   if (mine.length)
-    return `A pooled baseline (several ${condLabel(c)}s) isn't supported yet: clear ${condLabel(c)} ${mine[0]} first`
-  const own = c === s.refAx
-  if (own)
-    return theirs.length > 1 ? `Several ${c === 'dose' ? 'times' : 'doses'} are picked` : null
-  // the other condition: only as one position, with one of the axis' own picked
-  if (s.surface)
-    return `A surface starts from the baseline at each time: ${name} can't be the baseline`
+    return `A pooled baseline (several ${condLabel(c)} levels) isn't supported yet: clear ${condLabel(c)} ${mine[0]} first`
+  if (c === s.refAx)
+    return theirs.length > 1 && other ? `Several ${condLabel(other)} levels are picked` : null
+  // the partner: only as one position, with one of the axis' own picked (on a surface: every
+  // cell against that one position, instead of the baseline at each level of it)
   if (!theirs.length)
     return `A ${condLabel(c)} on its own isn't a baseline for a ${condLabel(s.refAx)} curve: pick a ${condLabel(s.refAx)} first (then ${name} makes one position)`
   return null
@@ -97,108 +189,147 @@ function chipWhy(
 export function curveModel(
   state: CurveState,
   samples: readonly StandardRow[],
-  active: readonly ConditionKey[]
+  active: readonly ConditionKey[],
+  numeric: NumericConds
 ): CurveModelOut {
-  const conds = orderConds(active).filter((c) => valuesOf(samples, c).length > 0)
+  const conds = orderConds(active).filter((c) => valuesOf(samples, c, numeric).length > 0)
   const outOf = (c: ConditionKey): Set<string> => new Set(state.filter[c] ?? [])
   const rows = samples.filter((r) => conds.every((c) => !outOf(c).has(cv(r, c) ?? '')))
-  // An axis is one with more than one value left after the filter: filtered down to one, time is
-  // just a context condition (no surface, no time curve, no time row on the grid).
-  const hasTime = conds.includes('time') && valuesOf(rows, 'time').length > 1
-  const surface = state.axis === 'surface' && hasTime && conds.includes('dose')
-  const refAx: ConditionKey = surface ? 'dose' : state.axis === 'time' && hasTime ? 'time' : 'dose'
-  const axisConds: ConditionKey[] = surface ? ['dose', 'time'] : [refAx]
-  const gx = valuesOf(rows, 'dose')
-  const gy: Array<string | null> = hasTime ? valuesOf(rows, 'time') : [null]
+  // A surface's axes must both vary after the filter: filtered down to one value, the second is just
+  // a context condition (no surface, no row on the grid). So is a partner.
+  const pair = pairOf(state)
+  const varies = (c: ConditionKey): boolean =>
+    conds.includes(c) && valuesOf(rows, c, numeric).length > 1
+  const surface = state.axis === 'surface' && varies(pair[0]) && varies(pair[1])
+  const picked0 = refAxisOf(state.axis, pair)
+  // an axis no longer in the data (filtered out, a saved pick) falls back to dose
+  const refAx: ConditionKey = surface
+    ? pair[0]
+    : conds.includes(picked0) && valuesOf(rows, picked0, numeric).length > 0
+      ? picked0
+      : 'dose'
+  const partner = surface ? pair[1] : partnerOf(refAx, conds, rows, numeric)
+  const axisConds: ConditionKey[] = surface ? [...pair] : [refAx]
+  // across and down in hierarchy order (dose across, time down)
+  const [xCond, yCond] = partner
+    ? (orderConds([refAx, partner]) as [ConditionKey, ConditionKey])
+    : [refAx, null]
+  const gx = valuesOf(rows, xCond, numeric)
+  const gy: Array<string | null> = yCond ? valuesOf(rows, yCond, numeric) : [null]
+  const { scale, guess: scaleGuess } = scaleOf(
+    valuesOf(rows, refAx, numeric),
+    state.scales?.[refAx]
+  )
+  const baseline: AxisBaseline = baselineOf(refAx, state.baselines?.[refAx])
+  const treated = (v: string): boolean => treatedOn(scale, v)
 
-  const dose = state.bDose.filter((v) => gx.includes(v))
-  const time = hasTime ? state.bTime.filter((v) => gy.includes(v)) : []
-  const shape = { refAx, surface, dose, time }
-  const doseChips = gx.map((v) => ({ v, on: dose.includes(v), why: chipWhy('dose', v, shape) }))
-  const timeChips = hasTime
-    ? (gy as string[]).map((v) => ({ v, on: time.includes(v), why: chipWhy('time', v, shape) }))
-    : []
-  // The picks the engine runs: the axis' own level, plus (not on a surface) one of the other.
-  const ownPick = refAx === 'dose' ? dose : time
-  const otherPick = refAx === 'dose' ? time : dose
-  const picked = ownPick.length === 1 && otherPick.length <= 1 && !(surface && otherPick.length)
+  const pick: Partial<Record<ConditionKey, string[]>> = {}
+  const own = (state.base[refAx] ?? []).filter((v) => valuesOf(rows, refAx, numeric).includes(v))
+  if (own.length) pick[refAx] = own
+  if (partner) {
+    const p = (state.base[partner] ?? []).filter((v) =>
+      valuesOf(rows, partner, numeric).includes(v)
+    )
+    if (p.length) pick[partner] = p
+  }
+  const shape = { refAx, partner, surface, pick }
+  const chipsOf = (c: ConditionKey, vs: Array<string | null>): HeadChip[] =>
+    (vs.filter((v) => v != null) as string[]).map((v) => ({
+      v,
+      on: (pick[c] ?? []).includes(v),
+      why: chipWhy(c, v, shape)
+    }))
+  const xChips = chipsOf(xCond, gx)
+  const yChips = yCond ? chipsOf(yCond, gy) : []
+  // The picks the engine runs: the axis' own level, plus (not on a surface) one of the partner.
+  const ownPick = pick[refAx] ?? []
+  const otherPick = partner ? (pick[partner] ?? []) : []
+  const picked = ownPick.length === 1 && otherPick.length <= 1
   const pin: CurveModelOut['pin'] = {}
   if (picked) {
-    pin[refAx as 'dose' | 'time'] = ownPick
-    if (otherPick.length) pin[refAx === 'dose' ? 'time' : 'dose'] = otherPick
+    pin[refAx] = ownPick
+    if (otherPick.length && partner) pin[partner] = otherPick
   }
   const isBase = (r: StandardRow): boolean =>
     picked &&
-    (Object.entries(pin) as Array<['dose' | 'time', string[]]>).every(([c, vs]) =>
+    (Object.entries(pin) as Array<[ConditionKey, string[]]>).every(([c, vs]) =>
       vs.includes(cv(r, c) ?? '')
     )
 
-  // context: every condition but the axis — time beside a dose axis (a curve per time), dose beside a
-  // time axis; a surface spans both
+  // context: every condition but the axis — the partner too (a curve per time beside a dose axis);
+  // a surface spans both
   const ctxConds: ConditionKey[] = conds.filter((c) => !axisConds.includes(c))
   const warnings: string[] = []
   if (!picked) warnings.push(`Pick the baseline: a ${condLabel(refAx)} on the grid.`)
   for (const c of conds)
-    if (valuesOf(samples, c).every((v) => outOf(c).has(v)))
+    if (valuesOf(samples, c, numeric).every((v) => outOf(c).has(v)))
       warnings.push(`${condLabel(c)}: every value is filtered out.`)
 
   // ── compile ──
   const num: CondSelector = {}
   const den: CondSelector = {}
   if (picked) {
-    // the curve's points: every axis level beyond the baseline's (the engine leaves levels ≤ 0 out)
-    num[refAx] = valuesOf(rows, refAx).filter((v) => !ownPick.includes(v) && above0(v))
+    // the curve's points: every treated axis level beyond the baseline's (the engine leaves the
+    // rest out: ≤ 0 on a log axis, 0 on a linear one)
+    num[refAx] = valuesOf(rows, refAx, numeric).filter((v) => !ownPick.includes(v) && treated(v))
     for (const [c, vs] of Object.entries(pin)) den[c as ConditionKey] = vs
     const baseRows = rows.filter(isBase)
     for (const c of conds) {
       if (c === refAx) continue
       // pinned by the baseline (one position): its left-out values only drop curves
-      if (pin[c as 'dose' | 'time']) {
+      if (pin[c]) {
         const drop = new Set(state.drop[c] ?? [])
-        const kept = valuesOf(rows, c)
-        if (drop.size || kept.length < valuesOf(samples, c).length)
+        const kept = valuesOf(rows, c, numeric)
+        if (drop.size || kept.length < valuesOf(samples, c, numeric).length)
           num[c] = kept.filter((v) => !drop.has(v))
         continue
       }
-      // a surface's time: only a filter, on the curves (responseSurface applies it to both sides;
-      // its baseline is each time's own)
-      if (surface && c === 'time') {
-        const kept = valuesOf(rows, 'time')
-        if (kept.length < valuesOf(samples, 'time').length) num.time = kept
+      // a surface's second axis: only a filter, on the curves (responseSurface applies it to both
+      // sides; its baseline is each level's own)
+      if (surface && c === partner) {
+        const kept = valuesOf(rows, c, numeric)
+        if (kept.length < valuesOf(samples, c, numeric).length) num[c] = kept
         continue
       }
-      const all = valuesOf(samples, c)
-      const kept = valuesOf(rows, c)
+      const all = valuesOf(samples, c, numeric)
+      const kept = valuesOf(rows, c, numeric)
       const drop = new Set(ctxConds.includes(c) ? (state.drop[c] ?? []) : [])
       const numVals = kept.filter((v) => !drop.has(v))
       if (numVals.length < all.length) num[c] = numVals
       // the filter reaches the baseline too (a dropped context value only removes its curves)
       if (kept.length < all.length) {
-        const baseVals = valuesOf(baseRows, c)
+        const baseVals = valuesOf(baseRows, c, numeric)
         if (baseVals.length) den[c] = baseVals
       }
     }
   }
-  // matched: every other condition — except one the baseline pins (its one time serves every time)
-  const match = conds.filter((c) => !axisConds.includes(c) && !pin[c as 'dose' | 'time'])
+  // matched: every other condition — except one the baseline pins (its one level serves every one)
+  const match = conds.filter((c) => !axisConds.includes(c) && !pin[c])
   return {
     conds,
-    hasTime,
     surface,
+    axisConds,
     refAx,
+    partner,
     rows,
+    xCond,
+    yCond,
     gx,
     gy,
-    doseChips,
-    timeChips,
+    xChips,
+    yChips,
     pin,
+    scale,
+    scaleGuess,
+    baseline,
     picked,
     isBase,
     ctxConds,
     num,
     den,
     match,
-    warnings
+    warnings,
+    numeric
   }
 }
 
@@ -209,45 +340,49 @@ export function baselineLine(
   baseRows: readonly StandardRow[],
   matched: readonly ConditionKey[]
 ): string {
-  const at = (['dose', 'time'] as const)
+  const { numeric } = m
+  const at = [m.refAx, ...(m.partner ? [m.partner] : [])]
     .filter((c) => m.pin[c])
     .map((c) => `${condLabel(c)} ${m.pin[c]![0]}`)
   // a context condition the baseline holds one value of (DMSO is the only dose 0) is said
   const locked = m.ctxConds.find(
     (c) =>
-      !m.pin[c as 'dose' | 'time'] &&
+      !m.pin[c] &&
       !matched.includes(c) &&
-      valuesOf(baseRows, c).length === 1 &&
-      valuesOf(m.rows, c).length > 1
+      valuesOf(baseRows, c, numeric).length === 1 &&
+      valuesOf(m.rows, c, numeric).length > 1
   )
   const start = locked
-    ? `${valuesOf(baseRows, locked)[0]}'s ${at.join(' at ')}, the only ${at[0]} in the data`
+    ? `${valuesOf(baseRows, locked, numeric)[0]}'s ${at.join(' at ')}, the only ${at[0]} in the data`
     : `its own ${at.join(' at ')}`
-  // a surface is always matched per time (responseSurface), whatever the preview lists
+  // its own first point (t₀, the lowest temperature), or a control off the curve
+  const kind = m.surface ? '' : m.baseline === 'matched' ? ' (its first point)' : ' (a control)'
+  // a surface is always matched per level of its second axis (responseSurface), whatever the
+  // preview lists
   const per = [
     ...new Set<ConditionKey>([
-      ...(m.surface && !m.pin.time ? ['time' as ConditionKey] : []),
+      ...(m.surface && m.partner && !m.pin[m.partner] ? [m.partner] : []),
       ...matched
     ])
   ].map(condLabel)
-  return `each ${m.surface ? 'surface' : 'curve'} starts from ${start}${per.length ? `, matched per ${per.join(' per ')}` : ''}`
+  return `each ${m.surface ? 'surface' : 'curve'} starts from ${start}${kind}${per.length ? `, matched per ${per.join(' per ')}` : ''}`
 }
 
-/** A fresh window's baseline: the axis' lowest level (dose 0's column; t₀'s row on a time axis). */
+/** A fresh window's baseline: the axis' lowest level (dose 0; t₀ on a time axis; the lowest
+ *  temperature). */
 export function defaultBaseline(
   samples: readonly StandardRow[],
-  refAx: ConditionKey
-): Pick<CurveState, 'bDose' | 'bTime'> {
-  const lowest = valuesOf(samples, refAx)[0]
-  return refAx === 'time'
-    ? { bDose: [], bTime: lowest ? [lowest] : [] }
-    : { bDose: lowest ? [lowest] : [], bTime: [] }
+  refAx: ConditionKey,
+  numeric: NumericConds
+): Pick<CurveState, 'base'> {
+  const lowest = valuesOf(samples, refAx, numeric)[0]
+  return { base: lowest ? { [refAx]: [lowest] } : {} }
 }
 
 /**
- * A saved config as window state. One this window wrote pins the baseline's dose / time in `den`;
- * one saved before (`den` on a control compound: DMSO) reads as the dose / time those control
- * samples sit at. A condition pinned on the curves but not to every value reads as filtered when the
+ * A saved config as window state. One this window wrote pins the baseline's levels (the axis's,
+ * and maybe its partner's) in `den`; one saved before (`den` on a control compound: DMSO) reads as
+ * the axis level those control samples sit at. A condition pinned on the curves but not to every value reads as filtered when the
  * baseline is pinned alike, else as left out (its curves dropped).
  */
 export function readCurveState(
@@ -258,10 +393,17 @@ export function readCurveState(
     surface?: boolean
     detection?: CurveModel
     surfaceDescription?: SurfaceFit
+    surfaceIntent?: SurfaceIntent
+    responseAxis?: ConditionKey
+    axisScale?: Partial<Record<ConditionKey, AxisScale>>
+    axisBaseline?: Partial<Record<ConditionKey, AxisBaseline>>
+    axisFits?: Partial<Record<ConditionKey, AxisFit>>
+    surfacePair?: [ConditionKey, ConditionKey]
   },
   samples: readonly StandardRow[],
   active: readonly ConditionKey[],
-  fresh: { axis: CurveAxisPick; detection: CurveModel }
+  fresh: { axis: CurveAxisPick; detection: CurveModel },
+  numeric: NumericConds
 ): CurveState {
   const num = cfg.num ?? {}
   const den = cfg.den ?? {}
@@ -270,18 +412,22 @@ export function readCurveState(
   const axis: CurveAxisPick = configured
     ? cfg.surface
       ? 'surface'
-      : cfg.curveAxis === 'time'
-        ? 'time'
-        : 'dose'
+      : (cfg.curveAxis ?? 'dose')
     : fresh.axis
-  const refAx: ConditionKey = axis === 'time' ? 'time' : 'dose'
+  const pair = cfg.surfacePair
+  const refAx = refAxisOf(axis, pair)
   const base: CurveState = {
     detection: cfg.detection ?? fresh.detection,
     axis,
-    surfaceFit: cfg.surfaceDescription ?? 'slices',
+    intent: cfg.surfaceIntent ?? 'shape',
+    ...(cfg.responseAxis ? { responseAxis: cfg.responseAxis } : null),
     filter: {},
     drop: {},
-    ...defaultBaseline(samples, refAx)
+    scales: { ...cfg.axisScale },
+    baselines: { ...cfg.axisBaseline },
+    ...(pair ? { pair } : null),
+    ...(cfg.axisFits ? { fits: { ...cfg.axisFits } } : null),
+    ...defaultBaseline(samples, refAx, numeric)
   }
   if (!configured) return base
   const sel =
@@ -289,23 +435,29 @@ export function readCurveState(
     (r: StandardRow): boolean =>
       active.every((c) => !s[c]?.length || s[c]!.includes(cv(r, c) ?? ''))
   const denRows = samples.filter(sel(den))
-  const levelOf = (c: 'dose' | 'time'): string[] =>
-    den[c]?.length ? [...den[c]!] : valuesOf(denRows, c).length === 1 ? valuesOf(denRows, c) : []
-  base.bDose = levelOf('dose')
-  base.bTime = active.includes('time') ? levelOf('time') : []
-  // a matched time (each time its own baseline) isn't a pick
-  if (refAx === 'dose' && !den.time?.length) base.bTime = []
-  if (refAx === 'time' && !den.dose?.length) base.bDose = []
+  // the axis's level: pinned, else the one level the control samples sit at (DMSO at dose 0)
+  const own = den[refAx]?.length
+    ? [...den[refAx]!]
+    : valuesOf(denRows, refAx, numeric).length === 1
+      ? valuesOf(denRows, refAx, numeric)
+      : []
+  base.base = own.length ? { [refAx]: own } : {}
+  // any other numeric condition pinned on the baseline: a partner level (one position) — one
+  // matched (each level its own baseline) isn't a pick
+  for (const c of active)
+    if (c !== refAx && isNumericCond(c, numeric) && den[c]?.length) base.base[c] = [...den[c]!]
   for (const c of active) {
-    if (c === refAx || (axis === 'surface' && (c === 'dose' || c === 'time'))) continue
-    const all = valuesOf(samples, c)
+    if (c === refAx || (axis === 'surface' && (pair ?? ['dose', 'time']).includes(c))) continue
+    const all = valuesOf(samples, c, numeric)
     const n = num[c]
     if (!n?.length || n.length === all.length) continue
     // a value with no treated samples (DMSO only at dose 0) was never a curve: not left out
+    const { scale } = scaleOf(valuesOf(samples, refAx, numeric), cfg.axisScale?.[refAx])
     const treatedVals = new Set(
       valuesOf(
-        samples.filter((r) => Number(cv(r, refAx)) > 0),
-        c
+        samples.filter((r) => treatedOn(scale, cv(r, refAx))),
+        c,
+        numeric
       )
     )
     const out = all.filter((v) => !n.includes(v) && treatedVals.has(v))

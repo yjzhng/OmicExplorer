@@ -1,15 +1,28 @@
 import { describe, expect, it } from 'vitest'
 
 import { rng } from './sam'
-import { fitJointBatch } from './surfaceJoint'
-import { designKey, fitNullTail, jointF, nullF, nullSurfaces, nullSurvival } from './surfaceNull'
+import { fitJointBatch, presetSpec } from './surfaceJoint'
+import {
+  designKey,
+  fitNullTail,
+  jointF,
+  nullF,
+  nullSurfaces,
+  nullSurvival,
+  type SurfaceDesign
+} from './surfaceNull'
 
-const design = {
+// 4 doses × 3 times on the joint model's own axes (log₁₀ dose, log₁₀(t + 30)), the preset's model
+const design: SurfaceDesign = {
   treated: [1, 10, 100, 1000].flatMap((dose) =>
-    [30, 120, 480].map((time, j) => ({ dose, time, group: j }))
+    [30, 120, 480].map((time, j) => ({
+      xa: Math.log10(dose),
+      xb: Math.log10(time + 30),
+      group: j
+    }))
   ),
   nGroups: 3,
-  timeOffset: 30
+  spec: presetSpec(Math.log10(30))
 }
 
 describe('the 4PL surface null', () => {

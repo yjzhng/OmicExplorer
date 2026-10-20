@@ -13,7 +13,7 @@ import {
   crossPairs,
   previewCompare,
   previewContrastPair,
-  previewTwoWay,
+  previewFactorAnova,
   analysisUnmet,
   condLabel,
   condsIn,
@@ -21,8 +21,10 @@ import {
   type DataShape,
   orderConds,
   isNumericCond,
+  numericConds as numericConditionsOf,
   type CondSelector,
   type ConditionKey,
+  type CustomConditionKey,
   type PairFix,
   type ThresholdConfig,
   type StandardRow
@@ -53,7 +55,7 @@ import { useUiTheme } from '../ui/useUiTheme'
 export type SelectVariant = 'compare' | 'contrast'
 export type ContrastSource = 'select' | 'pair'
 
-type Analysis = 'compare' | 'two_way_anova' | 'curve_fit'
+type Analysis = 'compare' | 'anova' | 'curve_fit'
 /** The curve-axis switch's dose × time entry (not a condition key). */
 const SURFACE = '\u0000surface'
 
@@ -204,6 +206,7 @@ export function ComparisonDialog({
   variant = 'compare',
   rows: rowsProp,
   active: activeProp,
+  numericConditions,
   shape,
   initial,
   pair,
@@ -217,6 +220,8 @@ export function ComparisonDialog({
   rows: StandardRow[]
   /** conditions offered as selectable (Standardize's active set, or those present upstream) */
   active: ConditionKey[]
+  /** the data's declared numeric custom conditions (its schema, with dose and time) */
+  numericConditions: readonly CustomConditionKey[]
   /** compare only: what the data's shape allows (see dataShape) — gates the analysis switch */
   shape?: DataShape
   initial: {
@@ -262,9 +267,9 @@ export function ComparisonDialog({
   const dock = useDialogDock()
   const contrast = variant === 'contrast'
   const [analysis, setAnalysis] = useState<Analysis>(
-    curveTile ? 'curve_fit' : initial.analysis === 'two_way_anova' ? 'two_way_anova' : 'compare'
+    curveTile ? 'curve_fit' : initial.analysis === 'anova' ? 'anova' : 'compare'
   )
-  const twoWay = !contrast && analysis === 'two_way_anova'
+  const twoWay = !contrast && analysis === 'anova'
   // Curve fit: the num/den model of a t-test, with one numeric condition (dose) as the curve's
   // x-axis instead of a matched context — each numerator group (treatment) pools its levels into
   // one curve, against the denominator (the control, the curve's starting point).
@@ -365,7 +370,10 @@ export function ComparisonDialog({
   // A curve runs over a numeric condition (or dose × time, one surface per gene × compound): that
   // condition's row is the AXIS — the treatment side's levels make up the curve, the control side's
   // are its starting point (one level, or every level of a control compound).
-  const numericConds = useMemo(() => ordered.filter((c) => isNumericCond(c)), [ordered])
+  const numericConds = useMemo(() => {
+    const numeric = numericConditionsOf(numericConditions)
+    return ordered.filter((c) => isNumericCond(c, numeric))
+  }, [ordered, numericConditions])
   // Either model can fit dose and time together when the data have both: the Spline model's
   // default; under 4PL (the 4PL surface) the user's choice.
   const surfaceOk = curve && numericConds.includes('dose') && numericConds.includes('time')
@@ -384,7 +392,7 @@ export function ComparisonDialog({
     return valsOf(c).filter((v) => seen.has(v))
   }
   const [axisSel, setAxisSel] = useState<string>(() =>
-    surfaceOk && (initial.surface ?? initialDetection === 'spline')
+    surfaceOk && (initial.surface ?? true)
       ? SURFACE
       : initial.curveAxis && numericConds.includes(initial.curveAxis)
         ? initial.curveAxis
@@ -517,8 +525,16 @@ export function ComparisonDialog({
     () =>
       contrast
         ? previewContrast(rows, num, den, match, active, compared)
-        : previewCompare({ rows, num, den, match, activeConditions: active, curveAxis }),
-    [contrast, rows, num, den, match, active, compared, curveAxis]
+        : previewCompare({
+            rows,
+            num,
+            den,
+            match,
+            activeConditions: active,
+            numericConditions,
+            curveAxis
+          }),
+    [contrast, rows, num, den, match, active, numericConditions, compared, curveAxis]
   )
   // Role-level problems the engine can't see (it only gets selectors).
   const roleWarnings: string[] = []
@@ -595,10 +611,10 @@ export function ComparisonDialog({
   // When the two factors are valid, dry-run the two-way grouping: one interaction per context
   // combination (every non-factor condition, matched like-for-like) with a complete 2×2 — across
   // every numerator×denominator level pair of each factor.
-  const twoWayView = ((): ReturnType<typeof previewTwoWay> | null => {
+  const twoWayView = ((): ReturnType<typeof previewFactorAnova> | null => {
     if (!twoWay || !twoWayCheck.ok) return null
     const [a, b] = axis
-    return previewTwoWay({
+    return previewFactorAnova({
       rows,
       factors: [
         { condition: a, pairs: crossPairs(num[a] ?? [], den[a] ?? []) },
@@ -648,7 +664,7 @@ export function ComparisonDialog({
         ? thresholdForDetection(detection, cur, surface)
         : thresholdForAnalysis(
             initial.analysis ?? 'compare',
-            twoWay ? 'two_way_anova' : curve ? 'curve_fit' : 'compare',
+            twoWay ? 'anova' : curve ? 'curve_fit' : 'compare',
             cur
           )
       : null
@@ -657,7 +673,7 @@ export function ComparisonDialog({
       // Derive the two factors from the compared conditions for the existing two-way run path.
       const [a, b] = axis
       update(id, {
-        analysis: 'two_way_anova',
+        analysis: 'anova',
         num,
         den,
         match,
@@ -859,17 +875,23 @@ export function ComparisonDialog({
           <ToggleSwitch
             label="Axis"
             value={axisSel === SURFACE ? 'surface' : axisSel}
-            options={curveAxisOptions(shape, detection).map((o) => {
-              // Also greyed: an axis the wired data doesn't carry at all.
-              const absent =
-                o.value === 'surface' ? !surfaceOk : !numericConds.includes(o.value as ConditionKey)
-              return {
-                ...o,
-                value: o.value as string,
-                disabled: o.disabled || absent,
-                title: absent && !o.disabled ? `No ${o.label} in the data` : o.title
-              }
-            })}
+            // (this window runs dose × time surfaces only; any pair is the Curve fit window's)
+            options={curveAxisOptions(shape, detection)
+              .filter((o) => !o.value.startsWith('surface:') || o.value === 'surface:dose|time')
+              .map((o) => ({ ...o, value: o.value.startsWith('surface:') ? 'surface' : o.value }))
+              .map((o) => {
+                // Also greyed: an axis the wired data doesn't carry at all.
+                const absent =
+                  o.value === 'surface'
+                    ? !surfaceOk
+                    : !numericConds.includes(o.value as ConditionKey)
+                return {
+                  ...o,
+                  value: o.value as string,
+                  disabled: o.disabled || absent,
+                  title: absent && !o.disabled ? `No ${o.label} in the data` : o.title
+                }
+              })}
             onChange={(a) => pickAxis(a === 'surface' ? SURFACE : a)}
           />
         </div>
@@ -942,7 +964,7 @@ export function ComparisonDialog({
                 options={(
                   [
                     ['compare', 't-test'],
-                    ['two_way_anova', '2-way ANOVA']
+                    ['anova', '2-way ANOVA']
                   ] as const
                 ).map(([value, label]) => {
                   // An analysis the data's shape can't support is offered greyed, with why.

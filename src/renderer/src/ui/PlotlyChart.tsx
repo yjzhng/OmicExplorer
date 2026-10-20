@@ -1793,6 +1793,16 @@ export function PlotlyChart({
     )
       .then(() => {
         if (cancelled) return
+        // A WebGL context Chromium wouldn't create (past its per-page cap, or no usable GPU):
+        // Plotly draws its "WebGL is not supported" notice instead of the plot, and no context is
+        // ever lost to tell us. SVG from now on, as for a dropped one (a 3-D scene has no SVG to
+        // fall back to — its notice stays).
+        if (el.querySelector('.no-webgl') && !sceneCount(data)) {
+          // its notice is an overlay Plotly leaves behind when the traces change: cleared, so
+          // the SVG redraw shows
+          el.querySelectorAll('.no-webgl').forEach((n) => n.remove())
+          glSlotRef.current?.lost()
+        }
         // Bind linked-selection events once per graph div (idempotent).
         const div = el as PlotlyGraphDiv & { __oeBound?: boolean }
         if (!div.__oeBound) {

@@ -176,8 +176,11 @@ export function DRView({
       legend: { yanchor: 'middle', y: 0.5 },
       title: title ? { text: title, font: { size: 13 } } : undefined,
       // Fitted curves run continuously over dose, on a log axis; measured levels are categories.
+      // (a linear axis — see axisModel.ts — stays linear)
       xaxis: dr.continuous
-        ? { ...axisBase(p), title: axisLabel ?? dr.axis, type: 'log', dtick: 1 }
+        ? dr.linear
+          ? { ...axisBase(p), title: axisLabel ?? dr.axis }
+          : { ...axisBase(p), title: axisLabel ?? dr.axis, type: 'log', dtick: 1 }
         : {
             ...axisBase(p),
             title: axisLabel ?? dr.axis,

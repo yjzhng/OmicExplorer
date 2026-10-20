@@ -12,7 +12,8 @@ import {
   metaValue,
   type ClusterColorBy,
   type ClusterData,
-  type ConditionKey
+  type ConditionKey,
+  type NumericConds
 } from '../engine'
 import { ClusterView } from '../ui/ClusterView'
 import { LoadingView } from '../ui/LoadingView'
@@ -32,8 +33,11 @@ export function ClusterTile({
   schemeShade,
   schemeArrow,
   categorical,
-  condTitle
+  condTitle,
+  numeric
 }: {
+  /** the dataset's numeric conditions (its schema; see ClusterView) */
+  numeric: NumericConds
   /** a condition's legend heading, with its unit (see ClusterView) */
   condTitle?: (c: ConditionKey) => string
   /** the run's embedding */
@@ -98,6 +102,7 @@ export function ClusterTile({
       scheme={scheme}
       categorical={categorical}
       condTitle={condTitle}
+      numeric={numeric}
     />
   )
 }

@@ -192,11 +192,18 @@ export function abundanceOnScale(
   return out
 }
 
+/** A curve fit's own value as a contrast feature: its curve fold change (the switcher's name, and
+ *  the value axes' title). */
+export const CURVE_FC_FEATURE = 'curve log₂FC'
+
 /** A contrast facet's value-axis title when it shows a feature other than the sides' own value
- *  (that one keeps its usual title — log₂FC, or abundance on the plots' scale); null otherwise. */
+ *  (that one keeps its usual title — log₂FC, or abundance on the plots' scale — unless it's a
+ *  curve fit's: curve log₂FC); null otherwise. */
 export function contrastFeatureLabel(rows: ContrastResultRow[]): string | null {
   const r = rows.find((x) => x.featureId)
-  return r && r.featureId !== 'value' ? (r.feature ?? null) : null
+  if (!r) return null
+  if (r.featureId !== 'value') return r.feature ?? null
+  return r.feature === CURVE_FC_FEATURE ? r.feature : null
 }
 
 const byFeature = new WeakMap<ContrastResultRow[], Map<string, ContrastResultRow[]>>()
@@ -278,6 +285,9 @@ export interface ContrastPairInput {
   /** axis labels for the two sides (the two input tiles' names). */
   labelA?: string
   labelB?: string
+  /** the conditions a side's name may state a fixed slice of: the input datasets' active ones —
+   *  one a Subset narrowed to a single value isn't (the rows still carry it). Unset = any. */
+  nameConds?: ConditionKey[]
   /** keep a divergent call only where a side is itself significant. Off when the sides carry no
    *  per-side significance (abundance / Standardize inputs). */
   driverMask?: boolean
@@ -509,7 +519,10 @@ export function runContrastPair(input: ContrastPairInput): ContrastResult {
     )
   // Names carry the fixed slices ("KO vs WT (dose 5)") so axis titles say what was contrasted.
   const fixedConds = condsIn([...input.sideA, ...input.sideB]).filter(
-    (c) => !ctxConds.includes(c) && (present(sideA, c) || present(sideB, c))
+    (c) =>
+      !ctxConds.includes(c) &&
+      (present(sideA, c) || present(sideB, c)) &&
+      (!input.nameConds || input.nameConds.includes(c))
   )
   const labelA = `${baseA}${sliceSuffix(sideA, fixedConds, baseA)}`
   const labelB = `${baseB}${sliceSuffix(sideB, fixedConds, baseB)}`

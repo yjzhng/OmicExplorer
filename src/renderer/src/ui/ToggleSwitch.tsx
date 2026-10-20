@@ -115,6 +115,15 @@ export function ToggleSwitch<V extends string>({
   // No glide on the first placement — the highlight should appear on the current option, not
   // slide in from the track's corner. Moves after that animate.
   const [placed, setPlaced] = useState(false)
+  // …nor when the options themselves change (a dependent pick whose levels are swapped for
+  // another set): the old box belongs to a row that's gone, so the highlight jumps to its new
+  // place rather than gliding across. (Adjusting state on a prop change, during render.)
+  const optionSet = options.map((o) => o.value).join('\u0001')
+  const [placedFor, setPlacedFor] = useState(optionSet)
+  if (optionSet !== placedFor) {
+    setPlacedFor(optionSet)
+    setPlaced(false)
+  }
 
   useLayoutEffect(() => {
     const track = trackRef.current

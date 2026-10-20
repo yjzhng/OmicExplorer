@@ -26,11 +26,21 @@ import { PlotAxesContext, swapAxes, type AxisDefaults } from '../ui/plotAxes'
 import { useGraph } from '../graph/store'
 import { UI } from '../ui/theme'
 import { useAppSettings } from '../ui/useAppSettings'
-import type { NodeResult, PlotAxes, PlotChild, PlotOrient, StepNode } from '../graph/types'
+import {
+  numericOfResult,
+  tdrPair,
+  type NodeResult,
+  type TdrConfig,
+  type PlotAxes,
+  type PlotChild,
+  type PlotOrient,
+  type StepNode
+} from '../graph/types'
 import { Spinner } from '../ui/Spinner'
 import { EMPTY_SEL, resolveFacets } from './facet'
 import { SUBSET_TOGGLE_KINDS } from './subset'
 import { PanelBody } from './PanelBody'
+import { PanelErrorBoundary } from './PanelErrorBoundary'
 import { enqueueReveal } from './renderQueue'
 import { PanelSettingsDialog, type TilePlotConfig } from './PanelSettingsDialog'
 import type { Anchor } from './TileDialog'
@@ -47,6 +57,11 @@ const glyph = {
   strokeLinecap: 'round' as const,
   strokeLinejoin: 'round' as const
 }
+
+/** The plot, re-rendered only when its own inputs change — not on the tile's own state (the copy /
+ *  download spinner, the copied tick, a header hover). A re-render rebuilds a view's traces and
+ *  layout, and Plotly's redraw resets any zoom the user made — before a copy could capture it. */
+const PlotBody = memo(PanelBody)
 
 /** Copy: two overlapping sheets. */
 function IconCopy(): ReactNode {
@@ -145,7 +160,7 @@ export const PanelTile = memo(function PanelTile({
    *  faceted plots read it instead of showing their own tabs. */
   facetSel?: Record<string, string>
 }): ReactNode {
-  // A tile's header shows its plot kind (a dr tile shows its axis: Dose- vs Time-response).
+  // A tile's header shows its plot kind (a Response plot names its condition(s): Dose response).
   const kind = child ? child.kind : node.data.kind
   const label = plotLabel(kind, child ? child.config : node.data.config)
   const bodyRef = useRef<HTMLDivElement>(null)
@@ -156,11 +171,16 @@ export const PanelTile = memo(function PanelTile({
   // Bubble/dumbbell/heatmap/bar can flip between landscape (categories across x) and
   // portrait (categories down y). Persisted in the node config so it survives a reload;
   // undefined falls back to each plot's natural orientation.
+  // (The potency plot too: its potency up the side, portrait, or across.)
   const canOrient =
-    kind === 'bubble' || kind === 'dumbbell' || kind === 'heatmap' || kind === 'geneBar'
+    kind === 'bubble' ||
+    kind === 'dumbbell' ||
+    kind === 'heatmap' ||
+    kind === 'geneBar' ||
+    kind === 'potency'
   const cfg = child ? child.config : node.data.config
   const defaultOrient: PlotOrient =
-    kind === 'dumbbell' || kind === 'heatmap' ? 'portrait' : 'landscape'
+    kind === 'dumbbell' || kind === 'heatmap' || kind === 'potency' ? 'portrait' : 'landscape'
   const orient = (cfg as { orient?: PlotOrient }).orient ?? defaultOrient
   const patchConfig = (patch: Record<string, unknown>): void => {
     const s = useGraph.getState()
@@ -312,10 +332,12 @@ export const PanelTile = memo(function PanelTile({
       kind === 'dr' || kind === 'bubble'
         ? [(cfg as { axis: ConditionKey }).axis]
         : kind === 'tdr'
-          ? ['dose', 'time']
+          ? tdrPair(cfg as TdrConfig)
           : undefined
     const dims = facetDims(rows, exclude)
-    const bars = dims.length ? resolveFacets(rows, dims, applied.facetSel ?? EMPTY_SEL).bars : []
+    const bars = dims.length
+      ? resolveFacets(rows, dims, applied.facetSel ?? EMPTY_SEL, numericOfResult(up)).bars
+      : []
     const context = bars
       .filter((b) => b.dim !== 'comparison')
       // Bare values in hierarchy order (cell, cmpd, dose, time, then any custom condition) — the
@@ -607,15 +629,19 @@ export const PanelTile = memo(function PanelTile({
           <DeferredMount urgent={near}>
             {/* The tile's axis overrides reach every PlotlyChart inside (faceted plots too). */}
             <PlotAxesContext.Provider value={axesCtx}>
-              <PanelBody
-                key={`${categorical}|${customKey}|${plotFont}`}
-                node={node}
-                edges={edges}
-                results={applied.results}
-                child={child}
-                selectedOnly={selectedOnly}
-                facetSel={applied.facetSel}
-              />
+              {/* One tile that throws must not blank the whole Results page: it reports itself
+                  in place, and the other tiles still draw. */}
+              <PanelErrorBoundary label={`${label} · ${child ? `${node.id}/${child.id}` : node.id}`}>
+                <PlotBody
+                  key={`${categorical}|${customKey}|${plotFont}`}
+                  node={node}
+                  edges={edges}
+                  results={applied.results}
+                  child={child}
+                  selectedOnly={selectedOnly}
+                  facetSel={applied.facetSel}
+                />
+              </PanelErrorBoundary>
             </PlotAxesContext.Provider>
           </DeferredMount>
         }

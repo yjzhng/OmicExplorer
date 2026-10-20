@@ -27,7 +27,7 @@ const grid = (doses: number[], reps: number, genes = ['g1', 'g2']): StandardRow[
 const unmet = (rows: StandardRow[], active: ConditionKey[]) => {
   const verdicts = (shape: DataShape) => ({
     t: analysisUnmet(shape, 'compare'),
-    anova: analysisUnmet(shape, 'two_way_anova'),
+    anova: analysisUnmet(shape, 'anova'),
     curve: analysisUnmet(shape, 'curve_fit')
   })
   const g = rows[0]?.uniqID
@@ -47,11 +47,17 @@ const unmet = (rows: StandardRow[], active: ConditionKey[]) => {
 }
 
 describe('analysisUnmet (data shape gates the Compare analysis)', () => {
-  it('replicated dose series: t-test and curve fit, but no second factor for an ANOVA', () => {
+  it('replicated dose series: t-test, curve fit, and a one-way ANOVA over its doses', () => {
     const u = unmet(grid([0, 1, 10, 100], 3), ['cell', 'cmpd', 'dose'])
     expect(u.t).toBeNull()
     expect(u.curve).toBeNull()
-    expect(u.anova).toMatch(/two conditions/)
+    expect(u.anova).toBeNull()
+  })
+
+  it('one condition at two values: the t-test answers it, no ANOVA', () => {
+    const u = unmet(grid([0, 1], 3), ['cell', 'cmpd', 'dose'])
+    expect(u.t).toBeNull()
+    expect(u.anova).toMatch(/at least three values, or two conditions/)
   })
 
   it('one sample per group rules out the t-test and ANOVA, not a curve with enough doses', () => {

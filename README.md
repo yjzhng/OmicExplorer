@@ -132,7 +132,7 @@ still load.
 
 Needs [Node.js](https://nodejs.org) + git.
 
-- **Native window (macOS):** clone the repo and double-click `OmicExplorer.app`
+- **Native window (macOS):** clone the repo and double-click `OmicExplorer Dev.app`
   (a dev launcher that runs `npm run dev`), or `npm run make:launcher` to
   regenerate it.
 - **Browser / any OS:** `npm install && npm run dev` → http://localhost:5673

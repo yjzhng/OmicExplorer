@@ -11,6 +11,7 @@
  * ratio's denominator, not the fit). Only the local optimiser differs: SciPy's L-BFGS-B there,
  * bounded Levenberg–Marquardt here — both refine the same starts to the same least-squares minimum.
  */
+import { xUnits } from './axisModel'
 import { rng } from './sam'
 import {
   applyThreshold,
@@ -58,6 +59,11 @@ function lowShare(x: number, pec50: number, slope: number): number {
 export function logistic(x: number, p: LogisticParams): number {
   return (p.front - p.back) / (1 + 10 ** (p.slope * (x + p.pec50))) + p.back
 }
+
+/** The fit's value at its control: the front plateau (the control at −∞, CurveCurator's), or the
+ *  curve at its first point when the control is one (a matched baseline: `baseX`). */
+export const controlFit = (c: LogisticParams & { baseX?: number }): number =>
+  c.baseX != null ? logistic(c.baseX, c) : c.front
 
 /** Log-doses to draw a fitted curve at, over [xMin, xMax]: `base` evenly spaced, then each span
  *  split in half while the curve still bends inside it — so a steep turn gets as many points as it
@@ -507,21 +513,32 @@ export interface CurveFit extends LogisticParams {
    *  included), and that mean's standard error — absent on results run before they were kept */
   m0?: number
   m0SE?: number
+  /** where the control sits on x when it is the curve's own first point (a matched baseline: t₀,
+   *  the lowest temperature); absent = at −∞, CurveCurator's control */
+  baseX?: number
 }
 
 /**
- * Fit and test one curve — CurveCurator's `fit_model`. `doseX` are the treated points' log₁₀ doses
- * and `ratios` their response relative to the control's mean (both may hold replicates, in any
- * order; non-finite ratios are dropped). The control is added as one point, ratio 1 at −∞. Null
- * when 4 or fewer points remain — the fit has 4 parameters.
+ * Fit and test one curve — CurveCurator's `fit_model`. `doseX` are the treated points' positions
+ * (log₁₀ dose, or a linear axis's level in steps) and `ratios` their response relative to the
+ * control's mean (both may hold replicates, in any order; non-finite ratios are dropped). The
+ * control is added as one point, ratio 1 — at −∞ against one reference (CurveCurator's), or at
+ * `x0` when it is the curve's own first point (a matched baseline), the midpoint then held at or
+ * after it. Null when 4 or fewer points remain — the fit has 4 parameters.
  */
-export function fitCurve(doseX: number[], ratios: number[], grid?: number[]): CurveFit | null {
+export function fitCurve(
+  doseX: number[],
+  ratios: number[],
+  grid?: number[],
+  x0 = -Infinity
+): CurveFit | null {
   const pts: Array<[number, number]> = []
   for (let i = 0; i < doseX.length; i++)
     if (Number.isFinite(doseX[i]) && Number.isFinite(ratios[i])) pts.push([doseX[i], ratios[i]])
   pts.sort((a, b) => a[0] - b[0])
-  const xs = [-Infinity, ...pts.map((p) => p[0])]
+  const xs = [x0, ...pts.map((p) => p[0])]
   const ys = [1, ...pts.map((p) => p[1])]
+  const real = Number.isFinite(x0)
   const n = xs.length
   if (n <= 4) return null
   const dx = xs.slice(1)
@@ -529,7 +546,7 @@ export function fitCurve(doseX: number[], ratios: number[], grid?: number[]): Cu
   // grid's points within the curve's measured range, each read off the straight line between the
   // neighbouring measured ratios; the test, R² and fold change stay on the real points alone.
   const fitPts = grid?.length ? withInterpolation(xs, ys, pts, grid) : { x: xs, y: ys }
-  const p = fitLogistic(fitPts.x, fitPts.y, dx)
+  const p = fitLogistic(fitPts.x, fitPts.y, dx, real ? { pec50Max: -x0 } : undefined)
   const v = toVec(p)
 
   // Null model: the flat line fitted to the same points as the curve — the mean of every point
@@ -546,9 +563,10 @@ export function fitCurve(doseX: number[], ratios: number[], grid?: number[]): Cu
   const r2 = Math.max(0, 1 - (m1 - 1e-20 + 1e-10) / (sst + 1e-10))
   const xMin = dx[0]
   const xMax = dx[dx.length - 1]
-  const lof = curveLackOfFit(dx, ys.slice(1), p)
+  const lof = curveLackOfFit(dx, ys.slice(1), p, x0)
   return {
     ...p,
+    ...(real ? { baseX: x0 } : null),
     ...(lof ? { lofF: lof.f, lofP: lof.p } : null),
     log2FC: Math.log2(logistic(xMax, p)) - Math.log2(logistic(xMin, p)),
     f,
@@ -575,10 +593,12 @@ export function fitCurve(doseX: number[], ratios: number[], grid?: number[]): Cu
 export function curveLackOfFit(
   doseX: number[],
   ratios: number[],
-  p: LogisticParams
+  p: LogisticParams,
+  x0 = -Infinity
 ): { f: number; p: number } | undefined {
   const groups = new Map<number, number[]>()
-  let sseAll = (1 - p.front) ** 2
+  // the control: ratio 1 at −∞ (the front), or at its own x on a matched baseline
+  let sseAll = (1 - (Number.isFinite(x0) ? logistic(x0, p) : p.front)) ** 2
   let n = 1
   for (let i = 0; i < doseX.length; i++) {
     const x = doseX[i]
@@ -868,7 +888,8 @@ export const CURVE_METRICS = [
 
 /**
  * A fitted curve's metrics as CurveCurator's results table lists them, for tables and exports:
- * potency (EC50 in the dose's units; pEC50 = −log₁₀ of it in molar, given the unit's scale), the slope and plateaus (ratios to the
+ * potency (EC50 in the axis's units; on a log axis also pEC50 = −log₁₀ of it, in molar given a
+ * molar unit's scale — on a linear one EC50 only), the slope and plateaus (ratios to the
  * control), the fit's quality (R², RMSE, points incl. the control, the lack-of-fit test's F and
  * −log₁₀ p), the F statistic, and — under
  * CurveCurator's threshold — the relevance score (at the threshold's fold-change limit on the
@@ -883,6 +904,8 @@ export function curveMetrics(
     x?: number[]
     y?: number[]
     described?: false
+    scale?: 'linear'
+    step?: number
   },
   t: ThresholdConfig | undefined,
   /** the dose unit's size in molar (1e-9 for nM), so pEC50 is molar; 1 = in the dose's own units */
@@ -898,7 +921,7 @@ export function curveMetrics(
   // the curve sits on its front plateau).
   let rmse = c.rmse
   if (rmse == null && c.x && c.y) {
-    let ss = (1 - c.front) ** 2
+    let ss = (1 - controlFit(c)) ** 2
     for (let i = 0; i < c.x.length; i++) ss += (c.y[i] - logistic(c.x[i], c)) ** 2
     rmse = Math.sqrt(ss / (c.x.length + 1))
   }
@@ -911,9 +934,11 @@ export function curveMetrics(
         : undefined
   // an undescribed curve (responders only, not one of them): its test, without its description
   const d = curveDescribed(c)
+  // On a log axis the potency is pEC50 (molar where the unit is), on a linear one EC50 in its units.
+  const lin = c.scale === 'linear'
   return {
-    pEC50: d ? c.pec50 - Math.log10(doseScale) : undefined,
-    EC50: d ? 10 ** -c.pec50 : undefined,
+    pEC50: d && !lin ? c.pec50 - Math.log10(doseScale) : undefined,
+    EC50: d ? xUnits(c, -c.pec50) : undefined,
     slope: d ? c.slope : undefined,
     front: d ? c.front : undefined,
     back: d ? c.back : undefined,
@@ -995,8 +1020,9 @@ export function curveResidualMad(
   }
   for (const c of curves) {
     if (!c.x || !c.y) continue
-    if (c.cy) c.cy.forEach((y, i) => add(null, c.crep?.[i] ?? null, y - c.front, c.id))
-    else add(null, null, 1 - c.front, c.id)
+    const f0 = controlFit(c)
+    if (c.cy) c.cy.forEach((y, i) => add(null, c.crep?.[i] ?? null, y - f0, c.id))
+    else add(null, null, 1 - f0, c.id)
     for (let i = 0; i < c.x.length; i++)
       add(c.x[i], c.rep?.[i] ?? null, c.y[i] - logistic(c.x[i], c), c.id)
   }
@@ -1086,10 +1112,11 @@ export function curveResidualPoints(
     const nFit = c.y.filter(Number.isFinite).length
     if (nFit <= 4) continue
     const pts: Omit<ResidualPoint, 'std'>[] = []
+    const f0 = controlFit(c)
     c.cy?.forEach((y, i) =>
       pts.push({
-        fitted: c.front,
-        residual: y - c.front,
+        fitted: f0,
+        residual: y - f0,
         x: null,
         rep: c.crep?.[i] ?? null,
         id: c.id

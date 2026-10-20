@@ -1,7 +1,11 @@
 import { describe, it, expect } from 'vitest'
+import { numericConds } from './types'
 import { facetContextDims, facetCompareRows, facetDims, facetPaired, facetSides } from './plotData'
 import type { ContrastResultRow } from './contrast'
 import type { CompareResultRow } from './types'
+
+/** dose and time numeric, no custom condition declared (the schema of these tests' data) */
+const numeric = numericConds()
 
 function row(partial: Partial<CompareResultRow>): CompareResultRow {
   return {
@@ -58,7 +62,7 @@ describe('context faceting (omicViz plot_group_cols parity)', () => {
       row({ comparison: 'Kan | H2O', cmpd: 'Kan', dose: 10 })
     ]
     expect(facetDims(many)).toEqual(['comparison', 'dose'])
-    const groups = facetCompareRows(many, ['comparison'])
+    const groups = facetCompareRows(many, ['comparison'], numeric)
     expect(groups.map((g) => g.key)).toEqual(['comparison=Amk | H2O', 'comparison=Kan | H2O'])
   })
 
@@ -77,7 +81,7 @@ describe('context faceting (omicViz plot_group_cols parity)', () => {
       row({ uniqID: 'a', cell: 'WT', dose: 2.5 }),
       row({ uniqID: 'a', cell: 'clpP', dose: 10 })
     ]
-    const groups = facetCompareRows(rows, ['cell', 'dose'])
+    const groups = facetCompareRows(rows, ['cell', 'dose'], numeric)
     expect(groups.map((g) => g.key)).toEqual([
       'cell=WT · dose=2.5',
       'cell=WT · dose=10',
@@ -92,7 +96,7 @@ describe('context faceting (omicViz plot_group_cols parity)', () => {
       row({ cell: 'WT', dose: 5 }),
       row({ cell: 'clpP', dose: 10 })
     ]
-    const byCell = facetCompareRows(rows, ['cell'])
+    const byCell = facetCompareRows(rows, ['cell'], numeric)
     expect(byCell.map((g) => g.key)).toEqual(['cell=WT', 'cell=clpP'])
     expect(byCell[0].rows).toHaveLength(2) // both WT doses pooled
   })
@@ -100,7 +104,7 @@ describe('context faceting (omicViz plot_group_cols parity)', () => {
   it('no context dims → one group with all rows', () => {
     const rows = [row({ dose: null }), row({ dose: null })]
     expect(facetContextDims(rows)).toEqual([])
-    expect(facetCompareRows(rows, [])).toHaveLength(1)
+    expect(facetCompareRows(rows, [], numeric)).toHaveLength(1)
   })
 })
 

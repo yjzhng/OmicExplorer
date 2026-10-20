@@ -1,6 +1,7 @@
 import {
   createContext,
   Fragment,
+  useCallback,
   useContext,
   useEffect,
   useMemo,
@@ -14,16 +15,17 @@ import { PagerTrigger } from '../ui/PagerTrigger'
 import { slashBackground } from '../ui/slash'
 import { createPortal } from 'react-dom'
 import { useStore } from '@xyflow/react'
-import Papa from 'papaparse'
 import { useShallow } from 'zustand/react/shallow'
 
 import {
-  DESCRIBE_Q,
   classifyConditions,
+  numericConds,
   combineStandardize,
   conditionLevels,
+  sampleLevels,
+  samplePasses,
+  sheetSamples,
   isCustomCond,
-  keptBy,
   enrichSourcesPresent,
   ENRICH_GROUPS,
   defaultTransform,
@@ -40,7 +42,6 @@ import {
   resolveEnrichSource,
   type ContrastStat,
   statTails,
-  crossPairs,
   IMPUTE_DEFAULTS,
   NORMALIZE_REFERENCE_LABEL,
   type NormalizeReference,
@@ -50,7 +51,8 @@ import {
   SAM_S0,
   previewCompare,
   previewContrastPair,
-  previewTwoWay,
+  previewFactorAnova,
+  interactionAxes,
   analysisUnmet,
   CLUSTER_COLOR,
   CURVE_MIN_TREATED,
@@ -61,21 +63,24 @@ import {
   orderConds,
   type ClusterColorBy,
   type ConditionKey,
+  type NumericConds,
   type SampleOrder,
   type FdrMethod,
-  type Pair,
   type StandardizeResult,
   DUMBBELL_ORDERS,
   curvesReplicated,
   RESIDUAL_DOT_CAP,
   dumbbellOrderLabel,
+  manualSheetConditions,
   manualSheetIssues,
   sheetIssueLines,
   type LeafOrder
 } from '../engine'
 import { IconCopy, IconGear, IconJump, IconTrash } from '../ui/icons'
 import { ProjectFolderViewer } from '../ui/ProjectFolderViewer'
+import { GeneSearchMenu } from '../dashboard/GeneSearchMenu'
 import {
+  DEFAULT_OUTLINE,
   defaultGroups,
   legendOn,
   resolveGroup,
@@ -99,24 +104,25 @@ import { OnOffSwitch, ToggleSwitch } from '../ui/ToggleSwitch'
 import { HoverTip, InfoTip } from '../ui/InfoTip'
 import { ValueMultiSelect } from '../ui/ValueMultiSelect'
 import { StatusIcon, StatusNote } from '../ui/StatusNote'
-import { gatePlotEntries, UNWIRED, type UpstreamFacts } from './requirements'
+import { entriesFor, gatePlotEntries, UNWIRED, type UpstreamFacts } from './requirements'
 import { useUpstreamFacts } from './useUpstreamFacts'
 import type { AxisDefaults } from '../ui/plotAxes'
-import { cssVars, PALETTES, QC_FILL, UI } from '../ui/theme'
+import { cssVars, GUIDE_WIDTH, PALETTES, QC_FILL, UI } from '../ui/theme'
 import { useUiTheme } from '../ui/useUiTheme'
 import { contrastSummary } from './ComparisonDialog'
 import { CompareDialog } from './CompareDialog'
+import { analysisChoice, stdSampleRows } from './compareModel'
 import { CurveDialog } from './CurveDialog'
 import { ContrastDialog } from './ContrastDialog'
 import {
-  CURVE_METHOD_OPTIONS,
-  DESCRIPTOR_OPTIONS,
-  DETECTOR_OPTIONS,
-  MODEL_LOCK,
-  SURFACE_FIT_OPTIONS,
   curveAxisOptions,
-  surfaceFitShown
+  curveSurfaceWhy,
+  readAxisValue,
+  surfacePairs,
+  surfaceValue
 } from './curveSettings'
+import { fitOf } from './axisFits'
+import { METRIC_IDS, METRIC_NAMES, type MetricId } from './metricBars'
 import { isPairable, pairSides, selectorRowsOf, selectSource, toContrastSide } from './contrastPair'
 import type { PairInput } from './PairContrastDialog'
 import { InteractiveImportDialog } from './InteractiveImportDialog'
@@ -129,15 +135,19 @@ import {
   CATEGORIES,
   entryKey,
   NODE_SPECS,
-  plotEntriesFor,
   plotLabel,
   PLOT_SECTIONS,
   safeTileName,
+  responseLabel,
   stepTitle,
-  type PlotMenuEntry
+  tileEntryKey,
+  type PlotMenuEntry,
+  loadAbove,
+  wiredKindOf
 } from './registry'
 import { ApplyStageContext } from './applyStage'
 import { locationOf, useGraph } from './store'
+import { UnitInput } from './UnitInput'
 import { nameChip, nameInput, tileNameText } from './tileNameStyles'
 import { usePlotGroupTitle } from './usePlotGroupTitle'
 import {
@@ -161,9 +171,13 @@ import {
   isContrastConfigured,
   isStep,
   normalizeCompareConfig,
+  anovaFactorsOf,
+  numericOfResult,
+  declaredNumeric,
+  loadCustomConditions,
+  loadNumericConditions,
   thresholdForDetection,
   curveMethodOf,
-  describesAll,
   thresholdForAnalysis,
   resolveContrastSource,
   resolveLoadMode,
@@ -190,12 +204,14 @@ import {
   responseSliceable,
   type ResponseConfig,
   type TdrConfig,
+  tdrPair,
   drYScale,
-  AU,
-  DOSE_UNITS,
-  TIME_UNITS,
-  type CondUnits,
+  DOSE_UNIT_SUGGESTIONS,
+  TIME_UNIT_SUGGESTIONS,
   type PotencyConfig,
+  type MetricsConfig,
+  type VarianceConfig,
+  type InteractionConfig,
   type CurveMadConfig,
   type DumbbellConfig,
   type EnrichConfig,
@@ -226,6 +242,7 @@ import {
   type StandardizeConfig,
   type SubsetConfig,
   type StringConfig,
+  STRING_OUTLINE,
   TABLE_GENE_MAX,
   type TableConfig,
   type VolcanoConfig,
@@ -250,47 +267,42 @@ const CONDS: ConditionKey[] = ['cell', 'cmpd', 'dose', 'time']
  *  the group container itself — groups don't nest). */
 const GROUP_CHILD_OPS: NodeKind[] = CATEGORIES.plotting.ops
 
-/** Ops fanned out into menu entries (in GROUP_CHILD_OPS order): `dr` splits into dose/time.
- *  PlotMenuEntry / plotEntriesFor / entryKey are shared with the new-step TilePicker (see registry). */
-const PLOT_ENTRIES: PlotMenuEntry[] = GROUP_CHILD_OPS.flatMap(plotEntriesFor)
-
 /** Sub-groups for the add-plot menu, so the flat plotting list reads as labelled sections by what
  *  each plot shows. Derived from the shared PLOT_SECTIONS (single source of truth, also used by the
- *  new-step TilePicker); `dr` expands into its two entry keys (dose/time). Any entry not listed falls
+ *  new-step TilePicker); each kind fans out over the data's numeric conditions (`axes`) into its
+ *  entries (plotEntriesFor: a Response plot per condition and per pair). Any kind not listed falls
  *  into a trailing "Other" section, so new plot kinds are never dropped. */
-const PLOT_GROUP_DEFS: { label: string; keys: string[] }[] = PLOT_SECTIONS.map((s) => ({
-  label: s.label,
-  keys: s.kinds.flatMap((k) => (k === 'dr' ? ['dr:axis=dose', 'dr:axis=time'] : [k]))
-}))
-/** Menu sections resolved to entries, plus a trailing "Other" section for any uncategorised entry. */
-const PLOT_MENU_GROUPS: { label: string; entries: PlotMenuEntry[] }[] = (() => {
-  const byKey = new Map(PLOT_ENTRIES.map((e) => [entryKey(e), e]))
-  const used = new Set<string>()
-  const groups = PLOT_GROUP_DEFS.map((g) => {
-    const entries = g.keys.map((k) => byKey.get(k)).filter((e): e is PlotMenuEntry => !!e)
-    entries.forEach((e) => used.add(entryKey(e)))
-    return { label: g.label, entries }
-  }).filter((g) => g.entries.length > 0)
-  const rest = PLOT_ENTRIES.filter((e) => !used.has(entryKey(e)))
+function plotMenuGroups(
+  facts: UpstreamFacts = UNWIRED
+): { label: string; entries: PlotMenuEntry[] }[] {
+  const listed = new Set(PLOT_SECTIONS.flatMap((sec) => sec.kinds))
+  const groups = PLOT_SECTIONS.map((sec) => ({
+    label: sec.label,
+    entries: sec.kinds
+      .filter((k) => GROUP_CHILD_OPS.includes(k))
+      .flatMap((k) => entriesFor(k, facts))
+  })).filter((g) => g.entries.length > 0)
+  const rest = GROUP_CHILD_OPS.filter((k) => !listed.has(k)).flatMap((k) => entriesFor(k, facts))
   return rest.length ? [...groups, { label: 'Other', entries: rest }] : groups
-})()
+}
+/** The menu section a plot of `kind` sits under (whatever its variant), else "Other". */
+const sectionOfKind = (kind: NodeKind): string =>
+  PLOT_SECTIONS.find((sec) => sec.kinds.includes(kind))?.label ?? 'Other'
 
 /** The add-plot menu's sections for a step of `upstreamKind`: only the plots it can feed. */
 function plotMenuGroupsFor(upstreamKind: NodeKind): { label: string; entries: PlotMenuEntry[] }[] {
-  return PLOT_MENU_GROUPS.map((g) => ({
-    ...g,
-    entries: g.entries.filter((e) => canConnect(upstreamKind, e.kind))
-  })).filter((g) => g.entries.length > 0)
+  return plotMenuGroups()
+    .map((g) => ({
+      ...g,
+      entries: g.entries.filter((e) => canConnect(upstreamKind, e.kind))
+    }))
+    .filter((g) => g.entries.length > 0)
 }
 
-/** True when a subcard is this menu entry's kind and matches every override key (so Dose-response
- *  and Time-response match independently even though both are `dr`). */
+/** True when a subcard is this menu entry — its kind and variant (so each Response plot matches on
+ *  its own condition(s) even though they share a kind). */
 const childMatchesEntry = (c: PlotChild, e: PlotMenuEntry): boolean =>
-  c.kind === e.kind &&
-  (!e.override ||
-    Object.entries(e.override).every(
-      ([k, v]) => (c.config as unknown as Record<string, unknown>)[k] === v
-    ))
+  c.kind === e.kind && tileEntryKey(c.kind, c.config) === entryKey(e)
 
 /** True when the group already contains a subcard matching this entry. */
 const entryPresent = (e: PlotMenuEntry, children: PlotChild[]): boolean =>
@@ -462,13 +474,15 @@ export function AddPlotMenu({
   // whose data requirement (response axes, annotations, …) the upstream can't meet.
   const menuGroups = useMemo(
     () =>
-      PLOT_MENU_GROUPS.map((g) => ({
-        ...g,
-        entries: gatePlotEntries(
-          upstreamKind ? g.entries.filter((e) => canConnect(upstreamKind, e.kind)) : g.entries,
-          facts
-        )
-      })).filter((g) => g.entries.length > 0),
+      plotMenuGroups(facts)
+        .map((g) => ({
+          ...g,
+          entries: gatePlotEntries(
+            upstreamKind ? g.entries.filter((e) => canConnect(upstreamKind, e.kind)) : g.entries,
+            facts
+          )
+        }))
+        .filter((g) => g.entries.length > 0),
     [upstreamKind, facts]
   )
   const plotAccent = accentOf('plotting') // the plot-tile accent, for highlighting selected entries
@@ -688,8 +702,7 @@ function PlotPicker({
   }, [open])
   const sections = useMemo(() => {
     // each plot under the first menu section holding an entry it matches, else "Other"
-    const sectionOf = (c: PlotChild): string =>
-      PLOT_MENU_GROUPS.find((g) => g.entries.some((e) => childMatchesEntry(c, e)))?.label ?? 'Other'
+    const sectionOf = (c: PlotChild): string => sectionOfKind(c.kind)
     // In tile order, so the list and the arrows read as the tile does; a new header wherever the
     // category changes (a category the plots were dragged apart from heads each of its runs).
     const runs: { key: string; label: string; items: { id: string; label: string }[] }[] = []
@@ -798,7 +811,7 @@ function PlotPicker({
 
 /** Settings › Plot defaults' plot picker: the plot tile's own "Select plots" menu (AddPlotMenu —
  *  same window, collapsible section headers with their count, rows), single-choice: the plots a
- *  step of `upstreamKind` feeds, Dose-response and Time-response as their own entries. The
+ *  step of `upstreamKind` feeds, each Response plot (Dose response, Time response…) its own entry. The
  *  section count is 1 where the picked plot sits. */
 export function PlotEntryMenu({
   value,
@@ -985,6 +998,8 @@ const AXIS_KINDS: ReadonlySet<NodeKind> = new Set<NodeKind>([
   'ma',
   'dr',
   'potency',
+  'variance',
+  'interaction',
   'curveMad',
   'bubble',
   'dumbbell',
@@ -1045,6 +1060,12 @@ function kindPanel(
           <ColourSection config={config as PotencyConfig} {...props} />
         </>
       )
+    case 'metrics':
+      return <MetricsPanel config={config as MetricsConfig} {...props} />
+    case 'variance':
+      return <VariancePanel config={config as VarianceConfig} {...props} />
+    case 'interaction':
+      return <InteractionPanel config={config as InteractionConfig} {...props} />
     case 'curveMad':
       return <CurveMadPanel config={config as CurveMadConfig} {...props} />
     case 'response':
@@ -1211,7 +1232,7 @@ export function NodeConfigPanel({
   // For a group the header/accent follow the active subcard; else the node's own op.
   const headKind = activeChild?.kind ?? kind
   const category = categoryOf(headKind)
-  // A dr tile is titled by its axis (Dose-response / Time-response), like everywhere else.
+  // A Response plot is titled by its condition(s) (Dose response, Dose & Time response), like everywhere else.
   const headLabel = plotLabel(headKind, activeChild ? activeChild.config : node.data.config)
   const ops = CATEGORIES[category].ops
 
@@ -1402,6 +1423,7 @@ function useInputText(name: string | null | undefined): string | null {
 function LoadPanel({ id, config }: { id: string; config: LoadConfig }) {
   const update = useGraph((s) => s.updateConfig)
   const setUnits = useGraph((s) => s.setLoadUnits)
+  const setNumeric = useGraph((s) => s.setLoadNumeric)
   const inputFiles = useGraph((s) => s.inputFiles)
   const refreshDataFiles = useGraph((s) => s.refreshDataFiles)
   const [dialogOpen, setDialogOpen] = useConfigWindowOpen(id)
@@ -1444,14 +1466,18 @@ function LoadPanel({ id, config }: { id: string; config: LoadConfig }) {
   )
   const sheetText = useInputText(mode === 'manual' ? config.samplesheet : null)
   const dataText = useInputText(mode === 'manual' ? config.data : null)
-  const sheetCols = useMemo(() => {
-    if (sheetText == null) return null
-    const header = Papa.parse<string[]>(sheetText.replace(/^\uFEFF/, ''), { preview: 1 }).data[0]
-    return new Set((header ?? []).map((h) => h.trim().toLowerCase()))
-  }, [sheetText])
+  // The samplesheet's conditions, as the run will read them: the presets whose column holds a value,
+  // then its custom ones (detected as the run detects them) — what the Conditions section lists.
+  const sheetConds = useMemo(
+    () => (sheetText == null ? [] : manualSheetConditions(sheetText)),
+    [sheetText]
+  )
   const sheetCheck = useMemo(
-    () => (sheetText == null ? null : manualSheetIssues(sheetText, dataText, config.data)),
-    [sheetText, dataText, config.data]
+    () =>
+      sheetText == null
+        ? null
+        : manualSheetIssues(sheetText, dataText, config.data, declaredNumeric(config)),
+    [sheetText, dataText, config]
   )
   // Interactive import is set up once the standard files have been generated (config.data set).
   const converted = !!config.data
@@ -1643,40 +1669,59 @@ function LoadPanel({ id, config }: { id: string; config: LoadConfig }) {
           </>
         )}
       </Section>
-      {/* A manual samplesheet has no mapping step, so its numeric conditions' units are set here
-          (the interactive import sets them on its Samplesheet step). Display-only — no re-run. */}
+      {/* A manual samplesheet has no mapping step, so its conditions' types and units are set here
+          (the interactive import sets them on its Conditions step): each condition's cat/num chip
+          — fixed for the presets, a click for a custom one, which re-runs what's below — and a
+          numeric one's unit (display-only — no re-run). */}
       {mode === 'manual' && (
-        <Section title="Condition units">
-          <Field label="dose">
-            <Select
-              disabled={!sheetCols?.has('dose')}
-              value={sheetCols?.has('dose') ? (config.units?.dose ?? '') : ''}
-              onChange={(v) => setUnits(id, { dose: (v || undefined) as CondUnits['dose'] })}
-              options={
-                sheetCols?.has('dose')
-                  ? [
-                      { value: '', label: '— pick a unit —' },
-                      ...[AU, ...Object.keys(DOSE_UNITS)].map((u) => ({ value: u, label: u }))
-                    ]
-                  : [{ value: '', label: 'not in samplesheet' }]
-              }
-            />
-          </Field>
-          <Field label="time">
-            <Select
-              disabled={!sheetCols?.has('time')}
-              value={sheetCols?.has('time') ? (config.units?.time ?? '') : ''}
-              onChange={(v) => setUnits(id, { time: (v || undefined) as CondUnits['time'] })}
-              options={
-                sheetCols?.has('time')
-                  ? [
-                      { value: '', label: '— pick a unit —' },
-                      ...[AU, ...TIME_UNITS].map((u) => ({ value: u, label: u }))
-                    ]
-                  : [{ value: '', label: 'not in samplesheet' }]
-              }
-            />
-          </Field>
+        <Section title="Conditions">
+          {sheetConds.length === 0 ? (
+            <span style={styles.condNone}>
+              {sheetText == null
+                ? 'Choose a samplesheet first.'
+                : 'No conditions in the samplesheet.'}
+            </span>
+          ) : (
+            sheetConds.map((c) => {
+              const preset = c === 'cell' || c === 'cmpd' || c === 'dose' || c === 'time'
+              const num = c === 'dose' || c === 'time' || declaredNumeric(config).includes(c)
+              const key = preset ? c : `@${c}`
+              const what = num
+                ? 'Numeric: its values are numbers on a scale, with a unit'
+                : 'Categorical: its values are labels'
+              return (
+                <Field key={c} label={c}>
+                  <span style={styles.condRow}>
+                    {preset ? (
+                      <span style={styles.typeChip} title={`${what} (fixed for ${c}).`}>
+                        {num ? 'num' : 'cat'}
+                      </span>
+                    ) : (
+                      <button
+                        type="button"
+                        style={{ ...styles.typeChip, ...styles.typeChipBtn }}
+                        title={`${what}. Click to make it ${num ? 'categorical' : 'numeric'} (re-runs what's below).`}
+                        onClick={() => setNumeric(id, c, !num)}
+                      >
+                        {num ? 'num' : 'cat'}
+                      </button>
+                    )}
+                    {/* any text is a unit (nM, mg/mL, MIC, %, h…); the list only suggests */}
+                    {num ? (
+                      <UnitInput
+                        style={styles.input}
+                        value={(config.units as Record<string, string | undefined>)?.[key]}
+                        suggestions={c === 'time' ? TIME_UNIT_SUGGESTIONS : DOSE_UNIT_SUGGESTIONS}
+                        onChange={(u) => setUnits(id, { [key]: u })}
+                      />
+                    ) : (
+                      <span style={styles.condNone}>no unit</span>
+                    )}
+                  </span>
+                </Field>
+              )
+            })
+          )}
         </Section>
       )}
     </>
@@ -1701,13 +1746,9 @@ function DataScaleSection({
   const setLogTransform = useGraph((s) => s.setStdLogTransform)
   const previewStdScale = useGraph((s) => s.previewStdScale)
   // The upstream data file's name, so the preview re-reads when the Load step points elsewhere.
-  const dataFile = useGraph((s) => {
-    const upId = s.edges.find((e) => e.target === id)?.source
-    const up = upId ? s.nodes.find((n) => n.id === upId) : undefined
-    return up && isStep(up) && up.data.kind === 'load'
-      ? ((up.data.config as LoadConfig).data ?? '')
-      : ''
-  })
+  const dataFile = useGraph(
+    (s) => (loadAbove(s, id)?.load.data.config as LoadConfig | undefined)?.data ?? ''
+  )
   const [preview, setPreview] = useState<ScalePreview | null | 'loading'>('loading')
   useEffect(() => {
     let live = true
@@ -1877,6 +1918,66 @@ function ValueHistogramView({
   )
 }
 
+/** Pick one protein: a button showing the pick, opening the app's gene search (GeneSearchMenu, as
+ *  the one-gene pager's) over the last run's genes. Before any run there are none to list. */
+function ProteinPicker({
+  value,
+  names,
+  onChange
+}: {
+  value: string | undefined
+  /** uniqID → display name, from the Clean data step's last run */
+  names: Record<string, string> | undefined
+  onChange: (uid: string) => void
+}): ReactNode {
+  const [rect, setRect] = useState<DOMRect | null>(null)
+  const btnRef = useRef<HTMLButtonElement>(null)
+  const close = useCallback(() => setRect(null), [])
+  // every gene, by name
+  const genes = useMemo(
+    () =>
+      names
+        ? Object.keys(names).sort((a, b) =>
+            (names[a] ?? a).localeCompare(names[b] ?? b, undefined, { numeric: true })
+          )
+        : [],
+    [names]
+  )
+  const shown = value ? (names?.[value] ?? value) : null
+  return (
+    <>
+      <button
+        ref={btnRef}
+        type="button"
+        disabled={!names}
+        title={!names ? 'Run Clean data once to list its proteins' : 'Pick the reference protein'}
+        onClick={() =>
+          setRect((r) => (r ? null : (btnRef.current?.getBoundingClientRect() ?? null)))
+        }
+        style={{
+          ...styles.input,
+          textAlign: 'left',
+          cursor: names ? 'pointer' : 'not-allowed',
+          color: shown ? UI.text : UI.textMuted
+        }}
+      >
+        {shown ?? (names ? 'Pick a protein…' : 'Run Clean data first')}
+      </button>
+      {rect && names && (
+        <GeneSearchMenu
+          genes={genes}
+          current={value}
+          displayMap={names}
+          anchor={rect}
+          triggerRef={btnRef}
+          onPick={onChange}
+          onClose={close}
+        />
+      )}
+    </>
+  )
+}
+
 function StandardizePanel({ id, config }: { id: string; config: StandardizeConfig }) {
   const update = useGraph((s) => s.updateConfig)
   const std = useGraph((s) => {
@@ -1905,11 +2006,21 @@ function StandardizePanel({ id, config }: { id: string; config: StandardizeConfi
         keys.push(customCond(name))
     return keys.join('\u0001')
   })
+  // Fed by Clean data (a second clean-up): the conditions of the table it's given, before this
+  // step has run itself.
+  const inputConds = useGraph((s) => {
+    const upId = s.edges.find((e) => e.target === id)?.source
+    const r = upId ? s.results[upId] : undefined
+    return r?.kind === 'standardize' ? r.std.activeConditions.join('\u0001') : null
+  })
   const conds = useMemo(() => {
     if (importConds != null)
       return orderConds(importConds ? (importConds.split('\u0001') as ConditionKey[]) : [])
-    return orderConds(std ? std.activeConditions : [...CONDS])
-  }, [std, importConds])
+    if (std) return orderConds(std.activeConditions)
+    if (inputConds != null)
+      return orderConds(inputConds ? (inputConds.split('\u0001') as ConditionKey[]) : [])
+    return orderConds([...CONDS])
+  }, [std, importConds, inputConds])
   const geneTotal = useMemo(() => (std ? new Set(std.rows.map((r) => r.uniqID)).size : 0), [std])
   const r2 = (v: number): number => Math.round(v * 100) / 100
   return (
@@ -2009,6 +2120,9 @@ function StandardizePanel({ id, config }: { id: string; config: StandardizeConfi
             <br />
             <b>All genes</b>: every value each sample measured.
             <br />
+            <b>Reference protein</b>: one protein (e.g. a housekeeping protein) brought to the same
+            level in every sample; a sample that didn't measure it is left as it is.
+            <br />
             <b>Median</b>: shift each sample to the same median.
             <br />
             <b>Distribution</b>: median plus spread (Perseus width adjustment); also changes fold
@@ -2029,28 +2143,61 @@ function StandardizePanel({ id, config }: { id: string; config: StandardizeConfi
               <Select
                 value={config.normalizeReference ?? 'shared'}
                 onChange={(v) => update(id, { normalizeReference: v as NormalizeReference })}
-                options={(['shared', 'all'] as const).map((v) => ({
+                options={(['shared', 'all', 'protein'] as const).map((v) => ({
                   value: v,
                   label: NORMALIZE_REFERENCE_LABEL[v]
                 }))}
               />
             </Field>
-            <Field label="Method">
-              <Select
-                value={config.normalizeSpread ? 'distribution' : 'median'}
-                onChange={(v) => update(id, { normalizeSpread: v === 'distribution' })}
-                options={[
-                  { value: 'median', label: 'Median' },
-                  { value: 'distribution', label: 'Distribution' }
-                ]}
-              />
-            </Field>
+            {config.normalizeReference === 'protein' ? (
+              <Field label="Protein">
+                <ProteinPicker
+                  value={config.normalizeProtein}
+                  names={std?.displayMap}
+                  onChange={(uid) => update(id, { normalizeProtein: uid })}
+                />
+              </Field>
+            ) : (
+              // (one protein has no spread to equalise: median only)
+              <Field label="Method">
+                <Select
+                  value={config.normalizeSpread ? 'distribution' : 'median'}
+                  onChange={(v) => update(id, { normalizeSpread: v === 'distribution' })}
+                  options={[
+                    { value: 'median', label: 'Median' },
+                    { value: 'distribution', label: 'Distribution' }
+                  ]}
+                />
+              </Field>
+            )}
           </>
         )}
         {config.normalizeEnabled &&
           std?.normalization &&
           (() => {
             const nz = std.normalization
+            if (nz.used === 'protein') {
+              const name = nz.protein ? (std.displayMap[nz.protein] ?? nz.protein) : ''
+              const missing = nz.missingSamples ?? 0
+              return !nz.protein ? (
+                <StatusNote kind="warn">Pick the reference protein.</StatusNote>
+              ) : nz.samples === 0 ? (
+                <StatusNote kind="warn">
+                  {name} wasn't measured in any sample (or was dropped in clean-up): nothing was
+                  normalised.
+                </StatusNote>
+              ) : (
+                <StatusNote
+                  kind={missing ? 'warn' : 'ok'}
+                  style={missing ? undefined : styles.doneNote}
+                >
+                  {`Normalised ${nz.samples.toLocaleString()} sample${nz.samples === 1 ? '' : 's'} on ${name}`}
+                  {missing
+                    ? ` · ${missing.toLocaleString()} sample${missing === 1 ? '' : 's'} without it left as they are`
+                    : ''}
+                </StatusNote>
+              )
+            }
             const asked = nz.used === nz.reference
             const n = nz.samples
             // The genes the medians were taken on, of every gene kept: common ones, or all.
@@ -2137,31 +2284,27 @@ function StandardizePanel({ id, config }: { id: string; config: StandardizeConfi
 }
 
 /** How many comparisons the configured comparison would run (a dry-run count for the ready
- *  message): distinct num|den labels for an explicit compare, or the interaction groups for a
- *  two-way ANOVA. Null if it can't be determined (not configured / incomplete). */
+ *  message): distinct num|den labels for an explicit compare; an ANOVA's overall comparisons and
+ *  the terms it can test. Null if it can't be determined (not configured / incomplete). */
 function comparisonCount(
   std: StandardizeResult,
   config: CompareConfig
 ): { n: number; on: ConditionKey[] } | null {
   try {
-    if (config.analysis === 'two_way_anova') {
-      // Level pairs from the multi-select num/den values (legacy single fields as fallback).
-      const factorPairs = (c: ConditionKey, n1: string, d1: string): Pair[] => {
-        const cross = crossPairs(config.num[c] ?? [], config.den[c] ?? [])
-        return cross.length > 0 ? cross : n1 && d1 ? [[n1, d1]] : []
-      }
-      const p1 = factorPairs(config.condition, config.pairNum, config.pairDen)
-      const p2 = factorPairs(config.condition2, config.pair2Num, config.pair2Den)
-      if (p1.length === 0 || p2.length === 0) return null
-      const n = previewTwoWay({
+    if (config.analysis === 'anova') {
+      const factors = anovaFactorsOf(config, numericConds(std.numericConditions ?? []))
+      if (!factors.length) return null
+      const pv = previewFactorAnova({
         rows: std.rows,
-        factors: [
-          { condition: config.condition, pairs: p1 },
-          { condition: config.condition2, pairs: p2 }
-        ],
-        activeConditions: std.activeConditions
-      }).groups
-      return { n, on: [config.condition, config.condition2] }
+        factors,
+        activeConditions: std.activeConditions,
+        num: config.num,
+        den: config.den
+      })
+      return {
+        n: new Set(pv.rows.map((r) => r[0])).size + pv.tested.length,
+        on: factors.map((f) => f.condition)
+      }
     }
     const stated =
       config.analysis === 'compare' ? { compared: config.compared, pool: config.pool } : {}
@@ -2172,6 +2315,7 @@ function comparisonCount(
       match: config.match,
       ...stated,
       activeConditions: std.activeConditions,
+      numericConditions: std.numericConditions ?? [],
       curveAxis: config.analysis === 'curve_fit' ? (config.curveAxis ?? 'dose') : undefined
     }).labels.length
     const on = classifyConditions(
@@ -2196,18 +2340,68 @@ function SubsetPanel({ id, config }: { id: string; config: SubsetConfig }) {
     const r = up ? s.results[up] : undefined
     return r?.kind === 'standardize' ? r.std : null
   })
-  const levels = useMemo(() => (std ? conditionLevels(std) : {}), [std])
+  // Off Load data (wiredKindOf): the samplesheet's samples, read as Clean data will read them, less
+  // what any Subsets above this one drop — there's no run to pick values from yet.
+  const aboveLoad = useGraph((s) =>
+    wiredKindOf(s, id) === 'load'
+      ? ((loadAbove(s, id)?.load.data.config as LoadConfig | undefined) ?? null)
+      : null
+  )
+  // (the Subsets' own selectors: stable objects, so a shallow compare holds)
+  const aboveKeep = useGraph(useShallow((s) => loadAbove(s, id)?.keep ?? []))
+  const above = useMemo(
+    () => (aboveLoad ? { load: aboveLoad, keep: aboveKeep } : null),
+    [aboveLoad, aboveKeep]
+  )
+  const sheetText = useInputText(above?.load.samplesheet)
+  const sheet = useMemo(() => {
+    if (!above || sheetText == null) return null
+    try {
+      const passes = above.keep.map(samplePasses)
+      return sheetSamples(sheetText, loadCustomConditions(above.load)).filter((m) =>
+        passes.every((pass) => pass(m))
+      )
+    } catch {
+      return null // a samplesheet Clean data couldn't read either: its run says why
+    }
+  }, [above, sheetText])
+  const levels = useMemo(
+    () =>
+      above
+        ? sheet
+          ? sampleLevels(sheet, loadNumericConditions(above.load))
+          : {}
+        : std
+          ? conditionLevels(std)
+          : {},
+    [above, sheet, std]
+  )
+  const samples = above ? sheet : (std?.samples ?? null)
   const keep = useMemo(() => config.keep ?? {}, [config.keep])
   const counts = useMemo(() => {
-    if (!std?.samples) return null
-    const pass = keptBy(keep)
-    return { kept: std.samples.filter(pass).length, of: std.samples.length }
-  }, [std, keep])
+    if (!samples) return null
+    const pass = samplePasses({ keep, reps: config.reps, drop: config.drop })
+    return { kept: samples.filter(pass).length, of: samples.length }
+  }, [samples, keep, config.reps, config.drop])
+  // The replicates on offer: as numbered at import — the samplesheet's, else Clean data's (a Subset
+  // before Clean data with no rep column has none yet: it numbers them as it reads the data).
+  const reps = useMemo(
+    () =>
+      [...new Set((samples ?? []).map((m) => m.rep).filter((r): r is number => r != null))]
+        .sort((a, b) => a - b)
+        .map(String),
+    [samples]
+  )
+  const sampleNames = useMemo(() => (samples ?? []).map((m) => m.sample), [samples])
 
-  if (!std)
+  if (above ? !sheet : !std)
     return (
       <Section title="Subset">
-        <div style={styles.hint}>Connect and run a Clean data tile to pick values.</div>
+        <div style={styles.hint}>
+          {above
+            ? 'Configure the Load data tile to pick values.'
+            : 'Connect and run a Clean data tile to pick values.'}
+        </div>
       </Section>
     )
   const conds = orderConds(Object.keys(levels) as ConditionKey[])
@@ -2215,7 +2409,11 @@ function SubsetPanel({ id, config }: { id: string; config: SubsetConfig }) {
     <Section
       title="Subset"
       subtitle={counts ? `${counts.kept} of ${counts.of} samples` : undefined}
-      info="Keeps the samples whose conditions take the ticked values; downstream tiles see only those. A condition left at All isn't filtered."
+      info={
+        above
+          ? "Keeps the samples whose conditions (and replicate) take the ticked values, less any left out by name; the Clean data step below reads only those, so its clean-up sees just them. A condition left at All isn't filtered. Replicates keep the numbers they were imported with."
+          : "Keeps the samples whose conditions (and replicate) take the ticked values, less any left out by name; downstream tiles see only those. A condition left at All isn't filtered. Replicates keep the numbers they were imported with."
+      }
     >
       {conds.map((c) => (
         <Field key={c} label={condLabel(c)}>
@@ -2239,6 +2437,34 @@ function SubsetPanel({ id, config }: { id: string; config: SubsetConfig }) {
           />
         </Field>
       ))}
+      {/* Whole replicate sets: unticking r3 drops replicate 3 of every condition. */}
+      {reps.length > 1 && (
+        <Field label="replicate">
+          <ValueMultiSelect
+            values={reps}
+            selected={config.reps ?? []}
+            noun="replicate"
+            onChange={(next) => updateConfig(id, { reps: next.length ? next : undefined })}
+          />
+        </Field>
+      )}
+      {/* One-off exclusions (a bad replicate of one condition): untick a sample to leave it out —
+          kept as the samples left out (`drop`), so samples new upstream are kept. */}
+      {sampleNames.length > 1 && (
+        <Field label="samples">
+          <ValueMultiSelect
+            values={sampleNames}
+            selected={
+              config.drop?.length ? sampleNames.filter((n) => !config.drop!.includes(n)) : []
+            }
+            noun="sample"
+            onChange={(next) => {
+              const drop = next.length ? sampleNames.filter((n) => !next.includes(n)) : []
+              updateConfig(id, { drop: drop.length ? drop : undefined })
+            }}
+          />
+        </Field>
+      )}
     </Section>
   )
 }
@@ -2399,6 +2625,17 @@ function CompareStatisticSection({
 
   const curveCurator = t.type === 'curvecurator'
   const ccByFdr = curveCurator && t.ccCallBy === 'fdr'
+  // Testing response changes with a 4PL along the picked axis: its F's null is a choice.
+  const changesNull = (() => {
+    if (config.analysis !== 'curve_fit' || !config.surface || config.surfaceIntent !== 'changes')
+      return false
+    const pair = config.surfacePair ?? ['dose', 'time']
+    const resp = config.responseAxis
+    if (!resp || !pair.includes(resp)) return false
+    const own = curveMethodOf(config) === 'custom' ? config.axisFits : undefined
+    const det = config.detection === 'spline' ? 'spline' : '4pl'
+    return fitOf(own, pair, pair.indexOf(resp), det).detect === '4pl'
+  })()
   const sam = t.type === 'sam_fdr'
   // The run's target–decoy FDR for CurveCurator's calls (follows its cutoffs live).
   const curveFdr = useGraph((s) => {
@@ -2501,6 +2738,48 @@ function CompareStatisticSection({
                       { type: 'curvecurator', statType: 'pP' }
                     : { type: 'non-linear', statType: 'pQ' }
               )
+            }
+          />
+        </Field>
+      )}
+      {changesNull && (
+        // Testing response changes with 4PL curves: the F's null (a non-linear fit has no exact one).
+        <Field
+          label="null"
+          info={
+            <>
+              Testing response changes with a 4PL along the axis: one 4PL shared by every level of
+              the other against a 4PL at each, by F = (ΔRSS / d1) / (RSS / d2). A non-linear fit has
+              no exact null for it, so the F is read against one of:
+              <br />
+              <b>NPARC df</b> — NPARC’s (Childs et al., 2019): the RSS reduction and the residual
+              RSS taken as scaled χ², their scale and degrees of freedom estimated across the genes
+              of the run; then the F distribution with those df. Fast.
+              <br />
+              <b>adjusted F</b> — the null simulated: each design’s genes refitted on their shared
+              4PL plus noise at their own residual level, many times, scored the same way; the p
+              from the simulated F’s tail (as the 4PL surface’s adjusted F). Slower.
+            </>
+          }
+        >
+          <ToggleSwitch
+            label="Null"
+            value={config.changesStat ?? 'adjusted'}
+            options={[
+              {
+                value: 'adjusted' as const,
+                label: 'adjusted F',
+                title: 'the null simulated on each design (slower)'
+              },
+              {
+                value: 'nparc' as const,
+                label: 'NPARC df',
+                title:
+                  'df estimated across the genes from the RSS distributions (Childs et al. 2019)'
+              }
+            ]}
+            onChange={(v) =>
+              v !== (config.changesStat ?? 'adjusted') && update(id, { changesStat: v })
             }
           />
         </Field>
@@ -2856,30 +3135,52 @@ function ComparePanel({
   // fits the new analysis — one compared condition for a t-test, two for a 2-way ANOVA (its
   // factors); otherwise the dialog opens on the new analysis to finish setting it up.
   const update = useGraph((s) => s.updateConfig)
-  const setCurveMethod = useGraph((s) => s.setCurveMethod)
   // A fresh (unconfigured) Compare starts on the first analysis its data can take, rather than a
-  // t-test the data can't support; a fresh Curve fit moves off an axis its data can't fit over
-  // (onto the first one it can) — but never off one it can, which the user may just have picked. A
-  // configured one keeps its pick and shows why it can't run.
+  // t-test the data can't support. A fresh Curve fit starts on the widest fit its data can take —
+  // the dose × time surface, else the first axis it can fit over — until the user picks one (a
+  // pick sets `surface`, so it's never overridden); after that it only moves off an axis its data
+  // can't fit over. A configured one keeps its pick and shows why it can't run.
   useEffect(() => {
     if (configured || !shape) return
     if (curve) {
-      const fits = (a: string): boolean =>
-        (shape.levels[a as 'dose'] ?? 0) >= 2 &&
-        (shape.treated[a as 'dose'] ?? 0) >= CURVE_MIN_TREATED
+      const pair =
+        config.surface === undefined
+          ? surfacePairs(shape.numeric).find((p) => !curveSurfaceWhy(shape, p))
+          : undefined
+      if (pair) {
+        const patch: Record<string, unknown> = { surface: true, surfacePair: pair }
+        const t = thresholdForDetection(config.detection ?? '4pl', config.threshold, true)
+        if (t) patch.threshold = t
+        update(id, patch)
+        return
+      }
+      if (config.surface) return
+      const fits = (a: ConditionKey): boolean =>
+        (shape.levels[a] ?? 0) >= 2 && (shape.treated[a] ?? 0) >= CURVE_MIN_TREATED
       if (fits(config.curveAxis ?? 'dose')) return
-      const ax = (['dose', 'time'] as const).find(fits)
+      const ax = shape.numeric.find(fits)
       if (ax) update(id, { curveAxis: ax })
       return
     }
     if (!analysisUnmet(shape, config.analysis)) return
-    const next = (['compare', 'two_way_anova'] as const).find((a) => !analysisUnmet(shape, a))
+    const next = (['compare', 'anova'] as const).find((a) => !analysisUnmet(shape, a))
     if (!next) return
     const patch: Record<string, unknown> = { analysis: next }
     const t = thresholdForAnalysis(config.analysis, next, config.threshold)
     if (t) patch.threshold = t
     update(id, patch)
-  }, [configured, curve, shape, config.analysis, config.curveAxis, config.threshold, id, update])
+  }, [
+    configured,
+    curve,
+    shape,
+    config.analysis,
+    config.curveAxis,
+    config.surface,
+    config.threshold,
+    config.detection,
+    id,
+    update
+  ])
   const switchAnalysis = (a: CompareConfig['analysis']): void => {
     if (a === config.analysis) return
     const axis = std
@@ -2889,29 +3190,24 @@ function ComparePanel({
     const patch: Record<string, unknown> = { analysis: a }
     const t = thresholdForAnalysis(config.analysis, a, config.threshold)
     if (t) patch.threshold = t
-    const fits = a === 'two_way_anova' ? axis.length === 2 : axis.length === 1
-    if (a === 'two_way_anova' && fits) {
-      const [c1, c2] = axis
-      Object.assign(patch, {
-        condition: c1,
-        pairNum: config.num[c1]?.[0] ?? '',
-        pairDen: config.den[c1]?.[0] ?? '',
-        condition2: c2,
-        pair2Num: config.num[c2]?.[0] ?? '',
-        pair2Den: config.den[c2]?.[0] ?? ''
-      })
-    }
+    // the ANOVA's factors are the compared conditions (inferred on a config saved without them)
+    if (a === 'anova' && !config.compared?.length && axis.length) patch.compared = axis
     update(id, patch)
-    if (!fits && std) setDialogOpen(true)
+    if (!configured && std) setDialogOpen(true)
   }
+  // The analysis is the user's only where the comparison leaves a choice: several test values, or several
+  // compared conditions (one at two values is a t-test either way).
+  const comparedNow = config.compared?.length
+    ? config.compared
+    : std
+      ? classifyConditions(std.rows, config.num, config.den, std.activeConditions).axis
+      : []
+  const noChoice = configured && !analysisChoice(comparedNow, config.num)
   // What the data can't take: the picked analysis (a Curve fit's own), and — on a Compare — whether
   // neither of its analyses fits (e.g. no replicates), which a Curve fit may still take.
   const unmet = shape ? analysisUnmet(shape, curve ? 'curve_fit' : config.analysis) : null
   const noCompare =
-    !curve &&
-    !!shape &&
-    !!analysisUnmet(shape, 'compare') &&
-    !!analysisUnmet(shape, 'two_way_anova')
+    !curve && !!shape && !!analysisUnmet(shape, 'compare') && !!analysisUnmet(shape, 'anova')
   const curveFits = !!shape && !analysisUnmet(shape, 'curve_fit')
   // A reason ("Needs …") inside a sentence.
   const inline = (why: string | null): string => (why ? why[0].toLowerCase() + why.slice(1) : '')
@@ -2921,251 +3217,96 @@ function ComparePanel({
   const detection = config.detection ?? '4pl'
   // A dose × time surface, under either model (4PL: the 4PL surface detector, adjusted F).
   const surfaceRun = curve && !!config.surface
+  const pair = config.surfacePair ?? ['dose', 'time']
+  const pairName = `${condLabel(pair[0])} × ${condLabel(pair[1])}`
   const readyMsg = surfaceRun
-    ? 'Ready, one dose × time surface per gene × compound'
+    ? `Ready, one ${pairName} surface per gene × compound`
     : nComparisons
       ? `Ready, ${nComparisons.n} ${unit}${nComparisons.n === 1 ? '' : 's'}${nComparisons.on.length ? ` on ${nComparisons.on.join(', ')}` : ''}`
       : 'Ready'
-  // A detector switch's patch: the model, the threshold its calls need, and — onto the spline —
-  // the surface wherever dose and time both vary (the response surface method's default).
-  const detectionPatch = (d: '4pl' | 'spline'): Record<string, unknown> => {
-    if (d === detection) return {}
-    const patch: Record<string, unknown> = { detection: d }
-    const t = thresholdForDetection(d, config.threshold, surfaceRun)
-    if (t) patch.threshold = t
-    if (d === 'spline' && config.surface == null && shape)
-      patch.surface = (shape.levels.dose ?? 0) >= 2 && (shape.levels.time ?? 0) >= 2
-    return patch
-  }
-  // The method preset (Hybrid / 4PL) or custom; and the descriptor's rows — one, or on a surface
-  // described slice by slice one per slice direction.
-  const method = curveMethodOf(config)
-  const descriptorAxes: Array<'dose' | 'time' | null> =
-    surfaceRun && (config.surfaceDescription ?? 'slices') !== 'joint' ? ['dose', 'time'] : [null]
   // The axis a curve runs over, or the dose × time surface. An axis the data can't fit over (too
   // few levels — unknown until Clean data has run) is offered greyed.
-  const axisValue = surfaceRun ? 'surface' : (config.curveAxis ?? 'dose')
+  const axisValue = surfaceRun ? surfaceValue(pair) : (config.curveAxis ?? 'dose')
 
   return (
     <>
       <Section title={curve ? 'Curve fit' : 'Comparison'}>
         {curve ? (
           <>
-            <Field
-              label="method"
-              info={
-                <>
-                  A preset of the detector and descriptor models below.
-                  <br />
-                  <b>Hybrid</b> — detection and description split: a smooth spline (or a dose × time
-                  spline surface) against a flat line, moderated F, called by q — it finds responses
-                  of any shape, not only sigmoid ones; each described curve is then fitted by a 4PL
-                  (EC50, slope, plateaus).
-                  <br />
-                  <b>4PL</b> — the CurveCurator method: a 4-parameter sigmoid against a flat line
-                  (its adjusted F-test), called by p-value or its relevance score. Over dose × time:
-                  a 4PL surface (a dose sigmoid whose top and midpoint change with time) against
-                  flat, its adjusted F-test (the null simulated on the run’s own design), called by
-                  p or q — slower, and it misses responses that aren’t sigmoid.
-                  <br />
-                  <b>custom</b> — pick the detector and descriptor yourself.
-                </>
+            {(() => {
+              // Only the fit's dimensions and its axis here; everything else in the Configure
+              // window. Options the data has too few levels for are offered greyed.
+              const opts = curveAxisOptions(shape, detection)
+              const twoD = opts.filter((o) => o.value.startsWith('surface:'))
+              const oneD = opts.filter((o) => !o.value.startsWith('surface:'))
+              const firstOk = (os: typeof opts): string | undefined =>
+                (os.find((o) => !o.disabled) ?? os[0])?.value
+              const pick = (v: string): void => {
+                const p = readAxisValue(v)
+                const surface = 'pair' in p
+                const patch: Record<string, unknown> =
+                  'pair' in p
+                    ? { surface: true, surfacePair: p.pair }
+                    : { curveAxis: p.axis, surface: false }
+                // onto or off a surface under 4PL: q-value calls ⇄ the relevance score
+                const t = thresholdForDetection(detection, config.threshold, surface)
+                if (t) patch.threshold = t
+                update(id, patch)
               }
-            >
-              <ToggleSwitch
-                label="Method"
-                value={method}
-                options={CURVE_METHOD_OPTIONS}
-                onChange={(m) => {
-                  // A preset that changes the detector re-runs; one that only relabels (custom ⇄
-                  // the preset the models already match) doesn't.
-                  const patch =
-                    m === 'custom' ? {} : detectionPatch(m === 'hybrid' ? 'spline' : '4pl')
-                  if (Object.keys(patch).length) update(id, { ...patch, curveMethod: undefined })
-                  else setCurveMethod(id, m === 'custom' ? 'custom' : undefined)
-                }}
-              />
-            </Field>
-            <Field
-              label="axis"
-              info={
+              const no2d = !twoD.some((o) => !o.disabled)
+              return (
                 <>
-                  What each gene’s response is fitted over.
-                  <br />
-                  <b>dose × time</b> — one surface per gene × compound, tested once.
-                  <br />
-                  <b>dose</b> — one curve per gene × compound, at each time point.
-                  <br />
-                  <b>time</b> — one curve per gene × compound, at each dose.
-                  <br />
-                  Greyed: the data has too few levels for it.
+                  <Field
+                    label="dimensions"
+                    info={
+                      <>
+                        <b>1D</b> — one curve per gene × compound over one numeric condition, at
+                        each level of the others.
+                        <br />
+                        <b>2D</b> — one surface per gene × compound over two, tested once.
+                      </>
+                    }
+                  >
+                    <ToggleSwitch
+                      label="Dimensions"
+                      value={surfaceRun ? '2d' : '1d'}
+                      options={[
+                        { value: '1d', label: '1D' },
+                        {
+                          value: '2d',
+                          label: '2D',
+                          disabled: no2d,
+                          title: no2d ? 'Needs two numeric conditions that vary' : undefined
+                        }
+                      ]}
+                      onChange={(v) => {
+                        if ((v === '2d') === surfaceRun) return
+                        const keep = v === '2d' ? surfaceValue(pair) : (config.curveAxis ?? 'dose')
+                        const own = v === '2d' ? twoD : oneD
+                        const ok = own.some((o) => o.value === keep && !o.disabled)
+                        const next = ok ? keep : firstOk(own)
+                        if (next) pick(next)
+                      }}
+                    />
+                  </Field>
+                  <Field
+                    label="axis"
+                    info={
+                      surfaceRun
+                        ? 'The two numeric conditions the surface runs over.'
+                        : 'The numeric condition each curve runs over.'
+                    }
+                  >
+                    <ToggleSwitch
+                      label="Axis"
+                      value={axisValue}
+                      options={surfaceRun ? twoD : oneD}
+                      onChange={pick}
+                    />
+                  </Field>
                 </>
-              }
-            >
-              <ToggleSwitch
-                label="Axis"
-                value={axisValue}
-                // dose × time first, as the method's widest view
-                options={[...curveAxisOptions(shape, detection)].sort(
-                  (a, b) => Number(b.value === 'surface') - Number(a.value === 'surface')
-                )}
-                onChange={(v) => {
-                  const surface = v === 'surface'
-                  const patch: Record<string, unknown> = surface
-                    ? { surface: true }
-                    : { curveAxis: v, surface: false }
-                  // onto or off a surface under 4PL: q-value calls ⇄ the relevance score
-                  const t = thresholdForDetection(detection, config.threshold, surface)
-                  if (t) patch.threshold = t
-                  update(id, patch)
-                }}
-              />
-            </Field>
-            {surfaceRun && (
-              <Field
-                label="fit"
-                info={
-                  <>
-                    How each surface is described — its detection and calls are the same either way,
-                    and the Dose & Time response plot draws what it describes.
-                    <br />
-                    <b>surface</b> — one model over the whole grid, EC50 and top changing smoothly
-                    with time: steadier on dense grids, about 10× slower (with the 4PL detector it
-                    is the test’s own fit, reused, so no slower).
-                    <br />
-                    <b>slices</b> — a 4PL at each slice, each fitted on its own: a dose curve at
-                    each time (EC50 and top read straight from each time’s data) and a time curve at
-                    each dose (when the response arrives, dose by dose). Fitted separately, a dose
-                    and a time curve needn’t agree where they cross.
-                    <br />
-                    Either way, the response plot views the surface by time or by dose slices.
-                  </>
-                }
-              >
-                <ToggleSwitch
-                  label="Fit"
-                  value={surfaceFitShown(config.surfaceDescription)}
-                  options={SURFACE_FIT_OPTIONS}
-                  // (slices onto a saved 'doseSlices' keeps it: the same fits, nothing to re-run)
-                  onChange={(v) =>
-                    v !== surfaceFitShown(config.surfaceDescription) &&
-                    update(id, { surfaceDescription: v })
-                  }
-                />
-              </Field>
-            )}
-            {/* The two models the method sets: shown under a preset too, locked to its choice —
-                picking another there makes the method custom. */}
-            <Field
-              label="detector"
-              info={
-                <>
-                  What decides whether a gene responds — its test, p and q.
-                  <br />
-                  <b>4PL</b> — a 4PL (over dose × time, a 4PL surface) against flat, its adjusted
-                  F-test.
-                  <br />
-                  <b>spline</b> — a smooth spline (over dose × time, a spline surface) against flat,
-                  moderated F: any response shape.
-                  {method !== 'custom' && (
-                    <>
-                      <br />
-                      Set by the method; picking the other makes it custom.
-                    </>
-                  )}
-                </>
-              }
-            >
-              <ModelLock locked={method !== 'custom'}>
-                <ToggleSwitch
-                  label="Detector"
-                  value={detection}
-                  options={DETECTOR_OPTIONS}
-                  onChange={(d) => update(id, { ...detectionPatch(d), curveMethod: 'custom' })}
-                />
-              </ModelLock>
-            </Field>
-            {descriptorAxes.map((ax) => (
-              <Field
-                key={ax ?? 'one'}
-                label={ax ? `descriptor (${ax} curves)` : 'descriptor'}
-                info={
-                  <>
-                    What describes a responding gene’s curve
-                    {ax === 'dose'
-                      ? ' along dose — the time slices’ dose curves'
-                      : ax === 'time'
-                        ? ' along time — the dose slices’ time curves'
-                        : ''}
-                    : its EC50, slope and plateaus, which the response plot draws.
-                    <br />
-                    <b>4PL</b> — a 4-parameter sigmoid.
-                    <br />
-                    <b>spline</b> — the spline itself (not built yet).
-                  </>
-                }
-              >
-                <ModelLock locked={method !== 'custom'}>
-                  <ToggleSwitch
-                    label="Descriptor"
-                    value="4pl"
-                    options={DESCRIPTOR_OPTIONS}
-                    onChange={() => {}}
-                  />
-                </ModelLock>
-              </Field>
-            ))}
-            <Field
-              label="description for"
-              info={
-                <>
-                  Which genes get a description (EC50, top) — what the Dose & Time response plot,
-                  the potency plot and a Contrast’s pEC50 read. Calls and q are the same either way.
-                  <br />
-                  <b>every gene</b> — all of them, so every gene has an EC50 (e.g. to contrast
-                  pEC50). Slower with a separate descriptor (much slower with the spline detector’s
-                  surface fit), and a flat curve’s EC50 means little.
-                  <br />
-                  <b>responders only</b> — the genes within q ≤ {DESCRIBE_Q}: their EC50s describe
-                  real curves. The rest are drawn flat.
-                  <br />
-                  Default: every gene with the 4PL detector over dose or time (its 4PL is its test,
-                  so describing costs nothing), responders only otherwise.
-                </>
-              }
-            >
-              <ToggleSwitch
-                label="Description for"
-                value={describesAll(config, surfaceRun) ? 'all' : 'responders'}
-                options={[
-                  { value: 'all', label: 'every gene' },
-                  { value: 'responders', label: 'responders only' }
-                ]}
-                onChange={(v) => {
-                  if ((v === 'all') !== describesAll(config, surfaceRun))
-                    update(id, { describeAll: v === 'all' })
-                }}
-              />
-            </Field>
-            {/* CurveCurator's interpolation, for every model and axis. */}
-            <Field
-              label="interpolation"
-              info={
-                <>
-                  Adapted from CurveCurator’s interpolation method. Steer curve to smooth fits by
-                  generating data point midway between adjacent doses or times, assuming linear
-                  transition in the gap between two data points (on a dose × time surface, one at
-                  the centre of each grid cell). The tests and R² still use only the measured data.
-                  May improve fit for data with large dose or time gaps.
-                </>
-              }
-            >
-              <OnOffSwitch
-                on={!!config.interpolation}
-                label="Interpolation"
-                onChange={(v) => update(id, { interpolation: v || undefined })}
-              />
-            </Field>
+              )
+            })()}
             {shape && analysisUnmet(shape, 'curve_fit') && (
               <StatusNote kind="warn">{analysisUnmet(shape, 'curve_fit')}</StatusNote>
             )}
@@ -3176,17 +3317,28 @@ function ComparePanel({
               <ToggleSwitch
                 label="Analysis"
                 // No highlight on an analysis the data can't take — nothing is really picked.
-                value={unmet ? ('' as CompareConfig['analysis']) : config.analysis}
+                value={
+                  unmet ? ('' as CompareConfig['analysis']) : noChoice ? 'compare' : config.analysis
+                }
                 options={(
                   [
-                    ['compare', 't-test'],
-                    ['two_way_anova', '2-way ANOVA']
+                    ['compare', 't-test', 'Each test group against its control'],
+                    [
+                      'anova',
+                      'ANOVA',
+                      'Whether the compared conditions change a gene at all, and which: an ANOVA'
+                    ]
                   ] as const
-                ).map(([value, label]) => {
+                ).map(([value, label, what]) => {
                   // An analysis the data's shape can't support is offered greyed, with why (unknown
-                  // until the upstream Clean data has run — then every one is offered).
-                  const why = shape ? analysisUnmet(shape, value) : null
-                  return { value, label, disabled: !!why, title: why ?? undefined }
+                  // until the upstream Clean data has run — then every one is offered); so is
+                  // the ANOVA on a comparison that leaves no choice.
+                  const why =
+                    (shape ? analysisUnmet(shape, value) : null) ??
+                    (value === 'anova' && noChoice
+                      ? 'One condition at two values: the t-test answers both'
+                      : null)
+                  return { value, label, disabled: !!why, title: why ?? what }
                 })}
                 onChange={switchAnalysis}
               />
@@ -3195,7 +3347,7 @@ function ComparePanel({
                 and when neither analysis can, where this data can go instead. */}
             {noCompare ? (
               <StatusNote kind="warn">
-                {`This data can’t take a t-test or a 2-way ANOVA — it ${inline(shape && analysisUnmet(shape, 'compare'))}.`}
+                {`This data can’t take a t-test or an ANOVA — it ${inline(shape && analysisUnmet(shape, 'compare'))}.`}
                 {curveFits && ' For a dose or time series, use a Curve fit tile.'}
               </StatusNote>
             ) : (
@@ -3222,8 +3374,10 @@ function ComparePanel({
           // Compare (t-test / 2-way ANOVA): the condition-row window.
           <CompareDialog
             id={id}
-            rows={std.rows}
+            // one row per sample, cached per result: all the window reads of the rows
+            rows={stdSampleRows(std)}
             active={std.activeConditions}
+            numericConditions={std.numericConditions ?? []}
             shape={shape ?? undefined}
             initial={{
               num: config.num,
@@ -3231,7 +3385,9 @@ function ComparePanel({
               match: config.match,
               compared: config.compared,
               pool: config.pool,
-              analysis: config.analysis
+              analysis: config.analysis,
+              asFactor: config.asFactor,
+              axisScale: config.axisScale
             }}
             onClose={() => setDialogOpen(false)}
           />
@@ -3239,8 +3395,10 @@ function ComparePanel({
         {dialogOpen && std && curve && (
           <CurveDialog
             id={id}
-            rows={std.rows}
+            // one row per sample, cached per result: all the window reads of the rows
+            rows={stdSampleRows(std)}
             active={std.activeConditions}
+            numericConditions={std.numericConditions ?? []}
             shape={shape ?? undefined}
             initial={{
               num: config.num,
@@ -3250,6 +3408,12 @@ function ComparePanel({
               controlBackground: config.controlBackground,
               surface: config.surface,
               surfaceDescription: config.surfaceDescription,
+              surfaceIntent: config.surfaceIntent,
+              responseAxis: config.responseAxis,
+              describeAll: config.describeAll,
+              interpolation: config.interpolation,
+              axisScale: config.axisScale,
+              axisBaseline: config.axisBaseline,
               detection: config.detection,
               curveMethod: config.curveMethod
             }}
@@ -3396,6 +3560,7 @@ function ContrastPanel({ id, config }: { id: string; config: ContrastConfig }) {
           id={id}
           rows={selRows}
           active={present}
+          numeric={numericOfResult(inputs.find((i) => i.id === from)?.result)}
           initial={{
             num: config.num ?? {},
             den: config.den ?? {},
@@ -3751,6 +3916,56 @@ function MAPanel({ config, update, edgeNodeId }: PlotPanelProps<MAConfig>): Reac
   )
 }
 
+/** The Curve metrics plot: which of the fit's parameters it draws (also the tile's switch). */
+function MetricsPanel({ config, update }: PlotPanelProps<MetricsConfig>): ReactNode {
+  return (
+    <Section title="Curve metrics">
+      <Field
+        label="metric"
+        aside={<QuickToggle config={config} field="metric" update={update} />}
+        info={
+          <>
+            The fitted parameter drawn for the gene on show: the potency (EC50 on a linear axis,
+            pEC50 on a log one), the slope or a plateau. A 2-D fit’s per slice, one bar per level.
+          </>
+        }
+      >
+        <Select
+          value={
+            config.metric && (METRIC_IDS as readonly string[]).includes(config.metric)
+              ? config.metric
+              : 'potency'
+          }
+          onChange={(v) => update({ metric: v as MetricId })}
+          options={METRIC_IDS.map((m) => ({ value: m, label: METRIC_NAMES[m] }))}
+        />
+      </Field>
+      <Field
+        label="show"
+        aside={<QuickToggle config={config} field="show" update={update} />}
+        info={
+          <>
+            A 2-D fit’s per-slice values <b>as they are</b>, or as their <b>change</b> (Δ) from the
+            reference slice — the compared axis’s control level as the Curve fit sets it (dose 0:
+            the vehicle’s curve), e.g. a melt’s Tm shift per dose. A curve has no reference: its
+            values as they are.
+          </>
+        }
+      >
+        <ToggleSwitch
+          label="Show"
+          value={config.show ?? 'value'}
+          options={[
+            { value: 'value', label: 'value' },
+            { value: 'delta', label: 'change' }
+          ]}
+          onChange={(v) => update({ show: v })}
+        />
+      </Field>
+    </Section>
+  )
+}
+
 function PotencyPanel({ config, update, edgeNodeId }: PlotPanelProps<PotencyConfig>): ReactNode {
   const names = useEffectNames(edgeNodeId)
   const colors = useEffectColors(edgeNodeId, config.fcPalette)
@@ -3879,13 +4094,16 @@ function PointStyleSections({
     min: number,
     max: number,
     /** sharing its cell with a swatch or a switch — take only the room they leave */
-    tight = false
+    tight = false,
+    /** the snap step — whole pixels, or 0.5 for a line width (outlines run thin) */
+    step = 1
   ): ReactNode => (
     <SizeBox
       value={value}
       onChange={onChange}
       min={min}
       max={max}
+      step={step}
       title={`${label} (px)`}
       tight={tight}
     />
@@ -3995,7 +4213,7 @@ function PointStyleSections({
                 </Fragment>
               ))}
 
-              {/* Marker outline — none by default, so a plot stays flat unless asked otherwise. */}
+              {/* Marker outline — a thin 0.5px by default (DEFAULT_OUTLINE). */}
               <span style={styles.rowLabel}>outline</span>
               {groups.map((g) => (
                 <div key={g.key} style={styles.ringCell}>
@@ -4014,7 +4232,8 @@ function PointStyleSections({
                     (v) => setGroup(g.key, { outline: v }),
                     0,
                     4,
-                    true
+                    true,
+                    0.5
                   )}
                 </div>
               ))}
@@ -4089,7 +4308,8 @@ function PointStyleSections({
                       (v) => setGroupHl(g.key, { ring: v }),
                       0,
                       3,
-                      true
+                      true,
+                      0.5
                     )}
                   </div>
                 ))}
@@ -4134,23 +4354,131 @@ function PointStyleSections({
             </div>
           )}
         </div>
+        {/* The threshold / reference guide lines — the plot's dashed cutoffs. */}
+        <Field label="threshold line">
+          <div style={{ width: 64 }}>
+            <SizeBox
+              value={style?.guideWidth ?? GUIDE_WIDTH}
+              onChange={(v) => setStyle({ guideWidth: v })}
+              min={0.5}
+              max={4}
+              step={0.5}
+              title="Threshold line width (px)"
+            />
+          </div>
+        </Field>
       </Section>
     </>
   )
 }
 
-const AXIS_OPTS = [
-  { value: 'dose', label: 'dose' },
-  { value: 'time', label: 'time' }
-]
-
 /** The DR panel: a Compare-fed DR's view (global, with its top-genes colour cap underneath, or
- *  focused), the dose⇆time axis when the data has both, and — one gene at a time (a Contrast, or a
+ *  focused), and — one gene at a time (a Contrast, or a
  *  focused Compare) — the value axis's scale. In the global view every gene is drawn as
  *  background; the cap decides how many of the strongest responders are coloured. */
+/** An ANOVA's variance plot: its view, and how many genes the detailed view shows. */
+function VariancePanel({ config, update }: PlotPanelProps<VarianceConfig>) {
+  const view = config.view ?? 'overview'
+  return (
+    <Section title="Variance">
+      <Field label="view" aside={<QuickToggle config={config} field="view" update={update} />}>
+        <Select
+          value={view}
+          onChange={(v) => update({ view: v as VarianceConfig['view'] })}
+          options={[
+            { value: 'overview', label: 'global (every gene, per factor)' },
+            { value: 'detail', label: 'detailed (genes side by side)' },
+            { value: 'focus', label: 'focused (one gene)' }
+          ]}
+        />
+      </Field>
+      {view === 'detail' && (
+        <Field label="top genes">
+          <div style={{ width: 90 }}>
+            <NumberInput
+              value={config.topGenes || 20}
+              step={5}
+              min={1}
+              max={60}
+              onChange={(v) => update({ topGenes: Math.max(1, Math.min(60, Math.round(v))) })}
+            />
+          </div>
+        </Field>
+      )}
+      <div style={styles.hint}>
+        {view === 'overview'
+          ? 'Each factor’s share of every gene’s variation, as a violin per factor — which factor drives this dataset.'
+          : view === 'detail'
+            ? 'The selected genes’ shares, else the most significant genes’ (smallest q of any factor), up to 60.'
+            : 'One gene’s shares, each factor’s q beside it — a share says how the change splits, the q whether it’s above noise.'}
+      </div>
+    </Section>
+  )
+}
+
+/** An ANOVA's interaction plot: the factors along x and as lines, and its look (the DR plot's). */
+function InteractionPanel({ config, update, edgeNodeId }: PlotPanelProps<InteractionConfig>) {
+  // the model's factors, from the upstream's result (unknown until it has run)
+  const factors = useGraph((s) => {
+    const upId = s.edges.find((e) => e.target === edgeNodeId)?.source
+    const r = upId ? s.results[upId] : undefined
+    return r?.kind === 'compare' ? r.cmp.anova?.factors : undefined
+  })
+  const axes = factors ? interactionAxes({ factors }, config.xFactor, config.lineFactor) : null
+  return (
+    <>
+      <Section title="Interaction">
+        {factors && factors.length >= 2 && (
+          <Field
+            label="x axis"
+            aside={<QuickToggle config={config} field="xFactor" update={update} />}
+          >
+            <Select
+              value={factors[axes!.x].condition}
+              onChange={(v) => update({ xFactor: v })}
+              options={factors.map((f) => ({ value: f.condition, label: condLabel(f.condition) }))}
+            />
+          </Field>
+        )}
+        {factors && factors.length >= 3 && axes?.line != null && (
+          <Field label="lines">
+            <Select
+              value={factors[axes.line].condition}
+              onChange={(v) => update({ lineFactor: v })}
+              options={factors
+                .filter((_, i) => i !== axes.x)
+                .map((f) => ({ value: f.condition, label: condLabel(f.condition) }))}
+            />
+          </Field>
+        )}
+        <div style={styles.hint}>
+          One gene at a time: each cell’s mean (the model’s fit) across the x factor, a line per
+          level of the other, its replicates as points and the mean’s standard error. Parallel
+          lines: no interaction; lines that diverge or cross: an interaction. With three or more
+          factors, the others are averaged (the model’s marginal means). A slope along x is drawn to
+          its scale: the model’s straight lines.
+        </div>
+      </Section>
+      <DRStyleSection
+        config={config}
+        update={update}
+        focused
+        detailed={false}
+        fromContrast={false}
+        curveFit={false}
+        texts={{
+          autoLine: 'one per level of the line factor',
+          points: 'Each cell’s replicates',
+          error: 'Each cell mean’s standard error (the model’s residual variance)'
+        }}
+      />
+    </>
+  )
+}
+
 function DRPanel({ config, update, edgeNodeId }: PlotPanelProps<DRConfig>) {
-  // Its axis (dose or time) is the plot's own — Dose-response and Time-response are separate
-  // plots — so it's never offered here.
+  // Its axis (a numeric condition) is the plot's own — one Response plot per condition — so it's
+  // never offered here.
   const upId = useGraph((s) => s.edges.find((e) => e.target === edgeNodeId)?.source)
   // From a Contrast the tile shows one gene at a time, so its value axis can be per gene.
   const fromContrast = useGraph((s) => {
@@ -4302,22 +4630,28 @@ function DRStyleSection({
   focused,
   detailed,
   fromContrast,
-  curveFit
+  curveFit,
+  texts
 }: {
-  config: DRConfig
+  config: Partial<DRConfig>
   update: (patch: Record<string, unknown>) => void
   focused: boolean
   /** the detailed view: points and error as focused, colours per gene as global */
   detailed: boolean
   fromContrast: boolean
   curveFit: boolean
+  /** another plot with the DR's look (the interaction plot): what its automatic line colour is,
+   *  and what its points and error are */
+  texts?: { autoLine: string; points: string; error: string }
 }): ReactNode {
   const look = drLook(config, curveFit)
-  const autoLine = fromContrast
-    ? 'one per side'
-    : focused
-      ? 'by effect group; one per comparison when several'
-      : 'one per gene'
+  const autoLine =
+    texts?.autoLine ??
+    (fromContrast
+      ? 'one per side'
+      : focused
+        ? 'by effect group; one per comparison when several'
+        : 'one per gene')
   const row: CSSProperties = { display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }
   const custom = DR_LOOK_FIELDS.some((f) => config[f] !== undefined)
   const color = (field: string, value: string, what: string, auto: string): ReactNode => (
@@ -4386,11 +4720,12 @@ function DRStyleSection({
                 on={look.points}
                 label="Points"
                 title={
-                  fromContrast
+                  texts?.points ??
+                  (fromContrast
                     ? "Each side's replicates behind its line"
                     : curveFit
                       ? 'The measured points the curve was fitted to'
-                      : 'The replicates behind each fold change'
+                      : 'The replicates behind each fold change')
                 }
                 onChange={(v) => update({ points: v })}
               />
@@ -4409,11 +4744,12 @@ function DRStyleSection({
                 on={look.errors}
                 label="Error"
                 title={
-                  fromContrast
+                  texts?.error ??
+                  (fromContrast
                     ? "Each side's standard error (its fold change's, or its abundance's)"
                     : curveFit
                       ? 'The fit’s 95% confidence band: where the true curve plausibly lies'
-                      : "The fold change's standard error"
+                      : "The fold change's standard error")
                 }
                 onChange={(v) => update({ errors: v })}
               />
@@ -4493,17 +4829,21 @@ function ResponsePanel({
   const globalFc = useRolePalette('fc')
   const dim = responseDim(config)
   const show = responseShow(config)
-  // The view by time or by dose slices: every 3-D line view, and a slices description's surface
-  // and heatmap too (its dose and time curves are separate fits) — see responseSliceable.
+  // The view by time or by dose slices: every line view, and a slices description's surface too
+  // (its dose and time curves are separate fits); never the heatmap — see responseSliceable.
   const upId = useGraph((s) => s.edges.find((e) => e.target === edgeNodeId)?.source)
   const { result } = useUpstreamFacts(upId)
   const rows = !measured && result?.kind === 'compare' ? result.cmp.rows : undefined
   const joint = !!rows?.some((r) => r.rs?.surface?.method === 'joint')
   const sliceable = responseSliceable(dim, show, rows)
   const slice = responseSlice(config, rows)
-  // What the lines are per — their Automatic palette is that levels' role (dose / time).
-  const linesPer: 'dose' | 'time' = dim === '3d' && slice === 'dose' ? 'dose' : 'time'
-  const lineRole = useRolePalette(linesPer)
+  // A measured plot is over its own pair (the first in the dose slot, the second in the time slot);
+  // a fitted surface over dose × time.
+  const [px0, py0]: [ConditionKey, ConditionKey] = measured ? tdrPair(config) : ['dose', 'time']
+  // What the lines are per — their Automatic palette is that levels' role (time's for time, dose's
+  // for dose and any other numeric condition, as the heatmap's level tracks).
+  const linesPer = slice === 'dose' ? px0 : py0
+  const lineRole = useRolePalette(linesPer === 'time' ? 'time' : 'dose')
   const look = responseLook(config)
   const lines = show === 'line'
   const valueScale = show !== 'line'
@@ -4547,7 +4887,7 @@ function ResponsePanel({
   )
   return (
     <>
-      <Section title="Dose & Time response">
+      <Section title={responseLabel([px0, py0])}>
         <Field label="view" aside={<QuickToggle config={config} field="dim" update={update} />}>
           <ToggleSwitch
             label="View"
@@ -4585,8 +4925,8 @@ function ResponsePanel({
               label="Curve"
               value={CURVE_OF_SLICE[slice]}
               options={[
-                { value: 'dose', label: 'dose' },
-                { value: 'time', label: 'time' }
+                { value: 'dose', label: condLabel(px0) },
+                { value: 'time', label: condLabel(py0) }
               ]}
               onChange={(v) => update({ slice: SLICE_OF_CURVE[v] })}
             />
@@ -4683,7 +5023,7 @@ function ResponsePanel({
                 'lineColor',
                 look.lineColor,
                 'Line',
-                `one per ${linesPer}, along the line palette`
+                `one per ${condLabel(linesPer)}, along the line palette`
               )}
               {px('lineWidth', look.lineWidth, 'Line width (px)', 0.5, 8)}
               {pct('lineOpacity', look.lineOpacity, 'Line opacity (%)')}
@@ -4696,7 +5036,10 @@ function ResponsePanel({
             <PanelPaletteSelect
               value={look.linePalette}
               onChange={(v) => update({ linePalette: v, linePaletteReverse: undefined })}
-              auto={{ palette: lineRole, label: `${paletteLabel(lineRole)} (${linesPer})` }}
+              auto={{
+                palette: lineRole,
+                label: `${paletteLabel(lineRole)} (${condLabel(linesPer)})`
+              }}
             />
           </Field>
         )}
@@ -5130,11 +5473,11 @@ function BubbleLookSection({
 }
 
 function BubblePanel({ config, update, edgeNodeId }: PlotPanelProps<BubbleConfig>) {
-  // Only offer the response axes the upstream data actually carries (dose and/or time); with one
-  // axis there's nothing to choose, so the selector is hidden and the config snaps to it.
+  // Only offer the numeric conditions the upstream data actually carries; with one axis there's
+  // nothing to choose, so the selector is hidden and the config snaps to it.
   const upId = useGraph((s) => s.edges.find((e) => e.target === edgeNodeId)?.source)
   const { axes: avail, result } = useUpstreamFacts(upId)
-  const axes = AXIS_OPTS.filter((o) => avail[o.value as 'dose' | 'time'])
+  const axes = avail.map((c) => ({ value: c, label: condLabel(c) }))
   // the significance column the upstream Compare calls by — the rank's other option
   const statName =
     result?.kind === 'compare' && result.cmp.threshold?.statType === 'pP' ? 'P-value' : 'Q-value'
@@ -5144,7 +5487,7 @@ function BubblePanel({ config, update, edgeNodeId }: PlotPanelProps<BubbleConfig
     if (axes.length > 0 && !axes.some((o) => o.value === config.axis))
       update({ axis: axes[0].value as BubbleConfig['axis'] })
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [avail.dose, avail.time, config.axis])
+  }, [avail.join('|'), config.axis])
   return (
     <>
       <Section title="Bubble">
@@ -5336,11 +5679,6 @@ function DumbbellPanel({ config, update, edgeNodeId }: PlotPanelProps<DumbbellCo
       />
     </>
   )
-}
-
-/** A model switch the method preset sets: shown faded while the preset holds it (MODEL_LOCK). */
-function ModelLock({ locked, children }: { locked: boolean; children: ReactNode }): ReactNode {
-  return <div {...(locked ? MODEL_LOCK : null)}>{children}</div>
 }
 
 /** One axis decoration (gridlines, zero line): show it, how it's stroked, how thick. The style
@@ -5724,7 +6062,9 @@ function GeneBarPanel({ config, update, edgeNodeId }: PlotPanelProps<BarConfig>)
   )
   // the primary colour condition's levels, for the colouring's default (condColorByDefault)
   const levels = upstream?.kind === 'standardize' ? primaryColorLevels(upstream.std) : 0
-  const colorConds = barColorConds(config, active, levels)
+  // the data's numeric conditions (its schema): what the fade can take
+  const numeric = useMemo(() => numericOfResult(upstream), [upstream])
+  const colorConds = barColorConds(config, active, levels, numeric)
   const byCondition =
     colorConds.length > 0 ||
     (config.colorBy ?? (condColorByDefault(levels) ? 'condition' : 'value')) === 'condition'
@@ -5864,7 +6204,9 @@ function GeneBarPanel({ config, update, edgeNodeId }: PlotPanelProps<BarConfig>)
                   : {
                       colorBy: 'condition',
                       // Start from what was there, else the first categorical condition.
-                      colorConds: colorConds.length ? colorConds : defaultColorConds(active)
+                      colorConds: colorConds.length
+                        ? colorConds
+                        : defaultColorConds(active, numeric)
                     }
               )
             }
@@ -5877,6 +6219,7 @@ function GeneBarPanel({ config, update, edgeNodeId }: PlotPanelProps<BarConfig>)
         {byCondition && (
           <ConditionColorFields
             active={active}
+            numeric={numeric}
             selected={colorConds}
             onChange={(next) => update({ colorBy: 'condition', colorConds: next })}
           />
@@ -5892,21 +6235,24 @@ function GeneBarPanel({ config, update, edgeNodeId }: PlotPanelProps<BarConfig>)
  *  cluster's, which picks the condition directly) and offers the fade alone. */
 function ConditionColorFields({
   active,
+  numeric,
   selected,
   onChange,
   colour = true
 }: {
   /** the conditions the upstream data carries */
   active: ConditionKey[]
+  /** of those, the numeric ones (the data's schema): what the fade can take */
+  numeric: NumericConds
   selected: ConditionKey[]
   onChange: (next: ConditionKey[]) => void
   colour?: boolean
 }): ReactNode {
   const NONE = ''
-  const cats = active.filter((c) => !isNumericCond(c))
-  const nums = active.filter((c) => isNumericCond(c))
-  const cat = selected.find((c) => !isNumericCond(c)) ?? NONE
-  const num = selected.find((c) => isNumericCond(c)) ?? NONE
+  const cats = active.filter((c) => !isNumericCond(c, numeric))
+  const nums = active.filter((c) => isNumericCond(c, numeric))
+  const cat = selected.find((c) => !isNumericCond(c, numeric)) ?? NONE
+  const num = selected.find((c) => isNumericCond(c, numeric)) ?? NONE
   const pick = (c: string, n: string): void =>
     onChange([c, n].filter((k) => k !== NONE) as ConditionKey[])
   const opts = (keys: ConditionKey[], none: boolean): Array<{ value: string; label: string }> => [
@@ -5954,6 +6300,7 @@ function ClusterPanel({ config, update, edgeNodeId }: PlotPanelProps<ClusterConf
     () => (upstream?.kind === 'standardize' ? upstream.std.activeConditions : CONDS),
     [upstream]
   )
+  const numeric = useMemo(() => numericOfResult(upstream), [upstream])
   // If the stored colorBy isn't an active condition for this upstream, snap it to the first.
   // 'cluster' is a deliberate non-condition choice, so it is left alone.
   useEffect(() => {
@@ -6110,17 +6457,18 @@ function ClusterPanel({ config, update, edgeNodeId }: PlotPanelProps<ClusterConf
         </Field>
         {/* Coloured by a categorical condition (cmpd, cell…): a dose/time fade under it, as QC
             and the gene bar — the colour-by above is the colour. */}
-        {config.colorBy !== CLUSTER_COLOR && !isNumericCond(config.colorBy as ConditionKey) && (
+        {config.colorBy !== CLUSTER_COLOR && !isNumericCond(config.colorBy, numeric) && (
           <ConditionColorFields
             colour={false}
             active={active}
-            selected={clusterColorConds(config)}
+            numeric={numeric}
+            selected={clusterColorConds(config, numeric)}
             onChange={(next) =>
               next.length > 0 &&
               update({
                 colorConds: next,
                 // colorBy follows: the colour condition, else the one picked
-                colorBy: next.find((k) => !isNumericCond(k)) ?? next[0]
+                colorBy: next.find((k) => !isNumericCond(k, numeric)) ?? next[0]
               })
             }
           />
@@ -6316,7 +6664,7 @@ function ClusterMarkerField({
         {centroid
           ? pct('centroidOpacity', st.centroidOpacity, 'Centroid opacity (%)')
           : pct('markerOpacity', st.markerOpacity, 'Dot opacity (%)')}
-        {px('outlineWidth', st.outlineWidth ?? (centroid ? 1.5 : 0), 'Outline width (px)', 0, 4)}
+        {px('outlineWidth', st.outlineWidth ?? DEFAULT_OUTLINE, 'Outline width (px)', 0, 4)}
         <ColorChip
           color={st.outlineColor}
           on
@@ -6492,7 +6840,67 @@ function StringPanel({ config, update }: PlotPanelProps<StringConfig>) {
         </div>
       </Field>
       <div style={styles.hint}>NCBI taxon override (e.g. 9606 human); 0 = detected species.</div>
+      <StringOutlineField
+        label="query outline"
+        width={config.queryOutline}
+        color={config.queryOutlineColor}
+        auto="black"
+        onWidth={(v) => update({ queryOutline: v })}
+        onColor={(c) => update({ queryOutlineColor: c })}
+      />
+      <StringOutlineField
+        label="interactor outline"
+        width={config.interactorOutline}
+        color={config.interactorOutlineColor}
+        auto="the background"
+        onWidth={(v) => update({ interactorOutline: v })}
+        onColor={(c) => update({ interactorOutlineColor: c })}
+      />
     </Section>
+  )
+}
+
+/** One kind of STRING node's outline: width (px) and colour (AUTO = `auto`, its default ink). */
+function StringOutlineField({
+  label,
+  width,
+  color,
+  auto,
+  onWidth,
+  onColor
+}: {
+  label: string
+  width: number | undefined
+  color: string | undefined
+  auto: string
+  onWidth: (v: number) => void
+  onColor: (c: string) => void
+}): ReactNode {
+  const ink = color ?? AUTO
+  return (
+    <Field label={label}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
+        <div style={{ width: 52, flex: '0 0 auto' }}>
+          <NumberInput
+            value={width ?? STRING_OUTLINE}
+            step={0.5}
+            min={0}
+            max={4}
+            title={`${label} width (px)`}
+            onChange={(v) => onWidth(Math.min(4, Math.max(0, Math.round(v * 4) / 4)))}
+          />
+        </div>
+        <ColorChip
+          color={ink}
+          on
+          label={`${label} colour`}
+          title={ink === AUTO ? `${label} colour: automatic (${auto})` : `${label} colour`}
+          onPick={onColor}
+          onAuto={() => onColor(AUTO)}
+          autoLabel={`Automatic (${auto})`}
+        />
+      </div>
+    </Field>
   )
 }
 
@@ -6510,6 +6918,7 @@ function QcPanel({ config, update, edgeNodeId }: PlotPanelProps<QcConfig>) {
   )
   // the primary colour condition's levels, for the colouring's default (condColorByDefault)
   const levels = upstream?.kind === 'standardize' ? primaryColorLevels(upstream.std) : 0
+  const numeric = useMemo(() => numericOfResult(upstream), [upstream])
   const byCondition = qcColorBy(config, levels) === 'condition'
   const color = config.color ?? QC_FILL
   return (
@@ -6571,7 +6980,9 @@ function QcPanel({ config, update, edgeNodeId }: PlotPanelProps<QcConfig>) {
             update({
               colorBy: 'condition',
               // Start from what was there, else the first categorical condition.
-              colorConds: config.colorConds?.length ? config.colorConds : defaultColorConds(active)
+              colorConds: config.colorConds?.length
+                ? config.colorConds
+                : defaultColorConds(active, numeric)
             })
           }
           autoLabel="Automatic (by condition)"
@@ -6580,7 +6991,8 @@ function QcPanel({ config, update, edgeNodeId }: PlotPanelProps<QcConfig>) {
       {byCondition && (
         <ConditionColorFields
           active={active}
-          selected={qcColorConds(config, active, levels)}
+          numeric={numeric}
+          selected={qcColorConds(config, active, levels, numeric)}
           onChange={(next) => update({ colorConds: next })}
         />
       )}
@@ -7734,6 +8146,20 @@ const styles: Record<string, CSSProperties> = {
     fontSize: 12,
     boxSizing: 'border-box'
   },
+  condRow: { display: 'flex', alignItems: 'center', gap: 6, minWidth: 0, width: '100%' },
+  condNone: { fontSize: 12, color: UI.textMuted },
+  typeChip: {
+    flex: 'none',
+    fontSize: 10,
+    fontWeight: 600,
+    lineHeight: '14px',
+    padding: '1px 6px',
+    borderRadius: 9,
+    border: `1px solid ${UI.border}`,
+    color: UI.textMuted,
+    whiteSpace: 'nowrap'
+  },
+  typeChipBtn: { background: 'transparent', cursor: 'pointer', color: UI.text },
   input: {
     width: '100%',
     background: UI.panelAlt,

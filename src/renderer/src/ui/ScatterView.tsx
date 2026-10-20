@@ -24,7 +24,15 @@ import {
   resolveHighlight,
   type ResolvedGroup
 } from './pointStyle'
-import { axisBase, EFFECT_COLOR, CATEGORICAL, guideLine, PALETTES, plotBase } from './theme'
+import {
+  axisBase,
+  EFFECT_COLOR,
+  CATEGORICAL,
+  GUIDE_WIDTH,
+  guideLine,
+  PALETTES,
+  plotBase
+} from './theme'
 import { useSelectedGeneSets } from './useSelection'
 import { useUiTheme } from './useUiTheme'
 
@@ -96,6 +104,7 @@ export function ScatterView({
   )
   const emphasis = useMemo(() => resolveHighlight(style), [style])
   const showLegend = legendOn(style)
+  const gw = style?.guideWidth ?? GUIDE_WIDTH
 
   const editable = !!onStatDrag
   const { data, layout, labels, guides } = useMemo(() => {
@@ -207,7 +216,7 @@ export function ScatterView({
     // around it — dissonant genes sit outside. An *independent* one gets two thresholds on
     // each axis, carving the plane into 9 zones, and no line of identity.
     const g = scatter.guide
-    const gLine = guideLine(p)
+    const gLine = guideLine(p, gw)
     const curve = (d: { x: number[]; y: number[] }, dashed: boolean) => ({
       type: 'scatter',
       mode: 'lines',
@@ -215,7 +224,7 @@ export function ScatterView({
       showlegend: false,
       x: d.x,
       y: d.y,
-      line: { color: p.textMuted, width: 1.5, dash: dashed ? 'dash' : 'solid' },
+      line: { color: p.textMuted, width: gw, dash: dashed ? 'dash' : 'solid' },
       opacity: dashed ? 0.7 : 0.55
     })
     // The band's edges are path SHAPES (a guide is a shape, so they can be dragged), drawn at the
@@ -250,7 +259,7 @@ export function ScatterView({
     const edge = (side: 1 | -1) => ({
       type: 'path',
       path: bandEdgePath(band!, side > 0 ? conf.confUp : conf.confDown, side),
-      line: { color: p.textMuted, width: 1.5, dash: 'dash' },
+      line: { color: p.textMuted, width: gw, dash: 'dash' },
       opacity: 0.7
     })
     const hLine = (y: number) => ({
@@ -411,7 +420,19 @@ export function ScatterView({
       ]
     })
     return { data: [...guideTraces, ...pointTraces, ...selTrace], layout: lay, labels, guides }
-  }, [scatter, title, labelTop, mode, marginal, groups, showLegend, selSets, editable, asymmetric])
+  }, [
+    scatter,
+    title,
+    labelTop,
+    mode,
+    marginal,
+    groups,
+    showLegend,
+    selSets,
+    editable,
+    asymmetric,
+    gw
+  ])
 
   // A released guide → its cutoff: a band edge reports its solved confidence; an axis line, the q
   // its new position stands for.

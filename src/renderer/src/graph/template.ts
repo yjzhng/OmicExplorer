@@ -56,7 +56,10 @@ function loadConfig(cfg: LoadConfig, keepMapping: boolean): LoadConfig {
   const out: LoadConfig = { ...cfg, data: null, samplesheet: null, db: null, matrix: null }
   if (keepMapping && cfg.interactive) out.interactive = templateSpec(cfg.interactive)
   else delete out.interactive
-  if (!keepMapping) delete out.units
+  if (!keepMapping) {
+    delete out.units
+    delete out.numericConditions
+  }
   return out
 }
 
@@ -139,7 +142,8 @@ export function projectFromTemplate(text: string): ProjectFile {
 /** A template's import spec (columns left empty — see templateSpec) fitted onto a matrix's freshly
  *  read one (`read`: its columns, and roles guessed by the template's preset): what still applies
  *  carries over — a column's role, a sample's conditions and name spans, a filter — wherever the
- *  same header is in the new matrix; the separator, custom conditions and preset always do. */
+ *  same header is in the new matrix; the separator, custom conditions (and which are numeric) and
+ *  preset always do. */
 export function fitTemplateSpec(
   tpl: InteractiveImport,
   read: InteractiveImport
@@ -154,6 +158,7 @@ export function fitTemplateSpec(
   }
   if (tpl.customConditions) out.customConditions = [...tpl.customConditions]
   if (tpl.hiddenConditions) out.hiddenConditions = [...tpl.hiddenConditions]
+  if (tpl.numericConditions) out.numericConditions = [...tpl.numericConditions]
   if (tpl.separator) out.separator = tpl.separator
   if (tpl.preset) out.preset = tpl.preset
   const spans = pick(tpl.spans)

@@ -12,6 +12,7 @@ import {
   PROJECT_VERSION,
   projectHeader,
   projectStanding,
+  upgradeChanges,
   RawJson,
   savedByVersion,
   serializeProject,
@@ -385,13 +386,110 @@ describe('project format version', () => {
       savedBy,
       createdWith: null
     })
-    expect(projectStanding(h(MIGRATED_THROUGH), '0.3.7')).toBe('current')
-    expect(projectStanding(h('0.3.5'), '0.3.7')).toBe('older')
-    // Before 0.3.5 a file named no app version: older by definition.
-    expect(projectStanding(h(null), '0.3.7')).toBe('older')
-    expect(projectStanding(h(MIGRATED_THROUGH, PROJECT_VERSION - 1), '0.3.7')).toBe('older')
-    expect(projectStanding(h('0.9.0'), '0.3.7')).toBe('newer')
-    expect(projectStanding(h(MIGRATED_THROUGH, PROJECT_VERSION + 1), '0.3.7')).toBe('newer')
+    expect(projectStanding(h(MIGRATED_THROUGH), '0.3.8')).toBe('current')
+    // Saved before the last upgrade: older only when that upgrade changes it (upgradeChanges);
+    // not known yet counts as unchanged, so no amber flash while it's checked.
+    expect(projectStanding(h('0.3.5'), '0.3.8', true)).toBe('older')
+    expect(projectStanding(h('0.3.5'), '0.3.8', false)).toBe('current')
+    expect(projectStanding(h('0.3.5'), '0.3.8')).toBe('current')
+    expect(projectStanding(h(null), '0.3.8', true)).toBe('older')
+    // a file saved since the last upgrade isn't flagged, whatever a check said
+    expect(projectStanding(h(MIGRATED_THROUGH), '0.3.8', true)).toBe('current')
+    expect(projectStanding(h(MIGRATED_THROUGH, PROJECT_VERSION - 1), '0.3.8')).toBe('older')
+    expect(projectStanding(h('0.9.0'), '0.3.8')).toBe('newer')
+    expect(projectStanding(h(MIGRATED_THROUGH, PROJECT_VERSION + 1), '0.3.8')).toBe('newer')
+  })
+
+  it('tells a file the upgrades change from one they leave as it was', () => {
+    const doc = emptyWorkflowDoc()
+    const file = (config: Record<string, unknown>): string =>
+      serializeProject({
+        format: 'omicexplorer-project',
+        version: PROJECT_VERSION,
+        name: 'P',
+        activeFolderId: 'fd-a',
+        folders: [
+          {
+            id: 'fd-a',
+            name: 'exp',
+            path: '/data/exp',
+            activeWorkflowId: 'wf-a',
+            workflows: [
+              {
+                id: 'wf-a',
+                name: 'Main',
+                doc: {
+                  ...doc,
+                  nodes: [
+                    {
+                      id: 'standardize-1',
+                      type: 'step',
+                      position: { x: 0, y: 0 },
+                      data: { kind: 'standardize', config }
+                    }
+                  ]
+                } as typeof doc,
+                results: sampleResults()
+              }
+            ]
+          }
+        ]
+      } as ProjectFile)
+    // current form: nothing to rewrite, whichever release stamped it
+    expect(upgradeChanges(file({ activeConditions: ['cell', 'cmpd'] }))).toBe(false)
+    // the pre-0.3.3 name of the cell condition: the upgrade renames it
+    expect(upgradeChanges(file({ activeConditions: ['strain', 'cmpd'] }))).toBe(true)
+  })
+
+  it('reads a saved 2-way ANOVA as the ANOVA, its factors kept as factors (0.3.8)', () => {
+    const doc = emptyWorkflowDoc()
+    const config = {
+      analysis: 'two_way_anova',
+      condition: 'cmpd',
+      condition2: 'time',
+      num: { cmpd: ['A'], time: ['60'] },
+      den: { cmpd: ['DMSO'], time: ['0'] },
+      match: ['cell']
+    }
+    const text = JSON.stringify({
+      format: 'omicexplorer-project',
+      version: PROJECT_VERSION,
+      appVersion: '0.3.7',
+      name: 'P',
+      activeFolderId: 'fd-a',
+      folders: [
+        {
+          id: 'fd-a',
+          name: 'exp',
+          path: '/data/exp',
+          activeWorkflowId: 'wf-a',
+          workflows: [
+            {
+              id: 'wf-a',
+              name: 'Main',
+              doc: {
+                ...doc,
+                nodes: [
+                  {
+                    id: 'compare-1',
+                    type: 'step',
+                    position: { x: 0, y: 0 },
+                    data: { kind: 'compare', config }
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    })
+    expect(upgradeChanges(text)).toBe(true)
+    const node = deserializeProject(text).folders[0].workflows[0].doc.nodes[0]
+    expect(node.data.config).toMatchObject({
+      analysis: 'anova',
+      compared: ['cmpd', 'time'],
+      asFactor: ['cmpd', 'time']
+    })
   })
 
   it('compares dotted versions numerically', () => {

@@ -11,7 +11,7 @@ import { useGraph } from '../graph/store'
 import { tooltip } from './condTooltip'
 import { PlotlyChart, type GuideDrag } from './PlotlyChart'
 import { legendOn, resolveGroups, resolveHighlight } from './pointStyle'
-import { axisBase, EFFECT_COLOR, guideLine, PALETTES, plotBase } from './theme'
+import { axisBase, EFFECT_COLOR, GUIDE_WIDTH, guideLine, PALETTES, plotBase } from './theme'
 import { useSelectedGeneSets } from './useSelection'
 import { useUiTheme } from './useUiTheme'
 
@@ -77,6 +77,7 @@ export function MAView({
   const editable = !!onThresholdChange
   const emphasis = useMemo(() => resolveHighlight(style), [style])
   const showLegend = legendOn(style)
+  const gw = style?.guideWidth ?? GUIDE_WIDTH
 
   const { data, layout, labels, guides } = useMemo(() => {
     const p = PALETTES[mode]
@@ -169,7 +170,7 @@ export function MAView({
       x1: hi,
       y0: y,
       y1: y,
-      line: guideLine(p)
+      line: guideLine(p, gw)
     })
     // Pin explicit axis ranges (with padding) so the range never re-pads on hover — otherwise
     // the enlarged overlay marker on an edge point shifts the whole cloud and bounces the hover.
@@ -243,7 +244,7 @@ export function MAView({
       .filter((pt) => look(pt.effect).label)
       .map((pt) => ({ x: pt.x, y: pt.y, text: pt.label, priority: Math.abs(pt.y), id: pt.uniqID }))
     return { data: traces, layout: lay, labels, guides }
-  }, [ma, title, mode, selSets, samThreshold, asymmetric, editable, groups, showLegend])
+  }, [ma, title, mode, selSets, samThreshold, asymmetric, editable, groups, showLegend, gw])
 
   // Symmetric: whichever line moved, set both cutoffs to ±|value| about 0. Asymmetric: one side.
   const onGuide = (key: string, value: number): void => {

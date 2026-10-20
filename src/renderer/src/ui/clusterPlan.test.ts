@@ -6,11 +6,14 @@
  */
 import { describe, expect, it } from 'vitest'
 
-import { customCond, type ClusterMeta, type ConditionKey } from '../engine'
+import { customCond, numericConds, type ClusterMeta, type ConditionKey } from '../engine'
 import { condsOf, planAesthetics } from './clusterPlan'
 
+/** dose and time numeric, no custom condition declared (the schema of these tests' data) */
+const numeric = numericConds()
+
 const plan = (varying: ConditionKey[], conds?: ConditionKey[]) =>
-  planAesthetics(new Set(varying), conds ?? ['cell', 'cmpd', 'dose', 'time'])
+  planAesthetics(new Set(varying), conds ?? ['cell', 'cmpd', 'dose', 'time'], numeric)
 
 const GENO = customCond('genotype')
 const MEDIUM = customCond('medium')
@@ -141,8 +144,8 @@ describe('condsOf', () => {
 
 describe('the user’s channel choices', () => {
   const ALL: ConditionKey[] = ['cell', 'cmpd', 'dose', 'time']
-  const withOv = (varying: ConditionKey[], ov: Parameters<typeof planAesthetics>[2]) =>
-    planAesthetics(new Set(varying), ALL, ov)
+  const withOv = (varying: ConditionKey[], ov: Parameters<typeof planAesthetics>[3]) =>
+    planAesthetics(new Set(varying), ALL, numeric, ov)
 
   it('no choices: exactly the automatic plan', () => {
     for (const v of [
@@ -188,5 +191,38 @@ describe('the user’s channel choices', () => {
 
   it('skips a chosen colour condition that does not vary', () => {
     expect(withOv(['cell', 'dose'], { color: ['cmpd'] })).toMatchObject({ colorKey: 'cell' })
+  })
+})
+
+describe('a custom condition declared numeric takes the ordered channels, as dose and time do', () => {
+  const TEMP = customCond('temp')
+  const conds: ConditionKey[] = ['cell', 'cmpd', 'dose', 'time', TEMP]
+  const declared = numericConds([TEMP])
+  const planD = (varying: ConditionKey[]) => planAesthetics(new Set(varying), conds, declared)
+
+  it('with one qualitative it takes the shade', () => {
+    expect(planD(['cell', TEMP])).toMatchObject({
+      colorKey: 'cell',
+      shadeKey: TEMP,
+      arrowKey: null
+    })
+  })
+  it('beside dose, dose keeps the arrows and it takes the shade', () => {
+    expect(planD(['cmpd', 'dose', TEMP])).toMatchObject({
+      colorKey: 'cmpd',
+      arrowKey: 'dose',
+      shadeKey: TEMP
+    })
+  })
+  it('alone it becomes a ramp', () => {
+    expect(planD([TEMP])).toMatchObject({ colorKey: TEMP, colorRamp: true })
+  })
+  it('undeclared, the same condition is categorical: colour only', () => {
+    expect(planAesthetics(new Set(['cell', TEMP]), conds, numeric)).toMatchObject({
+      grouped: true,
+      quals: ['cell', TEMP],
+      shadeKey: null,
+      arrowKey: null
+    })
   })
 })

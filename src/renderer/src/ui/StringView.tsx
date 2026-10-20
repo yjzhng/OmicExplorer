@@ -22,6 +22,8 @@ import { useSelection } from './useSelection'
 import { ROLE_DEFAULTS, paletteScale, type PaletteRef } from './palettes'
 import { axisBase, CATEGORICAL, plotBase, PALETTES, UI } from './theme'
 import { useUiTheme } from './useUiTheme'
+import { AUTO } from './ColorPicker'
+import { STRING_OUTLINE, type StringConfig } from '../graph/types'
 
 /** A cluster's own id — its hull's, as the hover and a click's selection see it (apart from any
  *  gene's id). */
@@ -105,7 +107,8 @@ const NODE_INSET = 1
  * STRING PPI network for the top differential genes, laid out force-directed and drawn as nodes
  * (log₂FC colour, degree size) over confidence-scored edges. Territories come from Markov clustering
  * of the interactions. Optionally pulls in first-shell interactors (proteins that connect to the
- * query set) as context; query genes get a black outline, interactors a thin one.
+ * query set) as context; query genes get a black outline, interactors a background one (both
+ * settable — `outlines`).
  * All data is read locally from the cached organism files (fetched in the import).
  */
 export function StringView({
@@ -119,7 +122,8 @@ export function StringView({
   addInteractors = false,
   title,
   onLevels,
-  palette
+  palette,
+  outlines
 }: {
   rows: CompareResultRow[]
   displayMap?: Record<string, string>
@@ -142,6 +146,11 @@ export function StringView({
   onLevels?: (levels: Set<StringLevel> | null) => void
   /** the fold-change palette the nodes are coloured on (the plot's own, else the global one) */
   palette?: PaletteRef
+  /** the nodes' outline widths and colours (the plot's config); unset = the defaults */
+  outlines?: Pick<
+    StringConfig,
+    'queryOutline' | 'queryOutlineColor' | 'interactorOutline' | 'interactorOutlineColor'
+  >
 }) {
   const mode = useUiTheme((s) => s.mode)
   // The tile's width, so the cluster legend flows into what fits — and re-flows as the tile is
@@ -200,6 +209,10 @@ export function StringView({
     onLevels?.(levels)
   }, [levels, onLevels])
 
+  const qLine = outlines?.queryOutline ?? STRING_OUTLINE
+  const qInk = outlines?.queryOutlineColor
+  const iLine = outlines?.interactorOutline ?? STRING_OUTLINE
+  const iInk = outlines?.interactorOutlineColor
   const { data, layout, nConnected, labels, labelColor, hover, moduleIds, more } = useMemo(() => {
     const p = PALETTES[mode]
     if (!net)
@@ -342,10 +355,19 @@ export function StringView({
         cmid: 0,
         cmin: -maxAbs,
         cmax: maxAbs,
-        // Differential (query) genes get a black outline; context genes a thin background outline.
+        // Differential (query) genes get a black outline; context genes a background one — unless
+        // the config sets either.
         line: {
-          width: nodeOrder.map((i) => (vis[i].isQuery ? 1.8 : 0.6)),
-          color: nodeOrder.map((i) => (vis[i].isQuery ? '#000000' : p.bg))
+          width: nodeOrder.map((i) => (vis[i].isQuery ? qLine : iLine)),
+          color: nodeOrder.map((i) =>
+            vis[i].isQuery
+              ? qInk && qInk !== AUTO
+                ? qInk
+                : '#000000'
+              : iInk && iInk !== AUTO
+                ? iInk
+                : p.bg
+          )
         },
         colorbar: { title: { text: 'log₂FC', side: 'right' }, thickness: 12 }
       }
@@ -366,7 +388,7 @@ export function StringView({
         // while it's lit and the others hide (labelsInPlace)
         id: focusId[i],
         // marker radius (size is a diameter) + half the stroke, so the label clears large nodes.
-        radius: sizeOf(degree[i]) / 2 + 1.8 / 2,
+        radius: sizeOf(degree[i]) / 2 + qLine / 2,
         // tight gap so the label hugs the node.
         margin: 1
       }))
@@ -526,7 +548,20 @@ export function StringView({
       moduleIds,
       more
     }
-  }, [net, mode, title, genes, annotationMap, maxGenes, fcScale, legendBudget])
+  }, [
+    net,
+    mode,
+    title,
+    genes,
+    annotationMap,
+    maxGenes,
+    fcScale,
+    legendBudget,
+    qLine,
+    qInk,
+    iLine,
+    iInk
+  ])
 
   // Hover a node → highlight it + its neighbours + the connecting edges. Done imperatively (restyle
   // + overlay traces) so it never re-renders/resets the pan-zoom. Dims the base nodes/edges and draws
@@ -662,14 +697,9 @@ export function StringView({
         })
         relayout(u)
       }
-      // Overlay a set of nodes (bright markers) + the given edge segments, over the dimmed base.
-      // `focus` (the hovered gene's nodes — several for a protein group) gets a heavier outline.
-      const overlay = (
-        idxs: number[],
-        ex: (number | null)[],
-        ey: (number | null)[],
-        focus: Set<number> = new Set()
-      ): void => {
+      // Overlay a set of nodes (bright markers, a 1px outline) + the given edge segments, over the
+      // dimmed base.
+      const overlay = (idxs: number[], ex: (number | null)[], ey: (number | null)[]): void => {
         clearOverlay()
         dim(true)
         // the nodes with a label placed (the shared layer's, tagged with the node's id)
@@ -708,7 +738,7 @@ export function StringView({
                 cmin: h.cmin,
                 cmax: h.cmax,
                 opacity: 1,
-                line: { width: idxs.map((i) => (focus.has(i) ? 2.4 : 1.4)), color: '#000000' }
+                line: { width: 1, color: '#000000' }
               }
             }
           ])
@@ -717,12 +747,12 @@ export function StringView({
         }
       }
       // Highlight the given nodes — only them, never their neighbours (a lit neighbour reads as
-      // the gene itself) — and their edges, bolding every involved module. `focus` (the hovered
-      // node, if any) gets the heavier outline. `spread` = the nodes whose every edge lights (a
+      // the gene itself) — and their edges, bolding every involved module. `spread` = the nodes
+      // whose every edge lights (a
       // hovered or selected gene); the rest (a hovered GROUP's members — an enrichment term's
       // genes, a cluster) light just the links among them: all of theirs would light most of the
       // network.
-      const highlightNodes = (ks: number[], focus: Set<number>, spread: Set<number>): void => {
+      const highlightNodes = (ks: number[], spread: Set<number>): void => {
         const inSet = new Set<number>(ks)
         const ex: (number | null)[] = []
         const ey: (number | null)[] = []
@@ -740,7 +770,7 @@ export function StringView({
             }
           }
         }
-        overlay([...inSet], ex, ey, focus)
+        overlay([...inSet], ex, ey)
         const mods = new Set<number>()
         for (const k of ks) {
           const m = h.moduleByNode[k] ?? -1
@@ -774,7 +804,7 @@ export function StringView({
         // hovered or selected gene lights its neighbourhood as well.
         const group = hoverMembers.length > 0
         const spread = new Set([...pinIdx, ...(group ? [] : hovIdx)])
-        highlightNodes(idxs, new Set([...hovIdx, ...memIdx]), spread)
+        highlightNodes(idxs, spread)
       }
       trimEdges()
       applyFocus()

@@ -18,6 +18,8 @@ import {
   buildHeatmap,
   buildQc,
   pickBalanced,
+  metaValue,
+  sampleHierarchy,
   sortSamples,
   type SampleMeta
 } from './plotData'
@@ -629,6 +631,76 @@ describe('sample order', () => {
   })
 })
 
+describe('sampleHierarchy', () => {
+  const m = (
+    cmpd: string,
+    dose: number | null,
+    time: number | null,
+    extra?: Record<string, string>
+  ): SampleMeta => ({ cell: '', cmpd, dose, time, rep: 1, ...(extra ? { extra } : null) })
+  /** every combination of the given levels */
+  const grid = (cmpds: string[], doses: number[], temps: string[]): SampleMeta[] =>
+    cmpds.flatMap((c) => doses.flatMap((d) => temps.map((t) => m(c, d, null, { temp: t }))))
+  /** a sorted axis' breaks: summed over the hierarchy's tracks */
+  const breaks = (ms: SampleMeta[]): number =>
+    sampleHierarchy(ms).reduce((sum, c, i, h) => {
+      const sorted = sortSamples([...ms], { by: 'natural' }, (x) => x, true)
+      const key = (x: SampleMeta): string =>
+        h
+          .slice(0, i + 1)
+          .map((k) => String(metaValue(x, k)))
+          .join('|')
+      return sum + sorted.filter((x, j) => j > 0 && key(x) !== key(sorted[j - 1])).length
+    }, 0)
+
+  it('puts the fewest levels outermost in a full design', () => {
+    // 2 compounds × 5 doses × 2 temperatures: the custom moves above dose
+    const ms = grid(['A', 'B'], [0, 1, 10, 100, 1000], ['37', '42'])
+    expect(sampleHierarchy(ms)).toEqual(['cmpd', '@temp', 'dose'])
+  })
+  it('keeps the usual order between conditions that tie', () => {
+    const ms = grid(['A', 'B'], [1, 10], ['37', '42'])
+    expect(sampleHierarchy(ms)).toEqual(['cmpd', 'dose', '@temp'])
+  })
+  it('puts conditions that never vary first, and leaves out absent ones', () => {
+    const ms = [m('A', 1, 60), m('A', 10, 60), m('A', 100, 60)]
+    expect(sampleHierarchy(ms)).toEqual(['cmpd', 'time', 'dose'])
+  })
+  it('counts an uneven design as it is', () => {
+    // the vehicle only at dose 0: 3 dose blocks + 7 combinations beat 4 compound blocks + 7
+    const ms = [
+      m('DMSO', 0, null),
+      ...['A', 'B', 'C'].flatMap((c) => [m(c, 1, null), m(c, 10, null)])
+    ]
+    expect(sampleHierarchy(ms)).toEqual(['dose', 'cmpd'])
+    expect(breaks(ms)).toBe(2 + 6)
+  })
+  it('sorts the axis by it, so each outer block is contiguous', () => {
+    const ms = grid(['A', 'B'], [0, 1, 10, 100, 1000], ['37', '42'])
+    const sorted = sortSamples([...ms], { by: 'natural' }, (x) => x, true)
+    const temps = sorted.map((x) => x.extra?.temp)
+    // within each compound, all of one temperature then the other
+    expect(temps.slice(0, 10)).toEqual([...Array(5).fill('37'), ...Array(5).fill('42')])
+  })
+  it('stacks the heatmap tracks in the same order', () => {
+    const rows: StandardRow[] = grid(['A', 'B'], [0, 1, 10, 100, 1000], ['37', '42']).map((x) => ({
+      uniqID: 'g',
+      cell: '',
+      cmpd: x.cmpd,
+      dose: x.dose,
+      time: null,
+      rep: 1,
+      value: 1,
+      extra: x.extra
+    }))
+    expect(buildHeatmap(rows, { log10: false, cluster: false }).conds).toEqual([
+      'cmpd',
+      '@temp',
+      'dose'
+    ])
+  })
+})
+
 describe('curve-fit labels in plots', () => {
   it('names the fold change by method and reads the comparison with its compound and baseline', async () => {
     const { comparisonOf, fcName, fcMeasure } = await import('./plotData')
@@ -638,11 +710,9 @@ describe('curve-fit labels in plots', () => {
       cmpd: 'drugA',
       curve: { baseline: 'dose 0 · time 60' }
     }
-    expect(comparisonOf([curve])).toBe('drugA | baseline (dose 0 · time 60)')
-    expect(comparisonOf([{ ...curve, curve: {} }])).toBe('drugA | baseline')
-    expect(comparisonOf([curve, { ...curve, cmpd: 'drugB' }])).toBe(
-      'dose curve | baseline (dose 0 · time 60)'
-    )
+    // just "baseline": which one the fit was given isn't spelled out
+    expect(comparisonOf([curve])).toBe('drugA | baseline')
+    expect(comparisonOf([curve, { ...curve, cmpd: 'drugB' }])).toBe('dose curve | baseline')
     expect(fcName([curve])).toBe('curve log₂FC')
     expect(fcName([{ ...curve, curve: undefined, rs: {} }])).toBe('peak log₂FC')
     expect(

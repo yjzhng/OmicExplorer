@@ -1,4 +1,5 @@
 import { Handle, Position, useReactFlow, useStore, type NodeProps, type Node } from '@xyflow/react'
+import { rowCount } from '../engine/lazyRows'
 import {
   Fragment,
   useEffect,
@@ -6,7 +7,8 @@ import {
   useMemo,
   useRef,
   useState,
-  type CSSProperties
+  type CSSProperties,
+  type ReactNode
 } from 'react'
 
 import { PILL_CAP } from '../ui/ChoiceSwitch'
@@ -25,7 +27,9 @@ import {
   hasSourceHandle,
   NODE_SPECS,
   plotLabel,
-  safeTileName
+  safeTileName,
+  loadAbove,
+  runsIn
 } from './registry'
 import { unmetRequirement } from './requirements'
 import { usePlotGroupTitle } from './usePlotGroupTitle'
@@ -40,8 +44,14 @@ import {
   useUpstreamRunning
 } from './StatusDot'
 import { TilePicker } from './TilePicker'
-import { isCompareConfigured, isStep, normalizeCompareConfig, resolveLoadMode } from './types'
-import { condLabel, VALID_CONDITIONS, type ConditionKey } from '../engine'
+import {
+  isCompareConfigured,
+  isStep,
+  normalizeCompareConfig,
+  resolveLoadMode,
+  tdrPair
+} from './types'
+import { condLabel, termless, VALID_CONDITIONS, type ConditionKey } from '../engine'
 import type {
   CompareConfig,
   LoadConfig,
@@ -49,7 +59,9 @@ import type {
   NodeKind,
   PlaceholderData,
   PlotGroupConfig,
-  SubsetConfig
+  ResponseConfig,
+  SubsetConfig,
+  TdrConfig
 } from './types'
 
 /** Tile names may only hold letters, digits, space, `.`, `_` and `-`: they lead the file name of
@@ -264,12 +276,12 @@ export function GraphNode({ id, data, selected: rfSelected }: NodeProps<Node<Nod
   const runNode = useGraph((s) => s.runNode)
   const cancelNode = useGraph((s) => s.cancelNode)
   // Gate: a Standardize whose upstream is an Interactive Load that hasn't been converted yet is
-  // blocked until the user completes the sample setup (which materializes the input files).
+  // blocked until the user completes the sample setup (which materializes the input files) — as
+  // is a Subset filtering that import before Clean data.
   const stdGate = useGraph((s) => {
-    if (data.kind !== 'standardize') return null
-    const upId = s.upstreamId(id)
-    const up = upId ? s.nodes.find((n) => n.id === upId) : undefined
-    if (up && isStep(up) && up.data.kind === 'load') {
+    if (data.kind !== 'standardize' && data.kind !== 'subset') return null
+    const up = loadAbove(s, id)?.load
+    if (up) {
       const c = up.data.config as LoadConfig
       if (resolveLoadMode(c) === 'interactive' && !c.data) return 'Configure samples first'
     }
@@ -309,6 +321,8 @@ export function GraphNode({ id, data, selected: rfSelected }: NodeProps<Node<Nod
   const statusInfo = useStepStatus(id, data)
   // A done plot tile whose plots compute nothing offers no Re-run (registry.nothingToRerun).
   const noRerun = nothingToRerun(data)
+  // its own Run (a Subset off Load data has none — runsIn)
+  const runs = useGraph((s) => runsIn(s, id))
   const incomplete = !statusInfo.ok
   // The "+" (and its drag arrow) only while hovering a tile that isn't open — an open tile's
   // settings are showing, and the prompt would compete with them.
@@ -353,7 +367,7 @@ export function GraphNode({ id, data, selected: rfSelected }: NodeProps<Node<Nod
   const typeText =
     data.kind === 'plotGroup'
       ? `${spec.label} · ${(data.config as PlotGroupConfig).children.length}`
-      : plotLabel(data.kind, data.config) // dr → axis-specific (Dose-/Time-response)
+      : plotLabel(data.kind, data.config) // a Response plot → its condition(s) (Dose response, Dose & Time response)
   // A plot group unnamed: named as its results tab is — after the step it reads from.
   const groupTitle = usePlotGroupTitle(id, data.kind === 'plotGroup')
   const shownName = data.name ?? groupTitle
@@ -477,6 +491,13 @@ export function GraphNode({ id, data, selected: rfSelected }: NodeProps<Node<Nod
         boxShadow: selected ? `0 0 0 1px ${accent}, 0 3px 14px rgba(0,0,0,0.4)` : card.boxShadow
       }}
     >
+      {/* the accent strip fills with the run as it goes (faded before, full colour when done) */}
+      <ProgressStrip
+        id={id}
+        accent={accent}
+        running={data.status === 'running'}
+        complete={!incomplete}
+      />
       {spec.acceptsFrom.length > 0 && (
         <Handle type="target" position={Position.Left} style={handleStyle} />
       )}
@@ -531,7 +552,7 @@ export function GraphNode({ id, data, selected: rfSelected }: NodeProps<Node<Nod
           )}
         </span>
         <div style={headerRight}>
-          {spec.hasRun && (hovered || selected) && !noRerun && (
+          {runs && (hovered || selected) && !noRerun && (
             <RunControl
               status={data.status}
               accent={accent}
@@ -741,6 +762,36 @@ export function TileBody({
   )
 }
 
+/** A Compare's / Contrast's significant-row count and a Contrast's value-row count, counted once per
+ *  result (they're O(rows)) — remembered across the tile's mounts too: returning to the canvas
+ *  would otherwise rebuild every large table (engine/lazyRows.ts) just to count it again. */
+const countsByResult = new WeakMap<object, { signfCount: number; valueRows: number }>()
+function summaryCounts(
+  result: ReturnType<typeof useGraph.getState>['results'][string] | undefined
+): { signfCount: number; valueRows: number } {
+  if (result?.kind !== 'compare' && result?.kind !== 'contrast')
+    return { signfCount: 0, valueRows: 0 }
+  const hit = countsByResult.get(result)
+  if (hit) return hit
+  let out: { signfCount: number; valueRows: number }
+  // (the 2×2s' calls — a two-way ANOVA's term rows would count each gene again per term)
+  if (result.kind === 'compare')
+    out = { signfCount: termless(result.cmp.rows).filter((r) => r.signf).length, valueRows: 0 }
+  else {
+    // the sides' own value only — the other features are further views of the same genes
+    let signf = 0
+    let value = 0
+    for (const r of result.ctr.rows)
+      if ((r.featureId ?? 'value') === 'value') {
+        value++
+        if (r.signf) signf++
+      }
+    out = { signfCount: signf, valueRows: value }
+  }
+  countsByResult.set(result, out)
+  return out
+}
+
 function NodeSummary({
   kind,
   result,
@@ -753,13 +804,8 @@ function NodeSummary({
 }) {
   // Significant-row count is O(rows); memoize on the result so it isn't recomputed on every
   // re-render of the tile (e.g. a hover toggle) — that stalled on large comparison tables.
-  const signfCount = useMemo(() => {
-    if (result?.kind === 'compare') return result.cmp.rows.filter((r) => r.signf).length
-    // the sides' own value only — the other features are further views of the same genes
-    if (result?.kind === 'contrast')
-      return result.ctr.rows.filter((r) => r.signf && (r.featureId ?? 'value') === 'value').length
-    return 0
-  }, [result])
+  // (A Contrast's row count likewise: its value rows, counted once.)
+  const { signfCount, valueRows } = useMemo(() => summaryCounts(result), [result])
   if (kind === 'load') {
     const cfg = config as LoadConfig
     const loaded = !!cfg.data && !!cfg.samplesheet
@@ -775,7 +821,7 @@ function NodeSummary({
     const std = result?.kind === 'standardize' ? result.std : null
     return std ? (
       <div style={stat}>
-        {std.rows.length.toLocaleString()} rows · {std.activeConditions.join(', ')}
+        {rowCount(std).toLocaleString()} rows · {std.activeConditions.join(', ')}
       </div>
     ) : (
       <div style={muted}>Tidy uniqID × sample table.</div>
@@ -787,7 +833,7 @@ function NodeSummary({
     // the union of conditions is what tells you the merge did what you expected.
     return std ? (
       <div style={stat}>
-        {std.rows.length.toLocaleString()} rows · {std.activeConditions.join(', ')}
+        {rowCount(std).toLocaleString()} rows · {std.activeConditions.join(', ')}
       </div>
     ) : (
       <div style={muted}>Pool two or more Clean data tiles into one dataset.</div>
@@ -804,6 +850,11 @@ function NodeSummary({
           ? `${vs!.length} ${label}`
           : `${label}: ${vs!.map((v) => v || '—').join(', ')}`
       })
+    // …the replicates kept, and the samples left out by name
+    const sc = config as SubsetConfig
+    if (sc.reps?.length) kept.push(`rep: ${sc.reps.join(', ')}`)
+    if (sc.drop?.length)
+      kept.push(`${sc.drop.length} sample${sc.drop.length === 1 ? '' : 's'} left out`)
     return (
       <>
         <div style={kept.length ? stat : muted}>
@@ -811,7 +862,7 @@ function NodeSummary({
         </div>
         {std && (
           <div style={muted}>
-            {std.rows.length.toLocaleString()} rows
+            {rowCount(std).toLocaleString()} rows
             {std.samples ? ` · ${std.samples.length} samples` : ''}
           </div>
         )}
@@ -835,8 +886,8 @@ function NodeSummary({
     const curve = kind === 'curveFit'
     const label = cmp
       ? `${n} ${curve ? 'curve set' : 'comparison'}${n === 1 ? '' : 's'}`
-      : cfg.analysis === 'two_way_anova'
-        ? `two-way · ${cfg.condition}×${cfg.condition2}`
+      : cfg.analysis === 'anova'
+        ? `ANOVA · ${(cfg.compared ?? []).map((c) => condLabel(c)).join(' × ')}`
         : curve
           ? `${sideShort(cfg.num)} · control ${sideShort(cfg.den)}`
           : `${sideShort(cfg.num)} vs ${sideShort(cfg.den)}`
@@ -845,7 +896,7 @@ function NodeSummary({
         {label}
         {cmp && (
           <div style={stat}>
-            {cmp.rows.length.toLocaleString()} rows · {signfCount} signif
+            {rowCount(cmp).toLocaleString()} rows · {signfCount} signif
           </div>
         )}
       </div>
@@ -862,8 +913,7 @@ function NodeSummary({
           : 'Connect a Compare tile, then pick two levels.'}
         {ctr && (
           <div style={stat}>
-            {ctr.rows.filter((r) => (r.featureId ?? 'value') === 'value').length.toLocaleString()}{' '}
-            rows · {signfCount} signif
+            {valueRows.toLocaleString()} rows · {signfCount} signif
           </div>
         )}
       </div>
@@ -875,14 +925,33 @@ function NodeSummary({
   if (kind === 'dr') return <div style={muted}>Response curves. Select to view.</div>
   if (kind === 'curveMad')
     return <div style={muted}>Curve-fit QC: residuals and fit metrics. Select to view.</div>
+  if (kind === 'variance')
+    return <div style={muted}>Each gene’s variation split among the factors. Select to view.</div>
+  if (kind === 'interaction')
+    return <div style={muted}>A gene’s cell means across the two factors. Select to view.</div>
   if (kind === 'potency')
     return <div style={muted}>Curve potency (pEC50) vs fold change. Select to view.</div>
-  if (kind === 'response')
-    return <div style={muted}>Dose × time response surface per gene. Select to view.</div>
+  if (kind === 'metrics')
+    return <div style={muted}>Curve parameters per gene, as bar charts. Select to view.</div>
+  if (kind === 'response') {
+    const [a, b] = (config as ResponseConfig | undefined)?.pair ?? ['dose', 'time']
+    return (
+      <div style={muted}>
+        {condLabel(a)} × {condLabel(b)} response surface per gene. Select to view.
+      </div>
+    )
+  }
   if (kind === 'bubble') return <div style={muted}>Gene × dose bubble grid. Select to view.</div>
   if (kind === 'dumbbell')
     return <div style={muted}>Group A ↔ group B per gene. Select to view.</div>
-  if (kind === 'tdr') return <div style={muted}>Dose × time response per gene. Select to view.</div>
+  if (kind === 'tdr') {
+    const [a, b] = tdrPair(config as TdrConfig)
+    return (
+      <div style={muted}>
+        {condLabel(a)} × {condLabel(b)} response per gene. Select to view.
+      </div>
+    )
+  }
   if (kind === 'geneBar')
     return <div style={muted}>Selected gene value across conditions. Select to view.</div>
   if (kind === 'pca')
@@ -987,6 +1056,58 @@ const handlePlus: CSSProperties = {
   justifyContent: 'center'
 }
 const plusGlyph: CSSProperties = { display: 'block', pointerEvents: 'none' }
+/**
+ * A tile's accent strip as its run's progress. Before a run (or out of date) the strip is faded —
+ * the tile's own top border; while it runs a full-colour fill grows across it — the engine's
+ * fraction where the run reports one (curve fits), else a segment sweeping along it; done, the
+ * border itself is full colour, so nothing is drawn.
+ */
+function ProgressStrip({
+  id,
+  accent,
+  running,
+  complete
+}: {
+  id: string
+  accent: string
+  running: boolean
+  complete: boolean
+}): ReactNode {
+  const p = useGraph((s) => (running ? s.progress[id] : undefined))
+  if (!running || complete) return null
+  const frac = p && p.total > 0 ? Math.min(1, p.done / p.total) : null
+  return (
+    <div
+      aria-hidden
+      title={p ? `${p.stage}${frac != null ? ` · ${Math.round(frac * 100)}%` : ''}` : 'Running…'}
+      style={{
+        position: 'absolute',
+        // over the top border (outside the padding box the card positions from)
+        top: -TILE_STRIP,
+        left: -1,
+        right: -1,
+        height: TILE_STRIP,
+        overflow: 'hidden',
+        borderTopLeftRadius: 8,
+        borderTopRightRadius: 8,
+        pointerEvents: 'none'
+      }}
+    >
+      {frac != null ? (
+        <div
+          className="oe-strip-fill"
+          style={{ width: `${frac * 100}%`, height: '100%', background: accent }}
+        />
+      ) : (
+        <div
+          className="oe-strip-sweep"
+          style={{ width: '30%', height: '100%', background: accent }}
+        />
+      )}
+    </div>
+  )
+}
+
 const card: CSSProperties = {
   width: 230,
   background: UI.panel,

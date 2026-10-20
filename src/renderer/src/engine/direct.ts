@@ -13,10 +13,20 @@ import {
   groupKey,
   groupRowsBy,
   log2Pos,
+  numValue,
   setCond,
   valEq,
   type RawStatRow
 } from './compare'
+import { NO_PROGRESS, type ProgressTracker } from './progress'
+import {
+  axisMapFor,
+  axisModelFor,
+  baseLevelOf,
+  toX,
+  treatedLevel,
+  type AxisModel
+} from './axisModel'
 import {
   applyCurveFdr,
   classifyCompareRow,
@@ -40,7 +50,14 @@ import {
   welchTTest,
   type ThresholdConfig
 } from './stats'
-import { condLabel, orderConds } from './types'
+import {
+  condLabel,
+  condsIn,
+  isNumericCond,
+  numericConds,
+  orderConds,
+  type NumericConds
+} from './types'
 import type {
   CompareInput,
   CompareResultRow,
@@ -83,6 +100,9 @@ export interface CompareTableResult {
    *  the config has moved on (e.g. an FDR-method change awaiting a re-run). Optional only for
    *  results embedded in projects saved before it existed — those fall back to the node config. */
   threshold?: ThresholdConfig
+  /** two-way ANOVA: the model behind the rows — its terms' tests and the per-gene attribution, per
+   *  context slice (the rows are its 2×2 contrasts) */
+  anova?: import('./anova').AnovaResult
 }
 
 export function runDirect(input: DirectInput): CompareTableResult {
@@ -176,24 +196,39 @@ export interface ComparePreview {
 
 /**
  * Whether a curve fit's control rows are a baseline for its axis — the curve's starting point. A
- * dose curve starts at no dose, so every control sample must be untreated (dose 0 / absent: the
- * vehicle). A time curve starts at t₀ or at the vehicle, so a control sample may be either. Any
- * other control (another compound at a dose) is a background treatment: valid only when the
- * curve's compound is titrated on top of it.
+ * curve against one reference (dose) starts at no treatment, so every control sample must be
+ * untreated (dose 0 / absent: the vehicle). A curve against a matched control — its own first
+ * point (time's t₀, a TPP series' lowest temperature) — starts at the control's level of the axis
+ * or at the vehicle, so a control sample may be either. Any other control (another compound at a
+ * dose) is a background treatment: valid only when the curve's compound is titrated on top of it.
+ * `model`: the curve's axis model (absent = the axis's preset; see axisModel.ts).
  */
-export function controlIsBaseline(controlRows: StandardRow[], axis: ConditionKey): boolean {
-  const none = (v: unknown): boolean => v == null || v === '' || !(Number(v) > 0)
+export function controlIsBaseline(
+  controlRows: StandardRow[],
+  axis: ConditionKey,
+  model: AxisModel = axisModelFor(axis)
+): boolean {
+  const none = (v: number | null): boolean => !(v != null && v > 0)
+  const matched = model.baseline === 'matched'
+  const base = baseLevelOf(controlRows.map((r) => numValue(r, axis)))
+  const atBase = (v: number | null): boolean => none(v) || v === base
   return controlRows.every(
-    (r) => none(condValue(r, 'dose')) || (axis === 'time' && none(condValue(r, 'time')))
+    (r) => none(numValue(r, 'dose')) || (matched && atBase(numValue(r, axis)))
   )
 }
 
 /** controlIsBaseline for a curve fit's configuration: its control is the `den` selection. */
 export function curveControlIsBaseline(
-  input: Pick<CompareInput, 'rows' | 'den' | 'activeConditions'> & { curveAxis: ConditionKey }
+  input: Pick<CompareInput, 'rows' | 'den' | 'activeConditions' | 'axisModel' | 'axisBaseline'> & {
+    curveAxis: ConditionKey
+  }
 ): boolean {
   const ctl = input.rows.filter((r) => selectorMatch(input.den, r, input.activeConditions))
-  return controlIsBaseline(ctl, input.curveAxis)
+  return controlIsBaseline(
+    ctl,
+    input.curveAxis,
+    axisModelFor(input.curveAxis, input.axisModel, undefined, undefined, input.axisBaseline)
+  )
 }
 
 // ── explicit comparison: numerator vs denominator cond-value selections ───────
@@ -357,16 +392,22 @@ function denLevels(
 
 /**
  * A curve's baseline in words, from its baseline samples (`ctl`) against its own (`grp`): each of
- * compound, dose and time the baseline holds one value of that the curve doesn't share — what's
- * matched to the curve isn't said. "DMSO · dose 0", "dose 0 · time 60", "time 0"; '' if nothing.
+ * compound and the dataset's numeric conditions (`numeric`: dose, time, any declared numeric) the
+ * baseline holds one value of that the curve doesn't share — what's matched to the curve isn't
+ * said. "DMSO · dose 0", "dose 0 · time 60", "time 0"; '' if nothing.
  */
-export function baselineText(ctl: readonly StandardRow[], grp: readonly StandardRow[]): string {
+export function baselineText(
+  ctl: readonly StandardRow[],
+  grp: readonly StandardRow[],
+  numeric: NumericConds
+): string {
   const one = (rows: readonly StandardRow[], c: ConditionKey): string | null => {
     const vs = new Set(rows.map((r) => String(condValue(r, c) ?? '')))
     return vs.size === 1 ? [...vs][0] : null
   }
   const parts: string[] = []
-  for (const c of ['cmpd', 'dose', 'time'] as ConditionKey[]) {
+  const conds: ConditionKey[] = ['cmpd', ...condsIn(ctl).filter((c) => isNumericCond(c, numeric))]
+  for (const c of conds) {
     const b = one(ctl, c)
     if (b == null || b === '' || one(grp, c) === b) continue
     parts.push(c === 'cmpd' ? b : `${condLabel(c)} ${b}`)
@@ -572,7 +613,7 @@ export function runCompare(input: CompareInput): CompareTableResult {
  */
 /** A batch of curves to fit (each its treated points' log₁₀ doses and ratios) — what curveFitSteps
  *  hands out, and gets back fitted in the same order. */
-export type FitBatch = Array<{ x: number[]; y: number[]; grid?: number[] }>
+export type FitBatch = Array<{ x: number[]; y: number[]; grid?: number[]; x0?: number }>
 
 /** Run a step generator to the end, answering each batch it yields. */
 export function driveSync<Q, A, R>(gen: Generator<Q, R, A>, answer: (q: Q) => A): R {
@@ -592,10 +633,20 @@ export async function driveAsync<Q, A, R>(
 
 /** Fit a batch here, one curve after another. */
 export const fitBatch = (batch: FitBatch): Array<CurveFit | null> =>
-  batch.map((c) => fitCurve(c.x, c.y, c.grid))
+  batch.map((c) => fitCurve(c.x, c.y, c.grid, c.x0))
 
-export function runCurveFit(input: CompareInput & { curveAxis: ConditionKey }): CompareTableResult {
-  return driveSync(curveFitSteps(input), fitBatch)
+export function runCurveFit(
+  input: CompareInput & { curveAxis: ConditionKey },
+  progress: ProgressTracker = NO_PROGRESS
+): CompareTableResult {
+  // the fits one by one, each counted (progress)
+  return driveSync(curveFitSteps(input, progress), (b) =>
+    b.map((c) => {
+      const f = fitCurve(c.x, c.y, c.grid, c.x0)
+      progress.add(1)
+      return f
+    })
+  )
 }
 
 /** runCurveFit as steps: the comparison's set-up and bookkeeping here, the curve fits — every
@@ -603,11 +654,41 @@ export function runCurveFit(input: CompareInput & { curveAxis: ConditionKey }): 
  *  the driver likes (one by one, or shared out over the worker pool). The fits are pure, so either
  *  way the result is the same. */
 export function* curveFitSteps(
-  input: CompareInput & { curveAxis: ConditionKey }
+  input: CompareInput & { curveAxis: ConditionKey },
+  progress: ProgressTracker = NO_PROGRESS
 ): Generator<FitBatch, CompareTableResult, Array<CurveFit | null>> {
   const threshold: ThresholdConfig = input.threshold ?? { ...DEFAULT_THRESHOLD, statType: 'pQ' }
   const axis = input.curveAxis
   const { slices, comparisons, cmpCond, contextDims } = compareSlices(input)
+  // progress: every slice's curves and as many decoys (the drivers count them as they're fitted)
+  progress.stage('Fitting curves and their decoys')
+  progress.plan(2 * slices.reduce((a, sl) => a + new Set(sl.grp.map((r) => r.uniqID)).size, 0))
+  // The axis's model (confirmed, else detected, else the preset's): x is log₁₀ of the level, or the
+  // level in steps on a linear axis. The control at −∞ against one reference (CurveCurator's); a
+  // matched baseline — the curve's own first point (t₀, the lowest temperature) — a real point at
+  // its level (the lowest the control sits at), the curves' midpoints at or after it.
+  const levels = new Set<number>()
+  for (const sl of slices)
+    for (const r of sl.grp) {
+      const v = numValue(r, axis)
+      if (v != null) levels.add(v)
+    }
+  const model = axisModelFor(
+    axis,
+    input.axisModel,
+    input.axisScale,
+    [...levels],
+    input.axisBaseline
+  )
+  const { scale } = model
+  const treatedLevels = [...levels].filter((v) => treatedLevel(scale, v))
+  const matched = model.baseline === 'matched'
+  const b = baseLevelOf(slices.flatMap((sl) => sl.denSlice.map((r) => numValue(r, axis))))
+  const base0 = matched && treatedLevels.every((v) => b < v) ? b : 0
+  const map = axisMapFor(model, treatedLevels, base0)
+  const x0 = matched ? toX(map, base0) : -Infinity
+  const linear = scale === 'linear' ? { scale: 'linear' as const, step: map.step } : null
+  const offset = map.offset ? { timeOffset: map.offset } : null
   const raw: RawStatRow[] = []
   const fits: Array<CompareResultRow['curve']> = []
   // Per slice: its decoys, and the index of its first result row (whose group key they file under).
@@ -628,18 +709,18 @@ export function* curveFitSteps(
       c.rep.push(r.rep ?? null)
       ctrl.set(r.uniqID, c)
     }
-    // Each gene's treated points: log₁₀ dose and ratio to the control.
+    // Each gene's treated points: x (log₁₀ dose) and ratio to the control.
     const pts = new Map<string, { x: number[]; y: number[]; rep: Array<number | null> }>()
     for (const r of grp) {
-      const dose = Number(condValue(r, axis))
+      const dose = numValue(r, axis)
       const c = ctrl.get(r.uniqID)
-      if (!(dose > 0) || !c || r.value == null) continue
+      if (!treatedLevel(scale, dose) || !c || r.value == null) continue
       const base = c.sum / c.n
       if (!(base > 0)) continue
       let p = pts.get(r.uniqID)
       if (!p) pts.set(r.uniqID, (p = { x: [], y: [], rep: [] }))
       p.rep.push(r.rep ?? null)
-      p.x.push(Math.log10(dose))
+      p.x.push(toX(map, dose))
       p.y.push(r.value / base)
     }
     const first = raw.length
@@ -647,7 +728,12 @@ export function* curveFitSteps(
     const genes = [...pts]
     // CurveCurator's interpolation, if asked for: one grid from every dose the slice tested.
     const grid = input.interpolation ? interpolationGrid(genes.flatMap(([, p]) => p.x)) : undefined
-    const sliceFits: Array<CurveFit | null> = yield genes.map(([, p]) => ({ x: p.x, y: p.y, grid }))
+    const sliceFits: Array<CurveFit | null> = yield genes.map(([, p]) => ({
+      x: p.x,
+      y: p.y,
+      grid,
+      ...(matched ? { x0 } : null)
+    }))
     for (let gi = 0; gi < genes.length; gi++) {
       const [uniqID, p] = genes[gi]
       const fit = sliceFits[gi]
@@ -675,7 +761,9 @@ export function* curveFitSteps(
       fits.push({
         ...curve,
         axis,
-        baseline: baselineText(denSlice, grp),
+        ...linear,
+        ...offset,
+        baseline: baselineText(denSlice, grp, numericConds(input.numericConditions)),
         x: p.x,
         y: p.y,
         rep: p.rep,
@@ -699,7 +787,7 @@ export function* curveFitSteps(
         layout,
         nControls,
         si + 1
-      ).map((c) => ({ ...c, grid }))
+      ).map((c) => ({ ...c, grid, ...(matched ? { x0 } : null) }))
       sliceDecoys.push({ first, decoys: decoyFits(decoyFitted) })
     }
   }
@@ -770,25 +858,34 @@ export function previewCompare(input: CompareInput): ComparePreview {
       `${c}: ${shared} is on both sides — pick different values for numerator and denominator.`
     )
   }
-  // A curve needs doses to fit: more than 4 points with the control, so 4 doses above 0.
+  // A curve needs doses to fit: more than 4 points with the control, so 4 treated doses (above 0
+  // on a log axis; any but 0 on a linear one).
   if (curveAxis) {
-    const doses = new Set<number>()
-    let atZero = false
+    const all: number[] = []
     for (const r of numRows) {
-      const d = Number(condValue(r, curveAxis))
-      if (d > 0) doses.add(d)
-      else if (condValue(r, curveAxis) != null) atZero = true
+      const d = numValue(r, curveAxis)
+      if (d != null) all.push(d)
     }
+    const { scale } = axisModelFor(curveAxis, input.axisModel, input.axisScale, all)
+    const doses = new Set(all.filter((d) => treatedLevel(scale, d)))
+    const atZero = all.some((d) => !treatedLevel(scale, d))
     if (anyPin(num) && doses.size < 4)
       warnings.push(
-        `A curve fit needs at least 4 ${condLabel(curveAxis)} levels above 0 in the numerator (it has ${doses.size}).`
+        `A curve fit needs at least 4 ${condLabel(curveAxis)} levels ${scale === 'log' ? 'above' : 'besides'} 0 in the numerator (it has ${doses.size}).`
       )
     if (atZero)
       notes.push(
         `Numerator samples at ${condLabel(curveAxis)} 0 are left out — the control is the curve's baseline.`
       )
   }
-  const controlTreated = !!curveAxis && denRows.length > 0 && !controlIsBaseline(denRows, curveAxis)
+  const controlTreated =
+    !!curveAxis &&
+    denRows.length > 0 &&
+    !controlIsBaseline(
+      denRows,
+      curveAxis,
+      axisModelFor(curveAxis, input.axisModel, undefined, undefined, input.axisBaseline)
+    )
   // With a real axis, label by the differing values; with none (degenerate overlap), fall back to
   // each side's full pin list so the string is never blank.
   const hasAxis = axisDims.length > 0

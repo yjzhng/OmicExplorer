@@ -93,12 +93,9 @@ describe('merge wiring', () => {
       ],
       results: {}
     }
-    expect(axisAvailFor(g, 'm')).toEqual({ dose: true, time: true })
+    expect(axisAvailFor(g, 'm')).toEqual(['dose', 'time'])
     // Edge order must not matter either.
-    expect(axisAvailFor({ ...g, edges: [...g.edges].reverse() }, 'm')).toEqual({
-      dose: true,
-      time: true
-    })
+    expect(axisAvailFor({ ...g, edges: [...g.edges].reverse() }, 'm')).toEqual(['dose', 'time'])
   })
 })
 

@@ -25,7 +25,13 @@ import {
   type PlotTableTarget
 } from '../graph/plotTables'
 import { useGraph } from '../graph/store'
-import { isStep, type EnrichConfig, type NodeResult, type StringConfig } from '../graph/types'
+import {
+  isStep,
+  numericOfResult,
+  type EnrichConfig,
+  type NodeResult,
+  type StringConfig
+} from '../graph/types'
 import {
   autoStringLevel,
   buildStringModel,
@@ -60,7 +66,7 @@ async function exportEnrichment(
   if (!source) return
   const combo = `${cfg.method ?? 'ora'}|${source}`
   const rows: Record<string, unknown>[] = []
-  for (const g of facetCompareRows(up.cmp.rows, facetDims(up.cmp.rows))) {
+  for (const g of facetCompareRows(up.cmp.rows, facetDims(up.cmp.rows), numericOfResult(up))) {
     const e = run.facets[g.key]?.[combo]
     if (e) rows.push(...enrichTermRows(e, facetLabel(g.values)))
   }
@@ -81,7 +87,7 @@ async function exportString(
   const caps = run.caps
   const nodes: Record<string, unknown>[] = []
   const edges: Record<string, unknown>[] = []
-  for (const g of facetCompareRows(up.cmp.rows, facetDims(up.cmp.rows))) {
+  for (const g of facetCompareRows(up.cmp.rows, facetDims(up.cmp.rows), numericOfResult(up))) {
     const all = run.facets[g.key]
     if (!all) continue
     const genes = stringQueryGenes(g.rows, up.displayMap, ann, stringSendLimit(maxGenes))

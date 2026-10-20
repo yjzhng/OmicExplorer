@@ -17,8 +17,8 @@ import { useUiTheme } from '../ui/useUiTheme'
 import { selectorStyles as S } from './selectorParts'
 
 /** The most value chips a condition shows in a selector dialog; beyond it, the searchable picker.
- *  Higher than a tile's pill switch (PILL_CAP): the dialog has the room, and seeing every value at
- *  once is what defining the two sides needs. */
+ *  No lower than a tile's pill switch (PILL_CAP): the dialog has the room, and seeing every value
+ *  at once is what defining the two sides needs. */
 export const CHIP_CAP = 10
 
 export interface ChipItem {

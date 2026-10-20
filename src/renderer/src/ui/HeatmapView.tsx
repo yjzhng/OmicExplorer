@@ -1,6 +1,13 @@
 import { useLayoutEffect, useMemo, useRef, useState } from 'react'
 
-import { condLabel, isNumericCond, metaValue, type ConditionKey, type HeatmapData } from '../engine'
+import {
+  condLabel,
+  isNumericCond,
+  metaValue,
+  type ConditionKey,
+  type HeatmapData,
+  type NumericConds
+} from '../engine'
 import { ROLE_DEFAULTS, paletteScale, paletteSeries, type PaletteRef } from './palettes'
 import { condTooltip, geneLine, valueLine } from './condTooltip'
 import { PlotlyChart } from './PlotlyChart'
@@ -14,12 +21,12 @@ import { useUiTheme } from './useUiTheme'
 /** Pixel gap between adjacent condition tracks (along the condition axis). */
 const TRACK_GAP = 1
 
-/** The numeric conditions' track palettes — dose and time levels in order along their palette
- *  roles (Blues / Greens by default; app settings → palettes). A custom condition is always
- *  categorical. */
-type LevelPalettes = { dose: PaletteRef; time: PaletteRef }
+/** The numeric conditions' track palettes — their levels in order along a palette role: time's
+ *  (Greens by default), dose's (Blues) for dose and any declared numeric condition (app settings →
+ *  palettes) — with the dataset's numeric conditions (`numeric`). */
+type LevelPalettes = { dose: PaletteRef; time: PaletteRef; numeric: NumericConds }
 const levelPalette = (c: ConditionKey, lp: LevelPalettes): PaletteRef | null =>
-  isNumericCond(c) ? (c === 'time' ? lp.time : lp.dose) : null
+  isNumericCond(c, lp.numeric) ? (c === 'time' ? lp.time : lp.dose) : null
 /** A categorical track's start along the categorical palette, per track: far enough along that the
  *  next track's first levels don't repeat this one's. */
 const TRACK_ROTATE = 5
@@ -102,7 +109,10 @@ function buildTracks(
   // landscape heatmap of the same data give each track the same palette.
   let catIndex = 0
   for (const c of heatmap.conds)
-    valColour.set(c, condColours(heatmap.samples, c, isNumericCond(c) ? 0 : catIndex++, levels))
+    valColour.set(
+      c,
+      condColours(heatmap.samples, c, isNumericCond(c, levels.numeric) ? 0 : catIndex++, levels)
+    )
   // cond-major matrices: z = palette index (+0.5 to land mid-block), cd = the sample's
   // identity (the same block every Clean data plot's tooltip opens with),
   // keys = the raw value string per cell ('' = missing), used to find group boundaries.
@@ -214,9 +224,12 @@ export function HeatmapView({
   orient = 'portrait',
   valueLabel = 'log abundance',
   condBar = true,
-  palette = ROLE_DEFAULTS.data
+  palette = ROLE_DEFAULTS.data,
+  numeric
 }: {
   heatmap: HeatmapData
+  /** the dataset's numeric conditions (numericOf its Clean data): their tracks are ordered */
+  numeric: NumericConds
   title?: string
   orient?: 'landscape' | 'portrait'
   /** the colour bar's title — the value scale, e.g. "log₂ abundance" (see abundanceLabel) */
@@ -256,7 +269,7 @@ export function HeatmapView({
     const idents = heatmap.samples.map(
       (m, s) => condTooltip(m, heatmap.conds, p.textMuted) || heatmap.x[s]
     )
-    const levels = { dose: dosePalette, time: timePalette }
+    const levels = { dose: dosePalette, time: timePalette, numeric }
     const tracks = condBar ? buildTracks(heatmap, landscape, p.panel, idents, levels) : null
     // Reserve a band for the condition tracks. In portrait the tracks stack vertically, so size the
     // band to ~one label height per track (measured from the tile) — just tall enough that Plotly
@@ -368,7 +381,8 @@ export function HeatmapView({
     condBar,
     palette,
     dosePalette,
-    timePalette
+    timePalette,
+    numeric
   ])
 
   // each sample's link key, for the sample link with the other plots

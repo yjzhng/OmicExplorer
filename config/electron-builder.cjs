@@ -62,6 +62,12 @@ module.exports = {
     gatekeeperAssess: false,
     notarize // true only when APPLE_* creds are set
   },
+  // Double-click / Open With on a project opens it in OmicExplorer (main/index.ts, open-file); on
+  // a template, starts a new project from it.
+  fileAssociations: [
+    { ext: 'omicexplorer', name: 'OmicExplorer project', role: 'Editor' },
+    { ext: 'omicexplorer-template', name: 'OmicExplorer template', role: 'Editor' }
+  ],
   win: { target: 'nsis' }, // signs automatically when CSC_LINK / CSC_KEY_PASSWORD are set
   // Consistent, arch-tagged filenames across artifacts:
   //   OmicExplorer-<version>-<arch>.{dmg,exe}

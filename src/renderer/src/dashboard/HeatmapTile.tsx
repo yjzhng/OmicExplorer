@@ -12,6 +12,7 @@ import {
   abundanceLabel,
   buildHeatmapSteps,
   clusterRowGroups,
+  numericOf,
   type HeatmapData,
   type SampleOrder,
   type StandardizeResult,
@@ -82,6 +83,7 @@ export function HeatmapTile({
       valueLabel={abundanceLabel(scale)}
       condBar={condBar}
       palette={palette}
+      numeric={numericOf(std)}
     />
   )
 }

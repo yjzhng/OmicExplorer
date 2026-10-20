@@ -295,6 +295,7 @@ describe('runCurveFit layouts', () => {
       den: { cmpd: ['DMSO'] },
       match: [],
       activeConditions: ['cmpd', 'dose'],
+      numericConditions: [],
       curveAxis: 'dose'
     })
     const viaDose0 = runCurveFit({
@@ -303,6 +304,7 @@ describe('runCurveFit layouts', () => {
       den: { dose: ['0'] },
       match: ['cmpd'],
       activeConditions: ['cmpd', 'dose'],
+      numericConditions: [],
       curveAxis: 'dose'
     })
     expect(viaDose0.comparisons).toEqual(['dose curve | 0'])
@@ -338,6 +340,7 @@ describe('runCurveFit layouts', () => {
       den: { cmpd: ['A', 'B'], dose: ['0'] },
       match: [],
       activeConditions: ['cmpd', 'dose'],
+      numericConditions: [],
       curveAxis: 'dose'
     })
     expect(res.rows).toHaveLength(4)
@@ -359,6 +362,7 @@ describe('runCurveFit layouts', () => {
         den: { cmpd: ['DMSO'] },
         match: [],
         activeConditions: ['cmpd', 'dose'],
+        numericConditions: [],
         curveAxis: 'dose',
         describeAll
       })
@@ -386,6 +390,7 @@ describe('runCurveFit layouts', () => {
       den: { cmpd: ['A', 'B'], dose: ['0'] },
       match: [],
       activeConditions: ['cmpd', 'dose'],
+      numericConditions: [],
       curveAxis: 'dose'
     })
     expect(new Set(res.rows.map((r) => r.cmpd))).toEqual(new Set(['A']))
@@ -500,6 +505,7 @@ describe('CurveCurator target–decoy FDR', () => {
       den: { cmpd: ['DMSO'] },
       match: [],
       activeConditions: ['cmpd', 'dose'],
+      numericConditions: [],
       curveAxis: 'dose',
       threshold: t()
     })

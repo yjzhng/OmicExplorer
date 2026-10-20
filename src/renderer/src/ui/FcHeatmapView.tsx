@@ -1,7 +1,7 @@
 import { useLayoutEffect, useMemo, useRef, useState } from 'react'
 
 import type { DendroLink, FcHeatmapData } from '../engine'
-import { ROLE_DEFAULTS, paletteScale, type PaletteRef } from './palettes'
+import { ROLE_DEFAULTS, paletteRange, paletteScale, type PaletteRef } from './palettes'
 import { tooltip } from './condTooltip'
 import { PlotlyChart } from './PlotlyChart'
 import { truncatedTicks } from './plotAxes'
@@ -160,9 +160,13 @@ export function FcHeatmapView({
   orient = 'portrait',
   palette = ROLE_DEFAULTS.fc,
   geneSide = NO_CLUSTER_SIDE,
-  condSide = NO_CLUSTER_SIDE
+  condSide = NO_CLUSTER_SIDE,
+  unsigned = false
 }: {
   data: FcHeatmapData
+  /** the cells are unsigned effect sizes (a two-way ANOVA's terms): drawn from 0 on the palette's
+   *  upper half */
+  unsigned?: boolean
   title?: string
   orient?: 'landscape' | 'portrait'
   /** the fold-change palette (its low end down, its middle 0, its high end up) */
@@ -208,11 +212,17 @@ export function FcHeatmapView({
     const capped = data.absMax > m
     const r = (v: number): string => (Math.abs(v) >= 10 ? v.toFixed(0) : v.toFixed(1))
     const capTicks = capped
-      ? {
-          tickmode: 'array',
-          tickvals: [-m, -m / 2, 0, m / 2, m],
-          ticktext: [`≤ ${r(-m)}`, r(-m / 2), '0', r(m / 2), `≥ ${r(m)}`]
-        }
+      ? unsigned
+        ? {
+            tickmode: 'array',
+            tickvals: [0, m / 2, m],
+            ticktext: ['0', r(m / 2), `≥ ${r(m)}`]
+          }
+        : {
+            tickmode: 'array',
+            tickvals: [-m, -m / 2, 0, m / 2, m],
+            ticktext: [`≤ ${r(-m)}`, r(-m / 2), '0', r(m / 2), `≥ ${r(m)}`]
+          }
       : {}
     const trace: Record<string, unknown> = {
       type: 'heatmap',
@@ -223,14 +233,14 @@ export function FcHeatmapView({
       customdata: landscape
         ? data.columns.map(() => data.geneIds)
         : data.geneIds.map((id) => data.columns.map(() => id)),
-      // The fold-change palette, symmetric about 0: down its low end, up its high end.
-      colorscale: paletteScale(palette),
-      zmid: 0,
-      zmin: -m,
-      zmax: m,
+      // The fold-change palette, symmetric about 0: down its low end, up its high end. Unsigned
+      // effect sizes (a two-way ANOVA's terms): its upper half, from its centre (0) out.
+      ...(unsigned
+        ? { colorscale: paletteRange(palette, 0.5, 1), zmin: 0, zmax: m }
+        : { colorscale: paletteScale(palette), zmid: 0, zmin: -m, zmax: m }),
       // 30% of the tile's height, centred on the plot
       colorbar: {
-        title: { text: 'log₂FC', side: 'right' },
+        title: { text: unsigned ? 'effect (log₂)' : 'log₂FC', side: 'right' },
         thickness: 12,
         ...(size.h > 0 ? { lenmode: 'pixels', len: 0.3 * size.h } : { len: 0.3 }),
         y: 0.5,
@@ -241,7 +251,7 @@ export function FcHeatmapView({
         {
           title: landscape ? '%{x}' : '%{y}',
           conds: [['condition', landscape ? '%{y}' : '%{x}']],
-          values: [['log₂FC', '%{z:.2f}']]
+          values: [[unsigned ? 'effect (log₂)' : 'log₂FC', '%{z:.2f}']]
         },
         p.textMuted,
         { template: true }
@@ -398,7 +408,7 @@ export function FcHeatmapView({
           : { alongX: false, edge: xEnd, span: yEnd, n: nY, clusters: geneCl.clusters }
     }
     return { data: traces, layout: lay, geneBars }
-  }, [data, title, orient, mode, size, area, palette, geneSide, condSide])
+  }, [data, title, orient, mode, size, area, palette, geneSide, condSide, unsigned])
 
   // Clicking a gene cluster's bar selects its genes (a second click unselects them) — as a legend
   // group does. Shapes take no Plotly events, so the bars are found by the pointer's position.

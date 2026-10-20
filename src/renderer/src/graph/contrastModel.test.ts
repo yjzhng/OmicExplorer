@@ -3,6 +3,7 @@
  * nothing it compiles leaves a condition pooled (runContrastPair's rule).
  */
 import { describe, expect, it } from 'vitest'
+import { numericConds } from '../engine'
 
 import { previewContrastPair, type ContrastSideRow, type StandardRow } from '../engine'
 import { sampleRows } from './compareModel'
@@ -16,6 +17,9 @@ import {
   readIntra,
   type ContrastState
 } from './contrastModel'
+
+/** dose and time numeric, no custom condition declared (the schema of these tests' data) */
+const numeric = numericConds()
 
 const conds = ['cell', 'cmpd', 'dose', 'time']
 // A Compare's result rows: cmpd A, B at doses 1, 10, × cell M, W × time 8, 24; two genes.
@@ -38,8 +42,8 @@ const matchesSel = (r: StandardRow, sel: Record<string, string[] | undefined>): 
 
 describe('intra-dataset', () => {
   it('opens with every condition matched and cmpd contrasted: one contrast per cell × dose × time', () => {
-    const s = defaultIntra(rows, conds)
-    const m = contrastModel(s, sampleRows(rows, conds), sampleRows(rows, conds), conds)
+    const s = defaultIntra(rows, conds, numeric)
+    const m = contrastModel(s, sampleRows(rows, conds), sampleRows(rows, conds), conds, numeric)
     expect(m.keys).toHaveLength(2 * 2 * 2)
     expect(contrastLine(m)).toBe('A vs B, per cell per dose per time')
     const c = compileIntra(m)
@@ -69,7 +73,7 @@ describe('intra-dataset', () => {
       },
       drop: {}
     }
-    const m = contrastModel(s, sampleRows(rows, conds), sampleRows(rows, conds), conds)
+    const m = contrastModel(s, sampleRows(rows, conds), sampleRows(rows, conds), conds, numeric)
     expect(m.keys).toHaveLength(1)
     expect(contrastLine(m)).toBe('M · A · 1 · 8 vs W · B · 10 · 24')
     const c = compileIntra(m)
@@ -88,7 +92,7 @@ describe('intra-dataset', () => {
       sl: { cmpd: { a: 'A', b: 'B' } },
       drop: { time: ['8'] }
     }
-    const m = contrastModel(s, sampleRows(rows, conds), sampleRows(rows, conds), conds)
+    const m = contrastModel(s, sampleRows(rows, conds), sampleRows(rows, conds), conds, numeric)
     expect(m.keys).toHaveLength(4)
     expect(compileIntra(m).num.time).toEqual(['24'])
   })
@@ -99,7 +103,7 @@ describe('intra-dataset', () => {
       sl: { cmpd: { a: 'A', b: 'A' } },
       drop: {}
     }
-    const m = contrastModel(s, sampleRows(rows, conds), sampleRows(rows, conds), conds)
+    const m = contrastModel(s, sampleRows(rows, conds), sampleRows(rows, conds), conds, numeric)
     expect(m.differs).toBe(false)
     expect(contrastLine(m)).toBe('condition identical on both sides. Select different conditions.')
   })
@@ -111,8 +115,10 @@ describe('intra-dataset', () => {
       drop: { dose: ['10'] }
     }
     const R = sampleRows(rows, conds)
-    const c = compileIntra(contrastModel(s, R, R, conds))
-    expect(compileIntra(contrastModel(readIntra(c, R, conds), R, R, conds))).toEqual(c)
+    const c = compileIntra(contrastModel(s, R, R, conds, numeric))
+    expect(
+      compileIntra(contrastModel(readIntra(c, R, conds, numeric), R, R, conds, numeric))
+    ).toEqual(c)
   })
 })
 
@@ -123,7 +129,8 @@ describe('inter-dataset', () => {
       { cmode: {}, sl: {}, drop: {} },
       sampleRows(rows, conds),
       sampleRows(RB, conds),
-      conds
+      conds,
+      numeric
     )
     expect(m.keys).toHaveLength(2 * 2 * 2 * 1)
     const c = compileInter(m)
@@ -140,12 +147,14 @@ describe('inter-dataset', () => {
     }
     const RA = sampleRows(rows, conds),
       R2 = sampleRows(RB, conds)
-    const m = contrastModel(s, RA, R2, conds)
+    const m = contrastModel(s, RA, R2, conds, numeric)
     const c = compileInter(m)
     expect(c.pairFix).toEqual({ a: { cell: ['M'], time: '8' }, b: { cell: ['M'], time: '24' } })
     const p = previewContrastPair(side(rows), side(RB), c.match, { a: 'A', b: 'B' }, c.pairFix)
     expect(p.unpinned).toEqual([])
     expect(p.groups).toBe(m.keys.length)
-    expect(compileInter(contrastModel(readInter(c, RA, R2, conds), RA, R2, conds))).toEqual(c)
+    expect(
+      compileInter(contrastModel(readInter(c, RA, R2, conds, numeric), RA, R2, conds, numeric))
+    ).toEqual(c)
   })
 })

@@ -7,7 +7,8 @@
  *  session exactly (embedded results and all). */
 import type { GeneSet, NodeResult } from './types'
 import { dirOf, relativeTo, resolveFrom } from './relPath'
-import { packResults, unpackResults } from './resultPack'
+import { compactResults } from './compactResults'
+import { packResults, unpackResults as unpackStored } from './resultPack'
 import { MIGRATED_THROUGH, upgradeProjectFile, type RawProject } from './upgrades'
 import { emptyWorkflowDoc, type WorkflowDoc } from './workflowDoc'
 
@@ -24,6 +25,10 @@ export interface ProjectWorkflow {
   /** in a session only (never saved): the results are parked on disk under this key while the
    *  workflow isn't the open one, and `results` is empty (see the store's parking) */
   parked?: string
+  /** while a project opens only (never saved): its results as the file stores them, packed and
+   *  not yet unpacked (deserializeProject's `packed`) — the open one is unpacked, the rest parked
+   *  from this, so a large project never holds every workflow's results in memory at once */
+  stored?: unknown
   /** this workflow's folder name on disk (under the project data folder) — follows `name` at the
    *  next save after a rename (see graph/diskNames.ts) */
   dir?: string
@@ -97,6 +102,11 @@ export const PROJECT_VERSION = 3
 /** The release of the last upgrade (upgrades.ts): a file saved before it is written in an older
  *  form — it opens fine, being upgraded as it's read, and Fix writes it back in the current one. */
 export { MIGRATED_THROUGH }
+/** A workflow's results from their stored (packed) form, their large row tables kept columnar
+ *  (compactResults) — a file's, a parked workflow's and the undo history's alike. */
+export function unpackResults(stored: unknown): Record<string, NodeResult> {
+  return compactResults(unpackStored(stored))
+}
 
 /** What a project file says about itself, from its first bytes (format, appVersion and
  *  createdWith are written first) — no full parse, so it's cheap for a list of files. */
@@ -126,18 +136,74 @@ export function savedByVersion(text: string): string | null {
   return projectHeader(text).savedBy
 }
 
-/** How a project file stands against this app: `current`; `older` — written before a migration
- *  this app applies on open (MIGRATED_THROUGH) or in an older format, so Fix rewrites it; or
- *  `newer` — saved by a newer app, which this one may not read right. */
+/** How a project file stands against this app: `current`; `older` — in an older file format, or
+ *  saved before a migration this app applies on open (MIGRATED_THROUGH) AND that migration changes
+ *  it (`upgrades`, from upgradeChanges — a file the upgrades leave as it was is current, whichever
+ *  release saved it), so Fix rewrites it; or `newer` — saved by a newer app, which this one may not
+ *  read right. `upgrades` unknown (not checked yet) counts as no change. */
 export function projectStanding(
   h: ProjectHeader,
-  appVersion: string | null
+  appVersion: string | null,
+  upgrades?: boolean
 ): 'current' | 'older' | 'newer' {
   if ((h.format ?? 0) > PROJECT_VERSION) return 'newer'
   if (h.savedBy && appVersion && isNewerVersion(h.savedBy, appVersion)) return 'newer'
   if ((h.format ?? 0) < PROJECT_VERSION) return 'older'
-  if (!h.savedBy || isNewerVersion(MIGRATED_THROUGH, h.savedBy)) return 'older'
+  if (upgradesDue(h) && upgrades) return 'older'
   return 'current'
+}
+
+/** Whether a file was saved before the last upgrade, so it may need one (upgradeChanges says). */
+export function upgradesDue(h: ProjectHeader): boolean {
+  return !h.savedBy || isNewerVersion(MIGRATED_THROUGH, h.savedBy)
+}
+
+/** The file's version stamps (its header): they change with every save, so they aren't a change of
+ *  the project. A workflow doc's own `version` likewise. */
+const STAMPS = new Set(['appVersion', 'createdWith', 'format', 'version'])
+
+/** Whether reading a project file through the upgrades changes anything in it besides its version
+ *  stamps — i.e. whether Fix would rewrite what it says, not just which release wrote it. The
+ *  results aren't compared (not settings, and by far the largest part): an upgrade that moves them
+ *  moves the steps they belong to too. */
+export function upgradeChanges(text: string): boolean {
+  const after = JSON.parse(text) as RawProject
+  for (const w of [
+    ...(after.workflows ?? []),
+    ...(after.folders ?? []).flatMap((f) => f.workflows ?? [])
+  ])
+    delete w.results
+  const before = structuredClone(after)
+  let n = 0
+  upgradeProjectFile(after, { nextFolderId: () => `fd-check-${++n}` })
+  return !sameContent(before, after)
+}
+
+/** Deep equality of parsed JSON, version stamps aside (the header's; a workflow doc's `version`);
+ *  a key set to undefined, '' or an empty list or object counts as absent (an upgrade writing
+ *  `geneSets: []` or `mask: ''` where the file had none changes nothing). */
+function sameContent(a: unknown, b: unknown, top = true): boolean {
+  if (a === b) return true
+  if (typeof a !== 'object' || typeof b !== 'object' || a === null || b === null) return false
+  if (Array.isArray(a) !== Array.isArray(b)) return false
+  if (Array.isArray(a))
+    return (
+      a.length === (b as unknown[]).length &&
+      a.every((x, i) => sameContent(x, (b as unknown[])[i], false))
+    )
+  const ra = a as Record<string, unknown>
+  const rb = b as Record<string, unknown>
+  const stamp = (r: Record<string, unknown>, k: string): boolean =>
+    top ? STAMPS.has(k) : k === 'version' && Array.isArray(r.nodes)
+  const empty = (v: unknown): boolean =>
+    v === undefined ||
+    v === '' ||
+    (Array.isArray(v) ? v.length === 0 : !!v && typeof v === 'object' && !Object.keys(v).length)
+  const keys = (r: Record<string, unknown>): string[] =>
+    Object.keys(r).filter((k) => !empty(r[k]) && !stamp(r, k))
+  const ka = keys(ra)
+  const kb = keys(rb)
+  return ka.length === kb.length && ka.every((k) => k in rb && sameContent(ra[k], rb[k], false))
 }
 
 /** Whether dotted version `a` is newer than `b` ("0.4.0" > "0.3.10"). */
@@ -257,11 +323,15 @@ export function serializeProjectChunks(p: ProjectFile): SavePiece[] {
         const out: Omit<Partial<ProjectWorkflow>, 'results'> & { results: unknown } = {
           ...w,
           results:
-            (w.results as unknown) instanceof RawJson || (w.results as unknown) instanceof ParkedRef
-              ? w.results
-              : packResults(w.results)
+            w.stored !== undefined
+              ? w.stored
+              : (w.results as unknown) instanceof RawJson ||
+                  (w.results as unknown) instanceof ParkedRef
+                ? w.results
+                : packResults(w.results)
         }
         delete out.parked
+        delete out.stored
         return out
       })
     }))
@@ -300,6 +370,14 @@ export function packedResultsChunks(results: Record<string, NodeResult>): string
   return parts
 }
 
+/** Results as a project file stores them (already packed) as park text in pieces — parking a
+ *  workflow straight from the file, without unpacking it first. */
+export function storedResultsChunks(stored: unknown): string[] {
+  const parts: string[] = []
+  stringifyInto(stored ?? {}, 3, parts)
+  return parts as string[]
+}
+
 /** A workflow's results from parked text (packedResultsChunks, joined). */
 export function unpackParked(text: string): Record<string, NodeResult> {
   return unpackResults(JSON.parse(text))
@@ -319,7 +397,8 @@ interface ProjectFileV1 {
 
 function coerceWorkflows(
   ws: ProjectWorkflow[] | undefined,
-  activeId?: string
+  activeId?: string,
+  packed = false
 ): { workflows: ProjectWorkflow[]; activeWorkflowId: string } {
   const workflows =
     Array.isArray(ws) && ws.length
@@ -327,7 +406,7 @@ function coerceWorkflows(
           id: w.id ?? nextWorkflowId(),
           name: w.name ?? `Workflow ${i + 1}`,
           doc: w.doc ?? emptyWorkflowDoc(),
-          results: unpackResults(w.results),
+          ...(packed ? { results: {}, stored: w.results } : { results: unpackResults(w.results) }),
           ...(typeof w.dir === 'string' && w.dir ? { dir: w.dir } : null),
           ...(w.outDirs && typeof w.outDirs === 'object' ? { outDirs: { ...w.outDirs } } : null),
           ...(typeof w.mask === 'string' ? { mask: w.mask } : null)
@@ -339,13 +418,21 @@ function coerceWorkflows(
 
 /** Parse + validate a project file of any release: brought to the current form first
  *  (upgrades.ts — every upgrade the file format has had, in one place), then read. */
-export function deserializeProject(text: string): ProjectFile {
+export function deserializeProject(
+  text: string,
+  /** leave each workflow's results packed, in `stored`, for the caller to unpack or park */
+  opts: { packed?: boolean } = {}
+): ProjectFile {
   const raw = JSON.parse(text) as Partial<ProjectFile> & ProjectFileV1
   // Reserve every existing id so parse-time and later-minted ids can't collide with saved ones.
   reserveIds(raw)
   upgradeProjectFile(raw as RawProject, { nextFolderId })
   const folders: ProjectFolder[] = (raw.folders ?? []).map((f, i) => {
-    const { workflows, activeWorkflowId } = coerceWorkflows(f.workflows, f.activeWorkflowId)
+    const { workflows, activeWorkflowId } = coerceWorkflows(
+      f.workflows,
+      f.activeWorkflowId,
+      opts.packed
+    )
     return {
       id: f.id ?? nextFolderId(),
       name: f.name ?? (f.path ? (f.path.split(/[/\\]/).pop() ?? f.path) : `Folder ${i + 1}`),

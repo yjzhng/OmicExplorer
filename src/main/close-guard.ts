@@ -9,17 +9,17 @@ import { BrowserWindow, dialog, ipcMain } from 'electron'
 
 export type SaveChoice = 'save' | 'discard' | 'cancel'
 
-let dirty = false
-let projectName = ''
+/** Each window's project: unsaved or not, and its name — by the window's webContents id (a
+ *  project opened from Finder gets a window of its own). */
+const projects = new Map<number, { dirty: boolean; name: string }>()
 
 /** Pending save requests to the renderer, by token. */
 const pendingSaves = new Map<number, (ok: boolean) => void>()
 let nextToken = 1
 
 export function registerCloseGuard(): void {
-  ipcMain.on('proj:dirty', (_evt, d: boolean, name: string) => {
-    dirty = !!d
-    projectName = name ?? ''
+  ipcMain.on('proj:dirty', (evt, d: boolean, name: string) => {
+    projects.set(evt.sender.id, { dirty: !!d, name: name ?? '' })
   })
   ipcMain.handle('proj:askSave', (evt, action: string): Promise<SaveChoice> => {
     const win = BrowserWindow.fromWebContents(evt.sender)
@@ -46,6 +46,7 @@ export function registerCloseGuard(): void {
 }
 
 async function askSave(win: BrowserWindow | null, action: string): Promise<SaveChoice> {
+  const projectName = win ? projects.get(win.webContents.id)?.name : ''
   const opts: Electron.MessageBoxOptions = {
     type: 'warning',
     buttons: ['Save', "Don't Save", 'Cancel'],
@@ -76,8 +77,10 @@ function requestRendererSave(win: BrowserWindow): Promise<boolean> {
 export function installCloseGuard(win: BrowserWindow): void {
   let allowClose = false
   let asking = false
+  const id = win.webContents.id
+  win.webContents.once('destroyed', () => projects.delete(id))
   win.on('close', (e) => {
-    if (allowClose || !dirty) return
+    if (allowClose || !projects.get(id)?.dirty) return
     e.preventDefault()
     if (asking) return
     asking = true

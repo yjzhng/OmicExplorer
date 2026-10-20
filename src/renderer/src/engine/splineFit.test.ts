@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
+import { DOSE_MODEL, TIME_MODEL } from './axisModel'
 import { rng } from './sam'
 import {
   describeCurve,
@@ -95,6 +96,7 @@ describe('runSplineFit — dose', () => {
     den: { cmpd: ['DMSO'] },
     match: [],
     activeConditions: ['cmpd', 'dose'],
+    numericConditions: [],
     curveAxis: 'dose'
   })
   const by = (k: string): typeof res.rows =>
@@ -137,7 +139,10 @@ describe('describeCurve — 4PL description of detected curves', () => {
   const bell = [0, ...lx.map((v) => 2 * Math.exp(-((v - 1.7) ** 2) / 0.3))]
 
   it('recovers a sigmoid’s midpoint and plateaus, and explains what the spline does', () => {
-    const d = describeCurve({ ...fitSplineCurve(x, sig, 0)!, scale: { axis: 'dose' } })!
+    const d = describeCurve({
+      ...fitSplineCurve(x, sig, 0)!,
+      scale: { axis: 'dose', ...DOSE_MODEL, offset: 0, step: 1 }
+    })!
     expect(Math.log10(d.mid)).toBeCloseTo(Math.log10(30), 1)
     expect(d.front).toBeCloseTo(0, 2)
     expect(d.back).toBeCloseTo(2, 1)
@@ -145,7 +150,10 @@ describe('describeCurve — 4PL description of detected curves', () => {
     expect(d.lowShape).toBe(false)
   })
   it('flags a non-monotonic curve as not this shape', () => {
-    const d = describeCurve({ ...fitSplineCurve(x, bell, 0)!, scale: { axis: 'dose' } })!
+    const d = describeCurve({
+      ...fitSplineCurve(x, bell, 0)!,
+      scale: { axis: 'dose', ...DOSE_MODEL, offset: 0, step: 1 }
+    })!
     expect(d.shapeRatio).toBeLessThan(0.8)
     expect(d.lowShape).toBe(true)
   })
@@ -153,7 +161,10 @@ describe('describeCurve — 4PL description of detected curves', () => {
     const off = 30
     const tx = [0, ...TIMES].map((t) => Math.log10(t + off))
     const y = [0, ...TIMES].map((t) => -2 * (1 - Math.exp(-t / 200)))
-    const d = describeCurve({ ...fitSplineCurve(tx, y, 0)!, scale: { axis: 'time', offset: off } })!
+    const d = describeCurve({
+      ...fitSplineCurve(tx, y, 0)!,
+      scale: { axis: 'time', ...TIME_MODEL, offset: off, step: 1 }
+    })!
     // half the effect at t = 200·ln 2 ≈ 139 min; a 4PL only approximates the exponential, so loosely
     expect(d.mid).toBeGreaterThan(70)
     expect(d.mid).toBeLessThan(280)
@@ -164,7 +175,10 @@ describe('describeCurve — 4PL description of detected curves', () => {
     const tx = [0, ...TIMES].map((t) => Math.log10(t + off))
     // full response from the first time point on (sustained), with some wobble
     const y = [0, 1.35, 0.88, 0.68, 1.1, 0.87, 0.96, 0.98, 1.25]
-    const d = describeCurve({ ...fitSplineCurve(tx, y, 0)!, scale: { axis: 'time', offset: off } })!
+    const d = describeCurve({
+      ...fitSplineCurve(tx, y, 0)!,
+      scale: { axis: 'time', ...TIME_MODEL, offset: off, step: 1 }
+    })!
     expect(d.front).toBe(0)
     expect(d.mid).toBeGreaterThan(0)
     expect(d.mid).toBeLessThan(TIMES[0])
@@ -199,6 +213,7 @@ describe('runSplineFit — time', () => {
     den: { cmpd: ['DMSO'] },
     match: [],
     activeConditions: ['cmpd', 'dose', 'time'],
+    numericConditions: [],
     curveAxis: 'time'
   })
   it('cancels vehicle drift and finds the responders', () => {

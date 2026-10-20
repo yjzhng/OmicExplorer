@@ -5,9 +5,10 @@ import type { NormalizeOptions, NormalizeSummary } from './normalize'
 
 /** The four built-in condition axes. `cell`/`cmpd` are categorical, `dose`/`time` numeric. */
 export type PresetConditionKey = 'cell' | 'cmpd' | 'dose' | 'time'
-/** A user-defined condition axis (see the interactive import's Conditions step). ALWAYS
- *  categorical — its values are strings, never ordered — so it can take a grouping/facet/colour
- *  role but never a response axis, a light→dark shade or a low→high arrow.
+/** A user-defined condition axis (see the interactive import's Conditions step). Categorical —
+ *  its values are labels, never ordered, taking a grouping/facet/colour role only — unless the
+ *  import declared it numeric (NumericConds): then it is ordered, like dose and time. Its values are
+ *  strings either way (a numeric one read through numValue).
  *
  *  The sigil is `@`, not `:`, because a result row's `cmp_cond` joins the compared condition keys
  *  with `:` and `comparisonDims` splits them back apart on it (see plotData.ts); a `:` in the key
@@ -43,9 +44,29 @@ export const customSlug = (c: CustomConditionKey): string => c.slice(1)
 export const customCond = (name: string): CustomConditionKey => `@${name}` as CustomConditionKey
 /** What to call a condition on screen: its slug for a custom one, the key itself for a preset. */
 export const condLabel = (c: ConditionKey): string => (isCustomCond(c) ? customSlug(c) : c)
-/** Whether a condition's values are numeric and therefore ORDERED. Only dose and time are —
- *  every custom condition is categorical, so ordered channels must never be handed one. */
-export const isNumericCond = (c: ConditionKey): boolean => c === 'dose' || c === 'time'
+/**
+ * The conditions a dataset declares numeric — its condition schema: dose and time always (their
+ * values are numbers by the data format), plus the custom ones declared numeric at import. Carried
+ * on Clean data (StandardizeResult.numericConditions; numericOf reads it) and handed to everything
+ * that asks isNumericCond, so a numeric custom condition is ordered wherever its data goes.
+ */
+export type NumericConds = ReadonlySet<ConditionKey>
+
+/** A dataset's numeric conditions from its declared numeric custom ones (dose and time always). */
+export function numericConds(customs: readonly CustomConditionKey[] = []): NumericConds {
+  return new Set<ConditionKey>(['dose', 'time', ...customs])
+}
+
+/** The numeric conditions of a Clean data result (absent — none declared, or a result from before
+ *  declarations — dose and time only). */
+export const numericOf = (
+  std: { numericConditions?: readonly CustomConditionKey[] } | null | undefined
+): NumericConds => numericConds(std?.numericConditions)
+
+/** Whether a condition's values are numeric and therefore ORDERED, in a dataset with these numeric
+ *  conditions (`numeric`, its schema — required, so no caller can forget the custom ones). Ordered
+ *  channels (a response axis, a light→dark shade, a low→high arrow) must only take one of these. */
+export const isNumericCond = (c: ConditionKey, numeric: NumericConds): boolean => numeric.has(c)
 /** Whether `name` can be used as a custom condition: a lowercase identifier, not reserved. */
 export const validCondName = (name: string): boolean =>
   /^[a-z][a-z0-9_]*$/.test(name) && !RESERVED_COND_NAMES.includes(name)
@@ -112,10 +133,17 @@ export interface StandardizeInput {
   dbText?: string
   /** active conditions; defaults to all present */
   activeConditions?: ConditionKey[]
+  /** Subset steps between Load data and Clean data: only the samples every filter keeps are read
+   *  (conditions, replicates, samples left out — subset.ts SampleFilter), so the clean-up below
+   *  sees just those. Unset = every sample. */
+  subsets?: import('./subset').SampleFilter[]
   /** samplesheet columns to read as custom conditions. The interactive import passes what the
    *  user defined; when omitted (a hand-written samplesheet) they're auto-detected — see
    *  `detectCustomConditions` in ingest.ts. */
   customConditions?: string[]
+  /** of those, the ones declared numeric (the import's cat/num chip): their values must be numbers,
+   *  and the result lists them (StandardizeResult.numericConditions) */
+  numericConditions?: string[]
   /** clean-up: drop genes identified (non-null value) in fewer than this % of
    *  samples. 0 / undefined = keep everything. */
   minSamplePct?: number
@@ -164,6 +192,9 @@ export interface StandardizeResult {
   keggCategories: Record<string, string>
   /** condition columns that carry at least one non-empty value */
   activeConditions: ConditionKey[]
+  /** the custom conditions declared numeric (of the active ones) — the dataset's condition schema
+   *  with dose and time (numericOf). Absent = none (a result from before declarations). */
+  numericConditions?: CustomConditionKey[]
   /** distinct compound names found */
   compounds: string[]
   /** clean-up summary: how many genes were dropped, how many total samples the presence threshold
@@ -214,12 +245,33 @@ export interface CompareInput {
    *  denominator. Absent = none (an unmatched condition still splits the numerator). */
   pool?: ConditionKey[]
   activeConditions: ConditionKey[]
+  /** the dataset's custom conditions declared numeric (its Clean data's numericConditions; dose and
+   *  time are always numeric) — its condition schema, numericConds(…) */
+  numericConditions: readonly CustomConditionKey[]
   method?: 'ttest'
   transform?: boolean
   threshold?: import('./stats').ThresholdConfig
   /** curve fit only: the numeric condition the curve runs over (dose). It is the fit's x-axis, so
    *  neither a facet nor matched — each numerator group pools every level of it into one curve. */
   curveAxis?: ConditionKey
+  /** curve fit: the axis's scale as the Curve fit confirmed it (log / linear). Absent = the one its
+   *  levels' spacing shows (detectScale), else the axis's preset. Both methods follow it. */
+  axisScale?: import('./axisModel').AxisScale
+  /** curve fit: what the baseline is to the curve, as the Curve fit set it — 'reference' (a control
+   *  off the curve, the vehicle) or 'matched' (the curve's own first point: t₀, the lowest
+   *  temperature). Absent = the axis's preset (dose reference, time matched, any other reference).
+   *  Both methods follow it. */
+  axisBaseline?: import('./axisModel').AxisBaseline
+  /** curve fit: each axis's scale / baseline as set, per condition — every axis a surface runs over
+   *  (a one-axis curve: `axisScale` / `axisBaseline` win). Absent: detected / the preset. */
+  axisScales?: Partial<Record<ConditionKey, import('./axisModel').AxisScale>>
+  axisBaselines?: Partial<Record<ConditionKey, import('./axisModel').AxisBaseline>>
+  /** curve fit: each axis's models — detector, descriptor, a surface's coupling (AxisFit). Absent:
+   *  the method's. */
+  axisFits?: Partial<Record<ConditionKey, import('./axisModel').AxisFit>>
+  /** curve fit: the whole axis model, overriding `axisScale`, `axisBaseline` and the preset
+   *  (axisModel.ts) — for tests; the app sets `axisScale` / `axisBaseline` only */
+  axisModel?: import('./axisModel').AxisModel
   /** curve fit, every model and axis: CurveCurator's interpolation (`interpolation = true`) — every
    *  4PL fit also sees points midway between the measured levels (a surface: one per grid cell),
    *  read off straight lines between the measured values; SSEs stay on the real points. 4PL: the
@@ -249,6 +301,27 @@ export interface VehNormInput {
 export type CurveModel = '4PL' | 'M0'
 
 /** One row of a comparison result table (mirrors omicViz norm CSV schema). */
+/** An ANOVA term row (see CompareResultRow.term): unsigned, so not a fold change. */
+export const isTermRow = (r: { term?: unknown }): boolean => r.term != null
+
+/** An ANOVA's overall row over two or more factors: their interaction (a 2×2, 2×2×2 …), its log2FC
+ *  a fold change of fold changes — a one-way ANOVA's are a level against the control. */
+export const isInteractionRow = (r: {
+  term?: unknown
+  slope?: unknown
+  cmp_cond?: string
+}): boolean => !isTermRow(r) && r.slope == null && String(r.cmp_cond ?? '').includes(':')
+
+/** An ANOVA's overall row through a slope (CompareResultRow.slope): a per-unit change. */
+export const isSlopeRow = (r: { slope?: unknown }): boolean => r.slope != null
+
+/** The rows with a signed fold change — every Compare row but a two-way ANOVA's term rows. For the
+ *  readers that need a direction (DR, bubble, enrichment's up / down, Contrast sides …). Returns
+ *  the same array when there are none, so memos keyed on it hold. */
+export function termless<R extends { term?: unknown }>(rows: R[]): R[] {
+  return rows.some(isTermRow) ? rows.filter((r) => !isTermRow(r)) : rows
+}
+
 export interface CompareResultRow {
   uniqID: string
   cmpd: string
@@ -271,6 +344,17 @@ export interface CompareResultRow {
   thrsh: string
   signf: boolean
   effect: 'up' | 'down' | 'none'
+  /** two-way ANOVA only: a model term's row — `comparison` is the term ("cmpd", "cmpd × cell"),
+   *  `log2FC` its UNSIGNED effect size (the term's RMS contribution, log₂; ≥ 0), pP / pQ its F-test.
+   *  Never a signed fold change: termless() keeps these rows from every reader that needs one. */
+  term?: true
+  /** ANOVA: an overall row through a slope — `log2FC` a change per unit of the numeric condition
+   *  (per decade on a log axis), or with factors a difference of such slopes; it carries no value
+   *  of that condition */
+  slope?: true
+  /** two-way ANOVA: the row's F-test — a term's own, or a 2×2 contrast's (one df: F = t², the same
+   *  test as its t) — on (df1, df2 = the residual df, plus the prior's when moderated) */
+  ftest?: { F: number; df1: number; df2: number }
   /** curve fit only: the final model — the 4PL when its F-test rejects the flat null at the
    *  threshold's α, else M0 (flat, at the curve's `m0`). Set with the call (classifyCompareRow), so
    *  it follows threshold edits; absent on results classified before it existed. */
@@ -294,6 +378,12 @@ export interface CompareResultRow {
     /** the control samples' own ratios to the control mean, and their replicates */
     cy?: number[]
     crep?: Array<number | null>
+    /** a linear axis: x is the level in steps of `step` (absent = log₁₀ of the level; see
+     *  axisModel.ts — xUnits maps x back) */
+    scale?: 'linear'
+    step?: number
+    /** a log axis whose matched baseline sits at 0 (t₀): the offset in log₁₀(level + offset) */
+    timeOffset?: number
     /** false: not described — its run described responders only (q ≤ DESCRIBE_Q, BH over the
      *  run's raw p) and this curve isn't one. Its 4PL is still its test; its EC50, slope and
      *  plateaus aren't read (curveDescribed). Absent = described. */
@@ -307,6 +397,19 @@ export interface CompareResultRow {
    *  q (BH × Storey's π₀ over the run). Never set together with `curve` (the CurveCurator
    *  method's 4PL). */
   rs?: ResponseFit
+}
+
+/** How one axis of a stored surface maps its levels to x (as StoredScale: absent scale = log₁₀,
+ *  with `timeOffset`), and its baseline — its kind and level. */
+export interface SurfaceAxisMap {
+  scale?: 'linear'
+  step?: number
+  timeOffset?: number
+  baseline: import('./axisModel').AxisBaseline
+  base: number
+  /** a log axis's place for its base level at 0 when that level is a cell (a surface against one
+   *  position: dose 0 at a higher temperature) — see AxisMap.zeroX */
+  zeroX?: number
 }
 
 /** A response surface method fit behind one result row — a curve over one axis, or a dose × time
@@ -326,18 +429,39 @@ export interface ResponseFit {
   F: number
   df1: number
   df2: number
-  /** one-axis curves: the level positions — baseline first (dose: log₁₀ dose, the baseline a step
-   *  below the lowest; time: log₁₀(t + timeOffset), t₀ the baseline) — the log₂ level means vs
+  /** one-axis curves: the level positions — baseline first (log₁₀ of the level, or the level itself
+   *  on a linear axis; against one reference — dose — the baseline a step below the lowest, against
+   *  a matched control — time: log₁₀(t + timeOffset) — the level 0 is) — the log₂ level means vs
    *  the baseline, the spline's fit at them, and the spline sampled finely for drawing */
   x?: number[]
   y?: number[]
   fitted?: number[]
   line?: { x: number[]; y: number[] }
-  /** time axis and surfaces: the offset in log₁₀(t + offset) */
+  /** a log axis with a matched baseline (time) and surfaces: the offset in log₁₀(t + offset) */
   timeOffset?: number
+  /** surfaces over another pair than dose × time, or on other axes than log × log: the two
+   *  conditions (the first in the `dose` slot of `cells`, the second in `time`'s) and how each one's
+   *  levels map to x (absent: dose × time, log₁₀ dose against the vehicle, log₁₀(t + timeOffset)
+   *  from t₀) */
+  pair?: [ConditionKey, ConditionKey]
+  maps?: [SurfaceAxisMap, SurfaceAxisMap]
+  /** one-axis curves on a linear axis: x is the level in steps of `step` (absent = log₁₀; see
+   *  axisModel.ts — xUnits maps x back) */
+  scale?: 'linear'
+  step?: number
   /** surfaces: every treated cell — its dose, time, log₂ effect vs that time's vehicle, and the
    *  spline surface's fit there */
   cells?: Array<{ dose: number; time: number; y: number; fitted: number }>
+  /** surfaces: the samples that aren't cells, for the views that show the reference (heatmap,
+   *  3-D) — the vehicle's replicates at each of its levels (`vehicle`: at the first axis's base
+   *  level, dose 0) and treated samples at a baseline level (t₀ under a matched second axis); each
+   *  one's mean and replicates as log₂ vs its level's vehicle mean, so the vehicle scatters about 0.
+   *  Levels as measured (0 included): a log axis places them. Absent on results fitted before. */
+  controls?: Array<{ dose: number; time: number; y: number; reps: number[]; vehicle?: true }>
+  /** a surface tested for response changes: the response axis, the axis compared across, and how
+   *  the slices differ from the base slice — the largest consistent offset (drift) and departure
+   *  beyond it (shape), log₂; the offset's share of the difference and what it mostly is */
+  shift?: import('./splineFit').SliceShift & { kind: 'drift' | 'shape' | 'both' }
   /** the description, for curves with q within the describe cutoff: a one-axis curve's 4PL, or a
    *  surface's (per time slice, or joint) */
   desc?: import('./splineFit').CurveDescription
@@ -356,4 +480,6 @@ export interface VehNormResult {
   decoys?: Record<string, import('./curveFit').DecoyCurve[]>
   curveFdr?: number
   ccAlpha?: Record<string, number>
+  /** two-way ANOVA: the model behind the rows (see CompareTableResult) */
+  anova?: import('./anova').AnovaResult
 }

@@ -12,6 +12,7 @@ import {
   abundanceLabel,
   buildGeneBar,
   isNumericCond,
+  numericOf,
   type ConditionKey,
   type SampleOrder,
   type StandardizeResult,
@@ -129,9 +130,10 @@ export function GeneBarTile({
     return [lo < 0 ? lo - pad : 0, hi + pad]
   }, [range])
   // Colour by condition: the categorical one sets the colour, the numeric one (dose, time) the shade.
-  const conds = barColorConds(config, std.activeConditions, primaryColorLevels(std))
-  const colorCat = conds.find((c) => !isNumericCond(c))
-  const colorNum = conds.find((c) => isNumericCond(c))
+  const numeric = numericOf(std)
+  const conds = barColorConds(config, std.activeConditions, primaryColorLevels(std), numeric)
+  const colorCat = conds.find((c) => !isNumericCond(c, numeric))
+  const colorNum = conds.find((c) => isNumericCond(c, numeric))
   const { replicates, repSize, repOpacity, repColor, repJitter } = config
   const look = useMemo(
     (): ReplicateLook => ({

@@ -46,6 +46,7 @@ import {
   accentOf,
   ALL_OPS,
   canConnect,
+  wiredKindOf,
   categoryOf,
   entryKey,
   NODE_SPECS,
@@ -737,7 +738,8 @@ function Canvas() {
       const pt = 'changedTouches' in event ? event.changedTouches[0] : event
       const sourceNode = useGraph.getState().nodes.find((n) => n.id === sourceId)
       if (!sourceNode || !isStep(sourceNode)) return
-      const ops = ALL_OPS.filter((o) => canConnect(sourceNode.data.kind, o))
+      const from = wiredKindOf(useGraph.getState(), sourceId) ?? sourceNode.data.kind
+      const ops = ALL_OPS.filter((o) => canConnect(from, o))
       if (ops.length === 0) return
       const flow = screenToFlowPosition({ x: pt.clientX, y: pt.clientY })
       const position = { x: flow.x, y: flow.y - 45 }
@@ -1009,12 +1011,12 @@ const DEFAULT_STEPS = ALL_OPS.filter(
 function plotEntriesAfter(step: NodeKind): PlotMenuEntry[] {
   return PLOT_SECTIONS.flatMap((sec) => sec.kinds)
     .filter((k) => canConnect(step, k))
-    .flatMap(plotEntriesFor)
+    .flatMap((k) => plotEntriesFor(k))
 }
 
 function PlotDefaults(): ReactNode {
   // Pick the process step first, then one of the plots it feeds — the plot tile's own menu, so
-  // Dose-response and Time-response are their own entries, as in the editor.
+  // Dose response and Time response are their own entries, as in the editor.
   const [step, setStep] = useState<NodeKind>(DEFAULT_STEPS[0])
   const entries = plotEntriesAfter(step)
   const [pickedKey, setPickedKey] = useState('')
@@ -1031,8 +1033,9 @@ function PlotDefaults(): ReactNode {
     ...(own ?? {}),
     ...(entry.override ?? {})
   } as NodeConfig
-  // Dose-response and Time-response are one plot kind: one set of defaults serves both.
-  const shared = plotEntriesFor(kind).length > 1
+  // The Response plots over each condition (or pair) are one plot kind: one set of defaults serves
+  // them all.
+  const shared = kind === 'dr' || kind === 'tdr'
   return (
     <>
       {/* One row: the process step, then the plot it feeds (and Reset, once there's a default). */}
@@ -1071,7 +1074,8 @@ function PlotDefaults(): ReactNode {
         {own
           ? `New ${entry.label} tiles start with these settings.`
           : `New ${entry.label} tiles start with the built-in settings — change anything below to save a default.`}
-        {shared && ' Dose-response and Time-response share one set of defaults.'}
+        {shared &&
+          ` Every ${entry.kind === 'tdr' ? 'two-condition' : 'one-condition'} Response plot shares one set of defaults.`}
       </div>
       {/* The panel's Selects read React Flow's zoom for their dropdown metrics; a provider of its
           own pins that to 1 here, outside the canvas. `edgeNodeId` matches no node, so the panels
@@ -2460,12 +2464,13 @@ function HomeGuides({ onGuide }: { onGuide: () => void }) {
 const APP_VERSION = typeof __APP_VERSION__ === 'string' ? __APP_VERSION__ : null
 
 /** A recent project's version tag, beside its name: the app version that last saved the file —
- *  amber when the file is older than this app's migrations (Fix rewrites it), red when a newer app
- *  saved it. The tooltip has the file format and the version it was created with. */
+ *  amber when this app's migrations would change the file (Fix rewrites it) — not merely because an
+ *  older release saved it — red when a newer app saved it. The tooltip has the file format and the version it was created with. */
 function ProjectVersionTag({ path }: { path: string | null }): ReactNode {
   const h = useGraph((s) => (path ? s.recentHeaders[path] : undefined))
+  const upgrades = useGraph((s) => (path ? s.recentUpgrades[path] : undefined))
   if (!h) return null
-  const standing = projectStanding(h, APP_VERSION)
+  const standing = projectStanding(h, APP_VERSION, upgrades)
   const color = standing === 'older' ? '#e2b93b' : standing === 'newer' ? UI.err : UI.textMuted
   const title = [
     h.savedBy ? `Last saved by OmicExplorer ${h.savedBy}` : 'Saved before OmicExplorer 0.3.5',
@@ -2519,7 +2524,8 @@ function ProjectRowMenu({
   // The menu is portalled to <body>, outside the app root that carries the theme's CSS variables,
   // so it's coloured from the palette itself (as the app's Select menu is).
   const p = PALETTES[useUiTheme((s) => s.mode)]
-  const older = !!path && !!h && projectStanding(h, APP_VERSION) === 'older'
+  const upgrades = useGraph((s) => (path ? s.recentUpgrades[path] : undefined))
+  const older = !!path && !!h && projectStanding(h, APP_VERSION, upgrades) === 'older'
   const fix = async (): Promise<void> => {
     if (!path) return
     setState({ busy: true })
@@ -2813,6 +2819,16 @@ function Home({
 }
 
 export default function App() {
+  // A window opened for a project file (double-clicked in Finder) opens it. Main hands the path
+  // out once, so StrictMode's second run gets null.
+  useEffect(() => {
+    void window.api
+      .takeLaunchProject?.()
+      .then((path) => {
+        if (path) void useGraph.getState().openProject(path)
+      })
+      .catch(() => undefined)
+  }, [])
   const mode = useUiTheme((s) => s.mode)
   // Read here so a change re-renders the app (portals pick it up through cssVars on their next render).
   const accent = useUiTheme((s) => s.accent)
@@ -3279,7 +3295,10 @@ const styles: Record<string, CSSProperties> = {
     background: UI.panel,
     border: `1px solid ${UI.border}`,
     borderRadius: 10,
-    overflow: 'hidden'
+    // The two axes apart, not the `overflow` shorthand: recentScroll swaps in overflowY, and React
+    // can't add / remove a longhand over a shorthand cleanly.
+    overflowX: 'hidden',
+    overflowY: 'hidden'
   },
   // Sized to its rows, shrinking (and scrolling) only when the window is too short to show them all.
   // Short lists (≤ 2 rows) are already under the 120px floor, so they just keep their natural height.

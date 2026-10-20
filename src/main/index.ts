@@ -1,4 +1,6 @@
-import { app, BrowserWindow, dialog } from 'electron'
+import { existsSync } from 'node:fs'
+
+import { app, BrowserWindow, dialog, ipcMain } from 'electron'
 import { createWindowFromPreset } from './window-manager'
 import { assertPreset } from './window-presets'
 import { installAppMenu } from './dev-menu'
@@ -16,8 +18,11 @@ import pkg from '../../package.json'
 // Derive the app name from package.json's productName. Without this, dev (which runs
 // the shared node_modules/electron binary) reports app.name = "Electron" — wrong in
 // the dock/menu and, worse, points userData at Electron's shared dir. Must run before
-// app is ready. Packaged builds already get this from the bundle; this makes dev match.
-app.setName(pkg.productName)
+// app is ready. A from-source run (not packaged) is "<productName> Dev": its own userData
+// (settings, recent projects, the reference cache) and its own single-instance lock, so it
+// never shares a session with — or, launched second, just focuses — an installed copy
+// running alongside.
+app.setName(app.isPackaged ? pkg.productName : `${pkg.productName} Dev`)
 
 // Single source of truth: the first window's shape comes from package.json.
 // Validated against the defined presets so a typo fails loudly, not silently.
@@ -47,9 +52,29 @@ function focusExistingWindow(): void {
   }
 }
 
-function openDefaultWindow(): void {
-  createWindowFromPreset(DEFAULT_PRESET, { search: `?preset=${DEFAULT_PRESET}` })
+/** The project each window was opened for, by webContents id, until its renderer takes it. */
+const launchProjects = new Map<number, string>()
+
+/** A window; given a project file, one that opens it — set off from the window in front, so it
+ *  isn't stacked exactly over it. */
+function openDefaultWindow(project?: string): void {
+  const front = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0]
+  const win = createWindowFromPreset(DEFAULT_PRESET, { search: `?preset=${DEFAULT_PRESET}` })
+  if (!project) return
+  launchProjects.set(win.webContents.id, project)
+  if (front && !front.isDestroyed()) {
+    const [x, y] = front.getPosition()
+    win.setPosition(x + 28, y + 28)
+  }
 }
+
+/** The project and template files among launch arguments (Windows / Linux pass a double-clicked
+ *  file so). */
+const projectArgs = (argv: string[]): string[] =>
+  argv.slice(1).filter((a) => /\.omicexplorer(-template)?$/i.test(a) && existsSync(a))
+
+/** Projects macOS asked to open before the app was ready (the double-click that launched it). */
+const queuedProjects: string[] = []
 
 // Compat harness: headless screenshot mode bypasses the normal app (no menu,
 // no single-instance lock) — just render the requested preset and capture it.
@@ -65,7 +90,26 @@ if (shoot) {
   // existing window instead of spawning a parallel session.
   app.quit()
 } else {
-  app.on('second-instance', focusExistingWindow)
+  // A second launch: a project file it was given opens in a new window; otherwise it just brings
+  // the app forward.
+  app.on('second-instance', (_e, argv) => {
+    const files = projectArgs(argv)
+    if (files.length) for (const f of files) openDefaultWindow(f)
+    else focusExistingWindow()
+  })
+  // macOS: Finder's double-click / Open With on a project or template (openProject starts a new
+  // project from a template). Registered before ready — the
+  // double-click that launches the app arrives before it is.
+  app.on('open-file', (e, path) => {
+    e.preventDefault()
+    if (app.isReady()) openDefaultWindow(path)
+    else queuedProjects.push(path)
+  })
+  ipcMain.handle('proj:takeLaunch', (evt): string | null => {
+    const path = launchProjects.get(evt.sender.id) ?? null
+    launchProjects.delete(evt.sender.id)
+    return path
+  })
 
   app.whenReady().then(() => {
     assertRenamedFromTemplate()
@@ -77,7 +121,11 @@ if (shoot) {
     registerPark() // inactive workflows' results parked on disk (renderer memory)
     registerRefCache() // Settings › Database: the UniProt / STRING cache's contents
     installAppMenu() // dev-only aspect-ratio switcher — lives here, not in the app UI
-    openDefaultWindow()
+    // Launched to open projects: a window for each; else the one home window.
+    const launch = [...queuedProjects, ...projectArgs(process.argv)]
+    queuedProjects.length = 0
+    if (launch.length) for (const f of launch) openDefaultWindow(f)
+    else openDefaultWindow()
     initAutoUpdate() // no-op unless packaged + appConfig.publish is set
 
     app.on('activate', () => {
@@ -85,8 +133,8 @@ if (shoot) {
     })
   })
 
-  // Quit with the last window — on macOS too. It's a single-window app (the instance lock focuses
-  // the one window), so staying in the Dock with no window, the macOS default, only left a process
-  // running that looked closed. The unsaved-changes prompt runs first (it guards the window's close).
+  // Quit with the last window — on macOS too. Staying in the Dock with no window, the macOS default,
+  // only left a process running that looked closed. The unsaved-changes prompt runs first (it
+  // guards each window's close).
   app.on('window-all-closed', () => app.quit())
 }

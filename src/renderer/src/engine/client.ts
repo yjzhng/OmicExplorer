@@ -4,16 +4,17 @@
  */
 import type { ContrastInput, ContrastPairInput, ContrastResult } from './contrast'
 import type { CompareTableResult, DirectInput } from './direct'
-import type { TwoWayInput } from './twoWay'
-import type { ScalePreview } from './ingest'
+import type { FactorAnovaInput } from './twoWay'
+import type { RecleanInput, ScalePreview } from './ingest'
 import type {
   ClusterData,
   ClusterOptions,
   EnrichData,
-  EnrichOptions,
-  enrichmentAll
+  enrichmentAll,
+  enrichmentTable
 } from './plotData'
 import type { EngineRequest, EngineResponse } from './worker'
+import type { Progress } from './progress'
 import type { ResponseInput } from './responseSurface'
 import type {
   CompareInput,
@@ -29,7 +30,15 @@ import { decodeValue, encodeValue } from './wire'
 
 let worker: Worker | null = null
 let seq = 0
-const pending = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void }>()
+const pending = new Map<
+  number,
+  {
+    resolve: (v: unknown) => void
+    reject: (e: Error) => void
+    /** told a long run's progress as the worker reports it */
+    onProgress?: (p: Progress) => void
+  }
+>()
 
 /** `localStorage['oe.enginePool']` overrides the engine pool's size (a number; 0 = no pool) — for
  *  diagnosing a machine. Unset, the worker sizes it from the core count (poolSize.ts). */
@@ -84,8 +93,13 @@ function getWorker(): Worker {
       const msg = e.data
       const p = pending.get(msg.id)
       if (!p) return
+      if ('progress' in msg) {
+        p.onProgress?.(msg.progress)
+        return
+      }
       pending.delete(msg.id)
-      if (msg.ok) p.resolve(decodeValue(msg.result))
+      // Results stay columnar where large: their rows are built when read (lazyRows.ts).
+      if (msg.ok) p.resolve(decodeValue(msg.result, true))
       else p.reject(new Error(msg.error))
     }
     worker.onerror = (e) => {
@@ -132,10 +146,14 @@ function withDataset(payload: unknown): unknown {
   return { ...(payload as object), rows: { $dataset: entry.key } }
 }
 
-function call<T>(op: EngineRequest['op'], payload: unknown): Promise<T> {
+function call<T>(
+  op: EngineRequest['op'],
+  payload: unknown,
+  onProgress?: (p: Progress) => void
+): Promise<T> {
   const id = ++seq
   return new Promise<T>((resolve, reject) => {
-    pending.set(id, { resolve: resolve as (v: unknown) => void, reject })
+    pending.set(id, { resolve: resolve as (v: unknown) => void, reject, onProgress })
     const message = withDataset(payload) // may post the table first (messages arrive in order)
     getWorker().postMessage({ id, op, payload: message } as EngineRequest)
   })
@@ -144,6 +162,9 @@ function call<T>(op: EngineRequest['op'], payload: unknown): Promise<T> {
 export const engine = {
   standardize: (input: StandardizeInput): Promise<StandardizeResult> =>
     call<StandardizeResult>('standardize', input),
+  /** Clean data on another Clean data's table: its clean-up, normalisation and imputation only. */
+  reclean: (input: RecleanInput): Promise<StandardizeResult> =>
+    call<StandardizeResult>('reclean', input),
   /** A data file's scale and a value sample, for Clean data's preview — no run needed. */
   previewScale: (dataText: string, dataFilename: string): Promise<ScalePreview> =>
     call<ScalePreview>('previewScale', { dataText, dataFilename }),
@@ -152,14 +173,18 @@ export const engine = {
     call<CompareTableResult>('direct', input),
   compare: (input: CompareInput): Promise<CompareTableResult> =>
     call<CompareTableResult>('compare', input),
-  twoWayAnova: (input: TwoWayInput): Promise<CompareTableResult> =>
-    call<CompareTableResult>('twoWayAnova', input),
+  factorAnova: (input: FactorAnovaInput): Promise<CompareTableResult> =>
+    call<CompareTableResult>('factorAnova', input),
   /** Dose–response curve fit (CurveCurator's recalibrated F-test). */
-  curveFit: (input: CompareInput & { curveAxis: ConditionKey }): Promise<CompareTableResult> =>
-    call<CompareTableResult>('curveFit', input),
+  curveFit: (
+    input: CompareInput & { curveAxis: ConditionKey },
+    onProgress?: (p: Progress) => void
+  ): Promise<CompareTableResult> => call<CompareTableResult>('curveFit', input, onProgress),
   /** Curve fit by the response surface method (spline detection; see responseSurface.ts). */
-  responseSurface: (input: ResponseInput): Promise<CompareTableResult> =>
-    call<CompareTableResult>('responseSurface', input),
+  responseSurface: (
+    input: ResponseInput,
+    onProgress?: (p: Progress) => void
+  ): Promise<CompareTableResult> => call<CompareTableResult>('responseSurface', input, onProgress),
   contrast: (input: ContrastInput): Promise<ContrastResult> =>
     call<ContrastResult>('contrast', input),
   contrastPair: (input: ContrastPairInput): Promise<ContrastResult> =>
@@ -215,7 +240,7 @@ function lane(
       nw.onmessage = (e: MessageEvent<EngineResponse>) => {
         const msg = e.data
         const p = waiting.get(msg.id)
-        if (!p) return
+        if (!p || 'progress' in msg) return // (this side worker's ops report no progress)
         waiting.delete(msg.id)
         if (msg.ok) p.resolve(decodeValue(msg.result))
         else p.reject(new Error(msg.error))
@@ -243,7 +268,7 @@ export const engineBg = {
   /** One facet's enrichment as table rows (every tested term), labelled with `facet`. */
   enrichmentTable: (
     rows: CompareResultRow[],
-    opts: Omit<EnrichOptions, 'topTerms'>,
+    opts: Parameters<typeof enrichmentTable>[1],
     facet: string
   ): Promise<Record<string, string | number | null>[]> =>
     bgCall<Record<string, string | number | null>[]>('enrichmentTable', { rows, opts, facet })

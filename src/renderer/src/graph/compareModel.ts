@@ -15,6 +15,7 @@ import {
   condValue,
   isNumericCond,
   orderConds,
+  type NumericConds,
   type CondSelector,
   type ConditionKey,
   type StandardRow
@@ -48,18 +49,25 @@ export const cv = (r: StandardRow, c: ConditionKey): string | null => {
 }
 
 const byValue =
-  (c: ConditionKey) =>
+  (c: ConditionKey, numeric: NumericConds) =>
   (a: string, b: string): number =>
-    isNumericCond(c) ? Number(a) - Number(b) : a.localeCompare(b, undefined, { numeric: true })
+    isNumericCond(c, numeric)
+      ? Number(a) - Number(b)
+      : a.localeCompare(b, undefined, { numeric: true })
 
-/** A condition's distinct values among `rows`, in display order (numeric conditions by number). */
-export function valuesOf(rows: readonly StandardRow[], c: ConditionKey): string[] {
+/** A condition's distinct values among `rows`, in display order (the dataset's numeric conditions —
+ *  `numeric` — by number). */
+export function valuesOf(
+  rows: readonly StandardRow[],
+  c: ConditionKey,
+  numeric: NumericConds
+): string[] {
   const seen = new Set<string>()
   for (const r of rows) {
     const v = cv(r, c)
     if (v != null) seen.add(v)
   }
-  return [...seen].sort(byValue(c))
+  return [...seen].sort(byValue(c, numeric))
 }
 
 /** One row per distinct sample (combination of condition values): what the grouping depends on. */
@@ -75,18 +83,36 @@ export function sampleRows(
   return [...seen.values()]
 }
 
+/** One row per sample of a Clean data result (sampleRows over its rows and active conditions),
+ *  worked out once per result. Its rows table is decoded on demand and released when idle, so
+ *  handing it to a settings window on every render — and reducing its ~half a million rows there
+ *  each time it came back decoded anew — kept the main thread busy with the window open. */
+const sampleCache = new WeakMap<object, StandardRow[]>()
+export function stdSampleRows(std: {
+  rows: readonly StandardRow[]
+  activeConditions: readonly ConditionKey[]
+}): StandardRow[] {
+  let s = sampleCache.get(std)
+  if (!s) sampleCache.set(std, (s = sampleRows(std.rows, std.activeConditions)))
+  return s
+}
+
 /** The vehicle, from the data alone: the one compound never given a dose above 0 (as the curve-fit
  *  dialog finds it) — never by its name. */
-export function vehicleOf(rows: readonly StandardRow[]): string | null {
-  const v = valuesOf(rows, 'cmpd').filter((m) =>
+export function vehicleOf(rows: readonly StandardRow[], numeric: NumericConds): string | null {
+  const v = valuesOf(rows, 'cmpd', numeric).filter((m) =>
     rows.every((r) => cv(r, 'cmpd') !== m || !(Number(cv(r, 'dose')) > 0))
   )
   return v.length === 1 ? v[0] : null
 }
 
 /** A condition's default control value: the vehicle for cmpd when the data have one, else its first. */
-export function defaultControl(rows: readonly StandardRow[], c: ConditionKey): string {
-  return (c === 'cmpd' && vehicleOf(rows)) || valuesOf(rows, c)[0]
+export function defaultControl(
+  rows: readonly StandardRow[],
+  c: ConditionKey,
+  numeric: NumericConds
+): string {
+  return (c === 'cmpd' && vehicleOf(rows, numeric)) || valuesOf(rows, c, numeric)[0]
 }
 
 /** How a context condition takes part, given the test and control samples. */
@@ -109,10 +135,11 @@ export function contextInfo(
   state: CompareState,
   c: ConditionKey,
   test: readonly StandardRow[],
-  ctrl: readonly StandardRow[]
+  ctrl: readonly StandardRow[],
+  numeric: NumericConds
 ): CtxInfo {
-  const Tv = valuesOf(test, c)
-  const Cv = valuesOf(ctrl, c)
+  const Tv = valuesOf(test, c, numeric)
+  const Cv = valuesOf(ctrl, c, numeric)
   const single = Tv.length <= 1 && Cv.length <= 1 && (Tv[0] === Cv[0] || !Tv.length || !Cv.length)
   const matchOk = !(Cv.length <= 1 && Tv.length > 1)
   const picked = state.modes[c] ?? 'match'
@@ -140,18 +167,21 @@ export interface CompareModel {
   pool: ConditionKey[]
   /** the dialog's own problems (beyond the engine preview's) */
   warnings: string[]
+  /** the dataset's numeric conditions (its schema), as the model was built with */
+  numeric: NumericConds
 }
 
 export function compareModel(
   state: CompareState,
   rows: readonly StandardRow[],
-  active: readonly ConditionKey[]
+  active: readonly ConditionKey[],
+  numeric: NumericConds
 ): CompareModel {
-  const conds = orderConds(active).filter((c) => valuesOf(rows, c).length > 0)
-  const CMP = conds.filter((c) => state.cmp[c] && valuesOf(rows, c).length > 1)
+  const conds = orderConds(active).filter((c) => valuesOf(rows, c, numeric).length > 0)
+  const CMP = conds.filter((c) => state.cmp[c] && valuesOf(rows, c, numeric).length > 1)
   const P: CompareModel['P'] = {}
   for (const c of CMP) {
-    const vs = valuesOf(rows, c)
+    const vs = valuesOf(rows, c, numeric)
     const k = state.cmp[c]!
     const r = vs.includes(k.r) ? k.r : vs[0]
     P[c] = { vs, r, T: vs.filter((v) => k.T.includes(v) && v !== r) }
@@ -161,7 +191,9 @@ export function compareModel(
   const ctrl0 = any ? rows.filter((r) => CMP.every((c) => cv(r, c) === P[c]!.r)) : []
   // Modes and locks come from every value; then each context condition's left-out values drop: from
   // both sides when matched or pooled, from the test side only when shared (the control is its level).
-  const ctx = conds.filter((c) => !CMP.includes(c)).map((c) => contextInfo(state, c, test0, ctrl0))
+  const ctx = conds
+    .filter((c) => !CMP.includes(c))
+    .map((c) => contextInfo(state, c, test0, ctrl0, numeric))
   const dropOf = (c: ConditionKey): Set<string> => new Set(state.drop[c] ?? [])
   const test = test0.filter((r) =>
     ctx.every((x) => x.mode === 'single' || !dropOf(x.c).has(cv(r, x.c) ?? ''))
@@ -211,9 +243,44 @@ export function compareModel(
     den,
     match: ctx.filter((x) => x.mode === 'match').map((x) => x.c),
     pool: ctx.filter((x) => x.mode === 'pool').map((x) => x.c),
-    warnings
+    warnings,
+    numeric
   }
 }
+
+/**
+ * The ANOVA's selectors for a model: each compared condition at its test values (num) and its
+ * control (den) — the factor's levels and its overall rows' pairs — and every context condition
+ * matched like-for-like, its left-out values an inclusion filter (pinned alike on both sides).
+ */
+export function anovaSelectors(
+  m: CompareModel,
+  state: CompareState,
+  rows: readonly StandardRow[]
+): { num: CondSelector; den: CondSelector; match: ConditionKey[] } {
+  const num: CondSelector = {}
+  const den: CondSelector = {}
+  for (const c of m.CMP) {
+    num[c] = m.P[c]!.T
+    den[c] = [m.P[c]!.r]
+  }
+  const inModel = rows.filter((r) =>
+    m.CMP.every((c) => [...m.P[c]!.T, m.P[c]!.r].includes(cv(r, c) ?? ''))
+  )
+  for (const x of m.ctx) {
+    const drop = state.drop[x.c] ?? []
+    if (!drop.length) continue
+    const kept = valuesOf(inModel, x.c, m.numeric).filter((v) => !drop.includes(v))
+    num[x.c] = kept
+    den[x.c] = [...kept]
+  }
+  return { num, den, match: m.ctx.map((x) => x.c) }
+}
+
+/** Whether a comparison leaves its analysis to the user — a t-test per test group or an ANOVA: several test values, or several compared conditions. One condition
+ *  at two values is a t-test either way. */
+export const analysisChoice = (compared: readonly ConditionKey[], num: CondSelector): boolean =>
+  compared.length >= 2 || compared.some((c) => (num[c]?.length ?? 0) >= 2)
 
 /** A value list for a summary: past four, "first–last (n)". */
 export const shortList = (vs: string[]): string =>
@@ -268,30 +335,31 @@ export const controlKind = (m: CompareModel): 'info' | 'warn' =>
  * read "shared DMSO control for every cmpd at every dose".
  */
 export function controlLine(m: CompareModel): string {
+  const { numeric } = m
   const locked = m.ctx.filter((x) => x.mode === 'fixed' && !x.matchOk)
   const rest = m.ctx.filter((x) => !locked.includes(x))
   const by = (mode: CtxInfo['mode']): CtxInfo[] => rest.filter((x) => x.mode === mode)
   const one = (c: ConditionKey): string | null => {
-    const v = valuesOf(m.test, c)
+    const v = valuesOf(m.test, c, numeric)
     return v.length === 1 ? valueName(c, v[0]) : null
   }
   let who: string
   if (m.CMP.length === 1 && !locked.length) {
     const X = m.CMP[0]
     const r = m.P[X]!.r
-    if (isNumericCond(X)) {
+    if (isNumericCond(X, numeric)) {
       // its own baseline: "dose 0 of each cmpd for every cmpd" when cmpd is matched
       const cm = by('match').some((x) => x.c === 'cmpd')
-      const lone = valuesOf(m.test, 'cmpd').length === 1
+      const lone = valuesOf(m.test, 'cmpd', numeric).length === 1
       who = cm
         ? `${valueName(X, r)} of ${lone ? one('cmpd') : `each ${condLabel('cmpd')}`} for ${lone ? one('cmpd') : `every ${condLabel('cmpd')}`}`
         : valueName(X, r)
     } else who = `shared ${valueName(X, r)} control for ${one(X) ?? `every ${condLabel(X)}`}`
   } else {
     const K = [...m.CMP, ...locked.map((x) => x.c)]
-    const cat = orderConds(K).filter((c) => !isNumericCond(c))
-    const numC = orderConds(K).filter((c) => isNumericCond(c))
-    const ctrlVal = (c: ConditionKey): string => valuesOf(m.ctrl, c)[0] ?? m.P[c]?.r ?? ''
+    const cat = orderConds(K).filter((c) => !isNumericCond(c, numeric))
+    const numC = orderConds(K).filter((c) => isNumericCond(c, numeric))
+    const ctrlVal = (c: ConditionKey): string => valuesOf(m.ctrl, c, numeric)[0] ?? m.P[c]?.r ?? ''
     const name = cat.length
       ? cat.map((c) => valueName(c, ctrlVal(c))).join(' · ')
       : numC.map((c) => valueName(c, ctrlVal(c))).join(' · ')
@@ -303,7 +371,7 @@ export function controlLine(m: CompareModel): string {
         ? ` for ${single.map((c) => one(c)).join(' · ')}`
         : ` for every ${many.map(condLabel).join(' × ')}${single.length ? ` at ${single.map((c) => one(c)).join(' · ')}` : ''}`
     const atEvery = (cat.length ? numC : [])
-      .filter((c) => valuesOf(m.test, c).length > 1)
+      .filter((c) => valuesOf(m.test, c, numeric).length > 1)
       .map((c) => `at every ${condLabel(c)}`)
     who = `shared ${name} control${forEvery}${atEvery.length ? ' ' + atEvery.join(' and ') : ''}`
   }
@@ -318,7 +386,8 @@ export function controlLine(m: CompareModel): string {
   const per = by('match')
     .map((x) => x.c)
     .filter(
-      (c) => !(m.CMP.length === 1 && !locked.length && isNumericCond(m.CMP[0]) && c === 'cmpd')
+      (c) =>
+        !(m.CMP.length === 1 && !locked.length && isNumericCond(m.CMP[0], numeric) && c === 'cmpd')
     )
   return (
     who +
@@ -356,25 +425,26 @@ export function readCompareState(
     pool?: ConditionKey[]
   },
   rows: readonly StandardRow[],
-  active: readonly ConditionKey[]
+  active: readonly ConditionKey[],
+  numeric: NumericConds
 ): CompareState {
   const pinned = (s: CondSelector): boolean => Object.values(s).some((v) => v && v.length > 0)
   if (!pinned(cfg.num) && !pinned(cfg.den)) return emptyCompareState()
-  const conds = orderConds(active).filter((c) => valuesOf(rows, c).length > 0)
+  const conds = orderConds(active).filter((c) => valuesOf(rows, c, numeric).length > 0)
   const compared = (
     cfg.compared ?? classifyConditions([...rows], cfg.num, cfg.den, [...active]).axis
   ).filter((c) => conds.includes(c))
   const state: CompareState = { cmp: {}, modes: {}, fixedVal: {}, drop: {} }
   for (const c of compared) {
-    const vs = valuesOf(rows, c)
-    const r = cfg.den[c]?.[0] ?? defaultControl(rows, c)
+    const vs = valuesOf(rows, c, numeric)
+    const r = cfg.den[c]?.[0] ?? defaultControl(rows, c, numeric)
     state.cmp[c] = { r, T: cfg.num[c]?.length ? [...cfg.num[c]!] : vs.filter((v) => v !== r) }
   }
   // the samples as compared, to tell a data lock (one control value) from a choice
   const test = rows.filter((r) => compared.every((c) => state.cmp[c]!.T.includes(cv(r, c) ?? '')))
   const ctrl = rows.filter((r) => compared.every((c) => cv(r, c) === state.cmp[c]!.r))
   for (const c of conds.filter((k) => !compared.includes(k))) {
-    const vs = valuesOf(rows, c)
+    const vs = valuesOf(rows, c, numeric)
     const n = cfg.num[c]?.length ? cfg.num[c]! : null
     const d = cfg.den[c]?.length ? cfg.den[c]! : null
     const leftOut = (keep: string[] | null): string[] =>
@@ -391,7 +461,7 @@ export function readCompareState(
       state.drop[c] = leftOut(n)
     } else {
       // unmatched (saved before): pooled, unless the control holds one value there (shared)
-      const locked = valuesOf(ctrl, c).length <= 1 && valuesOf(test, c).length > 1
+      const locked = valuesOf(ctrl, c, numeric).length <= 1 && valuesOf(test, c, numeric).length > 1
       state.modes[c] = locked ? 'fixed' : 'pool'
       state.drop[c] = leftOut(n)
     }

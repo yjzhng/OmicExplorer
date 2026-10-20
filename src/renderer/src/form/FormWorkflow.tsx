@@ -38,6 +38,8 @@ import {
   NODE_SPECS,
   accentOf,
   canConnect,
+  runsIn,
+  wiredKindOf,
   categoryOf,
   maxInputsFor,
   nothingToRerun,
@@ -49,6 +51,7 @@ import { pendingInputs } from '../graph/runGate'
 import { frameTiles, topFullFrames } from '../graph/frames'
 import { dropOrder, formTree, type DropSlot, type FormItem } from '../graph/frameOrder'
 import { useGraph } from '../graph/store'
+import { useUpstreamFacts } from '../graph/useUpstreamFacts'
 import {
   isStep,
   type CanvasFrame,
@@ -437,6 +440,8 @@ function StepTile({
   const renameNode = useGraph((s) => s.renameNode)
   const nodes = useGraph((s) => s.nodes)
   const edges = useGraph((s) => s.edges)
+  // its own Run (a Subset off Load data has none — runsIn)
+  const runs = runsIn({ nodes, edges }, node.id)
   const accent = accentOf(categoryOf(kind))
   const pending = useMemo(() => pendingInputs(id, nodes, edges), [id, nodes, edges])
   const blocked = pending.length > 0
@@ -532,7 +537,7 @@ function StepTile({
           it reads have results — pressing it early only reproduces the error it was always going
           to give. */}
       <div style={styles.tileSide}>
-        {NODE_SPECS[kind].hasRun && (hovered || selected) && !nothingToRerun(node.data) && (
+        {runs && (hovered || selected) && !nothingToRerun(node.data) && (
           <RunControl
             status={status}
             accent={accent}
@@ -571,7 +576,8 @@ const DETAILS_EMPTY: Partial<Record<NodeKind, string>> = {
 }
 
 /** What the details column says for a step with no configuration window. */
-const NO_DETAILS = 'This step has no configuration window — its settings are all in the middle column.'
+const NO_DETAILS =
+  'This step has no configuration window — its settings are all in the middle column.'
 
 /** A step's settings in the middle and a third column on the right. For a step with a
  *  configuration window (interactive import, Compare, Curve fit, Contrast), Configure… opens it
@@ -626,6 +632,7 @@ function inputsSection(node: StepNode): { title: string; body: ReactNode } | und
 /** Add a step: pick what to add, and (for anything but a source) what feeds it. */
 function AddStepRow(): ReactNode {
   const nodes = useGraph((s) => s.nodes)
+  const edges = useGraph((s) => s.edges)
   const addPlaceholder = useGraph((s) => s.addPlaceholder)
   const resolvePlaceholder = useGraph((s) => s.resolvePlaceholder)
   const cancelPlaceholder = useGraph((s) => s.cancelPlaceholder)
@@ -648,9 +655,18 @@ function AddStepRow(): ReactNode {
     [cancelPlaceholder]
   )
 
-  // Offer a kind when something already present could feed it, or when it needs no input at all.
-  const offer = ALL_OPS.filter((k) => k !== 'plotGroup').filter(
-    (k) => NODE_SPECS[k].acceptsFrom.length === 0 || steps.some((n) => canConnect(n.data.kind, k))
+  const wired = (n: StepNode): NodeKind => wiredKindOf({ nodes, edges }, n.id) ?? n.data.kind
+  // A new plot tile is wired to the last step that can feed one (onPick, below): its plots are the
+  // ones THAT step can feed and its data supports — the picker gates them by its facts, as the
+  // canvas's drop picker does by the step dragged from.
+  const plotFrom = [...steps].reverse().find((n) => canConnect(wired(n), 'plotGroup'))
+  const plotFacts = useUpstreamFacts(plotFrom?.id)
+  // Offer a kind when something already present could feed it, or when it needs no input at all;
+  // a plot, when the step a plot tile would read from can.
+  const offer = ALL_OPS.filter((k) => k !== 'plotGroup').filter((k) =>
+    categoryOf(k) === 'plotting'
+      ? !!plotFrom && canConnect(wired(plotFrom), k)
+      : NODE_SPECS[k].acceptsFrom.length === 0 || steps.some((n) => canConnect(wired(n), k))
   )
 
   const open = (): void => {
@@ -698,6 +714,7 @@ function AddStepRow(): ReactNode {
     >
       <TilePicker
         ops={offer}
+        upstream={plotFrom ? plotFacts : undefined}
         header="New step"
         style={styles.picker}
         onCancel={close}
@@ -714,7 +731,10 @@ function AddStepRow(): ReactNode {
           if (!kind) return
           // Wire it to the last step that can feed it, so the common linear case needs no second
           // choice; anything else is re-pointed in the new section's own Inputs row.
-          const from = [...steps].reverse().find((n) => canConnect(n.data.kind, kind as NodeKind))
+          const g = useGraph.getState()
+          const from = [...steps]
+            .reverse()
+            .find((n) => canConnect(wiredKindOf(g, n.id) ?? n.data.kind, kind as NodeKind))
           if (from)
             onConnect({ source: from.id, target: id, sourceHandle: null, targetHandle: null })
           // Lay it out for the canvas too: one column right of the step feeding it (or the first

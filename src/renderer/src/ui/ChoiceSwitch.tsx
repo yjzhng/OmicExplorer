@@ -16,7 +16,7 @@ import { ToggleSwitch, type ToggleOption } from './ToggleSwitch'
 import { useUiTheme } from './useUiTheme'
 
 /** The most options shown as pills; beyond it, the dropdown. */
-export const PILL_CAP = 6
+export const PILL_CAP = 10
 
 export function ChoiceSwitch<V extends string>({
   value,
