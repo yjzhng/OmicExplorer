@@ -60,6 +60,13 @@ export function logistic(x: number, p: LogisticParams): number {
   return (p.front - p.back) / (1 + 10 ** (p.slope * (x + p.pec50))) + p.back
 }
 
+/** A curve with its TEST's parameters — the ratio fit's (CurveFit.ratioFit) — for what's measured
+ *  on the ratio scale it was tested on (residuals, lack of fit, the decoys' noise). An older
+ *  result, whose parameters are the ratio fit's, as it is. */
+export function testFitOf<T extends LogisticParams & { ratioFit?: LogisticParams }>(c: T): T {
+  return c.ratioFit ? { ...c, ...c.ratioFit } : c
+}
+
 /** The fit's value at its control: the front plateau (the control at −∞, CurveCurator's), or the
  *  curve at its first point when the control is one (a matched baseline: `baseX`). */
 export const controlFit = (c: LogisticParams & { baseX?: number }): number =>
@@ -358,6 +365,109 @@ export function fitLogistic(
   return fromVec(fit.v)
 }
 
+/** Σ (log₂ y − log₂ f)² — the description fit's cost (see fitLogisticLog2). Infinity where the
+ *  curve isn't positive there. */
+function sseLog2(xs: number[], ly: number[], v: Vec): number {
+  let s = 0
+  for (let i = 0; i < xs.length; i++) {
+    const f = logistic4(xs[i], v[0], v[1], v[2], v[3])
+    if (!(f > 0)) return Infinity
+    const r = ly[i] - Math.log2(f)
+    s += r * r
+  }
+  return s
+}
+
+/** Bounded Levenberg–Marquardt on log₂ residuals (refine's, with r = log₂ y − log₂ f and the
+ *  gradient through the log: J / (f·ln 2)). */
+function refineLog2(xs: number[], ly: number[], start: Vec, b: Bounds): { v: Vec; cost: number } {
+  let v = clampVec(start, b)
+  let cost = sseLog2(xs, ly, v)
+  if (!Number.isFinite(cost)) return { v, cost }
+  let lambda = 1e-3
+  const free = new Int32Array(4)
+  const d = new Float64Array(4)
+  const M = [new Float64Array(5), new Float64Array(5), new Float64Array(5), new Float64Array(5)]
+  for (let iter = 0; iter < 200 && cost > 0; iter++) {
+    const A = new Float64Array(16)
+    const g = new Float64Array(4)
+    for (let i = 0; i < xs.length; i++) {
+      const f = logistic4(xs[i], v[0], v[1], v[2], v[3])
+      const J = gradient(xs[i], v)
+      const k = 1 / (f * Math.LN2)
+      const r = ly[i] - Math.log2(f)
+      for (let a = 0; a < 4; a++) {
+        g[a] += J[a] * k * r
+        for (let c = 0; c < 4; c++) A[a * 4 + c] += J[a] * k * J[c] * k
+      }
+    }
+    let m = 0
+    for (let a = 0; a < 4; a++)
+      if (!((v[a] <= b.lo[a] && g[a] < 0) || (v[a] >= b.hi[a] && g[a] > 0))) free[m++] = a
+    if (m === 0) break
+    let improved = false
+    while (lambda < 1e12) {
+      const D = A.map((x, k) => (k % 5 === 0 ? x + lambda * (x + 1e-9) : x))
+      if (solve(D, g, free, m, d, M)) {
+        const next = clampVec([v[0] + d[0], v[1] + d[1], v[2] + d[2], v[3] + d[3]], b)
+        const nextCost = sseLog2(xs, ly, next)
+        if (nextCost < cost) {
+          const gain = cost - nextCost
+          v = next
+          cost = nextCost
+          lambda = Math.max(lambda / 10, 1e-12)
+          improved = gain > 1e-14 + 1e-12 * cost
+          break
+        }
+      }
+      lambda *= 10
+    }
+    if (!improved) break
+  }
+  return { v, cost }
+}
+
+/**
+ * The 4PL that describes a curve as it's read — on log₂ ratios: the same model, bounds and
+ * parameters (plateaus still ratios) as fitLogistic, its least squares taken on log₂ y. A ratio fit
+ * weighs a response by its size, so where the curve drops near 0 the high-dose points barely count
+ * (0.002 against 0.0001 is a residual of 0.002) and the bottom plateau drifts to its limit — four
+ * log₂ units below the points it should sit on. From the ratio fit (`from`) and the best of the
+ * usual starting guesses; the lower log₂ cost wins. Points at or below 0 can't be logged and are
+ * left out; null with 4 or fewer left.
+ */
+export function fitLogisticLog2(
+  xs: number[],
+  ys: number[],
+  doseX: number[],
+  from: LogisticParams,
+  opts: { pec50Max?: number } = {}
+): LogisticParams | null {
+  const b = boundsFor(doseX)
+  if (opts.pec50Max != null) b.hi[0] = Math.max(b.lo[0], Math.min(b.hi[0], opts.pec50Max))
+  const px: number[] = []
+  const py: number[] = []
+  for (let i = 0; i < xs.length; i++)
+    if (ys[i] > 0) {
+      px.push(xs[i])
+      py.push(ys[i])
+    }
+  if (px.length <= 4) return null
+  const ly = py.map(Math.log2)
+  let best: Vec | null = null
+  let bestCost = Infinity
+  for (const guess of startGuesses(px, py, b)) {
+    const c = sseLog2(px, ly, guess)
+    if (c <= bestCost) [best, bestCost] = [guess, c]
+  }
+  let fit = refineLog2(px, ly, toVec(from), b)
+  if (best) {
+    const r = refineLog2(px, ly, [best[0], 1, best[2], best[3]], b)
+    if (r.cost < fit.cost) fit = r
+  }
+  return Number.isFinite(fit.cost) ? fromVec(fit.v) : null
+}
+
 /** Invert a symmetric 4×4 matrix by Gauss–Jordan with partial pivoting; null when singular. */
 function invert4(m: number[][]): number[][] | null {
   const a = m.map((row, i) => [...row, ...[0, 1, 2, 3].map((j) => (i === j ? 1 : 0))])
@@ -386,20 +496,23 @@ function invert4(m: number[][]): number[][] | null {
  * −∞, plus every measured ratio (`doseX` log₁₀ doses, `ratios`) — as fitCurve fits them.
  *
  * Returned on the plot's log₂ scale by the delta method (se / (f·ln 2)), so it stays defined
- * where the ratio's band would cross 0. Null when it can't be estimated: four or fewer points, a
- * singular JᵀJ (a parameter the data don't constrain), or a non-positive fitted ratio.
+ * where the ratio's band would cross 0. A curve described on log₂ ratios (`ratioFit` set — see
+ * CurveFit) has its band worked out on that scale throughout: log₂ residuals, the gradient
+ * through the log. Null when it can't be estimated: four or fewer points, a singular JᵀJ (a
+ * parameter the data don't constrain), or a non-positive fitted ratio.
  */
 export function curveBand(
-  p: LogisticParams,
+  p: LogisticParams & { ratioFit?: LogisticParams },
   doseX: number[],
   ratios: number[],
   at: number[],
   level = 0.95
 ): { mid: number[]; lo: number[]; hi: number[] } | null {
+  const log = !!p.ratioFit
   const xs = [-Infinity]
   const ys = [1]
   for (let i = 0; i < doseX.length; i++)
-    if (Number.isFinite(doseX[i]) && Number.isFinite(ratios[i])) {
+    if (Number.isFinite(doseX[i]) && Number.isFinite(ratios[i]) && (!log || ratios[i] > 0)) {
       xs.push(doseX[i])
       ys.push(ratios[i])
     }
@@ -407,12 +520,22 @@ export function curveBand(
   const df = n - 4
   if (df <= 0) return null
   const v = toVec(p)
+  // the model's gradient at x — on log₂ for a log₂ description (÷ f·ln 2)
+  const grad = (x: number): Vec | null => {
+    const g = gradient(x, v)
+    if (!log) return g
+    const f = logistic(x, p)
+    if (!(f > 0)) return null
+    const k = 1 / (f * Math.LN2)
+    return [g[0] * k, g[1] * k, g[2] * k, g[3] * k]
+  }
   const jtj = [0, 1, 2, 3].map(() => [0, 0, 0, 0])
   let ss = 0
   for (let i = 0; i < n; i++) {
-    const g = gradient(xs[i], v)
+    const g = grad(xs[i])
+    if (!g) return null
     for (let r = 0; r < 4; r++) for (let c = 0; c < 4; c++) jtj[r][c] += g[r] * g[c]
-    const e = ys[i] - logistic(xs[i], p)
+    const e = log ? Math.log2(ys[i]) - Math.log2(logistic(xs[i], p)) : ys[i] - logistic(xs[i], p)
     ss += e * e
   }
   const inv = invert4(jtj)
@@ -426,10 +549,11 @@ export function curveBand(
   for (const x of at) {
     const f = logistic(x, p)
     if (!(f > 0)) return null
-    const g = gradient(x, v)
+    const g = grad(x)!
     let q = 0
     for (let r = 0; r < 4; r++) for (let c = 0; c < 4; c++) q += g[r] * inv[r][c] * g[c]
-    const half = (t * Math.sqrt(Math.max(0, s2 * q))) / (f * Math.LN2)
+    const se = t * Math.sqrt(Math.max(0, s2 * q))
+    const half = log ? se : se / (f * Math.LN2)
     const m = Math.log2(f)
     mid.push(m)
     lo.push(m - half)
@@ -491,7 +615,12 @@ export const curveDescribed = (c: { described?: false }): boolean => c.described
 
 /** One fitted curve and its test. `xMin`/`xMax` are the tested log₁₀ doses' range. */
 export interface CurveFit extends LogisticParams {
-  /** curve fold change, log₂: the fitted ratio at the highest dose over that at the lowest */
+  /** The parameters (and fold change) are the curve's DESCRIPTION: the 4PL fitted on log₂ ratios
+   *  (fitLogisticLog2), as it's drawn and read. The TEST — F, its p-value, R², RMSE, the lack of
+   *  fit, M0 — is CurveCurator's, on the ratio fit, whose parameters are these. Absent on results
+   *  run before the two were split (their parameters are the ratio fit's). */
+  ratioFit?: LogisticParams
+  /** curve fold change, log₂: the described ratio at the highest dose over that at the lowest */
   log2FC: number
   /** CurveCurator's recalibrated F statistic and its p-value */
   f: number
@@ -564,11 +693,14 @@ export function fitCurve(
   const xMin = dx[0]
   const xMax = dx[dx.length - 1]
   const lof = curveLackOfFit(dx, ys.slice(1), p, x0)
+  // The description: the same 4PL on log₂ ratios (the ratio fit's where that can't be had).
+  const desc = fitLogisticLog2(fitPts.x, fitPts.y, dx, p, real ? { pec50Max: -x0 } : undefined) ?? p
   return {
-    ...p,
+    ...desc,
+    ratioFit: p,
     ...(real ? { baseX: x0 } : null),
     ...(lof ? { lofF: lof.f, lofP: lof.p } : null),
-    log2FC: Math.log2(logistic(xMax, p)) - Math.log2(logistic(xMin, p)),
+    log2FC: Math.log2(logistic(xMax, desc)) - Math.log2(logistic(xMin, desc)),
     f,
     pVal: fSurvival(f, dfn, dfd, F_LOC),
     r2,
@@ -627,9 +759,9 @@ export function curveLackOfFit(
 
 /** Whether a curve has (or can be given, from its kept points) a lack-of-fit test. */
 export function curveHasLof(
-  c: LogisticParams & { lofF?: number; x?: number[]; y?: number[] }
+  c: LogisticParams & { lofF?: number; x?: number[]; y?: number[]; ratioFit?: LogisticParams }
 ): boolean {
-  return c.lofF != null || (!!c.x && !!c.y && curveLackOfFit(c.x, c.y, c) != null)
+  return c.lofF != null || (!!c.x && !!c.y && curveLackOfFit(c.x, c.y, testFitOf(c)) != null)
 }
 
 /** The interpolation grid: the tested positions (log₁₀ dose, or log time) with ONE midpoint in
@@ -919,10 +1051,12 @@ export function curveMetrics(
   }
   // Kept with newer fits; an older one's from its kept points (the control: ratio 1 at −∞, where
   // the curve sits on its front plateau).
+  // (both measured on the ratio fit — the test's)
+  const tf = testFitOf(c)
   let rmse = c.rmse
   if (rmse == null && c.x && c.y) {
-    let ss = (1 - controlFit(c)) ** 2
-    for (let i = 0; i < c.x.length; i++) ss += (c.y[i] - logistic(c.x[i], c)) ** 2
+    let ss = (1 - controlFit(tf)) ** 2
+    for (let i = 0; i < c.x.length; i++) ss += (c.y[i] - logistic(c.x[i], tf)) ** 2
     rmse = Math.sqrt(ss / (c.x.length + 1))
   }
   // Kept with newer fits; an older one's from its kept points.
@@ -930,7 +1064,7 @@ export function curveMetrics(
     c.lofF != null && c.lofP != null
       ? { f: c.lofF, p: c.lofP }
       : c.x && c.y
-        ? curveLackOfFit(c.x, c.y, c)
+        ? curveLackOfFit(c.x, c.y, tf)
         : undefined
   // an undescribed curve (responders only, not one of them): its test, without its description
   const d = curveDescribed(c)
@@ -1020,11 +1154,13 @@ export function curveResidualMad(
   }
   for (const c of curves) {
     if (!c.x || !c.y) continue
-    const f0 = controlFit(c)
+    // residuals from the ratio fit — the test's, on the scale the points are in
+    const tf = testFitOf(c)
+    const f0 = controlFit(tf)
     if (c.cy) c.cy.forEach((y, i) => add(null, c.crep?.[i] ?? null, y - f0, c.id))
     else add(null, null, 1 - f0, c.id)
     for (let i = 0; i < c.x.length; i++)
-      add(c.x[i], c.rep?.[i] ?? null, c.y[i] - logistic(c.x[i], c), c.id)
+      add(c.x[i], c.rep?.[i] ?? null, c.y[i] - logistic(c.x[i], tf), c.id)
   }
   const order = (a: number | null, b: number | null): number =>
     a === b ? 0 : a == null ? -1 : b == null ? 1 : a - b
@@ -1112,7 +1248,9 @@ export function curveResidualPoints(
     const nFit = c.y.filter(Number.isFinite).length
     if (nFit <= 4) continue
     const pts: Omit<ResidualPoint, 'std'>[] = []
-    const f0 = controlFit(c)
+    // residuals from the ratio fit — the test's, on the scale the points are in
+    const tf = testFitOf(c)
+    const f0 = controlFit(tf)
     c.cy?.forEach((y, i) =>
       pts.push({
         fitted: f0,
@@ -1123,7 +1261,7 @@ export function curveResidualPoints(
       })
     )
     for (let i = 0; i < c.x.length; i++) {
-      const f = logistic(c.x[i], c)
+      const f = logistic(c.x[i], tf)
       pts.push({ fitted: f, residual: c.y[i] - f, x: c.x[i], rep: c.rep?.[i] ?? null, id: c.id })
     }
     const ok = pts.filter((q) => Number.isFinite(q.residual) && Number.isFinite(q.fitted))
@@ -1157,11 +1295,13 @@ export interface TargetCurve {
 /** A real curve's noise: √(SSE / recalibrated dfd) over its points, the control's included
  *  (CurveCurator's `estimate_noise_distribution`). */
 function curveNoise(t: TargetCurve): number {
-  let sse = 1 - logistic(-Infinity, t.fit)
+  // the ratio fit's residuals (CurveCurator's), not the log₂ description's
+  const p = t.fit.ratioFit ?? t.fit
+  let sse = 1 - logistic(-Infinity, p)
   sse *= sse
   t.doseX.forEach((x, i) => {
     if (Number.isFinite(x) && Number.isFinite(t.ratios[i]))
-      sse += (t.ratios[i] - logistic(x, t.fit)) ** 2
+      sse += (t.ratios[i] - logistic(x, p)) ** 2
   })
   return Math.sqrt(sse / curveDofs(t.fit.n).dfd)
 }

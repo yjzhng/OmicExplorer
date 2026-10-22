@@ -13,6 +13,9 @@ import Plotly, { type PlotlyGraphDiv } from 'plotly.js-dist-min'
 
 import {
   applyPlotAxes,
+  fitMargins,
+  thinAxes,
+  withoutLegend,
   axisTitleText,
   PlotAxesContext,
   truncateLabel,
@@ -21,10 +24,20 @@ import {
 } from './plotAxes'
 import { DEFAULT_HIGHLIGHT, type ResolvedHighlight } from './pointStyle'
 import { glSlot, type GlSlot } from './glBudget'
+import {
+  BIN_EXTENT,
+  BIN_IDS,
+  BIN_POINTS,
+  binDenseTraces,
+  DENSITY_OF,
+  type BinnedTraces,
+  wouldBin
+} from './densityBins'
 import { hasGlTraces, sceneCount, toGlOverlay, toGlTraces } from './glTraces'
 import { Spinner } from './Spinner'
 import { GENE_TITLE_BAND, GeneTitleContext, geneTitleLayout } from './geneTitle'
 import { PALETTES } from './theme'
+import { TileDrawContext } from './tileDraw'
 import { applyFocus, hoverFocus, legendClear, legendSelect } from './traceFocus'
 import { useSelection } from './useSelection'
 import { useUiTheme } from './useUiTheme'
@@ -90,8 +103,10 @@ interface PlotlyChartProps {
   }
   /** Escape hatch for bespoke imperative interactions (e.g. the STRING network's neighbour
    *  highlight): called with the live graph div after each render; return a cleanup run before the
-   *  next render and on unmount. Prefer the built-in linked-selection for gene highlighting. */
-  onGraphMount?: (el: PlotlyGraphDiv) => (() => void) | void
+   *  next render and on unmount — told which (`unmounting`): a chart going away needs its listeners
+   *  off but nothing redrawn (Plotly would finish that redraw on a purged div, and throw). Prefer
+   *  the built-in linked-selection for gene highlighting. */
+  onGraphMount?: (el: PlotlyGraphDiv) => ((unmounting?: boolean) => void) | void
   /** A click on an annotation drawn with `captureevents: true` (e.g. a clickable legend chip),
    *  given that annotation's `name`. */
   onAnnotationClick?: (name: string) => void
@@ -102,6 +117,10 @@ interface PlotlyChartProps {
   /** show Plotly's control bar (zoom/pan/download) on hover — default on; off where it would cover
    *  the view's own controls (the enrichment plot's category chips) */
   modeBar?: boolean
+  /** off: no autoscale — the bar's button is gone and a double-click resets to the layout's range.
+   *  For a view whose guides run far past its pinned range (so a zoom out still shows them to the
+   *  edges), which an autoscale would take in. */
+  autoscale?: boolean
   /** ms a hovered gene must stay under the cursor before the OTHER plots light it (the shared
    *  hover). Each one rebuilds and redraws its highlight on a change, so a sweep across a dense
    *  view (a heatmap's thousands of rows) would redraw every open plot per row crossed; held
@@ -717,6 +736,12 @@ function opacityFor(sig: string, line: boolean, base: BaseOpacity, dim: number):
   return dim
 }
 
+/** A binned trace's density (densityBins) in its source trace's highlight state: the trace-level
+ *  opacity that scales its resting look (already at the points' opacity) to the dimmed one. */
+function densityOpacity(sig: string, base: BaseOpacity, dim: number): number {
+  return Math.min(1, opacityFor(sig, false, base, dim) / (base.marker || 1))
+}
+
 /**
  * Layout with every categorical axis pinned strictly categorical. Plotly re-types an axis whenever a
  * trace's x/y data is restyled (as the overlay's is on each hover/pin), and with the default
@@ -792,11 +817,28 @@ function decorateData(
   bases: BaseOpacity[],
   dimAll: boolean,
   emph: ResolvedHighlight,
-  gl: boolean
+  gl: boolean,
+  binned: BinnedTraces = { traces: data, density: new Map() }
 ): { traces: unknown[]; sigs: string[] } {
   const sigs = traceSigs(data, active, dimAll)
-  const traces = (gl ? toGlTraces(data) : data).map((raw, i) => {
+  // What's drawn: the view's traces, a very dense bulk as its density (densityBins) — the same
+  // index for each view trace, the densities appended. The highlight state still comes from `data`.
+  const traces = (gl ? toGlTraces(binned.traces) : binned.traces).map((raw, i) => {
     const t = raw as Trace
+    const src = (t as Record<string, unknown>)[DENSITY_OF]
+    if (typeof src === 'number') {
+      const dt = data[src] as Trace
+      return sigs[src]
+        ? {
+            ...t,
+            opacity: densityOpacity(
+              sigs[src],
+              bases[src] ?? { marker: 0.85, line: 1 },
+              emphOf(dt, emph).dim
+            )
+          }
+        : raw
+    }
     if (!sigs[i]) return raw
     const op = traceOpacity(
       t,
@@ -943,6 +985,21 @@ function applyHighlight(
         { [isLine(t) ? 'opacity' : 'marker.opacity']: Array.isArray(op) ? [op] : op },
         [i]
       )
+      // A binned bulk's density (densityBins) dims along with its markers.
+      const live = (el as unknown as { data?: Trace[] }).data ?? []
+      const d = live.findIndex((lt) => lt && (lt as Record<string, unknown>)[DENSITY_OF] === i)
+      if (d >= 0)
+        void Plotly.restyle(
+          el,
+          {
+            opacity: densityOpacity(
+              sigs[i],
+              bases[i] ?? { marker: 0.85, line: 1 },
+              emphOf(t, emph).dim
+            )
+          },
+          [d]
+        )
     })
     applied.current = sigs
   }
@@ -1131,11 +1188,16 @@ function placeLabelAnnotations(
     // label is dropped at the next placement (a zoom, a resize)
     if (!t || (t as Record<string, unknown>)[OVERLAY_FLAG]) continue
     if ((t as Record<string, unknown>).__oeHoverOverlay) continue
-    if (typeof t.mode !== 'string' || !t.mode.includes('markers')) continue
-    const xs = t.x as unknown[]
-    const ys = t.y as unknown[]
+    // a binned bulk (densityBins): its density stands for its points, which still count here (the
+    // invisible extent trace repeats a few of them)
+    if ((t as Record<string, unknown>)[BIN_EXTENT]) continue
+    const binPts = (t as Record<string, unknown>)[BIN_POINTS] as
+      { x: unknown[]; y: unknown[]; size?: unknown } | undefined
+    if (!binPts && (typeof t.mode !== 'string' || !t.mode.includes('markers'))) continue
+    const xs = (binPts?.x ?? t.x) as unknown[]
+    const ys = (binPts?.y ?? t.y) as unknown[]
     if (!Array.isArray(xs) || !Array.isArray(ys)) continue
-    const ms = t.marker?.size
+    const ms = binPts ? binPts.size : t.marker?.size
     for (let k = 0; k < xs.length; k++) {
       const x = xs[k]
       const y = ys[k]
@@ -1326,6 +1388,82 @@ function placeLabelAnnotations(
   return [...adjBase, ...out]
 }
 
+/** Everything a label placement reads but the live annotations (see placeLabels): the inputs by
+ *  identity, the selection by content, and the geometry (`_fullLayout._size`, the axis ranges) by
+ *  value. Null before the plot has a geometry (a placement then does nothing either). */
+interface LabelInputs {
+  labels: PlotLabel[]
+  color: string
+  base: unknown[]
+  sides: Side[]
+  inPlace: boolean
+  data: unknown[] | undefined
+  traces: number
+  active: string
+  pinned: string
+  geometry: string
+}
+
+function labelInputs(
+  el: PlotlyGraphDiv,
+  labels: PlotLabel[],
+  color: string,
+  base: unknown[],
+  sides: Side[],
+  active: Set<string>,
+  pinned: Set<string>,
+  inPlace: boolean
+): LabelInputs | null {
+  const fl = (el as unknown as { _fullLayout?: Record<string, unknown> })._fullLayout
+  const size = fl?._size as { l: number; t: number; w: number; h: number } | undefined
+  const xr = (fl?.xaxis as { range?: unknown[] } | undefined)?.range
+  const yr = (fl?.yaxis as { range?: unknown[] } | undefined)?.range
+  if (!size || !xr || !yr) return null
+  const data = (el as unknown as { data?: unknown[] }).data
+  return {
+    labels,
+    color,
+    base,
+    sides,
+    inPlace,
+    data,
+    // a trace added in place (the overlay, re-added) keeps the array but moves the markers
+    traces: data?.length ?? 0,
+    active: [...active].sort().join('\0'),
+    pinned: [...pinned].sort().join('\0'),
+    geometry: [size.l, size.t, size.w, size.h, ...xr, ...yr].join(',')
+  }
+}
+
+const sameLabelInputs = (a: LabelInputs, b: LabelInputs): boolean =>
+  (Object.keys(a) as (keyof LabelInputs)[]).every((k) => a[k] === b[k])
+
+/** An annotation's drawn state, as far as a placement sets it. */
+function annotKey(a: unknown): string {
+  const o = (a ?? {}) as Record<string, unknown>
+  return JSON.stringify([
+    o.text,
+    o.opacity,
+    o.x,
+    o.y,
+    o.xref,
+    o.yref,
+    o.xanchor,
+    o.yanchor,
+    o.xshift,
+    o.yshift,
+    o.showarrow,
+    o.ax,
+    o.ay
+  ])
+}
+
+/** Whether the live annotations still draw what a placement set (`snap`, annotKey each). */
+function sameAnnots(live: unknown[] | undefined, snap: string[]): boolean {
+  if (!Array.isArray(live) || live.length !== snap.length) return false
+  return live.every((a, i) => annotKey(a) === snap[i])
+}
+
 /** Wire the (native-eventless) legend so hovering a per-gene legend entry drives the linked
  *  hover-highlight — used by DR/TR, whose legend items each stand for ONE gene. Maps the k-th
  *  legend item to the k-th legend-visible trace and, when that trace carries a single uniqID
@@ -1452,6 +1590,7 @@ export function PlotlyChart({
   onAnnotationClick,
   pinIdsOf,
   modeBar = true,
+  autoscale = true,
   linkDelay,
   onCamera
 }: PlotlyChartProps) {
@@ -1465,12 +1604,15 @@ export function PlotlyChart({
   // at render (see plotAxes.ts). Provided by the tile so no view has to thread it.
   const axesCtx = useContext(PlotAxesContext)
   const axes = axesCtx?.axes
+  const legendOff = axesCtx?.legend === false
   // A single-gene plot's gene: its name as the figure's title, the live picker laid over it.
   const geneTitle = useContext(GeneTitleContext)
   const geneTitleText = geneTitle?.text
   const claimGeneTitle = geneTitle?.claim
   // Before paint, so the pager's own fallback copy never flashes.
   useLayoutEffect(() => claimGeneTitle?.(), [claimGeneTitle])
+  // The dashboard tile around it (if any) waits for its draws before the next tile is revealed.
+  const tileDraw = useContext(TileDrawContext)
   // Report what each axis shows WITHOUT an override — the view's own title and the range actually
   // drawn — so the tile's settings can use them as placeholders. The tile only supplies the
   // callback while its settings window is open, so a plot nobody is configuring never pays for it;
@@ -1485,7 +1627,14 @@ export function PlotlyChart({
       // Range from the LIVE layout (an autoranged axis only resolves at draw time); the title from
       // the view's own layout, since the live one may already carry an override.
       const live = fl?.[key] as
-        { range?: unknown; showgrid?: unknown; zeroline?: unknown; showline?: unknown } | undefined
+        | {
+            range?: unknown
+            showgrid?: unknown
+            zeroline?: unknown
+            showline?: unknown
+            mirror?: unknown
+          }
+        | undefined
       const r = Array.isArray(live?.range) ? (live.range as unknown[]) : []
       const num = (v: unknown): number | undefined => (typeof v === 'number' ? v : undefined)
       const bool = (v: unknown): boolean | undefined => (typeof v === 'boolean' ? v : undefined)
@@ -1495,7 +1644,9 @@ export function PlotlyChart({
         max: num(r[1]),
         grid: bool(live?.showgrid),
         zeroline: bool(live?.zeroline),
-        line: bool(live?.showline)
+        line: bool(live?.showline),
+        // a frame Plotly draws (mirror) — or none, where it's off or hand-drawn (frameShape)
+        frame: live?.mirror == null ? undefined : live.mirror !== false
       }
     }
     const next: AxisDefaults = { x: axisOf('xaxis'), y: axisOf('yaxis') }
@@ -1555,7 +1706,7 @@ export function PlotlyChart({
   // Bespoke imperative interaction (network neighbour highlight): kept in a ref so re-mounts see the
   // latest; `mountCleanup` runs the previous mount's teardown before re-mounting / on unmount.
   const onGraphMountRef = useRef(onGraphMount)
-  const mountCleanupRef = useRef<(() => void) | null>(null)
+  const mountCleanupRef = useRef<((unmounting?: boolean) => void) | null>(null)
   // Guide-drag config + callback, kept in refs so the once-bound drag handlers always see the latest
   // (the guide `value` baselines update every render as the threshold changes).
   const guidesRef = useRef(guides)
@@ -1583,6 +1734,8 @@ export function PlotlyChart({
   // never replacing them.
   const baseAnnotsRef = useRef<unknown[]>([])
   const labelRaf = useRef(0)
+  // The last placement's inputs, and the annotations it set (annotKey each) — see placeLabels.
+  const lastPlacedRef = useRef<{ inputs: LabelInputs; out: string[] } | null>(null)
   // True while the left margin is pinned for bold tick labels (see reserveBoldMargin) — the pin is
   // imperative, so it must be released when the plot stops needing it.
   const pinnedMarginRef = useRef(false)
@@ -1590,6 +1743,14 @@ export function PlotlyChart({
   const layoutRef = useRef(layout)
   /** True from the start of a Plotly.react until it resolves (see the react effect). */
   const reactPendingRef = useRef(false)
+  /** Settles once every Plotly call this chart has in flight (a render, a margin relayout) has: the
+   *  unmount purges only then — purging mid-draw left Plotly's own follow-up work (an automargin
+   *  redraw, its events) running on a stripped div, throwing "emit is not a function". */
+  const inFlightRef = useRef<Promise<unknown>>(Promise.resolve())
+  const track = useCallback(<T,>(p: Promise<T>): Promise<T> => {
+    inFlightRef.current = Promise.allSettled([inFlightRef.current, p])
+    return p
+  }, [])
   /** Per 3-D scene, the aspect ratio last asked for (see liveCameras). */
   const lastAspectRef = useRef<Record<string, Aspect | null>>({})
   // Detaches the current legend-hover listeners (rebound after each render, since Plotly
@@ -1603,6 +1764,25 @@ export function PlotlyChart({
     const el = ref.current as PlotlyGraphDiv | null
     const labs = labelsRef.current
     if (!el || !labs) return // this chart opted out of auto-labels
+    // A placement is a pure function of its inputs and the plot's geometry: when none of them moved
+    // since the last one and the live annotations are still the ones it set (a render, which resets
+    // them, makes them differ), it would hand Plotly the same annotations again — a full annotation
+    // redraw, after walking every marker for nothing. E.g. a tile resize schedules one before
+    // Plotly's (deferred) re-fit has changed anything.
+    const inputs = labelInputs(
+      el,
+      labs,
+      labelColorRef.current ?? '#888',
+      baseAnnotsRef.current,
+      labelsAboveRef.current ? ABOVE_SIDES : SIDES,
+      activeRef.current,
+      pinnedRef.current,
+      labelsInPlaceRef.current
+    )
+    const last = lastPlacedRef.current
+    const liveAnns = (el as unknown as { layout?: { annotations?: unknown[] } }).layout?.annotations
+    if (inputs && last && sameLabelInputs(inputs, last.inputs) && sameAnnots(liveAnns, last.out))
+      return
     const merged = placeLabelAnnotations(
       el,
       labs,
@@ -1613,6 +1793,7 @@ export function PlotlyChart({
       pinnedRef.current,
       labelsInPlaceRef.current
     )
+    lastPlacedRef.current = merged && inputs ? { inputs, out: merged.map(annotKey) } : null
     if (merged) {
       // Only annotations change here (never the axis range), so this can't recurse into the
       // relayout handler, which reacts to xaxis/yaxis keys. (`relayout` isn't in the minified
@@ -1659,13 +1840,19 @@ export function PlotlyChart({
     // gene tick (landscape bubble) relies on automargin and must not have its left margin pinned.
     // The pin is IMPERATIVE, so it outlives a re-render — when the gene ticks move to x (the
     // orientation toggle) it has to be undone here, or the old reserve keeps squeezing the plot.
-    if (!boldTicksRef.current || (boldTicksRef.current.axis ?? 'y') !== 'y') {
+    // A view that sizes the y labels' margin itself (yaxis.automargin: false — it measured them
+    // bold, over every row) keeps it: re-measuring here would follow the rows on show.
+    const viewPinned =
+      (layoutRef.current?.yaxis as { automargin?: unknown } | undefined)?.automargin === false
+    if (viewPinned || !boldTicksRef.current || (boldTicksRef.current.axis ?? 'y') !== 'y') {
       if (!pinnedMarginRef.current) return
       pinnedMarginRef.current = false
-      void R.relayout(el, {
-        'yaxis.automargin': true,
-        'margin.l': (layoutRef.current?.margin as { l?: number } | undefined)?.l ?? 55
-      })
+      void track(
+        R.relayout(el, {
+          'yaxis.automargin': true,
+          'margin.l': (layoutRef.current?.margin as { l?: number } | undefined)?.l ?? 55
+        })
+      )
         .then(() => scheduleLabels())
         .catch(() => {})
       return
@@ -1678,8 +1865,8 @@ export function PlotlyChart({
     // survives a re-render, and reading the current margin would compound it (runaway growth). So
     // first force automargin ON with a small base margin to measure the true required width for the
     // base (non-bold) labels, then pin a bit wider with automargin OFF so hover-bolding can't move it.
-    void R.relayout(el, { 'yaxis.automargin': true, 'margin.l': 6 })
-      .then(() => {
+    void track(
+      R.relayout(el, { 'yaxis.automargin': true, 'margin.l': 6 }).then(() => {
         const l = readL()
         if (!l || !(l > 0)) return undefined
         return R.relayout(el, {
@@ -1687,9 +1874,10 @@ export function PlotlyChart({
           'margin.l': Math.ceil(l * BOLD_MARGIN_PAD) + 2
         })
       })
+    )
       .then(() => scheduleLabels()) // legend container-left position depends on the final margin
       .catch(() => {})
-  }, [scheduleLabels])
+  }, [scheduleLabels, track])
 
   // Mirror the latest `data` / highlight look into the refs the once-bound hover/selection
   // handlers read.
@@ -1707,14 +1895,47 @@ export function PlotlyChart({
   // render is already in the right mode; a change of permission re-renders it in place (glTick).
   const glSlotRef = useRef<GlSlot | null>(null)
   const [glTick, setGlTick] = useState(0)
-  const dense = useMemo(() => toGlTraces(data) !== data, [data])
+  // Emptied while hidden (its WebGL slot taken by a plot on screen): drawn for real when shown.
+  const blankRef = useRef(false)
+  // A very dense bulk drawn as a density (densityBins), keeping the labelled genes as markers.
+  // The labels matter only to a plot that bins: elsewhere a change of labels must not redraw it.
+  const bins = useMemo(() => wouldBin(data), [data])
+  const binLabels = useMemo(() => (bins ? labels : undefined), [bins, labels])
+  const binned = useMemo(() => {
+    const keep = new Set<string>()
+    for (const lab of binLabels ?? []) if (lab.id) keep.add(lab.id)
+    return binDenseTraces(data, keep)
+  }, [data, binLabels])
+  const dense = useMemo(() => toGlTraces(binned.traces) !== binned.traces, [binned])
   // The 3-D scenes it draws: each holds a WebGL context however the budget goes (no SVG for them).
   const scenes = useMemo(() => sceneCount(data), [data])
   useLayoutEffect(() => {
     const el = ref.current
-    const slot = glSlot({ dense, shown: !!el && el.offsetParent !== null, scenes }, () =>
+    const slot = glSlot({ dense, shown: !!el && el.offsetParent !== null, scenes }, (allowed) => {
+      // Its slot taken while it's hidden: free the WebGL context with an empty plot (at its size,
+      // so showing it isn't a re-fit) rather than redraw it as SVG for nobody — that redraw, for
+      // every plot of the tab just left, was a busy second or more after each tab switch. It's
+      // drawn for real when its tab is shown again (below).
+      if (!allowed && el && el.offsetParent === null) {
+        const lay = (el as unknown as { _fullLayout?: { width?: number; height?: number } })
+          ._fullLayout
+        blankRef.current = true
+        void Plotly.react(el, [], { width: lay?.width, height: lay?.height })
+        return
+      }
+      // Granted while on screen and already drawn (as SVG): it takes WebGL at its next redraw for
+      // its own reasons, not now — redrawing every plot of a tab just shown, for a look that
+      // doesn't change, was a busy second after each switch. (Emptied ones are drawn on show.)
+      if (
+        allowed &&
+        el &&
+        el.offsetParent !== null &&
+        !blankRef.current &&
+        el.querySelector('.main-svg')
+      )
+        return
       setGlTick((n) => n + 1)
-    )
+    })
     glSlotRef.current = slot
     // A dropped context (Chromium's per-page cap) → SVG from now on, never a blank plot. The event
     // doesn't bubble, so listen in the capture phase.
@@ -1723,7 +1944,11 @@ export function PlotlyChart({
     // On screen or not: a hidden dashboard tab is display:none, so the box goes to 0×0.
     const ro =
       el && typeof ResizeObserver !== 'undefined'
-        ? new ResizeObserver(() => slot.update({ shown: el.offsetParent !== null }))
+        ? new ResizeObserver(() => {
+            const shown = el.offsetParent !== null
+            slot.update({ shown })
+            if (shown && blankRef.current) setGlTick((n) => n + 1)
+          })
         : null
     if (el) ro?.observe(el)
     return () => {
@@ -1743,9 +1968,12 @@ export function PlotlyChart({
     const el = ref.current as PlotlyGraphDiv | null
     if (!el) return
     let cancelled = false
+    blankRef.current = false
     // A placement scheduled while this render is in flight would measure the OLD plot and could
     // land after it — the render's own completion schedules the (only) placement instead.
     reactPendingRef.current = true
+    // Tell the tile a draw is in flight (ended once it settles, fails, or is superseded).
+    const endDraw = tileDraw?.begin()
     // Snapshot base opacities from this render's fresh (un-dimmed) trace objects.
     basesRef.current = snapshotBases(data)
     // Render with the current highlight already baked in (dims + overlay), so this pass shows the
@@ -1756,7 +1984,8 @@ export function PlotlyChart({
       basesRef.current,
       guideDimRef.current,
       emphasis,
-      glSlotRef.current?.allowed() ?? false
+      glSlotRef.current?.allowed() ?? false,
+      binned
     )
     appliedRef.current = baked.sigs
     // Remember any view-owned annotations so the label pass appends to (not replaces) them. Clone
@@ -1767,15 +1996,14 @@ export function PlotlyChart({
           a && typeof a === 'object' ? { ...(a as Record<string, unknown>) } : a
         )
       : []
-    void Plotly.react(
-      el,
-      baked.traces,
-      {
+    const shown = {
+      traces: baked.traces,
+      layout: {
         autosize: true,
         // A copy: Plotly writes into the layout it's given (a relayout of margin.l lands here), and
         // the shared constant would carry one plot's pinned margin into every other plot.
         margin: { ...BASE_MARGIN },
-        ...strictCategoryAxes(applyPlotAxes(layout ?? {}, axes, data)),
+        ...strictCategoryAxes(applyPlotAxes(thinAxes(layout ?? {}), axes, data)),
         // Over the margin in effect (the view's, else the base) — not a bare top margin, which
         // would leave Plotly's own wide defaults on the other sides.
         ...(geneTitleText != null
@@ -1788,8 +2016,23 @@ export function PlotlyChart({
         // disabled so the re-render doesn't reset hovermode and let a point tooltip flash back.
         ...(hoverSuppressedRef.current ? { hovermode: false } : {}),
         ...liveCameras(el, layout, lastAspectRef.current)
-      },
-      { responsive: true, displaylogo: false, ...(modeBar ? null : { displayModeBar: false }) }
+      } as Record<string, unknown>
+    }
+    // The tile's legend switched off: no legend, no colour scale bars.
+    const legendFree = legendOff ? withoutLegend(shown.traces, shown.layout) : shown
+    // Margins that fit the box actually there (a small tile, a facet's cell): ones that left the
+    // plot no room made Plotly throw "Something went wrong with axis scaling", taking the tile down.
+    const drawn = {
+      traces: legendFree.traces,
+      layout: fitMargins(legendFree.layout, el.clientWidth, el.clientHeight)
+    }
+    void track(
+      Plotly.react(el, drawn.traces, drawn.layout, {
+        responsive: true,
+        displaylogo: false,
+        ...(modeBar ? null : { displayModeBar: false }),
+        ...(autoscale ? null : { doubleClick: 'reset', modeBarButtonsToRemove: ['autoScale2d'] })
+      })
     )
       .then(() => {
         if (cancelled) return
@@ -2096,7 +2339,9 @@ export function PlotlyChart({
           // returning false suppresses Plotly's default show/hide. Only gene traces (those with a
           // uniqID array in customdata) are intercepted; other legends keep the default behaviour.
           const groupIds = (curve: number): string[] | null => {
-            const cd = ((el as unknown as { data?: Trace[] }).data ?? [])[curve]?.customdata
+            const t = ((el as unknown as { data?: Trace[] }).data ?? [])[curve]
+            // a binned bulk's legend stands for ALL its genes, not just the markers left drawn
+            const cd = (t as Record<string, unknown> | undefined)?.[BIN_IDS] ?? t?.customdata
             return Array.isArray(cd) && cd.length && typeof cd[0] === 'string'
               ? (cd as string[])
               : null
@@ -2602,24 +2847,36 @@ export function PlotlyChart({
         setReady(true)
         publishRef.current()
       })
-      // A failed render must not leave placement deferred forever.
-      .catch(() => {
+      // A failed render must not leave placement deferred forever — nor the chart's spinner up
+      // (a render that never got through would otherwise read as busy for good). Said, not
+      // swallowed, so the cause can be found.
+      .catch((err: unknown) => {
         reactPendingRef.current = false
+        if (cancelled) return
+        console.error('PlotlyChart: render failed', err)
+        setReady(true)
       })
+      .finally(() => endDraw?.())
     return () => {
       cancelled = true
+      endDraw?.()
     }
   }, [
     data,
+    binned,
     layout,
     axes,
+    legendOff,
     geneTitleText,
     emphasis,
     scheduleLabels,
     rebindDom,
     reserveBoldMargin,
     modeBar,
-    glTick
+    autoscale,
+    glTick,
+    track,
+    tileDraw
   ])
 
   // Drive the highlight from the selection store imperatively: subscribe once, restyle the
@@ -2784,6 +3041,27 @@ export function PlotlyChart({
       cancelAnimationFrame(raf)
       raf = requestAnimationFrame(() => {
         if (el.offsetParent === null) return
+        // The size Plotly last laid out at: a hidden tab revealed at the size it was drawn (0×0 →
+        // back to its own box) needs no re-fit — only the highlight it skipped while hidden.
+        const lay = (el as unknown as { _fullLayout?: { width?: number; height?: number } })
+          ._fullLayout
+        const same =
+          lay?.width != null &&
+          Math.abs(lay.width - el.clientWidth) < 1 &&
+          Math.abs((lay.height ?? 0) - el.clientHeight) < 1
+        if (same) {
+          applyHighlight(
+            el as unknown as PlotlyGraphDiv,
+            dataRef.current,
+            activeRef.current,
+            basesRef.current,
+            appliedRef,
+            guideDimRef.current,
+            emphRef.current,
+            namesNow()
+          )
+          return
+        }
         Plotly.Plots.resize(el)
         // Also the moment a hidden tab is revealed (0×0 → sized): flush the highlight
         // that was skipped while it was hidden.
@@ -2850,13 +3128,18 @@ export function PlotlyChart({
     onGuideRef.current = onGuide
   }, [guides, onGuide])
 
+  // Mounted — read by the deferred purge below: StrictMode (dev) unmounts and remounts at once on
+  // the SAME div, and a purge landing after the remount would strip the plot it's now drawing.
+  const aliveRef = useRef(false)
   useEffect(() => {
     const el = ref.current as PlotlyGraphDiv | null
+    aliveRef.current = true
     return () => {
+      aliveRef.current = false
       cancelAnimationFrame(labelRaf.current)
       legendCleanupRef.current()
       hoverParkCleanupRef.current()
-      mountCleanupRef.current?.()
+      mountCleanupRef.current?.(true)
       if (el) {
         el.removeAllListeners?.('plotly_hover')
         el.removeAllListeners?.('plotly_unhover')
@@ -2865,7 +3148,11 @@ export function PlotlyChart({
         el.removeAllListeners?.('plotly_legendclick')
         el.removeAllListeners?.('plotly_legenddoubleclick')
         el.removeAllListeners?.('plotly_relayout')
-        Plotly.purge(el)
+        // after whatever Plotly still has in flight on it (see inFlightRef) — unless it's been
+        // mounted again meanwhile (aliveRef)
+        void inFlightRef.current.then(() => {
+          if (!aliveRef.current) Plotly.purge(el)
+        })
       }
     }
   }, [])

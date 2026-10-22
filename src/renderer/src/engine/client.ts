@@ -2,6 +2,7 @@
  * Promise-based client for the engine Web Worker. React nodes call `engine.*`
  * and await results; compute runs off the UI thread.
  */
+import type { ClusterOrderOptions, DendroLink } from './cluster'
 import type { ContrastInput, ContrastPairInput, ContrastResult } from './contrast'
 import type { CompareTableResult, DirectInput } from './direct'
 import type { FactorAnovaInput } from './twoWay'
@@ -26,7 +27,8 @@ import type {
   VehNormInput,
   VehNormResult
 } from './types'
-import { decodeValue, encodeValue } from './wire'
+import { rowsTable } from './lazyRows'
+import { decodeTable, decodeValue, encodeValue, isTable, type Table } from './wire'
 
 let worker: Worker | null = null
 let seq = 0
@@ -120,19 +122,24 @@ let datasets: Array<{ ref: WeakRef<object>; key: number }> = []
 let datasetSeq = 0
 
 /** The payload with a large `rows` table swapped for its key on the worker (sent there first if it
- *  isn't yet). */
+ *  isn't yet). `rows` may be a columnar table itself (a lazy result's — holderTable — or a part of
+ *  one): the worker gets its rows, and none is built here. A table is kept by identity, and so are
+ *  the rows built from one (rowsTable) — one dataset, however the caller holds it. */
 function withDataset(payload: unknown): unknown {
   const rows = (payload as { rows?: unknown } | null)?.rows
-  if (!Array.isArray(rows) || rows.length < MIN_DATASET_ROWS) return payload
-  let entry = datasets.find((d) => d.ref.deref() === rows)
+  if (isTable(rows) && rows.n < MIN_DATASET_ROWS)
+    return { ...(payload as object), rows: decodeTable(rows) }
+  if (!isTable(rows) && (!Array.isArray(rows) || rows.length < MIN_DATASET_ROWS)) return payload
+  const id: object = isTable(rows) ? rows : (rowsTable(rows) ?? rows)
+  let entry = datasets.find((d) => d.ref.deref() === id)
   if (entry) {
     datasets = [...datasets.filter((d) => d !== entry), entry] // most recent last
   } else {
-    entry = { ref: new WeakRef(rows), key: ++datasetSeq }
+    entry = { ref: new WeakRef(id), key: ++datasetSeq }
     const w = getWorker()
     // Sent columnar (see wire.ts): the worker gets the same rows, the UI thread skips cloning them.
     const transfer: Transferable[] = []
-    const packed = encodeValue(rows, transfer)
+    const packed = isTable(rows) ? rows : encodeValue(rows, transfer)
     w.postMessage(
       { id: 0, op: 'putDataset', payload: { key: entry.key, rows: packed } } as EngineRequest,
       transfer
@@ -191,12 +198,12 @@ export const engine = {
     call<ContrastResult>('contrastPair', input),
   /** An enrichment plot's run: every method × term source × facet (see enrichmentAll). */
   enrichmentAll: (
-    rows: CompareResultRow[],
+    rows: CompareResultRow[] | Table,
     opts: Parameters<typeof enrichmentAll>[1]
   ): Promise<Record<string, Record<string, EnrichData>>> =>
     call<Record<string, Record<string, EnrichData>>>('enrichmentAll', { rows, opts }),
   /** A cluster plot's run: the sample embedding (PCA / UMAP / t-SNE) of a Clean data table. */
-  buildCluster: (rows: StandardRow[], opts: ClusterOptions): Promise<ClusterData> =>
+  buildCluster: (rows: StandardRow[] | Table, opts: ClusterOptions): Promise<ClusterData> =>
     call<ClusterData>('buildCluster', { rows, opts }),
   /** Terminate the worker and reject any in-flight calls (backs the Stop button). */
   cancel: (): void => {
@@ -281,5 +288,17 @@ export const engineUi = {
     const flat = new Float64Array(matrix.length * m)
     for (let i = 0; i < matrix.length; i++) flat.set(matrix[i], i * m)
     return uiCall<number[][]>('clusterRowGroups', { flat, m, k }, [flat.buffer])
+  },
+  /** clusterRowTree off the UI thread, its rows passed likewise (the options as they are). */
+  clusterRowTree: (
+    matrix: number[][],
+    opts: ClusterOrderOptions
+  ): Promise<{ order: number[]; links: DendroLink[] }> => {
+    const m = matrix[0]?.length ?? 0
+    const flat = new Float64Array(matrix.length * m)
+    for (let i = 0; i < matrix.length; i++) flat.set(matrix[i], i * m)
+    return uiCall<{ order: number[]; links: DendroLink[] }>('clusterRowTree', { flat, m, opts }, [
+      flat.buffer
+    ])
   }
 }

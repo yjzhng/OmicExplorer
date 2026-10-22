@@ -19,13 +19,12 @@ import {
   curveResidualMad,
   curveResidualPoints,
   normalPpf,
-  stdByGene,
+  type StdLookup,
   thinPoints,
   xUnits,
   type StoredScale,
   type ResidualPoint,
   type CompareResultRow,
-  type StandardRow,
   type ThresholdConfig
 } from '../engine'
 import {
@@ -102,7 +101,7 @@ export function CurveMadView({
   displayMap: Record<string, string>
   /** the Clean data rows the Compare ran on — the points of curves fitted before they were kept
    *  are rebuilt from them */
-  std?: StandardRow[]
+  std?: StdLookup
   /** the curve axis's unit (a dose unit), for the axis title */
   unit?: string
   /** the control / dosed violins' and outliers' look (unset fields use the defaults) */
@@ -138,7 +137,7 @@ export function CurveMadView({
   const mode = useUiTheme((s) => s.mode)
   // The pinned / hovered genes' look, as on the volcano and MA (PlotlyChart's shared overlay).
   const emphasis = useMemo(() => resolveHighlight(style), [style])
-  const byGene = useMemo(() => (std ? stdByGene(std) : undefined), [std])
+  const byGene = std
   // Memo inputs kept primitive: the parent hands fresh label / colour objects per render.
   const { up: upName, down: downName, none: noneName } = effectLabels
   const upColor = effectColors?.up

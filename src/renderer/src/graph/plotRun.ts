@@ -15,20 +15,21 @@
  */
 import {
   enrichSourcesPresent,
-  facetCompareRows,
-  facetDims,
+  facetGroupsOf,
+  holderWhere,
   plotScaleOf,
   resolveEnrichSource,
-  termless,
   type ConditionKey,
   type EnrichSource,
   type LogTransform
 } from '../engine'
 import { engine } from '../engine/client'
+import { holderTable } from '../engine/lazyRows'
+import { withoutColumns } from '../engine/wire'
 import {
   readStringAll,
   stringCapOptions,
-  stringQueryGenes,
+  stringQueryGenesAt,
   stringSendLimit
 } from '../ui/stringModel'
 import { dominantTaxon, factsOf, unmetRequirement } from './requirements'
@@ -74,7 +75,8 @@ export async function runPlot(
     if (upstream.kind !== 'standardize') throw new Error('Needs a Clean data upstream.')
     const cfg = config as ClusterConfig
     const ran = clusterRunOf(cfg)
-    const cluster = await engine.buildCluster(upstream.std.rows, {
+    // a columnar table goes as its columns (none of its rows built here)
+    const cluster = await engine.buildCluster(holderTable(upstream.std) ?? upstream.std.rows, {
       method: cfg.method,
       colorBy: cfg.colorBy,
       clusterOn: cfg.clusterOn,
@@ -108,10 +110,13 @@ export async function runPlot(
     // (a two-way ANOVA's term rows have no up / down — kept out, as from every directional reader)
     // Sent without a curve fit's curves (`curve`, `rs`), which enrichment never reads: they are
     // most of a row (10k curve-fit rows ≈ 70 MB), and copying them to the worker blocked the UI
-    // for seconds on every threshold change.
-    const rows = termless(upstream.cmp.rows).map((r) =>
-      r.curve || r.rs ? { ...r, curve: undefined, rs: undefined } : r
-    )
+    // for seconds on every threshold change. A columnar result goes as its signed rows' columns
+    // less those two (withoutColumns) — no row built here.
+    const signed = holderWhere(upstream.cmp, 'signed', (c) => !c.term)
+    const table = holderTable(signed)
+    const rows = table
+      ? withoutColumns(table, ['curve', 'rs'])
+      : signed.rows.map((r) => (r.curve || r.rs ? { ...r, curve: undefined, rs: undefined } : r))
     const facets = await engine.enrichmentAll(rows, {
       numericConditions: upstream.numericConditions ?? [],
       annotationMap: ann,
@@ -132,12 +137,14 @@ export async function runPlot(
     if (!species) throw new Error('No species detected — set one in the settings.')
     const caps = stringCapOptions(cfg.maxGenes > 0 ? cfg.maxGenes : 40)
     const facets: Record<string, StringAll> = {}
-    const signed = termless(upstream.cmp.rows)
-    for (const g of facetCompareRows(signed, facetDims(signed), numericOfResult(upstream))) {
+    // (a two-way ANOVA's term rows kept out) — the facets resolved over the context tuples, each
+    // facet's genes read off its rows' columns (no row built)
+    for (const g of facetGroupsOf(upstream.cmp, numericOfResult(upstream), (c) => !c.term)) {
       if (cancelled()) throw new Error('cancelled')
       // The widest query; a facet without 2 significant genes has no network to read.
-      const widest = stringQueryGenes(
-        g.rows,
+      const widest = stringQueryGenesAt(
+        upstream.cmp,
+        g.idx,
         upstream.displayMap,
         ann,
         stringSendLimit(caps[caps.length - 1])

@@ -1,12 +1,41 @@
-/** log₂FC heatmap panel body. Gene clustering is O(n²) on the render thread, so the pivot +
- *  cluster is memoized on the comparison rows + display options (not every parent re-render). */
-import { useMemo } from 'react'
+/** log₂FC heatmap panel body. Clustering the genes is O(n²) — seconds for thousands of them — so
+ *  it runs in the UI worker lane (engineUi), off the UI thread: the tile pivots the comparison,
+ *  hands each clustering out, and draws when they're back, keeping the previous heatmap up
+ *  meanwhile. The result is cached on the comparison rows + display options (not every parent
+ *  re-render, nor every mount). */
+import { useEffect, useMemo, useState } from 'react'
 
-import { buildFcHeatmap, type CompareResultRow, type LeafOrder } from '../engine'
+import {
+  buildFcHeatmapSteps,
+  clusterRowTree,
+  type CompareResultRow,
+  type FcHeatmapData,
+  type LeafOrder
+} from '../engine'
+import { engineUi } from '../engine/client'
 import type { HeatmapLinkage } from '../graph/types'
 import { FcHeatmapView, type ClusterSide } from '../ui/FcHeatmapView'
 import type { PaletteRef } from '../ui/palettes'
+import { Spinner } from '../ui/Spinner'
 import { CATEGORICAL } from '../ui/theme'
+
+/** Built heatmaps by rows, display map and options key, app-wide: a remount (a tab, facet or
+ *  show switch back) shows the heatmap at once rather than clustering again. */
+const built = new WeakMap<
+  readonly CompareResultRow[],
+  WeakMap<Record<string, string>, Map<string, FcHeatmapData>>
+>()
+
+function cacheFor(
+  rows: readonly CompareResultRow[],
+  displayMap: Record<string, string>
+): Map<string, FcHeatmapData> {
+  let byMap = built.get(rows)
+  if (!byMap) built.set(rows, (byMap = new WeakMap()))
+  let m = byMap.get(displayMap)
+  if (!m) byMap.set(displayMap, (m = new Map()))
+  return m
+}
 
 export function FcHeatmapTile({
   rows,
@@ -53,21 +82,47 @@ export function FcHeatmapTile({
   condColors?: readonly string[]
 }) {
   const focusKey = focus.join(',')
-  const data = useMemo(
+  const key = `${maxGenes}\u0000${focusKey}\u0000${linkage ?? ''}\u0000${leafOrder ?? ''}`
+  const cached = cacheFor(rows, displayMap).get(key)
+  // the last one built here — shown, while a new one clusters, until it's in
+  const [last, setLast] = useState<FcHeatmapData | null>(null)
+  // a cached one counts as shown (so it stays up while a later change clusters)
+  if (cached && cached !== last) setLast(cached)
+  useEffect(() => {
+    const cache = cacheFor(rows, displayMap)
+    if (cache.get(key)) return
+    let live = true
     // Only genes differential (significant) in ≥1 comparison are shown — a focus pick overrides.
-    () =>
-      buildFcHeatmap(rows, {
-        displayMap,
-        maxGenes,
-        focus,
-        differentialOnly: true,
-        linkage,
-        leafOrder
-      }),
-    // focusKey stands in for the focus array's contents (stable across renders)
+    const gen = buildFcHeatmapSteps(rows, {
+      displayMap,
+      maxGenes,
+      focus,
+      differentialOnly: true,
+      linkage,
+      leafOrder
+    })
+    const step = (r: ReturnType<typeof gen.next>): void => {
+      if (r.done) {
+        // kept even when no longer shown here — it's this key's heatmap all the same
+        cache.set(key, r.value)
+        if (live) setLast(r.value)
+        return
+      }
+      if (!live) return
+      const { rows: m, opts } = r.value
+      engineUi.clusterRowTree(m, opts).then(
+        (tree) => step(gen.next(tree)),
+        // the worker lane failed: cluster here rather than show nothing
+        () => live && step(gen.next(clusterRowTree(m, opts)))
+      )
+    }
+    step(gen.next())
+    return () => {
+      live = false
+    }
+    // key stands in for maxGenes, focus's contents, linkage and leafOrder
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [rows, displayMap, maxGenes, focusKey, linkage, leafOrder]
-  )
+  }, [rows, displayMap, key])
   // Each side's look, kept while its settings hold (so the view's layout isn't redone per render).
   const geneSide = useMemo<ClusterSide>(
     () => ({ max: geneMax, modules: geneModules, tree: geneTree, colors: geneColors }),
@@ -77,6 +132,8 @@ export function FcHeatmapTile({
     () => ({ max: condMax, modules: condModules, tree: condTree, colors: condColors }),
     [condMax, condModules, condTree, condColors]
   )
+  const data = cached ?? last
+  if (!data) return <Spinner />
   const scope =
     focus.length > 0
       ? `${data.geneIds.length} selected genes`

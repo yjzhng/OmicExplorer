@@ -152,44 +152,86 @@ export function abundanceOnScale(
   if (!byScale) onScale.set(rows, (byScale = new Map()))
   const hit = byScale.get(scale)
   if (hit) return hit
-  const f = (v: number | null | undefined): number | null =>
-    v == null || !Number.isFinite(v) ? null : fromLog10(v, scale)
-  const out = rows.map((r): ContrastResultRow => {
-    // only the abundance itself is rescaled — a spread (SD, CV) keeps its own units
-    if (r.featureId && r.featureId !== 'value') return r
-    if (scale === 'log2') {
-      const k = 1 / Math.log10(2)
-      const m = (v: number | null | undefined): number | null =>
-        v == null || !Number.isFinite(v) ? (v ?? null) : v * k
-      return {
-        ...r,
-        FC1: m(r.FC1),
-        FC2: m(r.FC2),
-        FC1err: m(r.FC1err),
-        FC2err: m(r.FC2err),
-        FC1reps: r.FC1reps?.map((v) => v * k),
-        FC2reps: r.FC2reps?.map((v) => v * k),
-        FCdiff: m(r.FCdiff)
-      }
-    }
-    const a = f(r.FC1)
-    const b = f(r.FC2)
-    // d(10^v) = ln10 · 10^v · dv
-    const err = (lin: number | null, e: number | null | undefined): number | null =>
-      lin == null || e == null || !Number.isFinite(e) ? null : Math.LN10 * lin * e
-    return {
-      ...r,
-      FC1: a,
-      FC2: b,
-      FC1err: err(a, r.FC1err),
-      FC2err: err(b, r.FC2err),
-      FC1reps: r.FC1reps?.map((v) => fromLog10(v, scale)),
-      FC2reps: r.FC2reps?.map((v) => fromLog10(v, scale)),
-      FCdiff: a != null && b != null ? a - b : null
-    }
-  })
+  const out = rows.map((r) => rowOnScale(r, scale))
   byScale.set(scale, out)
   return out
+}
+
+/** The fields of a contrast row abundanceOnScale moves. */
+type SideValues = Pick<
+  ContrastResultRow,
+  'featureId' | 'FC1' | 'FC2' | 'FC1err' | 'FC2err' | 'FC1reps' | 'FC2reps'
+> & { FCdiff?: number | null }
+
+/** One abundance contrast row on `scale` (see abundanceOnScale) — the row itself where it isn't
+ *  the abundance (a spread keeps its own units) or the scale is log10 (how it's stored). */
+export function rowOnScale<R extends SideValues>(r: R, scale: ValueScale): R {
+  // only the abundance itself is rescaled — a spread (SD, CV) keeps its own units
+  if (scale === 'log10' || (r.featureId && r.featureId !== 'value')) return r
+  if (scale === 'log2') {
+    const k = 1 / Math.log10(2)
+    const m = (v: number | null | undefined): number | null =>
+      v == null || !Number.isFinite(v) ? (v ?? null) : v * k
+    return {
+      ...r,
+      FC1: m(r.FC1),
+      FC2: m(r.FC2),
+      FC1err: m(r.FC1err),
+      FC2err: m(r.FC2err),
+      FC1reps: r.FC1reps?.map((v) => v * k),
+      FC2reps: r.FC2reps?.map((v) => v * k),
+      FCdiff: m(r.FCdiff)
+    }
+  }
+  const f = (v: number | null | undefined): number | null =>
+    v == null || !Number.isFinite(v) ? null : fromLog10(v, scale)
+  const a = f(r.FC1)
+  const b = f(r.FC2)
+  // d(10^v) = ln10 · 10^v · dv
+  const err = (lin: number | null, e: number | null | undefined): number | null =>
+    lin == null || e == null || !Number.isFinite(e) ? null : Math.LN10 * lin * e
+  return {
+    ...r,
+    FC1: a,
+    FC2: b,
+    FC1err: err(a, r.FC1err),
+    FC2err: err(b, r.FC2err),
+    FC1reps: r.FC1reps?.map((v) => fromLog10(v, scale)),
+    FC2reps: r.FC2reps?.map((v) => fromLog10(v, scale)),
+    FCdiff: a != null && b != null ? a - b : null
+  }
+}
+
+/** The y range a contrast's per-gene response plot shares over every gene (ResponseCompareView's
+ *  global scale): both sides' values, ± their errors with `errors`, their replicates with
+ *  `points`, padded 5% — null when nothing is finite. */
+export function contrastYRange(
+  rows: Iterable<Pick<SideValues, 'FC1' | 'FC2' | 'FC1err' | 'FC2err' | 'FC1reps' | 'FC2reps'>>,
+  errors: boolean,
+  points: boolean
+): [number, number] | null {
+  let lo = Infinity
+  let hi = -Infinity
+  for (const r of rows) {
+    for (const [v, e] of [
+      [r.FC1, r.FC1err],
+      [r.FC2, r.FC2err]
+    ] as const) {
+      if (v == null || !Number.isFinite(v)) continue
+      const err = errors && e != null && Number.isFinite(e) ? Math.abs(e) : 0
+      if (v - err < lo) lo = v - err
+      if (v + err > hi) hi = v + err
+    }
+    if (points)
+      for (const v of [...(r.FC1reps ?? []), ...(r.FC2reps ?? [])]) {
+        if (!Number.isFinite(v)) continue
+        if (v < lo) lo = v
+        if (v > hi) hi = v
+      }
+  }
+  if (!(lo <= hi)) return null
+  const pad = (hi - lo || 1) * 0.05
+  return [lo - pad, hi + pad]
 }
 
 /** A curve fit's own value as a contrast feature: its curve fold change (the switcher's name, and
@@ -777,7 +819,7 @@ function addGaussianOutliers(
   stat: ContrastStat = {}
 ): void {
   const { confUp, confDown, q } = statTails(stat)
-  const pct = (c: number): string => `${Math.round(c * 1000) / 10}%`
+  const pct = (c: number): string => `${Math.round(c * 1e5) / 1e3}%`
   const qSame = AXIS_TAILS.every((t) => q[t] === q.aUp)
   // The label carries the cutoffs (per tail when they differ): the scatter guide parses it to
   // draw the matching boundary.
@@ -927,17 +969,19 @@ export function contrastStatDrag(
   value: number
 ): Partial<ContrastStat> {
   const asym = stat?.asymmetric ?? false
-  const round3 = (v: number): number => Math.round(v * 1000) / 1000
-  const conf = (c: number): number => round3(Math.min(0.999, Math.max(0.5, c)))
+  // to 0.001% (the Statistic panel's finest tail)
+  const round5 = (v: number): number => Math.round(v * 1e5) / 1e5
+  const conf = (c: number): number => round5(Math.min(0.99999, Math.max(0.5, c)))
   // up, not to nearest: a q just above the passing genes' must stay above them once stored
-  const q = (v: number): number => Math.min(0.5, Math.max(0.001, Math.ceil(v * 1000 - 1e-9) / 1000))
+  const q = (v: number): number =>
+    Math.min(0.5, Math.max(0.00001, Math.ceil(v * 1e5 - 1e-9) / 1e5))
   if (edge === 'bandUp' || edge === 'bandDown') {
     const c = conf(value)
     if (edge === 'bandDown' && asym) return { bandConfidenceDown: c }
-    return { bandConfidence: c, cutoffQ: round3(1 - c) }
+    return { bandConfidence: c, cutoffQ: round5(1 - c) }
   }
   const v = q(value)
-  if (edge === 'aUp' || !asym) return { cutoffQ: v, bandConfidence: round3(1 - v) }
+  if (edge === 'aUp' || !asym) return { cutoffQ: v, bandConfidence: round5(1 - v) }
   return { cutoffQTails: { ...stat?.cutoffQTails, [edge]: v } }
 }
 

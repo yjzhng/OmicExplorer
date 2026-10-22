@@ -321,8 +321,11 @@ function buildDendrogram(
   if (n <= 2) return { order: rows.map((_, i) => i), childA: [], childB: [], height: [], n }
   const m = rows[0]?.length ?? 0
 
-  // Full symmetric euclidean distance matrix (squared for Ward, whose update works on squares).
-  const D: Float64Array[] = Array.from({ length: n }, () => new Float64Array(n))
+  // The full symmetric euclidean distance matrix (squared for Ward, whose update works on
+  // squares) in ONE buffer, row i at i·n — not n arrays of n, whose allocation (and the garbage
+  // collection it set off) cost more than the clustering on a busy UI thread. Kept square, not a
+  // triangle: the nearest-neighbour scan reads a whole row, and a row in order is the fast read.
+  const D = new Float64Array(n * n)
   for (let i = 0; i < n; i++) {
     const a = rows[i]
     for (let j = i + 1; j < n; j++) {
@@ -333,8 +336,8 @@ function buildDendrogram(
         s += d * d
       }
       const dist = ward ? s : Math.sqrt(s)
-      D[i][j] = dist
-      D[j][i] = dist
+      D[i * n + j] = dist
+      D[j * n + i] = dist
     }
   }
 
@@ -363,10 +366,10 @@ function buildDendrogram(
     // so mutual pairs are detected deterministically.
     let b = -1
     let bd = Infinity
-    const Da = D[a]
+    const rowA = a * n
     for (let j = 0; j < n; j++) {
       if (!active[j] || j === a) continue
-      const d = Da[j]
+      const d = D[rowA + j]
       if (d < bd || (d === bd && j === prev)) {
         bd = d
         b = j
@@ -385,20 +388,22 @@ function buildDendrogram(
       node[lo] = nextId++
       const nl = size[lo]
       const nh = size[hi]
-      const Dlo = D[lo]
-      const Dhi = D[hi]
       const denom = nl + nh
+      const rowLo = lo * n
+      const rowHi = hi * n
       for (let k = 0; k < n; k++) {
         if (!active[k] || k === lo || k === hi) continue
         // Lance-Williams: UPGMA, Ward on squared distances, or complete (the farther)
         const nk = size[k]
+        const dl = D[rowLo + k]
+        const dh = D[rowHi + k]
         const merged = ward
-          ? ((nl + nk) * Dlo[k] + (nh + nk) * Dhi[k] - nk * bd) / (denom + nk)
+          ? ((nl + nk) * dl + (nh + nk) * dh - nk * bd) / (denom + nk)
           : complete
-            ? Math.max(Dlo[k], Dhi[k])
-            : (nl * Dlo[k] + nh * Dhi[k]) / denom
-        Dlo[k] = merged
-        D[k][lo] = merged
+            ? Math.max(dl, dh)
+            : (nl * dl + nh * dh) / denom
+        D[rowLo + k] = merged
+        D[k * n + lo] = merged
       }
       size[lo] = denom
       active[hi] = 0

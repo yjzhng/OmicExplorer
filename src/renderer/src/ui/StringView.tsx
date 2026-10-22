@@ -9,6 +9,7 @@ import {
   stringQueryGenes,
   stringSendLimit,
   type StringGene,
+  stringLevelScore,
   stringLevelsFromScore,
   stringVariant,
   type StringAll,
@@ -78,6 +79,20 @@ interface LegChip {
   label: string
   /** "+N more": how many clusters it folds */
   n?: number
+}
+
+/** What's drawn while there's no network (module-level, so it's the same objects every render). */
+const NO_GRAPH = {
+  data: [] as unknown[],
+  nConnected: 0,
+  labels: [] as PlotLabel[],
+  labelColor: undefined as string | undefined,
+  moduleIds: [] as string[][]
+}
+const NO_LEGEND = {
+  layout: {} as Record<string, unknown>,
+  hover: undefined as HoverInfo | undefined,
+  more: { at: -1, items: [] as LegChip[] }
 }
 
 /** Prefix of a cluster chip's annotation name (the rest is its module index). */
@@ -213,21 +228,20 @@ export function StringView({
   const qInk = outlines?.queryOutlineColor
   const iLine = outlines?.interactorOutline ?? STRING_OUTLINE
   const iInk = outlines?.interactorOutlineColor
-  const { data, layout, nConnected, labels, labelColor, hover, moduleIds, more } = useMemo(() => {
+  // The network's model — what's drawn, its modules and their labels — shared with the
+  // background export of the tile's tables (stringModel.ts), and its force layout. The costly
+  // part (Markov clustering, the layout), so it's cached on what it's built from alone: a resize
+  // (legendBudget), a theme flip or an outline change never re-runs it.
+  const model = useMemo(() => {
+    if (!net) return null
+    const m = buildStringModel(net, genes, annotationMap, maxGenes)
+    return { ...m, pos: layoutNetwork(m.vis.length, m.eIdx, 0x1a2b3c) }
+  }, [net, genes, annotationMap, maxGenes])
+  // The traces, labels and hover geometry — none of it depends on the tile's width, so a resize
+  // hands the chart the SAME traces (only the legend's layout below re-flows).
+  const graph = useMemo(() => {
     const p = PALETTES[mode]
-    if (!net)
-      return {
-        data: [] as unknown[],
-        layout: {} as Record<string, unknown>,
-        nConnected: 0,
-        labels: [] as PlotLabel[],
-        labelColor: undefined as string | undefined,
-        hover: undefined as HoverInfo | undefined,
-        moduleIds: [] as string[][],
-        more: { at: -1, items: [] as LegChip[] }
-      }
-    // The network's model — what's drawn, its modules and their labels — shared with the
-    // background export of the tile's tables (stringModel.ts).
+    if (!model) return null
     const {
       vis,
       degree,
@@ -236,9 +250,9 @@ export function StringView({
       territoryGroups,
       moduleByNode,
       uniqByStringId,
-      uniqByStringIdAll
-    } = buildStringModel(net, genes, annotationMap, maxGenes)
-    const pos = layoutNetwork(vis.length, eIdx, 0x1a2b3c)
+      uniqByStringIdAll,
+      pos
+    } = model
 
     // Territories: a rounded outward offset (Minkowski sum with a disk) of each group's hull, so a
     // 2-node group reads as a capsule and a near-collinear group as a padded blob — both still
@@ -393,6 +407,61 @@ export function StringView({
         margin: 1
       }))
 
+    // Each module's genes (their shared ids), for a chip's click.
+    const moduleIds = territoryGroups.map((grp) => [...new Set(grp.members.map((i) => focusId[i]))])
+
+    // Data for the imperative neighbour-highlight on hover (see onGraphMount). The node trace is last;
+    // edge traces sit between the territory traces and it.
+    const adj: number[][] = vis.map(() => [])
+    eIdx.forEach(([a, b]) => {
+      adj[a].push(b)
+      adj[b].push(a)
+    })
+    // Every node per shared id: a protein group's members are separate nodes but one gene, so they
+    // highlight together.
+    const indexByFocus = new Map<string, number[]>()
+    focusId.forEach((f, i) => {
+      const arr = indexByFocus.get(f)
+      if (arr) arr.push(i)
+      else indexByFocus.set(f, [i])
+    })
+    // …and a module's own id (its hull hovered) → every node of it
+    territoryGroups.forEach((grp, ci) => indexByFocus.set(moduleKey(ci), grp.members))
+    const hoverBase = {
+      nodeIdx: territoryTraces.length + edgeTraces.length,
+      edgeIdxs: edgeTraces.map((_, i) => territoryTraces.length + i),
+      edgeBuckets,
+      adj,
+      x: pos.x,
+      y: pos.y,
+      color: vis.map((g) => g.log2FC),
+      size: vis.map((_, i) => sizeOf(degree[i])),
+      colorscale: fcScale,
+      cmin: -maxAbs,
+      cmax: maxAbs,
+      hi: p.textMuted,
+      // each node's name, and the ink it's named in while lit
+      name: vis.map((g) => g.name),
+      ink: p.text,
+      focusId,
+      indexByFocus,
+      nodeOrder,
+      moduleByNode
+    }
+    return {
+      data: [...territoryTraces, ...edgeTraces, nodeTrace],
+      nConnected: vis.length,
+      labels,
+      labelColor: p.textMuted,
+      hoverBase,
+      moduleIds
+    }
+  }, [model, mode, fcScale, qLine, qInk, iLine, iInk])
+  // The cluster legend, and the layout carrying it: re-flowed to the tile's width.
+  const legend = useMemo(() => {
+    if (!model || !graph) return null
+    const p = PALETTES[mode]
+    const { territoryGroups } = model
     // Cluster legend (bottom, left-aligned): one chip per module — its colour ■ and ORA pathway
     // label — flowed into rows that fit the plot's width (legendBudget), at most LEG_MAX_ROWS of
     // them: a label longer than a row is shortened (the full one on hover), and modules past the
@@ -473,9 +542,6 @@ export function StringView({
       at: chips.findIndex((c) => c.ci < 0),
       items: rest.map((c) => ({ ...c, label: territoryGroups[c.ci].label }))
     }
-    // Each module's genes (their shared ids), for a chip's click.
-    const moduleIds = territoryGroups.map((grp) => [...new Set(grp.members.map((i) => focusId[i]))])
-
     const heading = title ?? ''
     const hidden = { ...axisBase(p), visible: false, showgrid: false, zeroline: false }
     const lay: Record<string, unknown> = {
@@ -496,72 +562,17 @@ export function StringView({
       hoverdistance: 2,
       annotations: clusterLegend
     }
-    // Data for the imperative neighbour-highlight on hover (see onGraphMount). The node trace is last;
-    // edge traces sit between the territory traces and it.
-    const adj: number[][] = vis.map(() => [])
-    eIdx.forEach(([a, b]) => {
-      adj[a].push(b)
-      adj[b].push(a)
-    })
-    // Every node per shared id: a protein group's members are separate nodes but one gene, so they
-    // highlight together.
-    const indexByFocus = new Map<string, number[]>()
-    focusId.forEach((f, i) => {
-      const arr = indexByFocus.get(f)
-      if (arr) arr.push(i)
-      else indexByFocus.set(f, [i])
-    })
-    // …and a module's own id (its hull hovered) → every node of it
-    territoryGroups.forEach((grp, ci) => indexByFocus.set(moduleKey(ci), grp.members))
-    const hover = {
-      nodeIdx: territoryTraces.length + edgeTraces.length,
-      edgeIdxs: edgeTraces.map((_, i) => territoryTraces.length + i),
-      edgeBuckets,
-      adj,
-      x: pos.x,
-      y: pos.y,
-      color: vis.map((g) => g.log2FC),
-      size: vis.map((_, i) => sizeOf(degree[i])),
-      colorscale: fcScale,
-      cmin: -maxAbs,
-      cmax: maxAbs,
-      hi: p.textMuted,
-      // each node's name, and the ink it's named in while lit
-      name: vis.map((g) => g.name),
-      ink: p.text,
-      focusId,
-      indexByFocus,
-      nodeOrder,
-      moduleByNode,
+    const hover: HoverInfo = {
+      ...graph.hoverBase,
       chips,
       chipText,
       restCis: rest.map((c) => c.ci),
       moreActiveText: (n: number) => `<span style="color:${p.text}"><b>${moreActive(n)}</b></span>`
     }
-    return {
-      data: [...territoryTraces, ...edgeTraces, nodeTrace],
-      layout: lay,
-      nConnected: vis.length,
-      labels,
-      labelColor: p.textMuted,
-      hover,
-      moduleIds,
-      more
-    }
-  }, [
-    net,
-    mode,
-    title,
-    genes,
-    annotationMap,
-    maxGenes,
-    fcScale,
-    legendBudget,
-    qLine,
-    qInk,
-    iLine,
-    iInk
-  ])
+    return { layout: lay, hover, more }
+  }, [model, graph, mode, title, legendBudget])
+  const { data, nConnected, labels, labelColor, moduleIds } = graph ?? NO_GRAPH
+  const { layout, hover, more } = legend ?? NO_LEGEND
 
   // Hover a node → highlight it + its neighbours + the connecting edges. Done imperatively (restyle
   // + overlay traces) so it never re-renders/resets the pan-zoom. Dims the base nodes/edges and draws
@@ -861,10 +872,11 @@ export function StringView({
       ev.on('plotly_hover', onHover as (...a: unknown[]) => void)
       ev.on('plotly_unhover', onUnhover)
       ev.on('plotly_relayout', onRelayout as (...a: unknown[]) => void)
-      return () => {
+      return (unmounting?: boolean) => {
         legendRefresh.current = null
         unsub()
-        clear()
+        // before a redraw, the highlight goes; a chart going away has nothing to restyle
+        if (!unmounting) clear()
         cancelAnimationFrame(trimRaf)
         ro?.disconnect()
         ev.removeListener?.('plotly_hover', onHover as (...a: unknown[]) => void)
@@ -892,8 +904,8 @@ export function StringView({
   if (net != null && levels != null && levels.size === 0)
     return (
       <Center>
-        No network — the query genes have no STRING interactions, even at low confidence. Raise max
-        genes or add interactors.
+        No network — the query genes have no STRING interactions, even at confidence ≥{' '}
+        {stringLevelScore('low')}. Raise max genes or add interactors.
       </Center>
     )
   if (net != null && nConnected === 0)

@@ -1,4 +1,4 @@
-import { useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 
 import type { DendroLink, FcHeatmapData } from '../engine'
 import { ROLE_DEFAULTS, paletteRange, paletteScale, type PaletteRef } from './palettes'
@@ -12,6 +12,8 @@ import { useUiTheme } from './useUiTheme'
 
 /** How strongly a hovered heatmap veils the cells outside the hovered row and column. */
 const HOVER_VEIL = 0.65
+/** ms after its first draw a heatmap that hasn't settled (see `settled`) is shown anyway. */
+const SETTLE_MS = 1000
 
 /** A dendrogram strip's depth (px), the same on both sides — at most DENDRO_MAX_FRAC of the
  *  plot's shorter side, so a small tile still leaves room for the cells. */
@@ -182,8 +184,17 @@ export function FcHeatmapView({
   const [size, setSize] = useState({ w: 0, h: 0 })
   // The plot area as Plotly last laid it out (the tile less its margins, which the gene labels
   // size) — what the dendrogram strips are shared out of, so the pixel-drawn cluster bars and the
-  // trees behind them meet where intended. Null until the first draw: a rough guess stands in.
-  const [area, setArea] = useState<{ w: number; h: number } | null>(null)
+  // trees behind them meet where intended — and the gene axis's own length, which the gene ticks
+  // are spaced along. Null until the first draw: a rough guess stands in.
+  const [area, setArea] = useState<{ w: number; h: number; gene: number } | null>(null)
+  // Hidden until it settles: the first draw lays the gene ticks out along a guessed axis, and the
+  // labels the measured one takes move the margin — the plot would jump sideways as it opened.
+  // Shown at the first draw whose ticks are the measured axis's and whose area held still (the
+  // spinner stays up meanwhile), or SETTLE_MS after the first draw if it never does.
+  const [settled, setSettled] = useState(false)
+  const lastReadRef = useRef<{ w: number; h: number; gene: number } | null>(null)
+  const settleTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  useEffect(() => () => clearTimeout(settleTimerRef.current), [])
   useLayoutEffect(() => {
     const el = wrapRef.current
     if (!el) return
@@ -193,6 +204,44 @@ export function FcHeatmapView({
     measure()
     return () => ro.disconnect()
   }, [])
+
+  // The cells' arrays (the genes × columns part) and the trees' cuts and lines don't depend on the
+  // tile's size: built once per data/look, so a resize — or the area settling after a draw —
+  // hands Plotly the same arrays, and it re-lays the plot out instead of recalculating every cell.
+  const cells = useMemo(() => {
+    const landscape = orient === 'landscape'
+    return {
+      z: landscape ? transpose(data.z) : data.z,
+      // each cell's gene uniqID: PlotlyChart's linked hover and click-to-pin read it
+      customdata: landscape
+        ? data.columns.map(() => data.geneIds)
+        : data.geneIds.map((id) => data.columns.map(() => id))
+    }
+  }, [data, orient])
+  const trees = useMemo(() => {
+    const landscape = orient === 'landscape'
+    // The trees, each in a strip on its own axes (a category axis can't take positions), its
+    // position axis spanning the cells' range so the leaves line up with the rows / columns.
+    // The side along y (to the cells' right) and along x (above them).
+    const yLook = landscape ? condSide : geneSide
+    const xLook = landscape ? geneSide : condSide
+    const shown = (l: ClusterSide): boolean => l.tree || l.modules
+    const yTree = shown(yLook) ? (landscape ? data.colTree : data.rowTree) : undefined
+    const xTree = shown(xLook) ? (landscape ? data.rowTree : data.colTree) : undefined
+    // Each tree's cut: the genes' and the comparisons' own.
+    const yCut = yLook.modules ? yLook.max : 0
+    const xCut = xLook.modules ? xLook.max : 0
+    const yCl = yTree ? cutTree(yTree, yCut) : null
+    const xCl = xTree ? cutTree(xTree, xCut) : null
+    return {
+      yLook,
+      xLook,
+      yCl,
+      xCl,
+      yLine: yCl && yLook.tree ? treeLine(evenHeights(yCl.links), false) : null,
+      xLine: xCl && xLook.tree ? treeLine(evenHeights(xCl.links), true) : null
+    }
+  }, [data, orient, geneSide, condSide])
 
   const {
     data: traces,
@@ -226,13 +275,10 @@ export function FcHeatmapView({
       : {}
     const trace: Record<string, unknown> = {
       type: 'heatmap',
-      z: landscape ? transpose(data.z) : data.z,
+      z: cells.z,
       x: landscape ? data.genes : data.columns,
       y: landscape ? data.columns : data.genes,
-      // each cell's gene uniqID: PlotlyChart's linked hover and click-to-pin read it
-      customdata: landscape
-        ? data.columns.map(() => data.geneIds)
-        : data.geneIds.map((id) => data.columns.map(() => id)),
+      customdata: cells.customdata,
       // The fold-change palette, symmetric about 0: down its low end, up its high end. Unsigned
       // effect sizes (a two-way ANOVA's terms): its upper half, from its centre (0) out.
       ...(unsigned
@@ -262,9 +308,16 @@ export function FcHeatmapView({
       title: 'gene',
       automargin: true,
       tickfont: { size: 9 },
-      // Gene names cut short like every plot's (the full name is in the hover): a first guess at
-      // the axis's length, which heatmapFocus redraws to the axis as laid out.
-      ...truncatedTicks(data.genes, landscape ? size.w - 140 : size.h - 75, GENE_TICK_PX),
+      // Gene names cut short like every plot's (the full name is in the hover), spaced along the
+      // gene axis as last laid out — the same ticks heatmapFocus draws there. A guess at its
+      // length (before the first draw) gave other ticks than heatmapFocus's: each render put the
+      // guessed ones back, their labels moved the margin, the margin moved the area, and the
+      // area re-rendered — the gene-side edge shook.
+      ...truncatedTicks(
+        data.genes,
+        area?.gene ?? (landscape ? size.w - 140 : size.h - 75),
+        GENE_TICK_PX
+      ),
       ...(landscape ? { tickangle: -45 } : {})
     }
     const compAxis = {
@@ -281,22 +334,11 @@ export function FcHeatmapView({
       yaxis: landscape ? compAxis : geneAxis
     }
     const traces: Record<string, unknown>[] = [trace]
-    // The trees, each in a strip on its own axes (a category axis can't take positions), its
-    // position axis spanning the cells' range so the leaves line up with the rows / columns.
-    // The side along y (to the cells' right) and along x (above them).
-    const yLook = landscape ? condSide : geneSide
-    const xLook = landscape ? geneSide : condSide
-    const shown = (l: ClusterSide): boolean => l.tree || l.modules
-    const yTree = shown(yLook) ? (landscape ? data.colTree : data.rowTree) : undefined
-    const xTree = shown(xLook) ? (landscape ? data.rowTree : data.colTree) : undefined
-    if (yTree || xTree) {
+    // The trees (cut and drawn above): each in a strip on its own axes.
+    const { yLook, xLook, yCl, xCl, yLine, xLine } = trees
+    if (yCl || xCl) {
       const nX = landscape ? data.genes.length : data.columns.length
       const nY = landscape ? data.columns.length : data.genes.length
-      // Each tree's cut: the genes' and the comparisons' own.
-      const yCut = yLook.modules ? yLook.max : 0
-      const xCut = xLook.modules ? xLook.max : 0
-      const yCl = yTree ? cutTree(yTree, yCut) : null
-      const xCl = xTree ? cutTree(xTree, xCut) : null
       // The strips are laid out in shares of the plot (from its rough size); the bars are drawn
       // in pixels off the cells' edge (paper-anchored shapes), so their gap and thickness match
       // exactly on both sides. A strip starts just past its bars — the bars sit on top, so a
@@ -367,14 +409,13 @@ export function FcHeatmapView({
           })
         })
       const line = (
-        cl: ReturnType<typeof cutTree>,
-        alongX: boolean,
+        xy: ReturnType<typeof treeLine>,
         xa: string,
         ya: string
       ): Record<string, unknown> => ({
         type: 'scatter',
         mode: 'lines',
-        ...treeLine(evenHeights(cl.links), alongX),
+        ...xy,
         xaxis: xa,
         yaxis: ya,
         line: { color: p.textMuted, width: 1 },
@@ -384,18 +425,18 @@ export function FcHeatmapView({
       lay.xaxis = { ...(lay.xaxis as object), domain: [0, xEnd] }
       lay.yaxis = { ...(lay.yaxis as object), domain: [0, yEnd] }
       if (ySide && yCl) {
-        if (yLook.tree) {
+        if (yLine) {
           lay.xaxis2 = { ...bare, domain: [xEnd + offX, 1], range: [0, top], anchor: 'y2' }
           lay.yaxis2 = { ...bare, domain: [0, yEnd], range: [-0.5, nY - 0.5], anchor: 'x2' }
-          traces.push(line(yCl, false, 'x2', 'y2'))
+          traces.push(line(yLine, 'x2', 'y2'))
         }
         bars(yCl, false, nY, yLook.colors)
       }
       if (xSide && xCl) {
-        if (xLook.tree) {
+        if (xLine) {
           lay.xaxis3 = { ...bare, domain: [0, xEnd], range: [-0.5, nX - 0.5], anchor: 'y3' }
           lay.yaxis3 = { ...bare, domain: [yEnd + offY, 1], range: [0, top], anchor: 'x3' }
-          traces.push(line(xCl, true, 'x3', 'y3'))
+          traces.push(line(xLine, 'x3', 'y3'))
         }
         bars(xCl, true, nX, xLook.colors)
       }
@@ -408,7 +449,7 @@ export function FcHeatmapView({
           : { alongX: false, edge: xEnd, span: yEnd, n: nY, clusters: geneCl.clusters }
     }
     return { data: traces, layout: lay, geneBars }
-  }, [data, title, orient, mode, size, area, palette, geneSide, condSide, unsigned])
+  }, [data, cells, trees, title, orient, mode, size, area, palette, unsigned])
 
   // Clicking a gene cluster's bar selects its genes (a second click unselects them) — as a legend
   // group does. Shapes take no Plotly events, so the bars are found by the pointer's position.
@@ -452,6 +493,7 @@ export function FcHeatmapView({
       <PlotlyChart
         data={traces}
         layout={layout}
+        style={settled ? undefined : { opacity: 0 }}
         // the other plots follow a hover once it rests (a sweep down the rows redraws none)
         linkDelay={LINK_DELAY}
         // the lit genes (hovered here or elsewhere, pinned) and hovered column — see heatmapFocus
@@ -469,13 +511,39 @@ export function FcHeatmapView({
           const ev = el as unknown as {
             on: (e: string, cb: () => void) => void
             removeListener?: (e: string, cb: () => void) => void
-            _fullLayout?: { _size?: { w: number; h: number } }
+            _fullLayout?: {
+              _size?: { w: number; h: number }
+              xaxis?: { _length?: number; tickvals?: unknown[] }
+              yaxis?: { _length?: number; tickvals?: unknown[] }
+            }
           }
           const read = (): void => {
-            const sz = ev._fullLayout?._size
-            if (!sz) return
+            const fl = ev._fullLayout
+            const sz = fl?._size
+            const ga = orient === 'landscape' ? fl?.xaxis : fl?.yaxis
+            const gene = ga?._length
+            if (!sz || !gene) return
+            if (!settled) {
+              settleTimerRef.current ??= setTimeout(() => setSettled(true), SETTLE_MS)
+              const last = lastReadRef.current
+              const still =
+                !!last &&
+                Math.abs(last.w - sz.w) < 1 &&
+                Math.abs(last.h - sz.h) < 1 &&
+                Math.abs(last.gene - gene) < 1
+              lastReadRef.current = { w: sz.w, h: sz.h, gene }
+              const want = truncatedTicks(data.genes, gene, GENE_TICK_PX).tickvals
+              const live = ga.tickvals ?? []
+              if (still && live.length === want.length && want.every((v, i) => live[i] === v))
+                setSettled(true)
+            }
             setArea((a) =>
-              a && Math.abs(a.w - sz.w) < 1 && Math.abs(a.h - sz.h) < 1 ? a : { w: sz.w, h: sz.h }
+              a &&
+              Math.abs(a.w - sz.w) < 1 &&
+              Math.abs(a.h - sz.h) < 1 &&
+              Math.abs(a.gene - gene) < 1
+                ? a
+                : { w: sz.w, h: sz.h, gene }
             )
           }
           ev.on('plotly_afterplot', read)

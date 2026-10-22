@@ -262,7 +262,10 @@ export function HeatmapView({
     return () => ro.disconnect()
   }, [])
 
-  const { data, layout } = useMemo(() => {
+  // The traces don't depend on the tile's size, so a resize keeps them — the same objects, so
+  // Plotly only re-lays the plot out (the layout below follows the size) instead of rebuilding and
+  // recalculating every cell.
+  const { traces, tracks } = useMemo(() => {
     const p = PALETTES[mode]
     const landscape = orient === 'landscape'
     // Each sample's identity for the tooltips (cells and tracks alike), its label when it has none.
@@ -271,24 +274,6 @@ export function HeatmapView({
     )
     const levels = { dose: dosePalette, time: timePalette, numeric }
     const tracks = condBar ? buildTracks(heatmap, landscape, p.panel, idents, levels) : null
-    // Reserve a band for the condition tracks. In portrait the tracks stack vertically, so size the
-    // band to ~one label height per track (measured from the tile) — just tall enough that Plotly
-    // doesn't drop overlapping row labels, no taller. Landscape lays them out horizontally where
-    // labels angle and don't collide, so a modest fixed fraction suffices.
-    // No band (and no gap) while the condition bar is hidden — the heatmap takes the room.
-    const nT = tracks ? heatmap.conds.length : 0
-    const PER_TRACK_PX = 16 // ~9px label + line spacing
-    const areaH = plotH > 0 ? Math.max(plotH - 75 /* Plotly top+bottom margins */, 80) : 0
-    const band =
-      nT === 0
-        ? 0
-        : landscape
-          ? Math.min(0.26, nT * 0.05)
-          : areaH > 0
-            ? Math.min(0.5, (nT * PER_TRACK_PX) / areaH)
-            : Math.min(0.26, nT * 0.05)
-    const gap = nT > 0 ? 0.028 : 0
-    const mainEnd = 1 - band - gap
     // Hover: "log=2.31" on a logged scale; a linear value's size varies too much for fixed decimals.
     const logged = valueLabel.startsWith('log')
     const valueKey = logged ? valueLabel.split(' ')[0] : 'value'
@@ -316,6 +301,30 @@ export function HeatmapView({
       }
     ]
     if (tracks) traces.push(tracks.trace)
+    return { traces, tracks }
+  }, [heatmap, orient, mode, valueLabel, condBar, palette, dosePalette, timePalette, numeric])
+
+  const layout = useMemo(() => {
+    const p = PALETTES[mode]
+    const landscape = orient === 'landscape'
+    // Reserve a band for the condition tracks. In portrait the tracks stack vertically, so size the
+    // band to ~one label height per track (measured from the tile) — just tall enough that Plotly
+    // doesn't drop overlapping row labels, no taller. Landscape lays them out horizontally where
+    // labels angle and don't collide, so a modest fixed fraction suffices.
+    // No band (and no gap) while the condition bar is hidden — the heatmap takes the room.
+    const nT = tracks ? heatmap.conds.length : 0
+    const PER_TRACK_PX = 16 // ~9px label + line spacing
+    const areaH = plotH > 0 ? Math.max(plotH - 75 /* Plotly top+bottom margins */, 80) : 0
+    const band =
+      nT === 0
+        ? 0
+        : landscape
+          ? Math.min(0.26, nT * 0.05)
+          : areaH > 0
+            ? Math.min(0.5, (nT * PER_TRACK_PX) / areaH)
+            : Math.min(0.26, nT * 0.05)
+    const gap = nT > 0 ? 0.028 : 0
+    const mainEnd = 1 - band - gap
     const geneAxis = {
       ...axisBase(p),
       title: 'gene',
@@ -369,21 +378,8 @@ export function HeatmapView({
       }
       if (tracks) lay.yaxis2 = { ...trackAxis, domain: [mainEnd + gap, 1], anchor: 'x' }
     }
-    return { data: traces, layout: lay }
-  }, [
-    heatmap,
-    title,
-    orient,
-    mode,
-    plotH,
-    plotW,
-    valueLabel,
-    condBar,
-    palette,
-    dosePalette,
-    timePalette,
-    numeric
-  ])
+    return lay
+  }, [heatmap, tracks, title, orient, mode, plotH, plotW])
 
   // each sample's link key, for the sample link with the other plots
   const sampleKeys = useMemo(
@@ -394,7 +390,7 @@ export function HeatmapView({
   return (
     <div ref={wrapRef} style={{ width: '100%', height: '100%' }}>
       <PlotlyChart
-        data={data}
+        data={traces}
         layout={layout}
         // the other plots follow a hover once it rests (a sweep down the rows redraws none)
         linkDelay={LINK_DELAY}

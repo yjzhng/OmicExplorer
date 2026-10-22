@@ -18,8 +18,11 @@ import {
   isSlopeRow,
   type ConditionKey,
   type CustomConditionKey,
+  contextOf,
   presentStd,
-  presentScaleOf
+  presentScaleOf,
+  rowView,
+  type RowView
 } from '../engine'
 import { deriveGroups } from '../graph/groups'
 import {
@@ -72,6 +75,30 @@ function cellOf(r: object, c: string): Cell {
   return (r as unknown as Record<string, Cell>)[c] ?? null
 }
 
+/** cellOf by row index, read off a view's columns (no row built). */
+function cellReader(view: RowView<unknown>, c: string): (i: number) => Cell {
+  if (isCustomCond(c as ConditionKey)) {
+    const extra = view.col('extra')
+    const slug = customSlug(c as CustomConditionKey)
+    return (i) => (extra(i) as Record<string, string> | undefined)?.[slug] ?? null
+  }
+  const col = view.col(c)
+  return (i) => (col(i) as Cell | undefined) ?? null
+}
+
+/** A table's rows as cells, read off the result's columns (no row built): `cell(c)` overrides a
+ *  column's reader. */
+function cellRows(
+  view: RowView<unknown>,
+  cols: readonly string[],
+  cell: (c: string) => ((i: number) => Cell) | undefined
+): Cell[][] {
+  const readers = cols.map((c) => cell(c) ?? cellReader(view, c))
+  const rows: Cell[][] = new Array(view.n)
+  for (let i = 0; i < view.n; i++) rows[i] = readers.map((read) => read(i))
+  return rows
+}
+
 /** Standardized table → columns + rows (cell shown only when the data carries it). */
 function standardizeTable(
   result: Extract<NodeResult, { kind: 'standardize' }>,
@@ -82,8 +109,11 @@ function standardizeTable(
 } {
   const dm = result.std.displayMap
   // On Clean data's presented scale (its chosen log-transform), as its table shows them.
-  const src = presentStd(result.std, presentScaleOf(result.std, logTransform)).rows
-  const showCell = present(src, 'cell')
+  const std = presentStd(result.std, presentScaleOf(result.std, logTransform))
+  // which columns: off the context tuples (every condition value the rows carry); the cells off
+  // the columns — no row built
+  const ctx = contextOf(std).rows
+  const showCell = present(ctx, 'cell')
   const cols = [
     'uniqID',
     'gene',
@@ -91,17 +121,15 @@ function standardizeTable(
     'cmpd',
     'dose',
     'time',
-    ...customCols(src),
+    ...customCols(ctx),
     'rep',
     'value'
   ]
-  const rows = src.map((r) => {
-    const gene = dm[r.uniqID] ?? ''
-    return cols.map((c): Cell => {
-      if (c === 'gene') return gene
-      return cellOf(r, c)
-    })
-  })
+  const view = rowView(std)
+  const uid = view.col('uniqID')
+  const rows = cellRows(view, cols, (c) =>
+    c === 'gene' ? (i) => dm[uid(i) as string] ?? '' : undefined
+  )
   return { columns: cols.map((c) => condLabel(c as ConditionKey)), rows }
 }
 
@@ -185,16 +213,18 @@ function contrastTable(result: Extract<NodeResult, { kind: 'contrast' }>): {
   rows: Cell[][]
 } {
   const dm = result.displayMap
-  const src = result.ctr.rows
+  // which columns: off the context tuples (they carry the feature and every condition value);
+  // the cells off the columns — no row built
+  const ctx = contextOf(result.ctr).rows
   const cols = [
     // every feature the contrast offers, each row saying which
-    ...(src.some((r) => r.feature) ? ['feature'] : []),
+    ...(ctx.some((r) => r.feature) ? ['feature'] : []),
     'uniqID',
     'gene',
-    ...(present(src, 'cell') ? ['cell'] : []),
-    ...(present(src, 'dose') ? ['dose'] : []),
-    ...(present(src, 'time') ? ['time'] : []),
-    ...customCols(src),
+    ...(present(ctx, 'cell') ? ['cell'] : []),
+    ...(present(ctx, 'dose') ? ['dose'] : []),
+    ...(present(ctx, 'time') ? ['time'] : []),
+    ...customCols(ctx),
     'FC1',
     'FC2',
     'FCdiff',
@@ -203,14 +233,15 @@ function contrastTable(result: Extract<NodeResult, { kind: 'contrast' }>): {
     'signf',
     'effect'
   ]
-  const rows = src.map((r) => {
-    const gene = dm[r.uniqID] ?? ''
-    return cols.map((c): Cell => {
-      if (c === 'gene') return gene
-      if (c === 'signf' || c === 'signf1' || c === 'signf2')
-        return b((r as unknown as Record<string, boolean>)[c])
-      return cellOf(r, c)
-    })
+  const view = rowView(result.ctr)
+  const uid = view.col('uniqID')
+  const rows = cellRows(view, cols, (c) => {
+    if (c === 'gene') return (i) => dm[uid(i) as string] ?? ''
+    if (c === 'signf' || c === 'signf1' || c === 'signf2') {
+      const col = view.col(c)
+      return (i) => b(col(i) as boolean)
+    }
+    return undefined
   })
   return { columns: cols.map((c) => condLabel(c as ConditionKey)), rows }
 }

@@ -120,18 +120,28 @@ export function ToggleSwitch<V extends string>({
   // place rather than gliding across. (Adjusting state on a prop change, during render.)
   const optionSet = options.map((o) => o.value).join('\u0001')
   const [placedFor, setPlacedFor] = useState(optionSet)
+  // What re-measuring hangs on besides the pick: the option values (the buttons, keyed on them),
+  // and which are disabled.
+  const optionKey = optionSet + '\u0002' + options.map((o) => (o.disabled ? 1 : 0)).join('')
+  const optionCount = options.length
   if (optionSet !== placedFor) {
     setPlacedFor(optionSet)
     setPlaced(false)
   }
 
+  // Keyed on what places the box, not on `options` itself: most callers build that array afresh
+  // each render, and every re-run reads offsets — a forced layout per switch per render, which
+  // added up to most of a second when a tab's tiles mount together. Labels are left to the
+  // resize observer below.
   useLayoutEffect(() => {
     const track = trackRef.current
     if (!track) return
     const measure = (): void => {
       const el = optionRefs.current[activeIndex]
-      // Hidden (display:none) or nothing picked: no highlight until it can be measured.
-      if (!el || el.offsetWidth === 0) return setBox(undefined)
+      // Nothing picked: no highlight. Hidden (display:none — a Results tab switched away from):
+      // keep the last box, so hiding and showing the tab doesn't re-render (and re-place) it.
+      if (!el) return setBox(undefined)
+      if (el.offsetWidth === 0) return
       const next = {
         left: el.offsetLeft,
         top: el.offsetTop,
@@ -151,11 +161,14 @@ export function ToggleSwitch<V extends string>({
     }
     measure()
     // Labels can change width (a font loading, a relabel) and the track can wrap or be revealed,
-    // so re-measure whenever the track resizes.
+    // so re-measure whenever the track or any option resizes — the options too, since a relabel
+    // in a track pinned at its full width (fill, or capped by maxWidth) moves the picked one
+    // without the track itself changing size.
     const ro = new ResizeObserver(measure)
     ro.observe(track)
+    for (const el of optionRefs.current.slice(0, optionCount)) if (el) ro.observe(el)
     return () => ro.disconnect()
-  }, [activeIndex, options, size])
+  }, [activeIndex, optionKey, optionCount, size])
 
   useLayoutEffect(() => {
     if (!box || placed) return

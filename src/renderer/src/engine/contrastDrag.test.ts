@@ -90,7 +90,11 @@ describe('the drag patch', () => {
       bandConfidence: 0.954,
       cutoffQ: 0.046
     })
-    expect(contrastStatDrag({}, 'bDown', 0.0123)).toEqual({ cutoffQ: 0.013, bandConfidence: 0.987 })
+    // a q rounds UP, to 0.001% (the finest tail)
+    expect(contrastStatDrag({}, 'bDown', 0.012341)).toEqual({
+      cutoffQ: 0.01235,
+      bandConfidence: 0.98765
+    })
   })
   it('asymmetric: a secondary edge sets its own tail', () => {
     expect(contrastStatDrag({ asymmetric: true }, 'bandDown', 0.9)).toEqual({

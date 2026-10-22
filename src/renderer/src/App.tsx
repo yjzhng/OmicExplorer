@@ -206,7 +206,9 @@ function FlowViews({ view }: { view: AppView }) {
       onTransitionEnd={(e) => {
         if (p === slide.to && e.target === e.currentTarget) settle()
       }}
-      aria-hidden={p !== slide.to}
+      // The outgoing page: inert, not aria-hidden — the button that started the slide still holds
+      // focus, and aria-hidden over a focused element is blocked; inert also drops that focus.
+      inert={p !== slide.to}
     >
       {p === 'canvas' ? canvasPage : resultsPage}
     </div>

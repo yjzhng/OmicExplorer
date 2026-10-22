@@ -1,10 +1,10 @@
-import { useMemo } from 'react'
+import { useContext, useMemo } from 'react'
 
 import { buildBubble, condLabel, type CompareResultRow, type ConditionKey } from '../engine'
 import { tooltip } from './condTooltip'
 import { sizeKeyLevels } from './sizeKey'
 import { PlotlyChart } from './PlotlyChart'
-import { truncateLabel } from './plotAxes'
+import { PlotAxesContext, truncateLabel } from './plotAxes'
 import {
   BUBBLE_SIG_PALETTE,
   ROLE_DEFAULTS,
@@ -214,6 +214,9 @@ export function BubbleView({
   // is highlighted imperatively by the overlay in PlotlyChart instead (no re-plot).
   const pinnedIds = useSelection((s) => s.pinnedIds)
 
+  // The tile's legend switched off: no size key (PlotlyChart drops the colour bar).
+  const legendOff = useContext(PlotAxesContext)?.legend === false
+
   const { data, layout, boldTicks } = useMemo(() => {
     const p = PALETTES[mode]
     const extra = [...pinnedIds]
@@ -356,11 +359,13 @@ export function BubbleView({
       // an omitted key keeps the other orientation's value.
       side: landscape ? 'left' : 'top'
     }
-    const key = sizeKey(
-      sizeBy === 'fc' ? maxAbsFC : maxSig,
-      sizeBy === 'fc' ? '|log₂FC|' : sigName,
-      p.textMuted
-    )
+    const key = legendOff
+      ? { shapes: [], annotations: [], height: 0, width: 0 }
+      : sizeKey(
+          sizeBy === 'fc' ? maxAbsFC : maxSig,
+          sizeBy === 'fc' ? '|log₂FC|' : sigName,
+          p.textMuted
+        )
     const lay: Record<string, unknown> = {
       ...plotBase(p),
       showlegend: false,
@@ -436,6 +441,7 @@ export function BubbleView({
     focus,
     orient,
     pinnedIds,
+    legendOff,
     title,
     mode,
     palette

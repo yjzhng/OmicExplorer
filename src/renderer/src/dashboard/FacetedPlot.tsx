@@ -11,20 +11,47 @@
  */
 import { useMemo, useState, type CSSProperties, type ReactNode } from 'react'
 
-import { facetDims, type ContextRow, type ConditionKey, type NumericConds } from '../engine'
+import {
+  abundanceOnScale,
+  contextOf,
+  facetDims,
+  rowsOfContexts,
+  rowsOfFeatureNamed,
+  rowsOfKind,
+  type ConditionKey,
+  type ContextRow,
+  type ContrastResultRow,
+  type NumericConds,
+  type ValueScale
+} from '../engine'
 import { UI } from '../ui/theme'
 import { ChoiceSwitch, PILL_CAP } from '../ui/ChoiceSwitch'
 import { facetBarLabel, facetChoice, isNumericFacet, pickFacet, resolveFacets } from './facet'
 
+/** A result to facet without building all of its rows: the facets resolve over its context tuples
+ *  (contextIndex.ts) and only the facet on show is built. The options narrow it as the readers of
+ *  whole row arrays did — plain values, so the facet's rows stay the same array render to render. */
+export interface FacetSource<T extends ContextRow> {
+  /** the result holding the rows (`r.cmp`, `r.ctr`) */
+  of: { rows: readonly T[] }
+  /** a two-way ANOVA's kind of row on show (rowsOfKind) */
+  show?: string
+  /** a contrast's feature on show, by its switcher label (rowsOfFeatureNamed); null = its first */
+  feature?: string | null
+  /** an abundance contrast's plot scale (abundanceOnScale) */
+  scale?: ValueScale
+}
+
 export function FacetedPlot<T extends ContextRow>({
-  rows,
+  rows: given,
   numeric,
   exclude,
   together,
   children,
   facetSel
 }: {
-  rows: T[]
+  /** the rows to facet, or a result to facet without building its rows (FacetSource) */
+  rows: T[] | FacetSource<T>
   /** the dataset's numeric conditions (numericOfResult of the upstream): their levels are ordered */
   numeric: NumericConds
   exclude?: ConditionKey[]
@@ -39,6 +66,29 @@ export function FacetedPlot<T extends ContextRow>({
    *  Undefined = standalone, with its own interactive tabs. */
   facetSel?: Record<string, string>
 }) {
+  const src = Array.isArray(given) ? null : given
+  const of = src?.of
+  const show = src?.show
+  const feature = src?.feature
+  const scale = src?.scale
+  const ix = useMemo(() => (of ? contextOf(of) : null), [of])
+  // what the facets resolve over: the rows, or the result's context tuples narrowed as asked
+  const rows = useMemo((): ContextRow[] => {
+    if (!ix) return given as T[]
+    let ctx = ix.rows
+    if (show !== undefined) ctx = rowsOfKind(ctx, show)
+    if (feature !== undefined)
+      ctx = rowsOfFeatureNamed(ctx as ContrastResultRow[], feature ?? undefined)
+    return ctx
+  }, [ix, given, show, feature])
+  /** The rows behind some of `rows`: themselves, or the result's rows built for those tuples. */
+  const realise = (ctx: ContextRow[]): T[] => {
+    if (!of || !ix) return ctx as T[]
+    const built = rowsOfContexts(of, ix, ctx)
+    return (
+      scale ? abundanceOnScale(built as unknown as ContrastResultRow[], scale) : built
+    ) as T[]
+  }
   const dims = useMemo(
     () => facetDims(rows, exclude).filter((d) => !(together && d === 'comparison')),
     [rows, exclude, together]
@@ -47,11 +97,18 @@ export function FacetedPlot<T extends ContextRow>({
   const sel = facetSel ?? selState
   const {
     bars,
-    rows: groupRows,
+    rows: groupCtx,
     key: facetKey
   } = useMemo(() => resolveFacets(rows, dims, sel, numeric), [rows, dims, sel, numeric])
+  // the facet on show's rows (every row when unfaceted) — the only ones built from a source
+  const groupRows = useMemo(
+    () => realise(dims.length === 0 ? rows : groupCtx),
+    // realise reads of / ix / scale, all listed
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [of, ix, scale, rows, groupCtx, dims.length]
+  )
 
-  if (dims.length === 0) return <div style={styles.single}>{children(rows, '')}</div>
+  if (dims.length === 0) return <div style={styles.single}>{children(groupRows, '')}</div>
 
   // Shared/forced selection: a global control (or export) owns it, so just render the
   // resolved facet — no tabs here.

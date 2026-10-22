@@ -20,7 +20,7 @@ import { territoryRing, type TerritoryShape } from './territory'
 import { hslHex } from './colormap'
 import { shade } from './condColor'
 import { PlotlyChart } from './PlotlyChart'
-import { PlotAxesContext, type PlotAxesCtx } from './plotAxes'
+import { AXIS_LINE_WIDTH, PlotAxesContext, type PlotAxesCtx } from './plotAxes'
 import { axisBase, CATEGORICAL, PALETTES, plotBase, UI, withAlpha, type Palette } from './theme'
 import { useUiTheme } from './useUiTheme'
 import { sectionKey, SECTIONED_LEGEND } from './legendSections'
@@ -213,6 +213,8 @@ export function ClusterView({
     if (!minimal || !outer) return outer
     const report = outer.onDefaults
     return {
+      // the tile's legend switch still applies (only the axis overrides are dropped)
+      legend: outer.legend,
       // the settings' title placeholders: the titles the L shows, not the hidden axes' blank ones
       onDefaults:
         report && ((d) => report({ x: { ...d.x, title: xLabel }, y: { ...d.y, title: yLabel } }))
@@ -295,10 +297,10 @@ function minimalAxes(
     ticks: '',
     zeroline: false
   })
-  // Each segment as thick as its axis's line-width setting (the Axes section's box shows 1 unset).
+  // Each segment as thick as its axis's line-width setting (unset: the default, as the Axes section's box shows).
   const line = (st: AxisStyle | undefined): Record<string, unknown> => ({
     color: p.textMuted,
-    width: st?.lineWidth || 1
+    width: st?.lineWidth || AXIS_LINE_WIDTH
   })
   const corner = { type: 'line', xref: 'paper', yref: 'paper', layer: 'above' }
   const shapes = [

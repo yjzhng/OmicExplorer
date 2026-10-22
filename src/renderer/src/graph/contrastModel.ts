@@ -237,3 +237,18 @@ export function contrastLine(m: ContrastModel, base?: { a: string; b: string }):
     (per.length ? `, per ${per.map((x) => condLabel(x.c)).join(' per ')}` : '')
   )
 }
+
+/** A tail %'s arrow-key step: 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1 — then by 0.5 to 50. A value
+ *  between two rungs steps to the next one in that direction. */
+const TAIL_RUNGS = [0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1]
+export function tailStep(v: number, dir: 1 | -1): number {
+  const eps = 1e-9
+  if (dir > 0) {
+    const r = TAIL_RUNGS.find((x) => x > v + eps)
+    if (r != null) return r
+    return Math.min(50, Math.floor((v + eps) / 0.5) * 0.5 + 0.5)
+  }
+  if (v > 1 + eps) return Math.max(1, Math.ceil((v - eps) / 0.5) * 0.5 - 0.5)
+  const below = TAIL_RUNGS.filter((x) => x < v - eps)
+  return below.length ? below[below.length - 1] : TAIL_RUNGS[0]
+}

@@ -11,6 +11,7 @@ import {
   clusterRowOrder,
   clusterRowTree,
   suggestClusterCount,
+  type ClusterOrderOptions,
   type DendroLink,
   type LeafOrder,
   type Linkage
@@ -18,6 +19,7 @@ import {
 import type { ContrastResultRow } from './contrast'
 import { curveSampleX, logistic } from './curveFit'
 import { embed2D, type ClusterMethod } from './embed'
+import { isSampleIndex, labelGroups, sampleIndex, type SampleIndex } from './sampleIndex'
 import { descValue } from './splineFit'
 import { abundanceLabel, fromLinear, type ValueScale } from './scale'
 import {
@@ -195,6 +197,11 @@ export function buildVolcano(rows: CompareResultRow[], opts: VolcanoOptions): Vo
 export interface ContextRow {
   /** Contrast rows only: the feature contrasted (its switcher label), when it offers several */
   feature?: string
+  /** Contrast rows only: the feature's id (what rowsOfFeature selects on) */
+  featureId?: string
+  /** A context index's row only (contextIndex.ts): the axis its rows' curve or response surface
+   *  runs along — `curve.axis` / `rs.axis`, which the index doesn't carry */
+  along?: string
   /** a two-way ANOVA term row (see CompareResultRow.term) — the `show` facet's terms */
   term?: unknown
   cmp_cond?: string
@@ -1251,7 +1258,7 @@ export const DUMBBELL_ORDERS: readonly DumbbellOrder[] = ['fc1', 'fc2', 'diff']
 /** An order's display name: a side's own name (the contrast's cmp1/cmp2), or "change". */
 export function dumbbellOrderLabel(
   o: string,
-  rows: readonly ContrastResultRow[] | undefined
+  rows: readonly { cmp1?: string; cmp2?: string }[] | undefined
 ): string {
   if (o === 'fc1') return rows?.[0]?.cmp1 ?? 'side 1'
   if (o === 'fc2') return rows?.[0]?.cmp2 ?? 'side 2'
@@ -1367,7 +1374,9 @@ export interface GeneBarData {
 /** Focus genes' standardized values across every condition (mean ± sd over replicates),
  *  one grouped series per gene. */
 export function buildGeneBar(
-  rows: StandardRow[],
+  /** read once in order, none kept (an array, or scanRows' scan) — or a Clean data result's
+   *  sample index (sampleIndex), read as ids */
+  rows: Iterable<StandardRow> | SampleIndex,
   uniqIDs: string[],
   displayMap?: Record<string, string>,
   /** log-scaled data → compute the central value and spread in log10 space (geometric mean ±
@@ -1379,39 +1388,9 @@ export function buildGeneBar(
   /** the conditions' order along the axis (default natural) */
   order: SampleOrdering = { by: 'natural' }
 ): GeneBarData {
-  const want = new Set(uniqIDs)
-  const byKey = new Map<string, number[]>() // `${uniqID} ${cond}` → values
-  const condOrder: string[] = []
-  const condSeen = new Set<string>()
-  const condMeta: Record<string, SampleMeta> = {}
-  const present = new Set<string>()
-  for (const r of rows) {
-    const cond = sampleCond(r)
-    // The axis shows every condition in the data, so a gene missing a value in some condition
-    // still keeps that slot on the axis (drawn as an empty NaN position).
-    if (!condSeen.has(cond)) {
-      condSeen.add(cond)
-      condOrder.push(cond)
-      condMeta[cond] = {
-        cell: r.cell,
-        cmpd: r.cmpd,
-        dose: r.dose,
-        time: r.time,
-        rep: r.rep,
-        ...(r.extra ? { extra: { ...r.extra } } : null)
-      }
-    }
-    if (!want.has(r.uniqID)) continue
-    present.add(r.uniqID) // gene is in the data (listed even if every value is missing)
-    if (r.value == null || !Number.isFinite(r.value)) continue
-    const k = `${r.uniqID} ${cond}`
-    let arr = byKey.get(k)
-    if (!arr) {
-      arr = []
-      byKey.set(k, arr)
-    }
-    arr.push(r.value)
-  }
+  const { condOrder, condMeta, present, valuesAt } = isSampleIndex(rows)
+    ? geneBarPivotIx(rows, uniqIDs)
+    : geneBarPivot(rows, uniqIDs)
   sortSamples(condOrder, order, (c) => condMeta[c], false)
   const genes = uniqIDs
     .filter((id) => present.has(id))
@@ -1419,7 +1398,7 @@ export function buildGeneBar(
   const bars: GeneBarValue[] = []
   for (const { uniqID, label } of genes) {
     for (const cond of condOrder) {
-      const vals = byKey.get(`${uniqID} ${cond}`)
+      const vals = valuesAt(uniqID, cond)
       // No finite replicate here → a missing bar (mean null): the view leaves the position
       // empty and labels it NaN.
       if (!vals || vals.length === 0) {
@@ -1484,6 +1463,104 @@ export function buildGeneBar(
     }
   }
   return { bars, conds: condOrder, condMeta, genes }
+}
+
+/** What a gene bar's pivot hands the layout: the conditions in first-appearance order with their
+ *  condition values, the wanted genes present in the data, and a gene's values in a condition. */
+interface GeneBarPivot {
+  condOrder: string[]
+  condMeta: Record<string, SampleMeta>
+  present: Set<string>
+  valuesAt: (uniqID: string, cond: string) => number[] | undefined
+}
+
+/** The gene bar's pivot off the rows. */
+function geneBarPivot(rows: Iterable<StandardRow>, uniqIDs: string[]): GeneBarPivot {
+  const want = new Set(uniqIDs)
+  const byKey = new Map<string, number[]>() // `${uniqID} ${cond}` → values
+  const condOrder: string[] = []
+  const condSeen = new Set<string>()
+  const condMeta: Record<string, SampleMeta> = {}
+  const present = new Set<string>()
+  for (const r of rows) {
+    const cond = sampleCond(r)
+    // The axis shows every condition in the data, so a gene missing a value in some condition
+    // still keeps that slot on the axis (drawn as an empty NaN position).
+    if (!condSeen.has(cond)) {
+      condSeen.add(cond)
+      condOrder.push(cond)
+      condMeta[cond] = {
+        cell: r.cell,
+        cmpd: r.cmpd,
+        dose: r.dose,
+        time: r.time,
+        rep: r.rep,
+        ...(r.extra ? { extra: { ...r.extra } } : null)
+      }
+    }
+    if (!want.has(r.uniqID)) continue
+    present.add(r.uniqID) // gene is in the data (listed even if every value is missing)
+    if (r.value == null || !Number.isFinite(r.value)) continue
+    const k = `${r.uniqID} ${cond}`
+    let arr = byKey.get(k)
+    if (!arr) {
+      arr = []
+      byKey.set(k, arr)
+    }
+    arr.push(r.value)
+  }
+  return { condOrder, condMeta, present, valuesAt: (g, c) => byKey.get(`${g} ${c}`) }
+}
+
+/** The gene bar's pivot off a sample index: each condition label made once per sample, the
+ *  wanted genes' values gathered by gene and condition id. */
+function geneBarPivotIx(ix: SampleIndex, uniqIDs: string[]): GeneBarPivot {
+  // every row is read for the axis, so conditions first appear in sample id order
+  const { of, labels: condOrder } = labelGroups(ix, sampleCond)
+  const condMeta: Record<string, SampleMeta> = {}
+  const metaSeen = new Set<string>()
+  ix.reps.forEach((r, s) => {
+    const cond = condOrder[of[s]]
+    if (metaSeen.has(cond)) return
+    metaSeen.add(cond)
+    condMeta[cond] = {
+      cell: r.cell,
+      cmpd: r.cmpd,
+      dose: r.dose,
+      time: r.time,
+      rep: r.rep,
+      ...(r.extra ? { extra: { ...r.extra } } : null)
+    }
+  })
+  const C = condOrder.length
+  // wanted gene id → its slot; values by slot × condition
+  const slot = new Int32Array(ix.genes.length).fill(-1)
+  const wanted: number[] = []
+  for (const id of uniqIDs) {
+    const g = ix.geneOf.get(id)
+    if (g !== undefined && slot[g] < 0) slot[g] = wanted.push(g) - 1
+  }
+  const vals: Array<number[] | undefined> = new Array(wanted.length * C)
+  const seen = new Uint8Array(wanted.length)
+  for (let r = 0; r < ix.n; r++) {
+    const w = slot[ix.gene[r]]
+    if (w < 0) continue
+    seen[w] = 1 // gene is in the data (listed even if every value is missing)
+    const v = ix.value[r]
+    if (Number.isNaN(v)) continue
+    ;(vals[w * C + of[ix.sample[r]]] ??= []).push(v)
+  }
+  const present = new Set(wanted.filter((_, w) => seen[w]).map((g) => ix.genes[g]))
+  const condAt = new Map(condOrder.map((c, i) => [c, i]))
+  return {
+    condOrder: [...condOrder],
+    condMeta,
+    present,
+    valuesAt: (g, c) => {
+      const w = slot[ix.geneOf.get(g) ?? -1]
+      return w === undefined || w < 0 ? undefined : vals[w * C + condAt.get(c)!]
+    }
+  }
 }
 
 // ── cluster / sample embedding (standardize) ─────────────────────────────────────
@@ -2279,7 +2356,7 @@ function sampleCond(r: StandardRow): string {
 }
 
 /** Pivot the standardized long table into a genes × samples matrix for a heatmap. */
-export function buildHeatmap(rows: StandardRow[], opts: HeatmapOptions = {}): HeatmapData {
+export function buildHeatmap(rows: Iterable<StandardRow>, opts: HeatmapOptions = {}): HeatmapData {
   const gen = buildHeatmapSteps(rows, opts)
   let r = gen.next()
   while (!r.done) r = gen.next(clusterRowGroups(r.value.matrix, r.value.k))
@@ -2297,40 +2374,15 @@ export interface HeatmapClusterJob {
  *  memory — the slow part for a full proteome) handed out, so the dashboard can run it off the UI
  *  thread. Same result either way. */
 export function* buildHeatmapSteps(
-  rows: StandardRow[],
+  /** the rows, read once in order and none kept (an array, or scanRows' scan) — or a Clean data
+   *  result's sample index (sampleIndex), read as ids */
+  rows: Iterable<StandardRow> | SampleIndex,
   opts: HeatmapOptions = {}
 ): Generator<HeatmapClusterJob, HeatmapData, number[][]> {
   const log10 = opts.log10 ?? true
-  const sampleOrder: string[] = []
-  const sampleSeen = new Set<string>()
-  const sampleMeta = new Map<string, SampleMeta>()
-  const geneOrder: string[] = []
-  const geneSeen = new Set<string>()
-  const cells = new Map<string, number | null>() // `${gene} ${sample}` → value
-
-  for (const r of rows) {
-    const s = sampleLabel(r)
-    if (!sampleSeen.has(s)) {
-      sampleSeen.add(s)
-      sampleOrder.push(s)
-      sampleMeta.set(s, {
-        cell: r.cell,
-        cmpd: r.cmpd,
-        dose: r.dose,
-        time: r.time,
-        rep: r.rep,
-        ...(r.extra ? { extra: { ...r.extra } } : null)
-      })
-    }
-    if (!geneSeen.has(r.uniqID)) {
-      geneSeen.add(r.uniqID)
-      geneOrder.push(r.uniqID)
-    }
-    let v: number | null = r.value
-    if (v != null && Number.isFinite(v) && log10) v = v > 0 ? Math.log10(v) : null
-    else if (v != null && !Number.isFinite(v)) v = null
-    cells.set(`${r.uniqID} ${s}`, v)
-  }
+  const { sampleOrder, sampleMeta, geneOrder, cell } = isSampleIndex(rows)
+    ? heatmapPivotIx(rows, log10)
+    : heatmapPivot(rows, log10)
 
   // Order the sample columns — by default naturally by condition (sampleHierarchy, then the
   // replicate), so samples sharing a condition block together.
@@ -2346,7 +2398,7 @@ export function* buildHeatmapSteps(
     genes = focus.filter((g) => present.has(g))
   }
 
-  let z = genes.map((g) => sampleOrder.map((s) => cells.get(`${g} ${s}`) ?? null))
+  let z = genes.map((g) => sampleOrder.map((s) => cell(g, s)))
   // Cluster gene rows so similar profiles sit together (omicViz's clustered heatmap).
   // Impute missing cells with the sample-column mean before clustering, matching
   // omicViz's `fillna(pivot.mean())`; the displayed z keeps its real nulls.
@@ -2402,6 +2454,95 @@ export function* buildHeatmapSteps(
   return { z, x: sampleOrder, y, geneIds: genes, samples, conds }
 }
 
+/** What a heatmap's pivot hands the layout: the samples and genes in first-appearance order, each
+ *  sample's condition values, and a cell's value (null = none). */
+interface HeatmapPivot {
+  sampleOrder: string[]
+  sampleMeta: Map<string, SampleMeta>
+  geneOrder: string[]
+  cell: (gene: string, sample: string) => number | null
+}
+
+/** A heatmap cell's value: log10 when asked (a non-positive one → null); a non-finite one → null. */
+function heatCell(v: number | null, log10: boolean): number | null {
+  if (v != null && Number.isFinite(v) && log10) v = v > 0 ? Math.log10(v) : null
+  else if (v != null && !Number.isFinite(v)) v = null
+  return v
+}
+
+/** The heatmap's pivot off the rows. */
+function heatmapPivot(rows: Iterable<StandardRow>, log10: boolean): HeatmapPivot {
+  const sampleOrder: string[] = []
+  const sampleSeen = new Set<string>()
+  const sampleMeta = new Map<string, SampleMeta>()
+  const geneOrder: string[] = []
+  const geneSeen = new Set<string>()
+  const cells = new Map<string, number | null>() // `${gene} ${sample}` → value
+
+  for (const r of rows) {
+    const s = sampleLabel(r)
+    if (!sampleSeen.has(s)) {
+      sampleSeen.add(s)
+      sampleOrder.push(s)
+      sampleMeta.set(s, {
+        cell: r.cell,
+        cmpd: r.cmpd,
+        dose: r.dose,
+        time: r.time,
+        rep: r.rep,
+        ...(r.extra ? { extra: { ...r.extra } } : null)
+      })
+    }
+    if (!geneSeen.has(r.uniqID)) {
+      geneSeen.add(r.uniqID)
+      geneOrder.push(r.uniqID)
+    }
+    cells.set(`${r.uniqID} ${s}`, heatCell(r.value, log10))
+  }
+  return {
+    sampleOrder,
+    sampleMeta,
+    geneOrder,
+    cell: (g, s) => cells.get(`${g} ${s}`) ?? null
+  }
+}
+
+/** The heatmap's pivot off a sample index: each label made once per sample, the cells a dense
+ *  genes × samples grid (the last row for a cell wins, as in the rows' pivot). */
+function heatmapPivotIx(ix: SampleIndex, log10: boolean): HeatmapPivot {
+  // every row is read, so labels (and genes) first appear in sample (gene) id order
+  const { of, labels } = labelGroups(ix, sampleLabel)
+  const sampleMeta = new Map<string, SampleMeta>()
+  ix.reps.forEach((r, s) => {
+    const label = labels[of[s]]
+    if (!sampleMeta.has(label))
+      sampleMeta.set(label, {
+        cell: r.cell,
+        cmpd: r.cmpd,
+        dose: r.dose,
+        time: r.time,
+        rep: r.rep,
+        ...(r.extra ? { extra: { ...r.extra } } : null)
+      })
+  })
+  const S = labels.length
+  const grid = new Float64Array(ix.genes.length * S).fill(NaN) // NaN = null
+  for (let r = 0; r < ix.n; r++) {
+    const v = ix.value[r]
+    grid[ix.gene[r] * S + of[ix.sample[r]]] = Number.isNaN(v) ? NaN : (heatCell(v, log10) ?? NaN)
+  }
+  const col = new Map(labels.map((l, i) => [l, i]))
+  return {
+    sampleOrder: [...labels],
+    sampleMeta,
+    geneOrder: [...ix.genes],
+    cell: (g, s) => {
+      const v = grid[ix.geneOf.get(g)! * S + col.get(s)!]
+      return Number.isNaN(v) ? null : v
+    }
+  }
+}
+
 // ── log2FC heatmap (compare): genes × comparison-columns, signed fold change ──────
 
 export interface FcHeatmapData {
@@ -2452,6 +2593,26 @@ export function buildFcHeatmap(
   rows: CompareResultRow[],
   opts: FcHeatmapOptions = {}
 ): FcHeatmapData {
+  const gen = buildFcHeatmapSteps(rows, opts)
+  let r = gen.next()
+  while (!r.done) r = gen.next(clusterRowTree(r.value.rows, r.value.opts))
+  return r.value
+}
+
+/** What buildFcHeatmapSteps hands out: the rows to cluster and how — answered with
+ *  clusterRowTree's result for them. */
+export interface FcHeatmapClusterJob {
+  rows: number[][]
+  opts: ClusterOrderOptions
+}
+
+/** buildFcHeatmap as steps: the pivot and layout here, each clustering (the comparison columns,
+ *  then the gene rows — O(n²), the slow part) handed out, so the dashboard can run it off the UI
+ *  thread. Same result either way. */
+export function* buildFcHeatmapSteps(
+  rows: CompareResultRow[],
+  opts: FcHeatmapOptions = {}
+): Generator<FcHeatmapClusterJob, FcHeatmapData, ReturnType<typeof clusterRowTree>> {
   // Context dims = present conditions that AREN'T the comparison axis (cmp_cond) — they distinguish
   // one comparison column from another alongside the `comparison` label.
   const consumed = new Set<string>()
@@ -2568,7 +2729,7 @@ export function buildFcHeatmap(
     // Columns first: cluster on each column's gene-response profile.
     if (activeCols.length > 2 && genes.length > 1) {
       const colVecs = activeCols.map((_, ci) => imputed.map((row) => row[ci]))
-      const ct = clusterRowTree(colVecs, { ...how, weights: colVecs.map(mean) })
+      const ct = yield { rows: colVecs, opts: { ...how, weights: colVecs.map(mean) } }
       const corder = ct.order
       colTree = ct.links
       activeCols = corder.map((i) => activeCols[i])
@@ -2578,7 +2739,7 @@ export function buildFcHeatmap(
     // Rows: cluster on each gene's (now column-reordered) profile — with one column, that orders
     // the genes by it.
     if (genes.length > 2 && activeCols.length > 0) {
-      const rt = clusterRowTree(imputed, { ...how, weights: imputed.map(mean) })
+      const rt = yield { rows: imputed, opts: { ...how, weights: imputed.map(mean) } }
       const order = rt.order
       rowTree = rt.links
       genes = order.map((i) => genes[i])
@@ -2653,6 +2814,9 @@ export function buildQc(
     return p.join(' · ') || 'sample'
   }
   const condLabel = (r: StandardRow): string => parts(r).join(' · ') || 'all'
+  // every row's sample and gene as ids (shared, built once per table): the labels above are made
+  // once per sample, and the row loops below read only typed arrays
+  const ix = sampleIndex(std)
   // Each group's condition values, from its first row.
   const metas = new Map<string, SampleMeta>()
   const noteMeta = (label: string, r: StandardRow): void => {
@@ -2671,7 +2835,7 @@ export function buildQc(
   // Per-sample groups (intensity, # proteins) tell replicates apart; CV groups pool them.
   const sortGroups = (groups: QcGroup[], perSample: boolean): QcGroup[] =>
     sortSamples(groups, order, (g) => g.meta, perSample)
-  const push = (m: Map<string, number[]>, k: string, v: number): void => {
+  const push = <K>(m: Map<K, number[]>, k: K, v: number): void => {
     const a = m.get(k)
     if (a) a.push(v)
     else m.set(k, [v])
@@ -2681,17 +2845,22 @@ export function buildQc(
     // Proteins MEASURED in each sample: an imputed cell isn't an identification (with imputation
     // on, every sample would otherwise count every protein and the bars all come out level).
     // The imputed ones are counted apart, so the bar can show them stacked on top.
-    const count = new Map<string, { measured: number; imputed: number }>()
-    for (const r of std.rows)
-      if (r.value != null && Number.isFinite(r.value)) {
-        const k = sampleLabel(r)
-        noteMeta(k, r)
-        let c = count.get(k)
-        if (!c) count.set(k, (c = { measured: 0, imputed: 0 }))
-        if (r.imputed) c.imputed++
+    const { of, labels } = labelGroups(ix, sampleLabel)
+    const slot = new Int32Array(labels.length).fill(-1)
+    const count: Array<{ label: string; measured: number; imputed: number }> = []
+    for (let r = 0; r < ix.n; r++)
+      if (!Number.isNaN(ix.value[r])) {
+        const k = of[ix.sample[r]]
+        if (slot[k] < 0) {
+          slot[k] = count.length
+          count.push({ label: labels[k], measured: 0, imputed: 0 })
+          noteMeta(labels[k], ix.reps[ix.sample[r]])
+        }
+        const c = count[slot[k]]
+        if (ix.imputed[r]) c.imputed++
         else c.measured++
       }
-    const groups = [...count].map(([label, c]) => ({
+    const groups = count.map(({ label, ...c }) => ({
       label,
       values: [c.measured],
       ...(c.imputed ? { imputed: c.imputed } : null),
@@ -2705,13 +2874,21 @@ export function buildQc(
     const map = new Map<string, number[]>()
     let min = Infinity
     let max = -Infinity
-    for (const r of std.rows)
-      if (r.value != null && Number.isFinite(r.value)) {
-        push(map, sampleLabel(r), r.value)
-        noteMeta(sampleLabel(r), r)
-        if (r.value < min) min = r.value
-        if (r.value > max) max = r.value
+    const { of, labels } = labelGroups(ix, sampleLabel)
+    const vals: Array<number[] | undefined> = new Array(labels.length)
+    for (let r = 0; r < ix.n; r++) {
+      const v = ix.value[r]
+      if (Number.isNaN(v)) continue
+      const k = of[ix.sample[r]]
+      let a = vals[k]
+      if (!a) {
+        map.set(labels[k], (a = vals[k] = []))
+        noteMeta(labels[k], ix.reps[ix.sample[r]])
       }
+      a.push(v)
+      if (v < min) min = v
+      if (v > max) max = v
+    }
     // On the scale every abundance plot shows Clean data on — or, unset, log₁₀ when the values
     // look like raw intensity (all positive, ≥2 decades).
     const sc: ValueScale = scale ?? (min > 0 && max / min >= 100 ? 'log10' : 'linear')
@@ -2728,18 +2905,20 @@ export function buildQc(
   }
 
   // cv: per condition group, the %CV of each protein across its replicates.
-  const byGroup = new Map<string, Map<string, number[]>>() // condLabel → uniqID → replicate values
-  for (const r of std.rows)
-    if (r.value != null && Number.isFinite(r.value)) {
-      const gk = condLabel(r)
-      noteMeta(gk, r)
-      let gm = byGroup.get(gk)
-      if (!gm) {
-        gm = new Map()
-        byGroup.set(gk, gm)
-      }
-      push(gm, r.uniqID, r.value)
+  const byGroup = new Map<string, Map<number, number[]>>() // condLabel → gene id → replicate values
+  const { of, labels } = labelGroups(ix, condLabel)
+  const gms: Array<Map<number, number[]> | undefined> = new Array(labels.length)
+  for (let r = 0; r < ix.n; r++) {
+    const v = ix.value[r]
+    if (Number.isNaN(v)) continue
+    const k = of[ix.sample[r]]
+    let gm = gms[k]
+    if (!gm) {
+      byGroup.set(labels[k], (gm = gms[k] = new Map()))
+      noteMeta(labels[k], ix.reps[ix.sample[r]])
     }
+    push(gm, ix.gene[r], v)
+  }
   const groups = [...byGroup].map(([label, geneMap]) => {
     const cvs: number[] = []
     for (const vals of geneMap.values()) {
@@ -2755,6 +2934,58 @@ export function buildQc(
   })
   sortGroups(groups, false)
   return { groups, yLabel: 'CV %', metric, summary: 'median' }
+}
+
+// ── standardize matrix view (gene × sample table) ─────────────────────────────────
+
+/** One sample column of the Clean data matrix: its key (`s0`, `s1`, …), header label and header
+ *  lines (each condition the sample carries, then its replicate, by name). */
+export interface StdMatrixSample {
+  key: string
+  label: string
+  lines: Array<{ key: string; value: string }>
+}
+
+/** Pivot the tidy standardized rows into a gene × sample matrix: one row per uniqID (in first
+ *  appearance), one column per sample (its condition combination + replicate), off the shared
+ *  sample index — each sample's label and lines made once, the rows read as ids. */
+export function buildStdMatrix(std: StandardizeResult): {
+  samples: StdMatrixSample[]
+  rows: Record<string, unknown>[]
+} {
+  const dm = std.displayMap
+  const conds = std.activeConditions
+  const combo = (r: StandardRow): string =>
+    [...conds.map((c) => String(condValue(r, c) ?? '')), `r${r.rep ?? ''}`].join('\x01')
+  const label = (r: StandardRow): string => {
+    const parts = conds.map((c) => String(condValue(r, c) ?? '')).filter((x) => x !== '')
+    if (r.rep != null) parts.push(`r${r.rep}`)
+    return parts.join(' · ') || 'sample'
+  }
+  const lines = (r: StandardRow): StdMatrixSample['lines'] => {
+    const out = conds
+      .map((c) => ({ key: condLabel(c), value: String(condValue(r, c) ?? '') }))
+      .filter((l) => l.value !== '')
+    if (r.rep != null) out.push({ key: 'rep', value: String(r.rep) })
+    return out
+  }
+  const ix = sampleIndex(std)
+  // every row is read, so the columns (and genes) first appear in sample (gene) id order
+  const { of } = labelGroups(ix, combo)
+  const samples: StdMatrixSample[] = []
+  const colKey: string[] = []
+  ix.reps.forEach((r, s) => {
+    if (of[s] < samples.length) return
+    const key = `s${samples.length}`
+    samples.push({ key, label: label(r), lines: lines(r) })
+    colKey.push(key)
+  })
+  const rows = ix.genes.map((u): Record<string, unknown> => ({ uniqID: u, gene: dm[u] ?? '' }))
+  for (let r = 0; r < ix.n; r++) {
+    const v = ix.value[r]
+    rows[ix.gene[r]][colKey[of[ix.sample[r]]]] = Number.isNaN(v) ? ix.rawValue(r) : v
+  }
+  return { samples, rows }
 }
 
 // ── standardize sample-correlation matrix ─────────────────────────────────────────
@@ -2793,17 +3024,24 @@ export function buildSampleCorr(
     return p.join(' · ') || 'sample'
   }
   // Register samples and genes; find the value range for the log heuristic.
-  const sampleIdx = new Map<string, number>()
-  const geneIdx = new Map<string, number>()
+  // (off the shared sample index: each label made once per sample, the rows read as ids)
+  const ix = sampleIndex(std)
+  const groups = labelGroups(ix, sampleLabel)
+  const sampleIdx = new Int32Array(groups.labels.length).fill(-1) // label id → matrix index
+  const geneIdx = new Int32Array(ix.genes.length).fill(-1) // gene id → vector position
+  let G = 0
   let labels: string[] = []
   let metas: SampleMeta[] = []
   let min = Infinity
   let max = -Infinity
-  for (const r of std.rows) {
-    if (r.value == null || !Number.isFinite(r.value)) continue
-    if (!sampleIdx.has(sampleLabel(r))) {
-      sampleIdx.set(sampleLabel(r), labels.length)
-      labels.push(sampleLabel(r))
+  for (let row = 0; row < ix.n; row++) {
+    const v = ix.value[row]
+    if (Number.isNaN(v)) continue
+    const k = groups.of[ix.sample[row]]
+    if (sampleIdx[k] < 0) {
+      sampleIdx[k] = labels.length
+      labels.push(groups.labels[k])
+      const r = ix.reps[ix.sample[row]]
       // only the active conditions: the ones the label (and so the sample) is made of
       const act = new Set(conds)
       const extra = Object.fromEntries(
@@ -2818,21 +3056,19 @@ export function buildSampleCorr(
         ...(Object.keys(extra).length ? { extra } : null)
       })
     }
-    if (!geneIdx.has(r.uniqID)) geneIdx.set(r.uniqID, geneIdx.size)
-    if (r.value < min) min = r.value
-    if (r.value > max) max = r.value
+    if (geneIdx[ix.gene[row]] < 0) geneIdx[ix.gene[row]] = G++
+    if (v < min) min = v
+    if (v > max) max = v
   }
   const S = labels.length
-  const G = geneIdx.size
   const log = opts.scale ? opts.scale !== 'linear' : min > 0 && max / min >= 100
 
   // Dense per-sample vectors over the gene axis (NaN = protein absent in that sample).
   const vecs = Array.from({ length: S }, () => new Float64Array(G).fill(NaN))
-  for (const r of std.rows) {
-    if (r.value == null || !Number.isFinite(r.value)) continue
-    vecs[sampleIdx.get(sampleLabel(r))!][geneIdx.get(r.uniqID)!] = log
-      ? Math.log10(r.value)
-      : r.value
+  for (let row = 0; row < ix.n; row++) {
+    const v = ix.value[row]
+    if (Number.isNaN(v)) continue
+    vecs[sampleIdx[groups.of[ix.sample[row]]]][geneIdx[ix.gene[row]]] = log ? Math.log10(v) : v
   }
 
   // Pairwise-complete Pearson r for every sample pair.

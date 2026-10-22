@@ -13,6 +13,7 @@ import {
 } from 'react'
 import { PagerTrigger } from '../ui/PagerTrigger'
 import { slashBackground } from '../ui/slash'
+import { STRING_LEVEL_ORDER, stringLevelScore } from '../ui/stringModel'
 import { createPortal } from 'react-dom'
 import { useStore } from '@xyflow/react'
 import { useShallow } from 'zustand/react/shallow'
@@ -68,7 +69,8 @@ import {
   type FdrMethod,
   type StandardizeResult,
   DUMBBELL_ORDERS,
-  curvesReplicated,
+  contextOf,
+  someNested,
   RESIDUAL_DOT_CAP,
   dumbbellOrderLabel,
   manualSheetConditions,
@@ -106,7 +108,7 @@ import { ValueMultiSelect } from '../ui/ValueMultiSelect'
 import { StatusIcon, StatusNote } from '../ui/StatusNote'
 import { entriesFor, gatePlotEntries, UNWIRED, type UpstreamFacts } from './requirements'
 import { useUpstreamFacts } from './useUpstreamFacts'
-import type { AxisDefaults } from '../ui/plotAxes'
+import { AXIS_LINE_WIDTH, type AxisDefaults } from '../ui/plotAxes'
 import { cssVars, GUIDE_WIDTH, PALETTES, QC_FILL, UI } from '../ui/theme'
 import { useUiTheme } from '../ui/useUiTheme'
 import { contrastSummary } from './ComparisonDialog'
@@ -123,6 +125,7 @@ import {
 } from './curveSettings'
 import { fitOf } from './axisFits'
 import { METRIC_IDS, METRIC_NAMES, type MetricId } from './metricBars'
+import { tailStep } from './contrastModel'
 import { isPairable, pairSides, selectorRowsOf, selectSource, toContrastSide } from './contrastPair'
 import type { PairInput } from './PairContrastDialog'
 import { InteractiveImportDialog } from './InteractiveImportDialog'
@@ -199,6 +202,8 @@ import {
   responseShow,
   responseShowWhy,
   responseSlice,
+  responseSurfaceRows,
+  curvesReplicatedOf,
   CURVE_OF_SLICE,
   SLICE_OF_CURVE,
   responseSliceable,
@@ -227,6 +232,7 @@ import {
   type NodeKind,
   type AxisStyle,
   type LineStyle,
+  type LegendConfig,
   type PlotAxes,
   type PointStyle,
   type QuickAccess,
@@ -968,19 +974,63 @@ export function PlotConfig({
 }): ReactNode {
   const props = { update, edgeNodeId }
   const own = kindPanel(kind, config, props)
-  // Every Plotly axis plot also gets the shared Axes section (network / table have no axes).
-  return AXIS_KINDS.has(kind) ? (
+  // Every Plotly axis plot also gets the shared Axes section (network / table have no axes), and
+  // every Plotly plot the legend switch — but a point plot, whose switch is in its Points section.
+  return (
     <>
       {own}
-      <AxesSection
-        config={config as { axes?: PlotAxes }}
-        update={update}
-        defaults={axisDefaults}
-        minimal={kind === 'pca' && clusterMinimalAxes(config as ClusterConfig)}
-      />
+      {LEGEND_KINDS.has(kind) && <LegendSection config={config as LegendConfig} update={update} />}
+      {AXIS_KINDS.has(kind) && (
+        <AxesSection
+          config={config as { axes?: PlotAxes }}
+          update={update}
+          defaults={axisDefaults}
+          minimal={kind === 'pca' && clusterMinimalAxes(config as ClusterConfig)}
+        />
+      )}
     </>
-  ) : (
-    own
+  )
+}
+
+/** The plots that take the plot-wide legend switch: every Plotly plot but the point plots, which
+ *  keep theirs (style.legend) beside the groups' own legend entries. */
+const LEGEND_KINDS: ReadonlySet<NodeKind> = new Set<NodeKind>([
+  'heatmap',
+  'dr',
+  'metrics',
+  'variance',
+  'interaction',
+  'response',
+  'tdr',
+  'bubble',
+  'dumbbell',
+  'geneBar',
+  'pca',
+  'enrich',
+  'qc',
+  'corr'
+])
+
+/** The plot-wide legend switch: off hides the legend and the colour scale bars. */
+function LegendSection({
+  config,
+  update
+}: {
+  config: LegendConfig
+  update: (patch: Record<string, unknown>) => void
+}): ReactNode {
+  return (
+    <Section title="Legend">
+      <Field label="legend">
+        <OnOffSwitch
+          on={config.legend !== false}
+          label="Show legend"
+          // unset = shown, so switching back on clears the field
+          onChange={(on) => update({ legend: on ? undefined : false })}
+        />
+      </Field>
+      <div style={styles.hint}>Off hides the legend and any colour scale bar.</div>
+    </Section>
   )
 }
 
@@ -2645,7 +2695,13 @@ function CompareStatisticSection({
   // A curve fit run before the decoy FDR existed has no decoys (so no q-values) until re-run.
   const noDecoys = useGraph((s) => {
     const r = s.results[id]
-    return r?.kind === 'compare' && r.cmp.rows.some((x) => x.curve || x.rs?.cc) && !r.cmp.decoys
+    // (read off the nested columns — this runs on every store change)
+    return (
+      r?.kind === 'compare' &&
+      !r.cmp.decoys &&
+      (someNested(r.cmp, 'curve', 'axis', (on) => on) ||
+        someNested(r.cmp, 'rs', 'cc', (_, cc) => !!cc))
+    )
   })
   const method = sam ? 'sam' : curveCurator ? 'curvecurator' : 'pvalue'
   // The methods this analysis offers: SAM needs the t-test's per-sample values, CurveCurator a
@@ -3643,9 +3699,10 @@ function ContrastStatPanel({
   const asym = config.stat?.asymmetric ?? false
   // Shown as the TAIL — the % called on that side (1 − confidence): "top 1%" reads more
   // directly than "99% confidence". Stored as confidence / q as before.
-  const pctOf = (c: number): number => Math.round((1 - c) * 1000) / 10
-  const clamp = (v: number): number => Math.min(0.999, Math.max(0.5, 1 - v / 100))
-  const qOf = (c: number): number => Math.round((1 - c) * 1000) / 1000
+  // To 0.001% (confidence 0.99999), the finest tail.
+  const pctOf = (c: number): number => Math.round((1 - c) * 1e5) / 1e3
+  const clamp = (v: number): number => Math.min(0.99999, Math.max(0.5, 1 - v / 100))
+  const qOf = (c: number): number => Math.round((1 - c) * 1e5) / 1e5
   // The primary level drives both models' fields, so switching model keeps it.
   const setPrimary = (v: number): void => {
     const c = clamp(v)
@@ -3656,8 +3713,9 @@ function ContrastStatPanel({
     <div style={styles.pctBox}>
       <NumberInput
         value={pctOf(value)}
-        step={0.5}
-        min={0.1}
+        step={0.001}
+        ladder={tailStep}
+        min={0.001}
         max={50}
         disabled={disabled}
         title={disabled ? 'Mirrors the top tail — switch on asymmetric to edit' : undefined}
@@ -4833,7 +4891,7 @@ function ResponsePanel({
   // (its dose and time curves are separate fits); never the heatmap — see responseSliceable.
   const upId = useGraph((s) => s.edges.find((e) => e.target === edgeNodeId)?.source)
   const { result } = useUpstreamFacts(upId)
-  const rows = !measured && result?.kind === 'compare' ? result.cmp.rows : undefined
+  const rows = !measured && result?.kind === 'compare' ? responseSurfaceRows(result.cmp) : undefined
   const joint = !!rows?.some((r) => r.rs?.surface?.method === 'joint')
   const sliceable = responseSliceable(dim, show, rows)
   const slice = responseSlice(config, rows)
@@ -5556,7 +5614,7 @@ function BubblePanel({ config, update, edgeNodeId }: PlotPanelProps<BubbleConfig
 function CurveMadPanel({ config, update, edgeNodeId }: PlotPanelProps<CurveMadConfig>) {
   const upId = useGraph((s) => s.edges.find((e) => e.target === edgeNodeId)?.source)
   const { result } = useUpstreamFacts(upId)
-  const replicated = result?.kind === 'compare' ? curvesReplicated(result.cmp.rows) : true
+  const replicated = result?.kind === 'compare' ? curvesReplicatedOf(result.cmp) : true
   const check = config.check === 'sample' && !replicated ? 'dose' : (config.check ?? 'dose')
   const metrics = check === 'metrics'
   return (
@@ -5653,7 +5711,8 @@ function DumbbellPanel({ config, update, edgeNodeId }: PlotPanelProps<DumbbellCo
   // The side names (the contrast's cmp1/cmp2) label the order choices, as on the tile.
   const upId = useGraph((s) => s.edges.find((e) => e.target === edgeNodeId)?.source)
   const { result } = useUpstreamFacts(upId)
-  const rows = result?.kind === 'contrast' ? result.ctr.rows : undefined
+  // the context tuples: the first row's, all the labels read (no row built)
+  const rows = result?.kind === 'contrast' ? contextOf(result.ctr).rows : undefined
   return (
     <>
       <Section title="Dumbbell">
@@ -6006,22 +6065,22 @@ function AxesSection({
           label="Axis line"
           locked={minimal}
           on={minimal || (st.lineWidth != null ? st.lineWidth > 0 : (def.line ?? true))}
-          onShow={(on) => set({ lineWidth: on ? st.lineWidth || 1 : 0 })}
+          onShow={(on) => set({ lineWidth: on ? st.lineWidth || AXIS_LINE_WIDTH : 0 })}
           style={st.lineStyle ?? 'solid'}
           onStyle={(v) => set({ lineStyle: v === 'solid' ? undefined : v })}
-          // "off" is stored as width 0, so fall back to 1 — the greyed box shows the width the
-          // line would come back at, not a 0 that sits below the box's own minimum.
-          width={st.lineWidth || 1}
+          // "off" is stored as width 0, so fall back to the default — the greyed box shows the
+          // width the line would come back at, not a 0 that sits below the box's own minimum.
+          width={st.lineWidth || AXIS_LINE_WIDTH}
           onWidth={(v) => set({ lineWidth: v })}
         />
         <LineRow
           label="Frame"
           disabled={minimal}
-          on={st.mirror ?? false}
+          on={st.mirror ?? def.frame ?? true}
           onShow={(on) => set({ mirror: on })}
           style={st.frameStyle ?? 'solid'}
           onStyle={(v) => set({ frameStyle: v === 'solid' ? undefined : v })}
-          width={st.frameWidth ?? (st.lineWidth || 1)}
+          width={st.frameWidth ?? (st.lineWidth || AXIS_LINE_WIDTH)}
           onWidth={(v) => set({ frameWidth: v })}
         />
         <LineRow
@@ -6031,7 +6090,7 @@ function AxesSection({
           onShow={(on) => set({ grid: on })}
           style={st.gridStyle ?? 'solid'}
           onStyle={(v) => set({ gridStyle: v === 'solid' ? undefined : v })}
-          width={st.gridWidth ?? 1}
+          width={st.gridWidth ?? AXIS_LINE_WIDTH}
           onWidth={(v) => set({ gridWidth: v })}
         />
         <LineRow
@@ -6792,10 +6851,8 @@ function StringPanel({ config, update }: PlotPanelProps<StringConfig>) {
           }
           options={[
             { value: 'auto', label: 'auto (highest with a network)' },
-            { value: 'low', label: 'low (0.15)' },
-            { value: 'medium', label: 'medium (0.4)' },
-            { value: 'high', label: 'high (0.7)' },
-            { value: 'highest', label: 'highest (0.9)' }
+            // each level as its score cutoff: the links at or above it are drawn
+            ...STRING_LEVEL_ORDER.map((l) => ({ value: l, label: `≥ ${stringLevelScore(l)}` }))
           ]}
         />
       </Field>
@@ -7320,6 +7377,11 @@ export function Section({
   // group table, three sub-blocks and the axes), so folding what isn't being edited keeps the rest
   // reachable without scrolling.
   const [open, setOpen] = useState(defaultOpen)
+  // A text subtitle reads as part of the title, inside the toggle; any other (a Reset button, a
+  // StatusNote) sits beside it — a button can't nest in the toggle's button, and a click on it
+  // mustn't fold the section.
+  const textSub = typeof subtitle === 'string'
+  const besideSub = subtitle != null && !textSub
   // `grow`: the toggle fills the head (clicking beside the title folds too); without, it hugs the
   // title so an (i) can follow it.
   const toggle = (grow: boolean): ReactNode => (
@@ -7335,12 +7397,7 @@ export function Section({
     >
       <Chevron size={9} deg={open ? 90 : 0} />
       <span style={styles.sectionTitle}>{title}</span>
-      {subtitle != null &&
-        (typeof subtitle === 'string' ? (
-          <span style={styles.sectionSubtitle}>{subtitle}</span>
-        ) : (
-          subtitle
-        ))}
+      {textSub && <span style={styles.sectionSubtitle}>{subtitle}</span>}
     </button>
   )
   return (
@@ -7348,14 +7405,15 @@ export function Section({
       <div style={styles.sectionHead}>
         {/* The title row toggles; `action` (a switch, a pill) stays outside it, so using a control
             in the header doesn't fold the section under it. */}
-        {info == null ? (
+        {info == null && !besideSub ? (
           toggle(true)
         ) : (
-          // The (i) beside the title, outside the toggle — a tip inside the button would fold the
-          // section when clicked.
+          // The (i) and a non-text subtitle beside the title, outside the toggle — inside the
+          // button, a click on either would fold the section.
           <div style={{ ...styles.sectionTitleRow, flex: 1 }}>
             {toggle(false)}
-            <InfoTip label={`About ${title}`}>{info}</InfoTip>
+            {besideSub && subtitle}
+            {info != null && <InfoTip label={`About ${title}`}>{info}</InfoTip>}
           </div>
         )}
         {action}
@@ -7497,6 +7555,7 @@ function NumberInput({
   value,
   onChange,
   step,
+  ladder,
   min,
   max,
   disabled,
@@ -7505,6 +7564,8 @@ function NumberInput({
   value: number
   onChange: (v: number) => void
   step?: number
+  /** the arrow keys' step from a value, up (1) or down (−1), in place of the even `step` */
+  ladder?: (v: number, dir: 1 | -1) => number
   min?: number
   max?: number
   disabled?: boolean
@@ -7537,7 +7598,11 @@ function NumberInput({
       }}
       onBlur={() => setDraft(null)}
       onKeyDown={(e) => {
-        if (e.key === 'Enter') e.currentTarget.blur()
+        if (ladder && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
+          e.preventDefault()
+          setDraft(null)
+          onChange(ladder(value, e.key === 'ArrowUp' ? 1 : -1))
+        } else if (e.key === 'Enter') e.currentTarget.blur()
         else if (e.key === 'Escape') {
           setDraft(null)
           e.currentTarget.blur()

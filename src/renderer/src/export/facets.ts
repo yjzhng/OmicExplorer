@@ -4,7 +4,7 @@
  *  export into a flat list of render jobs (spec × facet × all/selected). No React imports. */
 import type { Edge } from '@xyflow/react'
 
-import { facetCompareRows, facetDims, facetPaired } from '../engine'
+import { contextOf, facetCompareRows, facetDims, facetPaired } from '../engine'
 import type { ConditionKey, ContextRow } from '../engine'
 import { numericOfResult, type NodeKind, type NodeResult } from '../graph/types'
 import type { ExportSpec } from './specs'
@@ -42,11 +42,13 @@ export function facetViews(
   upstream: NodeResult | undefined
 ): FacetView[] {
   if (!FACETED_KINDS.has(kind) || !upstream) return SINGLE
+  // the context tuples (contextOf): what the facet helpers read, as FacetedPlot's tabs do — no
+  // row built
   const rows: ContextRow[] | null =
     upstream.kind === 'compare'
-      ? upstream.cmp.rows
+      ? contextOf(upstream.cmp).rows
       : upstream.kind === 'contrast'
-        ? upstream.ctr.rows
+        ? contextOf(upstream.ctr).rows
         : null
   if (!rows) return SINGLE
   // DR/bubble consume one condition as their axis, so it isn't a facet dimension.

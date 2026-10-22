@@ -51,7 +51,7 @@ import {
   resolveLoadMode,
   tdrPair
 } from './types'
-import { condLabel, termless, VALID_CONDITIONS, type ConditionKey } from '../engine'
+import { condLabel, rowView, VALID_CONDITIONS, type ConditionKey } from '../engine'
 import type {
   CompareConfig,
   LoadConfig,
@@ -774,17 +774,26 @@ function summaryCounts(
   const hit = countsByResult.get(result)
   if (hit) return hit
   let out: { signfCount: number; valueRows: number }
-  // (the 2×2s' calls — a two-way ANOVA's term rows would count each gene again per term)
-  if (result.kind === 'compare')
-    out = { signfCount: termless(result.cmp.rows).filter((r) => r.signf).length, valueRows: 0 }
-  else {
+  // (read off the columns: no row built)
+  if (result.kind === 'compare') {
+    // (the 2×2s' calls — a two-way ANOVA's term rows would count each gene again per term)
+    const v = rowView(result.cmp)
+    const term = v.col('term')
+    const sig = v.col('signf')
+    let signf = 0
+    for (let i = 0; i < v.n; i++) if (term(i) == null && sig(i)) signf++
+    out = { signfCount: signf, valueRows: 0 }
+  } else {
     // the sides' own value only — the other features are further views of the same genes
+    const v = rowView(result.ctr)
+    const feature = v.col('featureId')
+    const sig = v.col('signf')
     let signf = 0
     let value = 0
-    for (const r of result.ctr.rows)
-      if ((r.featureId ?? 'value') === 'value') {
+    for (let i = 0; i < v.n; i++)
+      if ((feature(i) ?? 'value') === 'value') {
         value++
-        if (r.signf) signf++
+        if (sig(i)) signf++
       }
     out = { signfCount: signf, valueRows: value }
   }

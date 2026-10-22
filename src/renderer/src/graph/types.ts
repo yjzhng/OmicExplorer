@@ -2,6 +2,7 @@
 import type { Node } from '@xyflow/react'
 
 import type {
+  CompareResultRow,
   AxisBaseline,
   AxisFit,
   AxisScale,
@@ -27,10 +28,13 @@ import type {
   ThresholdConfig,
   VehNormResult
 } from '../engine'
+import { holderTable, rowCount } from '../engine/lazyRows'
 import {
   condLabel,
   condValue,
   crossPairs,
+  curvesReplicated,
+  nestedCol,
   axisModelFor,
   isCustomCond,
   isNumericCond,
@@ -859,6 +863,12 @@ export interface PlotAxes {
   y?: AxisStyle
 }
 
+/** A plot's legend switch, plot-wide (the point plots keep theirs in `style.legend`): false hides
+ *  the legend and the colour scale bars; unset = shown. */
+export interface LegendConfig {
+  legend?: boolean
+}
+
 /** Volcano (compare). The y-axis stat (−log10 p vs q) follows the upstream Compare's threshold
  *  `statType`, so the drawn guide matches the calls — it isn't a per-tile choice. */
 export interface VolcanoConfig extends FcPaletteConfig {
@@ -926,7 +936,7 @@ export interface PointStyle {
   highlight?: HighlightStyle
   /** show the legend (default on) */
   legend?: boolean
-  /** the threshold / reference guide lines' width, px (unset = GUIDE_WIDTH, 1) */
+  /** the threshold / reference guide lines' width, px (unset = GUIDE_WIDTH, 0.5) */
   guideWidth?: number
 }
 
@@ -1417,6 +1427,55 @@ export function responseSliceable(
   if (show === 'line') return true
   if (show === 'heatmap') return false
   return !!rows?.some((r) => r.rs?.surface && r.rs.surface.method !== 'joint')
+}
+
+/** A result's rows' key for a cache: its table when columnar, else its rows array. */
+const rowsKey = (holder: { rows: readonly object[] }): object => holderTable(holder) ?? holder.rows
+
+const surfaceRows = new WeakMap<object, Array<{ rs: { surface: { method?: string } } }>>()
+/** A Compare's response surfaces (`rs.surface`), one row each — of the rows that have one, the only
+ *  rows responseSlice, responseSliceable and a joint-surface check can pass on — read off the nested
+ *  column (no row built). Cached per table (or rows). */
+export function responseSurfaceRows(cmp: {
+  rows: readonly CompareResultRow[]
+}): Array<{ rs: { surface: { method?: string } } }> {
+  const key = rowsKey(cmp)
+  let out = surfaceRows.get(key)
+  if (!out) {
+    const surface = nestedCol(cmp, 'rs', 'surface')
+    out = []
+    for (let r = 0; r < rowCount(cmp); r++) {
+      const s = surface(r) as { method?: string } | null | undefined
+      if (s) out.push({ rs: { surface: s } })
+    }
+    surfaceRows.set(key, out)
+  }
+  return out
+}
+
+const replicatedCurves = new WeakMap<object, boolean>()
+/** curvesReplicated over a Compare's rows, read off the nested columns — only the curve fields it
+ *  reads, of the rows with points (no row built). Cached per table (or rows). */
+export function curvesReplicatedOf(cmp: { rows: readonly CompareResultRow[] }): boolean {
+  const key = rowsKey(cmp)
+  let out = replicatedCurves.get(key)
+  if (out === undefined) {
+    const [x, rep, cy, crep] = ['x', 'rep', 'cy', 'crep'].map((k) => nestedCol(cmp, 'curve', k))
+    const kept: Parameters<typeof curvesReplicated>[0][number][] = []
+    for (let r = 0; r < rowCount(cmp); r++)
+      if (x(r))
+        kept.push({
+          curve: {
+            x: x(r) as number[],
+            rep: rep(r) as Array<number | null> | undefined,
+            cy: cy(r) as number[] | undefined,
+            crep: crep(r) as Array<number | null> | undefined
+          }
+        })
+    out = curvesReplicated(kept)
+    replicatedCurves.set(key, out)
+  }
+  return out
 }
 
 export const responseShowWhy = (dim: '2d' | '3d', show: string): string | undefined =>

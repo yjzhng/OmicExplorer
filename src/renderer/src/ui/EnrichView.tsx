@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useContext, useMemo, useState } from 'react'
 
 import { useElementSize } from '../dashboard/useElementSize'
 
@@ -7,6 +7,7 @@ import { fitText, flowChips, measureText } from './legendChips'
 import { tooltip } from './condTooltip'
 import { PlotlyChart, type PlotLabel } from './PlotlyChart'
 import { effectHalves } from './palettes'
+import { AXIS_LINE_WIDTH, PlotAxesContext } from './plotAxes'
 import { axisBase, CATEGORICAL, EFFECT_COLOR, plotBase, plotFontCss, PALETTES } from './theme'
 import { useUiTheme } from './useUiTheme'
 import type { EffectColors } from '../graph/types'
@@ -65,6 +66,10 @@ export function EnrichView({
     setOnlyCats((cur) => (cur.includes(c) ? cur.filter((x) => x !== c) : [...cur, c]))
   }
 
+  // The tile's legend switched off: no group chips and no size key (PlotlyChart drops the colour
+  // bar) — and so no group filter either.
+  const legendOff = useContext(PlotAxesContext)?.legend === false
+
   const { data, layout, labels, labelColor, boldTicks, genesById } = useMemo(() => {
     // The dots' significance ramps (faint → strong): each side's own colour, from a pale tint of it
     // to the colour its stems, bars and axis note draw in.
@@ -97,7 +102,8 @@ export function EnrichView({
       const allCats: string[] = []
       for (const t of terms)
         if (t.category && !allCats.includes(t.category)) allCats.push(t.category)
-      const only = onlyCats.filter((c) => allCats.includes(c))
+      // (no chips to undo a choice with while the legend is off: every term)
+      const only = (legendOff ? [] : onlyCats).filter((c) => allCats.includes(c))
       const shown = only.length
         ? terms.filter((t) => !!t.category && only.includes(t.category))
         : terms
@@ -164,10 +170,15 @@ export function EnrichView({
         })
       }
 
+      // The x range over EVERY set (and the reference), not just the chosen groups' — so choosing a
+      // group never rescales or moves the axis.
       let lo = Infinity
       let hi = -Infinity
-      for (const row of rows)
-        for (const v of row.dist) {
+      for (const dist of [
+        ...terms.map((t) => t.dist as number[]),
+        ...(globalDist ? [globalDist] : [])
+      ])
+        for (const v of dist) {
           if (v < lo) lo = v
           if (v > hi) hi = v
         }
@@ -311,15 +322,18 @@ export function EnrichView({
       // fixed. Hovering a leading-edge gene bolds its pathways' labels (boldTicks); with an
       // auto-sized margin that widened the margin and slid the whole plot right under the cursor,
       // so the dot being clicked moved away (and, unhovered, un-bolded and slid back).
+      // Over every set too (not only the chosen groups'), so choosing one keeps the plot in place.
       const TICK_FS = 10
+      const tickFont = `bold ${TICK_FS}px ${plotFontCss()}`
       const labelW = Math.max(
         0,
-        ...rows.map((row) =>
+        ...terms.map((t) =>
           measureText(
-            `${row.label}${row.category ? ' ■' : ''}`,
-            `bold ${TICK_FS}px ${plotFontCss()}`
+            `${fitText(`${t.term} (${t.setSize})`, termBudget, tickFont)}${t.category ? ' ■' : ''}`,
+            tickFont
           )
-        )
+        ),
+        ...(globalDist ? [measureText(`all genes (${globalDist.length})`, tickFont)] : [])
       )
       const lay: Record<string, unknown> = {
         ...plotBase(p),
@@ -368,7 +382,7 @@ export function EnrichView({
           // Horizontal gridline at each pathway's baseline, to track a ridge back to its label.
           showgrid: true,
           gridcolor: p.grid,
-          gridwidth: 1
+          gridwidth: AXIS_LINE_WIDTH
         }
       }
       // Bold a pathway's label (and its category legend entry) when a hovered/pinned gene is one of
@@ -440,7 +454,7 @@ export function EnrichView({
       if (c && !groups.includes(c)) groups.push(c)
     }
     // Only the chosen groups' terms (a choice the data no longer has is ignored).
-    const only = onlyCats.filter((c) => groups.includes(c))
+    const only = (legendOff ? [] : onlyCats).filter((c) => groups.includes(c))
     const keep = (t: EnrichTerm): boolean =>
       !only.length || (!!t.category && only.includes(t.category))
     const up = enrich.up.filter(keep)
@@ -479,7 +493,7 @@ export function EnrichView({
     const LEGEND_FS = 10
     const LEGEND_ROW = LEGEND_FS + 4
     const { at: chipAt, lines: legendLineCount } = flowChips(
-      groups.map((c) => ({
+      (legendOff ? [] : groups).map((c) => ({
         c,
         width: Math.ceil(measureText(`■ ${c}`, `bold ${LEGEND_FS}px ${plotFontCss()}`)) + 14
       })),
@@ -646,7 +660,7 @@ export function EnrichView({
     // A key row: its circle, or its count label's line when the circle is smaller than the text.
     const keyRow = (v: number): number => Math.max(dotPx(v), AXIS_TICK_FS + 2)
     // The plot's height in px (0 before the tile is measured), for fitting the key to its band.
-    const plotH = heightBudget - (LEGEND_GAP + 30 + legendH) - (44 + 14)
+    const plotH = heightBudget - (LEGEND_GAP + 30 + legendH) - 44
     // The key's two levels — or only the lower one when both circles (at their true dot size)
     // wouldn't fit the key's band.
     const twoCounts = [...new Set([upTo(q3, keyStep), downTo(q1, keyStep)])]
@@ -715,53 +729,52 @@ export function EnrichView({
       ]
     }
 
-    // Symmetric x range with absolute-valued ticks (left side isn't shown as negative).
-    const M = Math.max(1e-6, ...both.map(mag))
+    // Symmetric x range with absolute-valued ticks (left side isn't shown as negative) — over EVERY
+    // term, not just the chosen groups', so choosing a group never rescales the axis.
+    const M = Math.max(1e-6, ...all.map(mag))
     const step = niceStep(M)
     const kmax = Math.max(1, Math.ceil(M / step))
     const tickvals: number[] = []
     for (let k = -kmax; k <= kmax; k++) tickvals.push(k * step)
     const bound = kmax * step
     const xTitle = style === 'bar' ? '−log p.adj' : gsea ? 'NES' : 'gene ratio'
-    const unit = gsea ? 'sets' : 'genes'
     const heading = title ?? ''
 
     const empty = enrich.up.length === 0 && enrich.down.length === 0
-    // Under the tick labels, two rows: the axis title — the measure, with the facet's comparison —
-    // centred, then the groups below it: each side's direction and how many query genes / sets it
-    // holds, in its colour, at that side's END of the axis (down left-aligned, up right-aligned).
+    // Under the tick labels, the axis title — the measure, with the facet's comparison — centred.
     const AXIS_TITLE_SHIFT = -24
-    const ROW = 14
-    const titleNote = (
-      text: string,
-      x: number,
-      color: string,
-      align: 'left' | 'right' | 'center',
-      row: 0 | 1
-    ): Record<string, unknown> => ({
-      ...note(text, x, 0, color, AXIS_TITLE_FS, align),
-      yanchor: 'top',
-      yshift: AXIS_TITLE_SHIFT - row * ROW
-    })
     // The title is cut to the PLOT's width — the tile less the term labels on the left and the
     // right margin — not the tile's: annotations are placed on the plot.
     const TITLE_FONT = `11px ${plotFontCss()}`
     const TICK_FONT = `10px ${plotFontCss()}`
+    // The term labels' width at their widest (bold, as a hovered one draws) over EVERY term, and the
+    // left margin fixed to it: an auto-sized margin followed the chosen groups' labels (and a
+    // label's bolding), sliding the plot sideways.
+    const BOLD_TICK = `bold ${TICK_FONT}`
     const labelW =
-      Math.max(0, ...order.map((t) => measureText(fitText(t, termBudget, TICK_FONT), TICK_FONT))) +
+      Math.max(
+        0,
+        ...yOrder(all).map((t) => measureText(fitText(t, termBudget, TICK_FONT), BOLD_TICK))
+      ) +
       (groups.length ? 14 : 0) +
       8
-    const plotW = Math.max(120, legendBudget + 40 - 6 - labelW - (style === 'dot' ? 66 : 12))
+    const plotW = Math.max(
+      120,
+      legendBudget + 40 - (Math.ceil(labelW) + 6) - (style === 'dot' && !legendOff ? 66 : 12)
+    )
     const axisLine = [
-      titleNote(
-        fitText(comparison ? `${xTitle} · ${comparison}` : xTitle, plotW, TITLE_FONT),
-        0.5,
-        p.textMuted,
-        'center',
-        0
-      ),
-      titleNote(`← down · ${enrich.querySize.down} ${unit}`, 0, downColor, 'left', 1),
-      titleNote(`up · ${enrich.querySize.up} ${unit} →`, 1, upColor, 'right', 1)
+      {
+        ...note(
+          fitText(comparison ? `${xTitle} · ${comparison}` : xTitle, plotW, TITLE_FONT),
+          0.5,
+          0,
+          p.textMuted,
+          AXIS_TITLE_FS,
+          'center'
+        ),
+        yanchor: 'top',
+        yshift: AXIS_TITLE_SHIFT
+      }
     ]
     const lay: Record<string, unknown> = {
       ...plotBase(p),
@@ -770,16 +783,16 @@ export function EnrichView({
       bargap: 0.35,
       title: heading ? { text: heading, font: { size: 13 } } : undefined,
       margin: {
-        l: 6,
-        r: style === 'dot' ? 66 : 12,
+        // fixed to every term's widest label (labelW: its group square and gap included)
+        l: Math.ceil(labelW) + 6,
+        r: style === 'dot' && !legendOff ? 66 : 12,
         t: LEGEND_GAP + 30 + legendH,
-        b: 44 + ROW
+        b: 44
       },
-      shapes: style === 'dot' && !empty ? sizeKey.shapes : [],
+      shapes: style === 'dot' && !empty && !legendOff ? sizeKey.shapes : [],
       xaxis: {
         ...axisBase(p),
-        // The title line is drawn as annotations (see axisLine) so its sides can sit at the axis's
-        // ends; Plotly's title is centred only.
+        // The title is drawn as an annotation (see axisLine), cut to the plot's width.
         zeroline: true,
         zerolinecolor: p.axis,
         range: [-bound * 1.04, bound * 1.04],
@@ -799,7 +812,9 @@ export function EnrichView({
         tickmode: 'array',
         tickvals: order,
         ticktext: order.map((t) => termTick(t)),
-        automargin: true,
+        // Not automargin: the margin above already fits every term's widest label, and must not
+        // follow the chosen groups' (or a hovered label's bolding) and slide the plot.
+        automargin: false,
         tickfont: { size: 10 },
         // No tick marks: the shared axis style's tick colour would turn Plotly's outside ticks on,
         // and they read as stray marks after each term's group square.
@@ -807,13 +822,13 @@ export function EnrichView({
         // A faint gridline along each term, to track a bar / dot back to its label (as the ridge).
         showgrid: true,
         gridcolor: p.grid,
-        gridwidth: 1
+        gridwidth: AXIS_LINE_WIDTH
       },
       annotations: empty
         ? [note('No enriched terms', 0.5, 0.5, p.textMuted, 12)]
         : [
             ...axisLine,
-            ...(style === 'dot' ? sizeKey.notes : []),
+            ...(style === 'dot' && !legendOff ? sizeKey.notes : []),
             // The groups, from the figure's left edge (the shared container-left alignment, as the
             // ridge's legend).
             ...chips
@@ -854,6 +869,7 @@ export function EnrichView({
     heightBudget,
     termBudget,
     onlyCats,
+    legendOff,
     measure,
     comparison,
     upColor,

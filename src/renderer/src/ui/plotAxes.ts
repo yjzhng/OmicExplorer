@@ -18,6 +18,7 @@ export interface AxisDefault {
   grid?: boolean
   zeroline?: boolean
   line?: boolean
+  frame?: boolean
 }
 export interface AxisDefaults {
   x?: AxisDefault
@@ -28,6 +29,8 @@ export interface AxisDefaults {
  *  for the chart to report the titles it would otherwise draw. */
 export interface PlotAxesCtx {
   axes?: PlotAxes
+  /** false: the plot draws no legend and no colour scale bars (its LegendConfig) */
+  legend?: boolean
   onDefaults?: (d: AxisDefaults) => void
 }
 
@@ -161,7 +164,7 @@ function axisLineShape(
   if (!customLine(st)) return null
   const line = {
     color: (ax.linecolor as string | undefined) ?? '#888',
-    width: st.lineWidth ?? (ax.linewidth as number | undefined) ?? 1,
+    width: st.lineWidth ?? (ax.linewidth as number | undefined) ?? AXIS_LINE_WIDTH,
     dash: st.lineStyle ?? 'solid'
   }
   const edge = { xref: 'paper', yref: 'paper', line, layer: 'above' } as const
@@ -181,7 +184,7 @@ function frameShape(
   if (!st.mirror || !customFrame(st)) return null
   const line = {
     color: (ax.linecolor as string | undefined) ?? '#888',
-    width: st.frameWidth ?? st.lineWidth ?? (ax.linewidth as number | undefined) ?? 1,
+    width: st.frameWidth ?? st.lineWidth ?? (ax.linewidth as number | undefined) ?? AXIS_LINE_WIDTH,
     dash: st.frameStyle ?? 'solid'
   }
   const edge = { xref: 'paper', yref: 'paper', line, layer: 'above' } as const
@@ -223,6 +226,67 @@ export function swapAxes(axes: PlotAxes | undefined): PlotAxes | undefined {
 }
 
 /** The layout with the tile's axis overrides applied to `xaxis` / `yaxis`. */
+/** A trace without its colour scale bar (its own or its marker's / line's), for a plot whose
+ *  legend is switched off. Only a trace that could draw one is touched. */
+function withoutScale(t: unknown): unknown {
+  if (!t || typeof t !== 'object') return t
+  const tr = t as Record<string, unknown>
+  const off = (o: unknown): unknown =>
+    o && typeof o === 'object' && ('colorscale' in o || 'showscale' in o || 'colorbar' in o)
+      ? { ...o, showscale: false }
+      : o
+  const own = off(tr) as Record<string, unknown>
+  return {
+    ...own,
+    ...(tr.marker ? { marker: off(tr.marker) } : null),
+    ...(tr.line ? { line: off(tr.line) } : null)
+  }
+}
+
+/** A plot with its legend switched off (LegendConfig): no legend and no colour scale bars — the
+ *  traces' own and any shared colour axis's. */
+export function withoutLegend(
+  traces: unknown[],
+  layout: Record<string, unknown>
+): { traces: unknown[]; layout: Record<string, unknown> } {
+  const lay: Record<string, unknown> = { ...layout, showlegend: false }
+  for (const [k, v] of Object.entries(layout))
+    if (/^coloraxis\d*$/.test(k) && v && typeof v === 'object') lay[k] = { ...v, showscale: false }
+  return { traces: traces.map(withoutScale), layout: lay }
+}
+
+/** The default width, px, of an axis line and its gridlines (Plotly's own is 1). */
+export const AXIS_LINE_WIDTH = 0.5
+
+/** Every 2-D axis (xaxis, yaxis2, …) with the app's defaults where the view sets none: the
+ *  default axis-line and grid widths, and the axis line on and framed (Plotly's mirror repeats it
+ *  on the opposite side, so the frame needs the line). Before applyPlotAxes, so a user's own
+ *  settings still win; an axis the view hides (a 3-D plot's unused 2-D axes) is left alone. */
+export function thinAxes(layout: Record<string, unknown>): Record<string, unknown> {
+  let out: Record<string, unknown> | undefined
+  for (const [k, v] of Object.entries(layout)) {
+    if (!/^[xy]axis\d*$/.test(k) || !v || typeof v !== 'object') continue
+    const ax = v as Record<string, unknown>
+    if (ax.visible === false) continue
+    out ??= { ...layout }
+    out[k] = {
+      linewidth: AXIS_LINE_WIDTH,
+      gridwidth: AXIS_LINE_WIDTH,
+      // a view that turns its line off (a cluster's minimal axes) has no frame either
+      ...(ax.showline === false ? null : { showline: true, mirror: true }),
+      ...ax
+    }
+  }
+  return out ?? layout
+}
+
+/** The axis style with the frame the view draws by default (thinAxes' mirror) where the user set
+ *  none — so a frame that has to be hand-drawn (a dashed axis line, a frame style of its own) still
+ *  comes with it. */
+function withFrameDefault(base: Record<string, unknown>, st: AxisStyle): AxisStyle {
+  return st.mirror == null && base.mirror === true ? { ...st, mirror: true } : st
+}
+
 export function applyPlotAxes(
   layout: Record<string, unknown>,
   axes: PlotAxes | undefined,
@@ -236,23 +300,25 @@ export function applyPlotAxes(
   // An axis the view hides (a 3-D plot's unused 2-D axes) takes no style and no stand-in lines.
   if (axes.x && (layout.xaxis as { visible?: boolean } | undefined)?.visible !== false) {
     const base = (layout.xaxis as Record<string, unknown>) ?? {}
-    out.xaxis = applyAxis(base, axes.x, () => dataExtent(data, 'x'))
-    const z = zeroLineShape(base, axes.x, 'x')
+    const st = withFrameDefault(base, axes.x)
+    out.xaxis = applyAxis(base, st, () => dataExtent(data, 'x'))
+    const z = zeroLineShape(base, st, 'x')
     if (z) extra.push(z)
-    const f = frameShape(base, axes.x, 'x')
+    const f = frameShape(base, st, 'x')
     if (f) extra.push(f)
-    const al = axisLineShape(base, axes.x, 'x')
+    const al = axisLineShape(base, st, 'x')
     if (al) extra.push(al)
   }
   // An axis the view hides (a 3-D plot's unused 2-D axes) takes no style and no stand-in lines.
   if (axes.y && (layout.yaxis as { visible?: boolean } | undefined)?.visible !== false) {
     const base = (layout.yaxis as Record<string, unknown>) ?? {}
-    out.yaxis = applyAxis(base, axes.y, () => dataExtent(data, 'y'))
-    const z = zeroLineShape(base, axes.y, 'y')
+    const st = withFrameDefault(base, axes.y)
+    out.yaxis = applyAxis(base, st, () => dataExtent(data, 'y'))
+    const z = zeroLineShape(base, st, 'y')
     if (z) extra.push(z)
-    const f = frameShape(base, axes.y, 'y')
+    const f = frameShape(base, st, 'y')
     if (f) extra.push(f)
-    const al = axisLineShape(base, axes.y, 'y')
+    const al = axisLineShape(base, st, 'y')
     if (al) extra.push(al)
   }
   if (extra.length) {
@@ -284,4 +350,27 @@ export function truncatedTicks(
   const step = Math.max(1, Math.ceil(labels.length / Math.max(1, fit)))
   const tickvals = labels.filter((_, i) => i % step === 0)
   return { tickmode: 'array', tickvals, ticktext: tickvals.map((l) => truncateLabel(l)) }
+}
+
+/** The layout with its margins scaled down, each pair (left + right, top + bottom) together, where
+ *  they'd leave the plot under MIN_PLOT px of a `w` × `h` box. An unmeasured box (0) is left alone. */
+export function fitMargins(
+  layout: Record<string, unknown>,
+  w: number,
+  h: number
+): Record<string, unknown> {
+  const MIN_PLOT = 24
+  const m = layout.margin as Record<string, unknown> | undefined
+  if (!m) return layout
+  const num = (v: unknown): number => (typeof v === 'number' && v > 0 ? v : 0)
+  const fit = (a: string, b: string, size: number): Record<string, number> | null => {
+    const sum = num(m[a]) + num(m[b])
+    const room = size - MIN_PLOT
+    if (!(size > 0) || sum <= room) return null
+    const k = Math.max(0, room) / sum
+    return { [a]: Math.floor(num(m[a]) * k), [b]: Math.floor(num(m[b]) * k) }
+  }
+  const x = fit('l', 'r', w)
+  const y = fit('t', 'b', h)
+  return x || y ? { ...layout, margin: { ...m, ...x, ...y } } : layout
 }

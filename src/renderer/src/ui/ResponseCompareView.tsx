@@ -1,6 +1,12 @@
 import { useMemo, type ReactNode } from 'react'
 
-import { condLabel, ctxNum, type ConditionKey, type ContrastResultRow } from '../engine'
+import {
+  condLabel,
+  contrastYRange,
+  ctxNum,
+  type ConditionKey,
+  type ContrastResultRow
+} from '../engine'
 import { drLook, type DRLook } from '../graph/types'
 import { AUTO } from './ColorPicker'
 import { tooltip } from './condTooltip'
@@ -25,6 +31,7 @@ export function ResponseCompareView({
   title,
   yLabel = 'log₂FC',
   scaleRows,
+  yRange: givenRange,
   look = DEFAULT_LOOK
 }: {
   rows: ContrastResultRow[]
@@ -41,6 +48,9 @@ export function ResponseCompareView({
   /** rows the y RANGE is computed over — the whole contrast, so paging genes (and switching
    *  facets) keeps one scale and the curves stay comparable. Unset = autorange per gene. */
   scaleRows?: ContrastResultRow[]
+  /** that range already worked out (contrastYRangeOf — off a large contrast's columns, its rows
+   *  never built); over `scaleRows` when given. Null = nothing finite: autorange. */
+  yRange?: [number, number] | null
   /** line / point / error look (the tile's settings); an automatic colour is one per side */
   look?: DRLook
 }): ReactNode {
@@ -101,31 +111,15 @@ export function ResponseCompareView({
   // stable reference until it re-runs, so this is computed once per result, not per gene.
   const showErr = look.errors
   const showPts = look.points
-  const yRange = useMemo((): [number, number] | null => {
-    if (!scaleRows?.length) return null
-    let lo = Infinity
-    let hi = -Infinity
-    for (const r of scaleRows) {
-      for (const [v, e] of [
-        [r.FC1, r.FC1err],
-        [r.FC2, r.FC2err]
-      ] as const) {
-        if (v == null || !Number.isFinite(v)) continue
-        const err = showErr && e != null && Number.isFinite(e) ? Math.abs(e) : 0
-        if (v - err < lo) lo = v - err
-        if (v + err > hi) hi = v + err
-      }
-      if (showPts)
-        for (const v of [...(r.FC1reps ?? []), ...(r.FC2reps ?? [])]) {
-          if (!Number.isFinite(v)) continue
-          if (v < lo) lo = v
-          if (v > hi) hi = v
-        }
-    }
-    if (!(lo <= hi)) return null
-    const pad = (hi - lo || 1) * 0.05
-    return [lo - pad, hi + pad]
-  }, [scaleRows, showErr, showPts])
+  const yRange = useMemo(
+    (): [number, number] | null =>
+      givenRange !== undefined
+        ? givenRange
+        : scaleRows?.length
+          ? contrastYRange(scaleRows, showErr, showPts)
+          : null,
+    [givenRange, scaleRows, showErr, showPts]
+  )
 
   const { data, layout } = useMemo(() => {
     const p = PALETTES[mode]

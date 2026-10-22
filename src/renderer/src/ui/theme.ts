@@ -259,7 +259,7 @@ export function plotBase(p: Palette): Record<string, unknown> {
 }
 
 /** A threshold / reference guide line's default width, px (a point plot's `guideWidth`). */
-export const GUIDE_WIDTH = 1
+export const GUIDE_WIDTH = 0.5
 
 /** Shared style for threshold / reference guide lines (volcano/MA/scatter). Uses the muted text
  *  colour (not the near-invisible border) so thresholds read clearly against the cloud. */

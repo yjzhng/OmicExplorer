@@ -100,12 +100,12 @@ export function DRView({
     }
   }, [dr, mode])
 
-  const { data, layout } = useMemo(() => {
+  // Everything a hover/pin doesn't change — the top-N curves at their resting width, the colour
+  // scale, the layout — is built once per data/look, so a hover reuses the SAME trace objects and
+  // x/y arrays (Plotly.react then restyles instead of recalculating every curve) and the same
+  // layout; only the emphasis below is per hover.
+  const base = useMemo(() => {
     const p = PALETTES[mode]
-    const active = new Set(pinnedIds)
-    if (hoverId) active.add(hoverId)
-    for (const g of hoverMembers) active.add(g)
-
     // Discrete x: the axis (dose/time) levels are spaced evenly as categories, not by their
     // numeric value, so a dose series like 1.25…80 reads at equal intervals. Categories are the
     // distinct axis values, numerically sorted; x is emitted as strings to match.
@@ -145,18 +145,9 @@ export function DRView({
     // An ACTIVE (hovered/pinned) top-N gene is emphasized IN ITS OWN COLOUR with a thicker line
     // (which also thickens its legend swatch) — rather than spawning a separate highlight trace,
     // so it never duplicates its own legend item.
-    const colored = top.map((s, i) => {
-      const on = active.has(s.uniqID)
-      return line(
-        s,
-        fixed ?? CATEGORICAL[i % CATEGORICAL.length],
-        on ? look.lineWidth + 2 : look.lineWidth
-      )
-    })
-    // A hovered/pinned gene that ISN'T a top-N curve has no colour of its own (it lives in the grey
-    // background), so draw it as an emphasis overlay — coloured by its peak |log₂FC| on the shared
-    // diverging (down→up) scale (not a flat accent), so it matches the bubble/heatmap palette.
-    const extra = dr.series.filter((s) => active.has(s.uniqID) && !topIds.has(s.uniqID))
+    const resting = top.map((s, i) =>
+      line(s, fixed ?? CATEGORICAL[i % CATEGORICAL.length], look.lineWidth)
+    )
     // A loop, not Math.max(...points): spreading every point as an argument overflows the stack
     // once there are ~100k of them (fitted curves are sampled finely).
     let absMax = 1e-9
@@ -164,8 +155,6 @@ export function DRView({
     const dcolor = divergeColor(absMax, palette)
     const peak = (s: DRSeries): number =>
       s.points.reduce((best, pt) => (Math.abs(pt.y) > Math.abs(best) ? pt.y : best), 0)
-    for (const s of extra)
-      colored.push(line(s, fixed ?? dcolor(peak(s)), look.lineWidth + 1.5, false))
 
     const lay: Record<string, unknown> = {
       ...plotBase(p),
@@ -190,8 +179,37 @@ export function DRView({
           },
       yaxis: { ...axisBase(p), title: fcLabel(dr), zeroline: true }
     }
-    return { data: [background, ...colored], layout: lay }
-  }, [dr, title, axisLabel, mode, hoverId, hoverMembers, pinnedIds, background, look, palette])
+    return { top, topIds, resting, line, fixed, dcolor, peak, layout: lay }
+  }, [dr, title, axisLabel, mode, look, palette])
+
+  // The hovered/pinned genes this plot draws (in series order): a hover of a gene it doesn't have
+  // (another dataset's, a cleared hover of one) leaves the key — and so the traces — as they were.
+  const activeKey = useMemo(() => {
+    const active = new Set(pinnedIds)
+    if (hoverId) active.add(hoverId)
+    for (const g of hoverMembers) active.add(g)
+    return dr.series
+      .filter((s) => active.has(s.uniqID))
+      .map((s) => s.uniqID)
+      .join('\0')
+  }, [dr, hoverId, hoverMembers, pinnedIds])
+
+  const data = useMemo(() => {
+    const { top, topIds, resting, line, fixed, dcolor, peak } = base
+    const active = new Set(activeKey ? activeKey.split('\0') : [])
+    // An active top-N curve: its resting trace with the thicker line, sharing its x/y arrays.
+    const colored = resting.map((t, i) =>
+      active.has(top[i].uniqID) ? { ...t, line: { ...t.line, width: look.lineWidth + 2 } } : t
+    )
+    // A hovered/pinned gene that ISN'T a top-N curve has no colour of its own (it lives in the grey
+    // background), so draw it as an emphasis overlay — coloured by its peak |log₂FC| on the shared
+    // diverging (down→up) scale (not a flat accent), so it matches the bubble/heatmap palette.
+    const extra = dr.series.filter((s) => active.has(s.uniqID) && !topIds.has(s.uniqID))
+    for (const s of extra)
+      colored.push(line(s, fixed ?? dcolor(peak(s)), look.lineWidth + 1.5, false))
+    return [background, ...colored]
+  }, [base, dr, activeKey, background, look])
+  const layout = base.layout
 
   return <PlotlyChart data={data} layout={layout} />
 }

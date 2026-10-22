@@ -12,7 +12,7 @@
  */
 import { useMemo, type CSSProperties, type ReactNode } from 'react'
 
-import { facetDims, type ContextRow } from '../engine'
+import { contextOf, facetDims, type ContextRow } from '../engine'
 import type { AnalysisGroup } from '../graph/groups'
 import { numericOfResult, type NodeResult } from '../graph/types'
 import { UI } from '../ui/theme'
@@ -35,8 +35,14 @@ export function FacetContextBar({
   results: Record<string, NodeResult>
 }): ReactNode {
   const r = results[group.rootId]
+  // The result's context tuples, not its rows: what the switchers resolve over (contextIndex.ts) —
+  // reading `rows` here built every row of a large result just to list its levels, and held them.
   const rows: ContextRow[] | null =
-    r?.kind === 'compare' ? r.cmp.rows : r?.kind === 'contrast' ? r.ctr.rows : null
+    r?.kind === 'compare'
+      ? contextOf(r.cmp).rows
+      : r?.kind === 'contrast'
+        ? contextOf(r.ctr).rows
+        : null
   const numeric = useMemo(() => numericOfResult(r), [r])
   const sel = useFacet((s) => s.sel[group.id]) ?? EMPTY_SEL
   const setSel = useFacet((s) => s.setSel)

@@ -335,6 +335,14 @@ export function bindHeatmapFocus(
     if (sig === tickSig) return
     tickSig = sig
     const name = `${geneAxisId[0]}axis${geneAxisId.slice(1)}`
+    // the view's layout already has these ticks (it spaced them along the same axis): no relayout
+    const vals = (span.ga as { tickvals?: unknown[] }).tickvals
+    if (
+      Array.isArray(vals) &&
+      vals.length === ticks.length &&
+      ticks.every((i, k) => vals[k] === geneLabels[i])
+    )
+      return
     void Plotly.relayout(el, {
       [`${name}.tickmode`]: 'array',
       [`${name}.tickvals`]: ticks.map((i) => geneLabels[i]),

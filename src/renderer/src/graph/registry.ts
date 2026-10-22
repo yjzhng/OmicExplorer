@@ -1,11 +1,13 @@
 /** Static metadata for node operations, grouped under high-level categories. */
 import {
   condLabel,
+  contextOf,
   ctxNum,
   customCond,
   DEFAULT_THRESHOLD,
   numericConds,
   type ConditionKey,
+  type ContextRow,
   type SampleFilter
 } from '../engine'
 import {
@@ -703,13 +705,17 @@ export function axisAvailFromResult(r: NodeResult | undefined): AxisAvail {
  *  new one), and the scan walks every row — on a million-row Contrast, ~0.4 s. It runs inside
  *  store selectors (useUpstreamFacts), which re-run on every store change, once per tile asking. */
 const availByResult = new WeakMap<NodeResult, AxisAvail>()
+/** A Compare's or a Contrast's context tuples (one per distinct condition context), else null. */
+const contextRowsOf = (r: NodeResult): readonly ContextRow[] | null =>
+  r.kind === 'compare' ? contextOf(r.cmp).rows : r.kind === 'contrast' ? contextOf(r.ctr).rows : null
 function scanAxisAvail(r: NodeResult): AxisAvail {
   const numeric = numericOfResult(r)
   if (r.kind === 'standardize') {
     const ac = r.std.activeConditions ?? []
     return [...numeric].filter((c) => ac.includes(c))
   }
-  const rows = r.kind === 'compare' ? r.cmp.rows : r.kind === 'contrast' ? r.ctr.rows : null
+  // the context tuples (contextOf) carry every condition value the rows do — no row built
+  const rows = contextRowsOf(r)
   if (!rows) return DEFAULT_AXES
   return [...numeric].filter((c) => rows.some((x) => ctxNum(x, c) != null))
 }
@@ -730,7 +736,7 @@ export function multiLevelAxes(r: NodeResult | undefined): AxisAvail {
   if (!r) return DEFAULT_AXES
   const hit = multiByResult.get(r)
   if (hit) return [...hit]
-  const rows = r.kind === 'compare' ? r.cmp.rows : r.kind === 'contrast' ? r.ctr.rows : null
+  const rows = contextRowsOf(r)
   const avail = axisAvailFromResult(r)
   const found = !rows
     ? avail
@@ -770,9 +776,10 @@ function fittedAxes(r: NodeResult): ConditionKey[] {
   let hit = fittedByResult.get(r)
   if (!hit) {
     const found = new Set<ConditionKey>()
-    for (const x of r.cmp.rows) {
-      const a = x.curve?.axis ?? (x.rs?.axis === 'surface' ? undefined : x.rs?.axis)
-      if (a != null) found.add(a)
+    // each context's axis (`along`: a curve's, else a response fit's) — no row built
+    for (const x of contextOf(r.cmp).rows) {
+      const a = x.along === 'surface' ? undefined : x.along
+      if (a != null) found.add(a as ConditionKey)
     }
     hit = [...found]
     fittedByResult.set(r, hit)

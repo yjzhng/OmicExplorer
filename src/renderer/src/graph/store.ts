@@ -114,10 +114,11 @@ import {
   isSurfaceRow,
   surfaceSideRows,
   surfaceSliceCond,
+  surfaceSliceCondOf,
   pairSides,
   selectSource,
   stdFeatureValue,
-  stdGroups,
+  stdGroupsOf,
   toContrastSide,
   type CompareFeatureCtx,
   type ContrastFeature
@@ -3287,7 +3288,7 @@ export const useGraph = create<GraphState>()((set, get) => ({
           const ctxB = featureCtx(idB)
           // Surfaces are contrasted slice by slice: matched on the slices' condition.
           const surf = [ra, rb]
-            .map((r) => (r.kind === 'compare' ? surfaceSliceCond(r.cmp.rows) : undefined))
+            .map((r) => (r.kind === 'compare' ? surfaceSliceCondOf(r.cmp) : undefined))
             .find((c) => c != null)
           ctr = await stack(features, (f) =>
             engine.contrastPair({
@@ -3373,8 +3374,9 @@ export const useGraph = create<GraphState>()((set, get) => ({
           // both collapses replicates cleanly and gives an honest per-condition abundance spread.
           const pooled: CompareResultRow[] = isAbundance
             ? (() => {
-                // One per gene × condition context (custom conditions included in the key).
-                return stdGroups(stds.flatMap((r) => r.std.rows)).map(
+                // One per gene × condition context (custom conditions included in the key) — read
+                // off the tables' columns (no row built).
+                return stdGroupsOf(stds.map((r) => r.std)).map(
                   ({ row, logs }): CompareResultRow => {
                     const out = poolRow(row, logs)
                     repsOf.set(out, logs)

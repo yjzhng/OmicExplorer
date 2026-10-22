@@ -112,6 +112,8 @@ export function MAView({
         // This group's own highlight look (see PlotlyChart's EMPH_KEY): the emphasis overlay and
         // the dim read it per trace, so each group can bump/ring/label/fade differently.
         __oeEmph: g.highlight,
+        // The grey bulk may draw as a density past ~100k points (PlotlyChart's densityBins).
+        ...(eff === 'none' ? { __oeBin: true } : {}),
         x: pts.map((pt) => pt.x),
         y: pts.map((pt) => pt.y),
         text: pts.map((pt) => pt.label),

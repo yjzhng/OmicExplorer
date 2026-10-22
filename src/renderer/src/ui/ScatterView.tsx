@@ -128,6 +128,8 @@ export function ScatterView({
       showlegend: g.legend,
       // This group's own highlight look — see PlotlyChart's EMPH_KEY.
       __oeEmph: g.highlight,
+      // The grey bulk may draw as a density past ~100k points (PlotlyChart's densityBins).
+      ...(g.key === 'none' ? { __oeBin: true } : {}),
       x: pts.map((pt) => pt.x),
       y: pts.map((pt) => pt.y),
       text: pts.map((pt) => pt.label),
@@ -228,10 +230,10 @@ export function ScatterView({
       opacity: dashed ? 0.7 : 0.55
     })
     // The band's edges are path SHAPES (a guide is a shape, so they can be dragged), drawn at the
-    // cutoffs in force, centred on the fitted line the calls are measured from (a solid trace,
-    // drawn first so points sit above it); y = x stays as a faint dotted reference — "the same
-    // response on both sides". Without the band's parameters (too few points to fit), the
-    // sampled edges as traces instead.
+    // cutoffs in force, centred on the line the calls are measured from (a solid trace, drawn
+    // first so points sit above it): y = x in identity mode, else the fitted line alone — no y = x
+    // beside it. Without the band's parameters (too few points to fit), the sampled edges as
+    // traces instead.
     const band = g?.kind === 'ols' ? g.band : undefined
     const conf = g?.cutoffs ?? {
       confUp: 0.99,
@@ -241,19 +243,7 @@ export function ScatterView({
     const guideTraces =
       g?.kind === 'ols' && g.fit && g.upper && g.lower
         ? band
-          ? [
-              // the y = x reference — unless the model's line IS y = x (identity)
-              ...(band.fixed
-                ? []
-                : [
-                    {
-                      ...curve({ x: [lo, hi], y: [lo, hi] }, false),
-                      line: { color: p.textMuted, width: 1, dash: 'dot' },
-                      opacity: 0.45
-                    }
-                  ]),
-              curve(g.fit, false)
-            ]
+          ? [curve(g.fit, false)]
           : [curve(g.fit, false), curve(g.upper, true), curve(g.lower, true)]
         : []
     const edge = (side: 1 | -1) => ({
@@ -298,9 +288,10 @@ export function ScatterView({
     // Draggable guides (only when editing is wired), indexed into `guideShapes` above. A band edge
     // is grabbed anywhere and passes through the cursor (its confidence solved from the point); an
     // axis line slides along its axis, its q read off where it lands.
-    const pctOf = (c: number): string => `${Math.round(Math.max(0, 1 - c) * 1000) / 10}%`
+    // (to 0.001%, as the Statistic panel's finest tail)
+    const pctOf = (c: number): string => `${Math.round(Math.max(0, 1 - c) * 1e5) / 1e3}%`
     const qShown = (q: number): string =>
-      String(Math.min(0.5, Math.max(0.001, Math.ceil(q * 1000 - 1e-9) / 1000)))
+      String(Math.min(0.5, Math.max(0.00001, Math.ceil(q * 1e5 - 1e-9) / 1e5)))
     const bandGuide = (i: 0 | 1): GuideDrag => {
       const side = i === 0 ? 1 : -1
       return {
@@ -311,7 +302,7 @@ export function ScatterView({
         cursor: 'nwse-resize',
         key: i === 0 ? 'bandUp' : 'bandDown',
         value: i === 0 ? conf.confUp : conf.confDown,
-        solve: (mx, my) => Math.min(0.999, Math.max(0.5, bandConfAt(band!, mx, my))),
+        solve: (mx, my) => Math.min(0.99999, Math.max(0.5, bandConfAt(band!, mx, my))),
         render: (c) => bandEdgePath(band!, c, side),
         // symmetric: the other edge mirrors it live
         ...(asymmetric

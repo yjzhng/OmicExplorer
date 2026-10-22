@@ -14,10 +14,12 @@
 import { firstRow } from '../engine/lazyRows'
 import {
   condLabel,
+  contextOf,
   enrichSourcesPresent,
   ENRICH_FALLBACK,
   ENRICH_SOURCE_LABEL,
   resolveEnrichSource,
+  someNested,
   type ConditionKey
 } from '../engine'
 import {
@@ -112,7 +114,7 @@ const SURFACES =
 const anova = (u: UpstreamFacts): boolean =>
   u.analysis != null
     ? u.analysis === 'anova'
-    : u.result?.kind === 'compare' && u.result.cmp.rows.some((r) => r.ftest != null)
+    : u.result?.kind === 'compare' && someNested(u.result.cmp, 'ftest', 'F', (on) => on)
 const NO_GROUP_MEANS =
   'An ANOVA has no two-group means to plot — show its results in a volcano, heatmap or table'
 /** The factors plots read an ANOVA's model (its terms, per-gene shares and cell means). */
@@ -141,7 +143,7 @@ const REQUIREMENTS: Partial<Record<NodeKind, Requirement>> = {
     // A curve fit's rows are whole curves over the axis (no per-level rows), each naming it.
     if (
       u.result?.kind === 'compare' &&
-      u.result.cmp.rows.some((r) => (r.curve?.axis ?? r.rs?.axis) === axis)
+      contextOf(u.result.cmp).rows.some((c) => c.along === axis)
     )
       return null
     return needSeries(u, axis)

@@ -23,12 +23,15 @@ import {
   logistic,
   replicateLog2FCs,
   responseCurve,
-  stdByGene,
+  type StdLookup,
   xUnits,
   type CompareResultRow,
   type ConditionKey,
   type StandardRow
 } from '../engine'
+
+/** No Clean data: no gene's replicates. */
+const NO_STD: StdLookup = new Map()
 import { drLook, type DRLook, type EffectColors } from '../graph/types'
 import { AUTO } from './ColorPicker'
 import { tooltip } from './condTooltip'
@@ -146,6 +149,42 @@ function widenExtent(
   }
 }
 
+const globalRanges = new WeakMap<object, WeakMap<object, Map<string, [number, number] | null>>>()
+/** The y range every gene of a result draws in (widenExtent over each gene's rows and its Clean
+ *  data replicates), padded — the global scale. Cached per result, Clean data, axis, look and
+ *  model: worked out once (its rows built for it, then free to go), not per tile or page. */
+function globalRange(
+  of: { rows: readonly CompareResultRow[] },
+  stdOf: StdLookup,
+  axis: ConditionKey,
+  look: DRLook,
+  model: 'spline' | 'curve'
+): [number, number] | null {
+  let byStd = globalRanges.get(of)
+  if (!byStd) globalRanges.set(of, (byStd = new WeakMap()))
+  let m = byStd.get(stdOf)
+  if (!m) byStd.set(stdOf, (m = new Map()))
+  const key = `${axis}\u0000${model}\u0000${JSON.stringify(look)}`
+  if (m.has(key)) return m.get(key)!
+  let range: [number, number] | null = null
+  if (of.rows.length) {
+    const byGene = new Map<string, CompareResultRow[]>()
+    for (const r of of.rows) {
+      const g = byGene.get(r.uniqID)
+      if (g) g.push(r)
+      else byGene.set(r.uniqID, [r])
+    }
+    const acc: [number, number] = [Infinity, -Infinity]
+    for (const [id, rs] of byGene) widenExtent(acc, rs, stdOf.get(id) ?? [], axis, look, model)
+    if (acc[0] <= acc[1]) {
+      const pad = (acc[1] - acc[0] || 1) * 0.05
+      range = [acc[0] - pad, acc[1] + pad]
+    }
+  }
+  m.set(key, range)
+  return range
+}
+
 export function DRFocusView({
   rows,
   axis,
@@ -156,7 +195,7 @@ export function DRFocusView({
   std,
   title,
   look = DEFAULT_LOOK,
-  scaleRows,
+  scaleOf,
   effectColors,
   model = 'curve'
 }: {
@@ -174,13 +213,13 @@ export function DRFocusView({
   /** uniqID → display name, for the legend / hover with several genes */
   displayMap?: Record<string, string>
   /** the Clean data rows the Compare ran on — a t-test's replicates are drawn from them */
-  std?: StandardRow[]
+  std?: StdLookup
   title?: string
   /** line / point / error look (the tile's settings) */
   look?: DRLook
-  /** rows the y RANGE is computed over — the whole Compare, so paging genes (and switching facets)
-   *  keeps one scale and the responses stay comparable. Unset = autorange per gene. */
-  scaleRows?: CompareResultRow[]
+  /** the result the y RANGE is computed over — the whole Compare, so paging genes (and switching
+   *  facets) keeps one scale and the responses stay comparable. Unset = autorange per gene. */
+  scaleOf?: { rows: readonly CompareResultRow[] }
   /** the upstream Compare's effect colours — a lone line's automatic colour */
   effectColors?: EffectColors
   /** a response surface method curve fit: draw the description 4PL ('curve') or the spline */
@@ -196,7 +235,7 @@ export function DRFocusView({
     () => genes ?? (gene ? [gene] : [...new Set(rows.map((r) => r.uniqID))]),
     [genes, gene, rows]
   )
-  const stdOf = useMemo(() => stdByGene(std ?? []), [std])
+  const stdOf = std ?? NO_STD
   const rowsOf = useMemo(() => {
     const m = new Map<string, CompareResultRow[]>(ids.map((id) => [id, []]))
     for (const r of rows) m.get(r.uniqID)?.push(r)
@@ -204,20 +243,11 @@ export function DRFocusView({
   }, [rows, ids])
   // One shared y range across the whole Compare: every gene's extent as drawn (see widenExtent).
   // Memoized on the row array — stable until the Compare re-runs — not recomputed per gene.
-  const yRange = useMemo((): [number, number] | null => {
-    if (!scaleRows?.length) return null
-    const byGene = new Map<string, CompareResultRow[]>()
-    for (const r of scaleRows) {
-      const g = byGene.get(r.uniqID)
-      if (g) g.push(r)
-      else byGene.set(r.uniqID, [r])
-    }
-    const acc: [number, number] = [Infinity, -Infinity]
-    for (const [id, rs] of byGene) widenExtent(acc, rs, stdOf.get(id) ?? [], axis, look, model)
-    if (!(acc[0] <= acc[1])) return null
-    const pad = (acc[1] - acc[0] || 1) * 0.05
-    return [acc[0] - pad, acc[1] + pad]
-  }, [scaleRows, stdOf, axis, look, model])
+  const yRange = useMemo(
+    (): [number, number] | null =>
+      scaleOf ? globalRange(scaleOf, stdOf, axis, look, model) : null,
+    [scaleOf, stdOf, axis, look, model]
+  )
   // Per gene, Plotly's autorange would take in a curve's band too; while one can be drawn, the range
   // is set the same way the global one is, from what the genes draw less the band.
   const geneRange = useMemo((): [number, number] | null => {

@@ -5,7 +5,7 @@
  * export that writes each facet's node / edge tables to the step's output/ folder — so the files
  * hold exactly what the tile shows.
  */
-import { benjaminiHochberg, type CompareResultRow } from '../engine'
+import { benjaminiHochberg, rowView, type CompareResultRow } from '../engine'
 
 /** ln Γ(z) via Lanczos, for the hypergeometric log-binomials in the per-module ORA. */
 function lnGamma(z: number): number {
@@ -91,10 +91,34 @@ export function stringQueryGenes(
     .slice(0, Math.max(2, sendLimit))
 }
 
+/** stringQueryGenes over a Compare's rows at `idx` (one facet's), read off their columns — only
+ *  the fields it reads (uniqID, log₂FC, signf), of the significant rows, so no row is built. */
+export function stringQueryGenesAt(
+  holder: { rows: readonly CompareResultRow[] },
+  idx: ArrayLike<number>,
+  displayMap: Record<string, string> | undefined,
+  annotationMap: Record<string, Record<string, string>> | undefined,
+  sendLimit: number
+): StringGene[] {
+  const v = rowView(holder)
+  const [uid, fc, sig] = ['uniqID', 'log2FC', 'signf'].map((k) => v.col(k))
+  const rows: CompareResultRow[] = []
+  for (let k = 0; k < idx.length; k++) {
+    const r = idx[k]
+    if (sig(r))
+      rows.push({ uniqID: uid(r), log2FC: fc(r), signf: sig(r) } as unknown as CompareResultRow)
+  }
+  return stringQueryGenes(rows, displayMap, annotationMap, sendLimit)
+}
+
 /** STRING's confidence buckets → the required score (0–1000) each stands for. */
 export const STRING_LEVELS = { low: 150, medium: 400, high: 700, highest: 900 } as const
 export type StringLevel = keyof typeof STRING_LEVELS
 const LEVELS_HIGH_FIRST: StringLevel[] = ['highest', 'high', 'medium', 'low']
+/** The levels low → high, as the confidence switches list them. */
+export const STRING_LEVEL_ORDER: StringLevel[] = ['low', 'medium', 'high', 'highest']
+/** A level as the cutoff it is: STRING's combined score, 0–1 ("0.40") — not its bucket name. */
+export const stringLevelScore = (l: StringLevel): string => (STRING_LEVELS[l] / 1000).toFixed(2)
 
 /** The confidence levels at which a network has anything, from the best link score (0–1000, at
  *  any confidence) a read reports — every level at or under it. Null (unknown) when not reported. */

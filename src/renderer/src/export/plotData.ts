@@ -13,8 +13,7 @@
 import {
   enrichSourcesPresent,
   enrichTermRows,
-  facetCompareRows,
-  facetDims,
+  facetGroupsOf,
   facetLabel,
   resolveEnrichSource
 } from '../engine'
@@ -39,7 +38,7 @@ import {
   type StringLevel,
   stringLevelsFromScore,
   stringNetFromResponse,
-  stringQueryGenes,
+  stringQueryGenesAt,
   stringSendLimit
 } from '../ui/stringModel'
 
@@ -66,7 +65,8 @@ async function exportEnrichment(
   if (!source) return
   const combo = `${cfg.method ?? 'ora'}|${source}`
   const rows: Record<string, unknown>[] = []
-  for (const g of facetCompareRows(up.cmp.rows, facetDims(up.cmp.rows), numericOfResult(up))) {
+  // (the facets over the context tuples: no row built)
+  for (const g of facetGroupsOf(up.cmp, numericOfResult(up))) {
     const e = run.facets[g.key]?.[combo]
     if (e) rows.push(...enrichTermRows(e, facetLabel(g.values)))
   }
@@ -87,10 +87,10 @@ async function exportString(
   const caps = run.caps
   const nodes: Record<string, unknown>[] = []
   const edges: Record<string, unknown>[] = []
-  for (const g of facetCompareRows(up.cmp.rows, facetDims(up.cmp.rows), numericOfResult(up))) {
+  for (const g of facetGroupsOf(up.cmp, numericOfResult(up))) {
     const all = run.facets[g.key]
     if (!all) continue
-    const genes = stringQueryGenes(g.rows, up.displayMap, ann, stringSendLimit(maxGenes))
+    const genes = stringQueryGenesAt(up.cmp, g.idx, up.displayMap, ann, stringSendLimit(maxGenes))
     if (genes.length < 2) continue
     // As the tile draws it: the chosen level — or, unset (auto), the highest this setting has a
     // network at (the best score doesn't depend on the level).

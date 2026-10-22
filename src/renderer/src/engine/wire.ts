@@ -412,6 +412,149 @@ export function decodeTable(t: Table, lazy = false): Obj[] {
   return rows
 }
 
+/** A table's rows one at a time: `dec(r)` is row r exactly as decodeTable builds it, each call a
+ *  new object. The nested records are built once each, when a row first needs them, and shared by
+ *  every row that points to them (as decodeTable shares them) for as long as the decoder lives —
+ *  so building a few rows of a large table never builds the nested records of the rest. */
+export function rowDecoder(t: Table, lazy = false): (r: number) => Obj {
+  const nestAt = t.nest ? memoRows(t.nest, lazy) : (): Obj => ({})
+  const readers = new Map<string, (i: number) => unknown>()
+  const lazyLists = new Map<string, (o: Obj, key: string, i: number) => void>()
+  for (const [k, col] of Object.entries(t.cols)) {
+    if (lazy && col.k === 'l' && col.items.n >= LAZY_LIST_PER_ROW * t.n)
+      lazyLists.set(k, lazyListColumn(col))
+    else readers.set(k, cellReader(col, nestAt, lazy))
+  }
+  const plans = t.shapes.map((keys) =>
+    keys.map((k) => [k, readers.get(k) ?? null, lazyLists.get(k) ?? null] as const)
+  )
+  return (r) => {
+    const plan = plans[t.shape[r]]
+    const o: Obj = {}
+    for (let j = 0; j < plan.length; j++) {
+      const [k, read, list] = plan[j]
+      if (read) o[k] = read(r)
+      else list!(o, k, r)
+    }
+    return o
+  }
+}
+
+/** One column of a table by row, without building the rows: its value where the row has the key
+ *  (the rest read as undefined — see `keyIn`); undefined when no row has it. Nested records come
+ *  out built (once each, shared), as they would in the rows. */
+export function tableColumn(t: Table, key: string): ((r: number) => unknown) | undefined {
+  const col = t.cols[key]
+  if (!col) return undefined
+  const read = cellReader(col, t.nest ? memoRows(t.nest, true) : (): Obj => ({}), true)
+  const has = keyIn(t, key)
+  return (r) => (has(r) ? read(r) : undefined)
+}
+
+/** One field of a nested record column (`curve.axis`), without building the records: `has(r)` is
+ *  whether row r's value is truthy (`r.curve &&`), `at(r)` its `sub` field (`r.curve?.[sub]`). A
+ *  record column reads `sub` off its nested table's own column; anything else, the whole value. */
+export function nestedColumn(
+  t: Table,
+  key: string,
+  sub: string
+): { has: (r: number) => boolean; at: (r: number) => unknown } | undefined {
+  const col = t.cols[key]
+  if (!col) return undefined
+  const whole = tableColumn(t, key)!
+  if (col.k !== 'o' && col.k !== 'O')
+    return {
+      has: (r) => !!whole(r),
+      at: (r) => (whole(r) as Record<string, unknown> | null | undefined)?.[sub]
+    }
+  const inner = col.k === 'O' ? col.table : t.nest
+  const field = inner ? tableColumn(inner, sub) : undefined
+  const present = keyIn(t, key)
+  const tags = col.t
+  // a row not holding a record (null, undefined, another value) reads its whole value instead
+  const plain = (r: number): boolean => present(r) && (!tags || tags[r] === T_MAIN)
+  return {
+    has: (r) => (plain(r) ? true : !!whole(r)),
+    at: (r) =>
+      plain(r)
+        ? field?.(col.i[r])
+        : (whole(r) as Record<string, unknown> | null | undefined)?.[sub]
+  }
+}
+
+/** Whether row r has `key` at all (absent ≠ undefined: `'FC1' in row`). */
+export function keyIn(t: Table, key: string): (r: number) => boolean {
+  const has = t.shapes.map((keys) => keys.includes(key))
+  return (r) => has[t.shape[r]]
+}
+
+/** A table's rows on demand, each built once and then the same object. */
+function memoRows(t: Table, lazy: boolean): (i: number) => Obj {
+  const dec = rowDecoder(t, lazy)
+  const memo: Array<Obj | undefined> = new Array(t.n)
+  return (i) => (memo[i] ??= dec(i))
+}
+
+/** columnReader's per-row twin: the same values, with the nested tables (records, lists, values
+ *  kept as is) built a row at a time instead of all at once. */
+function cellReader(
+  col: Column,
+  nestAt: (i: number) => Obj,
+  lazy: boolean
+): (i: number) => unknown {
+  if (col.k === 'a') {
+    const vals = col.v
+    const memo: unknown[] = new Array(vals.length)
+    const done = new Uint8Array(vals.length)
+    return (i) => {
+      if (!done[i]) {
+        memo[i] = decodeValue(vals[i])
+        done[i] = 1
+      }
+      return memo[i]
+    }
+  }
+  const t = col.t
+  let others: unknown[] | undefined
+  let otherAt: Map<number, number> | undefined
+  if (col.x) {
+    others = col.x.map((v) => decodeValue(v))
+    otherAt = new Map()
+    let n = 0
+    for (let i = 0; i < t!.length; i++) if (t![i] === T_OTHER) otherAt.set(i, n++)
+  }
+  const side = (i: number): unknown =>
+    t![i] === T_NULL ? null : t![i] === T_UNDEF ? undefined : others![otherAt!.get(i)!]
+  const tagged =
+    (read: (i: number) => unknown) =>
+    (i: number): unknown =>
+      t && t[i] !== T_MAIN ? side(i) : read(i)
+  if (col.k === 'f') {
+    const v = col.v
+    return tagged((i) => v[i])
+  }
+  if (col.k === 'b') {
+    const v = col.v
+    return tagged((i) => v[i] === 1)
+  }
+  if (col.k === 's') {
+    const { d, i: idx } = col
+    return tagged((i) => d[idx[i]])
+  }
+  if (col.k === 'l') {
+    const { off } = col
+    const itemAt = memoRows(col.items, lazy)
+    return tagged((i) => {
+      const out: Obj[] = []
+      for (let j = off[i]; j < off[i + 1]; j++) out.push(itemAt(j))
+      return out
+    })
+  }
+  const at = col.k === 'O' ? memoRows(col.table, lazy) : nestAt
+  const idx = col.i
+  return tagged((i) => at(idx[i]))
+}
+
 /** Inverse of encodeValue. `lazy` (the UI thread's results): a large table under a `rows` key is
  *  kept as columns, its rows built when read (lazyRows.ts), and long lists decode per row. */
 export function decodeValue(v: unknown, lazy = false): unknown {
@@ -474,5 +617,85 @@ function cellAt(t: Table, col: Column, r: number): unknown {
   if (col.k === 'O') return decodeRowAt(col.table, col.i[r])
   const out: Obj[] = []
   for (let j = col.off[r]; j < col.off[r + 1]; j++) out.push(decodeRowAt(col.items, j))
+  return out
+}
+
+/** The rows at `idx` (ascending) of a table, as a table of their own — its columns sliced, its
+ *  nested pool and record tables shared (each nested record stays one record), a list column's
+ *  items sliced alongside. What a part of a large result (a two-way ANOVA's signed rows, a curve
+ *  fit's fitted rows) is held as, so reading it builds only the rows read. */
+export function subTable(t: Table, idx: ArrayLike<number>): Table {
+  const n = idx.length
+  const shape = t.shape instanceof Uint16Array ? new Uint16Array(n) : new Uint32Array(n)
+  for (let j = 0; j < n; j++) shape[j] = t.shape[idx[j]]
+  const cols: Record<string, Column> = {}
+  for (const [k, col] of Object.entries(t.cols)) cols[k] = subColumn(col, idx)
+  return { $wire: 1, n, shapes: t.shapes, shape, cols, ...(t.nest ? { nest: t.nest } : null) }
+}
+
+function subColumn(col: Column, idx: ArrayLike<number>): Column {
+  const n = idx.length
+  if (col.k === 'a') return { k: 'a', v: Array.from(idx, (i) => col.v[i]) }
+  let t: Uint8Array | undefined
+  let x: unknown[] | undefined
+  if (col.t) {
+    t = new Uint8Array(n)
+    for (let j = 0; j < n; j++) t[j] = col.t[idx[j]]
+    if (col.x) {
+      // the T_OTHER values in row order: each picked row's, by its rank among the tagged rows
+      const rank = new Int32Array(col.t.length)
+      let m = 0
+      for (let i = 0; i < col.t.length; i++) if (col.t[i] === T_OTHER) rank[i] = m++
+      x = []
+      for (let j = 0; j < n; j++) if (t[j] === T_OTHER) x.push(col.x[rank[idx[j]]])
+    }
+  }
+  const tags = { ...(t ? { t } : null), ...(x ? { x } : null) }
+  const pick = <A extends Float64Array | Uint8Array | Int32Array>(a: A, out: A): A => {
+    for (let j = 0; j < n; j++) out[j] = a[idx[j]]
+    return out
+  }
+  if (col.k === 'f') return { k: 'f', v: pick(col.v, new Float64Array(n)), ...tags }
+  if (col.k === 'b') return { k: 'b', v: pick(col.v, new Uint8Array(n)), ...tags }
+  if (col.k === 's') return { k: 's', d: col.d, i: pick(col.i, new Int32Array(n)), ...tags }
+  if (col.k === 'o') return { k: 'o', i: pick(col.i, new Int32Array(n)), ...tags }
+  if (col.k === 'O') return { k: 'O', i: pick(col.i, new Int32Array(n)), table: col.table, ...tags }
+  // a list column: its rows' items, in order, as a sliced items table
+  const off = new Int32Array(n + 1)
+  const items: number[] = []
+  for (let j = 0; j < n; j++) {
+    const r = idx[j]
+    for (let i = col.off[r]; i < col.off[r + 1]; i++) items.push(i)
+    off[j + 1] = items.length
+  }
+  return { k: 'l', off, items: subTable(col.items, items), ...tags }
+}
+
+/** A table without the columns `drop` — its rows as `rows.map((r) => omit(r, drop))` reads them:
+ *  each row's other keys, in order. The kept columns are shared; their nested records (an 'o'
+ *  column's) are pooled anew, so the dropped columns' records (a curve fit's curves) don't ride
+ *  along in `nest`. `t` itself when it has none of them. */
+export function withoutColumns(t: Table, drop: readonly string[]): Table {
+  const gone = new Set(drop.filter((k) => k in t.cols))
+  if (!gone.size) return t
+  const transfer: Transferable[] = [] // nothing moved: the buffers stay with the table
+  const pool: Pool = { list: [], at: new Map() }
+  const cols: Record<string, Column> = {}
+  for (const [k, col] of Object.entries(t.cols)) {
+    if (gone.has(k)) continue
+    if (col.k !== 'o') {
+      cols[k] = col
+      continue
+    }
+    const read = tableColumn(t, k)!
+    cols[k] = encodeColumn(
+      Array.from({ length: t.n }, (_, r) => read(r)),
+      transfer,
+      pool
+    )
+  }
+  const shapes = t.shapes.map((keys) => keys.filter((k) => !gone.has(k)))
+  const out: Table = { $wire: 1, n: t.n, shapes, shape: t.shape, cols }
+  if (pool.list.length) out.nest = encodeTable(pool.list, transfer)
   return out
 }

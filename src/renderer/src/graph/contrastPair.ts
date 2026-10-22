@@ -6,9 +6,16 @@ import {
   condsIn,
   CURVE_FC_FEATURE,
   curveDescribed,
+  contextIndices,
+  contextOf,
   customSlug,
+  holderWhereNested,
   isCustomCond,
+  nestedCol,
+  nestedPresent,
   replicateLog2FCs,
+  rowView,
+  someNested,
   stdByGene,
   termless,
   xUnits,
@@ -19,6 +26,7 @@ import {
   type ContrastSideRow,
   type StandardRow
 } from '../engine'
+import { rowCount } from '../engine/lazyRows'
 import {
   isMolar,
   resolveContrastSource,
@@ -211,30 +219,52 @@ export function contrastFeatures(r: NodeResult | undefined, units?: CondUnits): 
       { id: 'cv', label: 'CV %' }
     ]
   if (r?.kind !== 'compare') return []
-  const rows = termless(r.cmp.rows)
-  const axes = new Set(rows.map(curveAxisOf).filter((a) => a != null))
+  // the signed rows (cmpRows), read off their columns — only the curve fields asked (no row built)
+  const { n, at } = signedRows(r.cmp)
+  const some = (test: (row: number) => boolean): boolean => {
+    for (let i = 0; i < n; i++) if (test(at(i))) return true
+    return false
+  }
+  const curveOn = nestedPresent(r.cmp, 'curve')
+  const rsOn = nestedPresent(r.cmp, 'rs')
+  const [curveAxis, curveScale] = ['axis', 'scale'].map((k) => nestedCol(r.cmp, 'curve', k))
+  const [rsAxis, rsScale] = ['axis', 'scale'].map((k) => nestedCol(r.cmp, 'rs', k))
+  // curveAxisOf, isSurfaceRow and isLinearRow, by row
+  const axisAt = (i: number): unknown =>
+    curveAxis(i) ?? (rsOn(i) && rsAxis(i) !== 'surface' ? rsAxis(i) : null)
+  const isSurface = (i: number): boolean => rsAxis(i) === 'surface'
+  const axes = new Set<ConditionKey>()
+  for (let i = 0; i < n; i++) {
+    const a = axisAt(at(i))
+    if (a != null) axes.add(a as ConditionKey)
+  }
   // Surfaces: both per slice (see surfaceSideRows) — the potency where any gene's curves along
   // their axis were described: EC50 on a linear axis, pEC50 on a log one, named with its unit.
-  if (rows.some(isSurfaceRow)) {
+  if (some(isSurface)) {
     // one value per slice (the switcher picks it): the largest effect along that slice's curve —
     // against the vehicle, or testing changes, the shift from the reference curve
     const fc: ContrastFeature = { id: 'value', label: CURVE_FC_FEATURE }
-    const r0 = rows.find(
-      (x) =>
-        isSurfaceRow(x) &&
-        (surfaceSlicing(x).k === 1 ? x.rs?.surface?.byDose : x.rs?.surface?.byTime)?.length
-    )
+    // (a surface row as the fields read here: its `rs`)
+    const rsOf = rowView(r.cmp).col('rs')
+    let r0: CompareResultRow | undefined
+    for (let i = 0; i < n && !r0; i++) {
+      if (!isSurface(at(i))) continue
+      const x = { rs: rsOf(at(i)) } as CompareResultRow
+      if ((surfaceSlicing(x).k === 1 ? x.rs?.surface?.byDose : x.rs?.surface?.byTime)?.length)
+        r0 = x
+    }
     if (!r0) return [fc]
     const { k, along } = surfaceSlicing(r0)
     const linear = r0.rs?.maps?.[k]?.scale === 'linear'
     return [fc, { id: 'pec50', label: potencyLabel(linear, along, units) }]
   }
-  if (rows.some((x) => x.curve || x.rs)) {
+  if (some((i) => curveOn(i) || rsOn(i))) {
     const fc: ContrastFeature = { id: 'value', label: CURVE_FC_FEATURE }
     if (!axes.size) return [fc]
     // the potency: pEC50 on a log axis, EC50 on a linear one (see axisModel.ts)
     const axis = [...axes][0]
-    return [fc, { id: 'pec50', label: potencyLabel(rows.some(isLinearRow), axis, units) }]
+    const linear = some((i) => curveScale(i) === 'linear' || rsScale(i) === 'linear')
+    return [fc, { id: 'pec50', label: potencyLabel(linear, axis, units) }]
   }
   const q = (r.cmp.threshold?.statType ?? 'pQ') === 'pQ'
   return [
@@ -244,20 +274,47 @@ export function contrastFeatures(r: NodeResult | undefined, units?: CondUnits): 
 }
 
 /** Clean data rows gathered per gene × condition context — a group's replicates together — with
- *  their log₁₀ abundances (a non-positive value has none). */
-export function stdGroups(rows: StandardRow[]): Array<{ row: StandardRow; logs: number[] }> {
+ *  their log₁₀ abundances (a non-positive value has none): over the rows of several results in
+ *  turn (as over their rows concatenated), read off their columns — no row built. Each group's
+ *  `row` holds only the fields its readers take (uniqID and the conditions: cell, cmpd, dose,
+ *  time, extra). */
+export function stdGroupsOf(
+  holders: ReadonlyArray<{ rows: readonly StandardRow[] }>
+): Array<{ row: StandardRow; logs: number[] }> {
   const groups = new Map<string, { row: StandardRow; logs: number[] }>()
-  for (const row of rows) {
-    if (row.value == null || !(row.value > 0)) continue
-    // Custom conditions join the key — without them two distinct contexts would pool together.
-    const extraKey = Object.keys(row.extra ?? {})
-      .sort()
-      .map((k) => `${k}=${row.extra![k]}`)
-      .join('¦')
-    const key = `${row.uniqID}¦${row.cell ?? ''}¦${row.cmpd ?? ''}¦${row.dose ?? ''}¦${row.time ?? ''}¦${extraKey}`
-    let g = groups.get(key)
-    if (!g) groups.set(key, (g = { row, logs: [] }))
-    g.logs.push(Math.log10(row.value))
+  for (const h of holders) {
+    const v = rowView(h)
+    const [uid, cell, cmpd, dose, time, extra, val] = [
+      'uniqID',
+      'cell',
+      'cmpd',
+      'dose',
+      'time',
+      'extra',
+      'value'
+    ].map((k) => v.col(k))
+    for (let i = 0; i < v.n; i++) {
+      const value = val(i) as number | null | undefined
+      if (value == null || !(value > 0)) continue
+      const e = extra(i) as StandardRow['extra']
+      const row = {
+        uniqID: uid(i),
+        cell: cell(i),
+        cmpd: cmpd(i),
+        dose: dose(i),
+        time: time(i),
+        extra: e
+      } as StandardRow
+      // Custom conditions join the key — without them two distinct contexts would pool together.
+      const extraKey = Object.keys(e ?? {})
+        .sort()
+        .map((k) => `${k}=${e![k]}`)
+        .join('¦')
+      const key = `${row.uniqID}¦${row.cell ?? ''}¦${row.cmpd ?? ''}¦${row.dose ?? ''}¦${row.time ?? ''}¦${extraKey}`
+      let g = groups.get(key)
+      if (!g) groups.set(key, (g = { row, logs: [] }))
+      g.logs.push(Math.log10(value))
+    }
   }
   return [...groups.values()]
 }
@@ -276,29 +333,104 @@ export function toContrastSide(
    *  gene */
   surfacesPerSlice = false
 ): ContrastSideRow[] {
-  if (r?.kind === 'compare' && surfacesPerSlice && cmpRows(r).some(isSurfaceRow))
+  if (
+    r?.kind === 'compare' &&
+    surfacesPerSlice &&
+    someNested(r.cmp, 'rs', 'axis', (_, a) => a === 'surface') &&
+    cmpRows(r).some(isSurfaceRow)
+  )
+    // (a surface's side rows read the whole row: built)
     return cmpRows(r).flatMap((row) =>
       isSurfaceRow(row) ? surfaceSideRows(row, feature, ctx) : []
     )
-  if (r?.kind === 'compare' && feature !== 'value')
-    // Another feature of the same rows: its value alone (no SE or replicates — those are the fold
-    // change's), the side's own calls kept for the divergence mask.
-    return cmpRows(r).map((row) => ({
-      uniqID: row.uniqID,
-      cell: row.cell ?? null,
-      cmpd: row.cmpd,
-      dose: row.dose,
-      time: row.time,
-      ...(row.extra ? { extra: row.extra } : null),
-      value: compareFeatureValue(row, feature, ctx),
-      signf: row.signf,
-      effect: row.effect,
-      pP: row.pP,
-      pQ: row.pQ
-    }))
+  // The other sides read only some fields of each row: off their columns (no row built).
+  if (r?.kind === 'compare') {
+    const { n, at } = signedRows(r.cmp)
+    const v = rowView(r.cmp)
+    const [uid, cell, cmpd, dose, time, extra, log2FC, signf, effect, pP, pQ] = [
+      'uniqID',
+      'cell',
+      'cmpd',
+      'dose',
+      'time',
+      'extra',
+      'log2FC',
+      'signf',
+      'effect',
+      'pP',
+      'pQ'
+    ].map((k) => v.col(k))
+    const out: ContrastSideRow[] = new Array(n)
+    if (feature !== 'value') {
+      // Another feature of the same rows: its value alone (no SE or replicates — those are the fold
+      // change's), the side's own calls kept for the divergence mask.
+      const [curve, rs] = ['curve', 'rs'].map((k) => v.col(k))
+      for (let k = 0; k < n; k++) {
+        const i = at(k)
+        const e = extra(i) as CompareResultRow['extra']
+        // (the fields compareFeatureValue reads; a potency's curves only when it's asked for)
+        const row = {
+          log2FC: log2FC(i),
+          pP: pP(i),
+          pQ: pQ(i),
+          ...(feature === 'pec50' ? { curve: curve(i), rs: rs(i) } : null)
+        } as CompareResultRow
+        out[k] = {
+          uniqID: uid(i),
+          cell: cell(i) ?? null,
+          cmpd: cmpd(i),
+          dose: dose(i),
+          time: time(i),
+          ...(e ? { extra: e } : null),
+          value: compareFeatureValue(row, feature, ctx),
+          signf: signf(i),
+          effect: effect(i),
+          pP: pP(i),
+          pQ: pQ(i)
+        } as ContrastSideRow
+      }
+      return out
+    }
+    const byGene = cleanStd ? stdByGene(cleanStd) : undefined
+    const [mean2, fcSE] = ['mean2', 'fcSE'].map((k) => v.col(k))
+    for (let k = 0; k < n; k++) {
+      const i = at(k)
+      const e = extra(i) as CompareResultRow['extra']
+      // (the fields replicateLog2FCs reads)
+      const reps = byGene
+        ? replicateLog2FCs(
+            {
+              mean2: mean2(i),
+              cell: cell(i),
+              cmpd: cmpd(i),
+              dose: dose(i),
+              time: time(i),
+              extra: e
+            } as CompareResultRow,
+            byGene.get(uid(i) as string) ?? []
+          )
+        : []
+      out[k] = {
+        uniqID: uid(i),
+        cell: cell(i) ?? null,
+        cmpd: cmpd(i),
+        dose: dose(i),
+        time: time(i),
+        ...(e ? { extra: e } : null),
+        value: log2FC(i),
+        signf: signf(i),
+        effect: effect(i),
+        pP: pP(i),
+        pQ: pQ(i),
+        se: fcSE(i) ?? null,
+        ...(reps.length ? { reps } : null)
+      } as ContrastSideRow
+    }
+    return out
+  }
   if (r?.kind === 'standardize' && feature !== 'value')
     // A spread is a group's, not a sample's: one row per gene × condition context.
-    return stdGroups(r.std.rows).map(({ row, logs }) => ({
+    return stdGroupsOf([r.std]).map(({ row, logs }) => ({
       uniqID: row.uniqID,
       cell: row.cell,
       cmpd: row.cmpd,
@@ -307,41 +439,35 @@ export function toContrastSide(
       ...(row.extra ? { extra: row.extra } : null),
       value: stdFeatureValue(logs, feature)
     }))
-  if (r?.kind === 'compare') {
-    const byGene = cleanStd ? stdByGene(cleanStd) : undefined
-    return cmpRows(r).map((row) => {
-      const reps = byGene ? replicateLog2FCs(row, byGene.get(row.uniqID) ?? []) : []
-      return {
-        uniqID: row.uniqID,
-        cell: row.cell ?? null,
-        cmpd: row.cmpd,
-        dose: row.dose,
-        time: row.time,
-        ...(row.extra ? { extra: row.extra } : null),
-        value: row.log2FC,
-        signf: row.signf,
-        effect: row.effect,
-        pP: row.pP,
-        pQ: row.pQ,
-        se: row.fcSE ?? null,
-        ...(reps.length ? { reps } : null)
-      }
-    })
-  }
-  if (r?.kind === 'standardize')
-    return r.std.rows.map((row) => {
-      const value = row.value != null && row.value > 0 ? Math.log10(row.value) : null
-      return {
-        uniqID: row.uniqID,
-        cell: row.cell,
-        cmpd: row.cmpd,
-        dose: row.dose,
-        time: row.time,
-        ...(row.extra ? { extra: row.extra } : null),
+  if (r?.kind === 'standardize') {
+    const v = rowView(r.std)
+    const [uid, cell, cmpd, dose, time, extra, val] = [
+      'uniqID',
+      'cell',
+      'cmpd',
+      'dose',
+      'time',
+      'extra',
+      'value'
+    ].map((k) => v.col(k))
+    const out: ContrastSideRow[] = new Array(v.n)
+    for (let i = 0; i < v.n; i++) {
+      const raw = val(i) as number | null | undefined
+      const value = raw != null && raw > 0 ? Math.log10(raw) : null
+      const e = extra(i) as StandardRow['extra']
+      out[i] = {
+        uniqID: uid(i),
+        cell: cell(i),
+        cmpd: cmpd(i),
+        dose: dose(i),
+        time: time(i),
+        ...(e ? { extra: e } : null),
         value,
         ...(value != null ? { reps: [value] } : null)
-      }
-    })
+      } as ContrastSideRow
+    }
+    return out
+  }
   return []
 }
 
@@ -382,11 +508,21 @@ export function contrastCurveSides(
 ): [CompareResultRow[], CompareResultRow[]] | null {
   const curvesOf = (r: NodeResult | undefined): CompareResultRow[] | null => {
     if (r?.kind !== 'compare') return null
-    const rows = r.cmp.rows.filter((x) => curveAxisOf(x) === axis)
+    // the curves along `axis` (curveAxisOf), read off the nested columns — and the same rows
+    // each call, so the plot drawn from them doesn't redraw
+    const rows = holderWhereNested(
+      r.cmp,
+      `curves¦${axis}`,
+      [
+        ['curve', 'axis'],
+        ['rs', 'axis']
+      ],
+      (on, v) => (v[0] ?? (on[1] && v[1] !== 'surface' ? v[1] : null)) === axis
+    ).rows as CompareResultRow[]
     return rows.length ? rows : null
   }
   const named = (rows: CompareResultRow[], name: string): CompareResultRow[] =>
-    rows.map((x) => ({ ...x, comparison: name }))
+    cached(namedOf, rows, name, () => rows.map((x) => ({ ...x, comparison: name })))
   if (resolveContrastSource(cfg, upstreamIds.length) === 'pair') {
     const sides = pairSides(cfg, upstreamIds)
     if (!sides) return null
@@ -399,14 +535,33 @@ export function contrastCurveSides(
   if (!all || !cfg.num || !cfg.den) return null
   // a row in a selection: every condition it pins takes one of its values
   const pick = (sel: CondSelector): CompareResultRow[] =>
-    all.filter((x) =>
-      (Object.entries(sel) as Array<[ConditionKey, string[] | undefined]>).every(
-        ([c, vs]) => !vs?.length || vs.some((v) => String(condValue(x, c) ?? '') === String(v))
+    cached(pickOf, all, JSON.stringify(sel), () =>
+      all.filter((x) =>
+        (Object.entries(sel) as Array<[ConditionKey, string[] | undefined]>).every(
+          ([c, vs]) => !vs?.length || vs.some((v) => String(condValue(x, c) ?? '') === String(v))
+        )
       )
     )
   const a = pick(cfg.num)
   const b = pick(cfg.den)
   return a.length && b.length ? [named(a, names[0]), named(b, names[1])] : null
+}
+
+/** A rows array's derived arrays by key — one per (rows, key), so a side handed out again is the
+ *  same array (contrastCurveSides runs on every render). */
+const namedOf = new WeakMap<object, Map<string, CompareResultRow[]>>()
+const pickOf = new WeakMap<object, Map<string, CompareResultRow[]>>()
+function cached(
+  by: WeakMap<object, Map<string, CompareResultRow[]>>,
+  rows: object,
+  key: string,
+  make: () => CompareResultRow[]
+): CompareResultRow[] {
+  let m = by.get(rows)
+  if (!m) by.set(rows, (m = new Map()))
+  let out = m.get(key)
+  if (!out) m.set(key, (out = make()))
+  return out
 }
 
 /** The wired inputs the tile actually consumes in its current mode — the rest are wired but idle
@@ -425,6 +580,34 @@ export function usedInputs(cfg: ContrastConfig, upstreamIds: string[]): Set<stri
 const cmpRows = (r: Extract<NodeResult, { kind: 'compare' }>): CompareResultRow[] =>
   termless(r.cmp.rows)
 
+/** cmpRows as row indices, off the context index (no row built): `n` of them, the i-th at
+ *  `at(i)`. */
+function signedRows(cmp: { rows: readonly CompareResultRow[] }): {
+  n: number
+  at: (i: number) => number
+} {
+  const ix = contextOf(cmp)
+  if (!ix.rows.some((c) => c.term)) return { n: ix.n, at: (i) => i }
+  const idx = contextIndices(
+    ix,
+    ix.rows.filter((c) => !c.term)
+  )
+  return { n: idx.length, at: (i) => idx[i] }
+}
+
+/** surfaceSliceCond over a Compare's rows, read off the nested column — only the first surface
+ *  row's `rs` read (no row built). */
+export function surfaceSliceCondOf(cmp: {
+  rows: readonly CompareResultRow[]
+}): ConditionKey | undefined {
+  const axis = nestedCol(cmp, 'rs', 'axis')
+  const n = rowCount(cmp)
+  for (let i = 0; i < n; i++)
+    if (axis(i) === 'surface')
+      return surfaceSlicing({ rs: rowView(cmp).col('rs')(i) } as CompareResultRow).at
+  return undefined
+}
+
 /** A result's rows in the shape the group selector reads (uniqID + conditions), plus which
  *  conditions carry values. Compare rows are one per gene × comparison context; Standardize rows
  *  one per gene × sample. */
@@ -432,26 +615,36 @@ export function selectorRowsOf(r: NodeResult | undefined): {
   rows: StandardRow[]
   present: ConditionKey[]
 } {
-  const raw: Array<Record<string, unknown>> =
-    r?.kind === 'compare'
-      ? termless(r.cmp.rows).map((x) => ({
-          uniqID: x.uniqID,
-          cell: x.cell ?? '',
-          cmpd: x.cmpd,
-          dose: x.dose,
-          time: x.time,
-          ...(x.extra ? { extra: x.extra } : null)
-        }))
-      : r?.kind === 'standardize'
-        ? r.std.rows.map((x) => ({
-            uniqID: x.uniqID,
-            cell: x.cell,
-            cmpd: x.cmpd,
-            dose: x.dose,
-            time: x.time,
-            ...(x.extra ? { extra: x.extra } : null)
-          }))
-        : []
+  // (read off the columns: no row built)
+  const holder = r?.kind === 'compare' ? r.cmp : r?.kind === 'standardize' ? r.std : undefined
+  const raw: Array<Record<string, unknown>> = []
+  if (holder) {
+    // a Compare's signed rows (cmpRows); every Clean data row
+    const { n, at } =
+      r?.kind === 'compare' ? signedRows(r.cmp) : { n: rowCount(holder), at: (i: number) => i }
+    const v = rowView(holder as { rows: readonly object[] })
+    const [uid, cell, cmpd, dose, time, extra] = [
+      'uniqID',
+      'cell',
+      'cmpd',
+      'dose',
+      'time',
+      'extra'
+    ].map((k) => v.col(k))
+    const blank = r?.kind === 'compare'
+    for (let k = 0; k < n; k++) {
+      const i = at(k)
+      const e = extra(i)
+      raw.push({
+        uniqID: uid(i),
+        cell: blank ? (cell(i) ?? '') : cell(i),
+        cmpd: cmpd(i),
+        dose: dose(i),
+        time: time(i),
+        ...(e ? { extra: e } : null)
+      })
+    }
+  }
   const rows = raw as unknown as StandardRow[]
   const present = condsIn(rows).filter((c) => condPresent(rows, c))
   return { rows, present }

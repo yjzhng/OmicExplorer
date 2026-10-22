@@ -8,6 +8,7 @@
  * (the Clean data table) and written (the standardized CSV); see presentStd.
  */
 import type { StandardizeResult, StandardRow } from './types'
+import { lazyCopy, tableWithNumbers } from './lazyRows'
 
 export type ValueScale = 'linear' | 'log2' | 'log10'
 /** Clean data's log-transform choice: the scale its values are presented on. */
@@ -198,6 +199,12 @@ export function presentStd(
   let byScale = presented.get(std)
   if (!byScale) presented.set(std, (byScale = new Map()))
   let out = byScale.get(scale)
+  // A columnar result: the value column rescaled, its rows still built only when read.
+  const table = out ? null : tableWithNumbers(std, 'value', (v) => fromLinear(v, scale))
+  if (!out && table) {
+    out = lazyCopy(std, { scale }, table) ?? undefined
+    if (out) byScale.set(scale, out)
+  }
   if (!out) {
     out = {
       ...std,

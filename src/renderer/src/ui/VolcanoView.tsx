@@ -141,6 +141,8 @@ export function VolcanoView({
         // This group's own highlight look (see PlotlyChart's EMPH_KEY): the emphasis overlay and
         // the dim read it per trace, so each group can bump/ring/label/fade differently.
         __oeEmph: g.highlight,
+        // The grey bulk may draw as a density past ~100k points (PlotlyChart's densityBins).
+        ...(eff === 'none' ? { __oeBin: true } : {}),
         x: pts.map((pt) => pt.x),
         y: pts.map((pt) => pt.y),
         text: pts.map((pt) => pt.label),
@@ -212,6 +214,13 @@ export function VolcanoView({
     }
     const xPad = (xHi - xLo || 2) * 0.05
     const hideDown = volcano.unsigned ? { visible: false } : null
+    // How far the guides run: well past the plot's range (Plotly clips them to it), so a zoom out or
+    // pan still shows them reaching the edges. (The range is pinned and autoscale is off, so these
+    // far ends never stretch the view.)
+    const FAR = 20
+    const xFarLo = xLo - xPad - FAR * (xHi - xLo + 2 * xPad)
+    const xFarHi = xHi + xPad + FAR * (xHi - xLo + 2 * xPad)
+    const yFar = yMax * 1.08 * (FAR + 1)
 
     // Guide geometry follows the threshold TYPE. Non-linear (SAM): a hyperbola boundary
     //   stat = P_lim + b/(|log₂FC| − FC_lim)     (stored as statMin=P_lim, s0=−FC_lim)
@@ -242,19 +251,18 @@ export function VolcanoView({
       const s0L = threshold.s0Down ?? s0v // down side's asymptote (mirrors s0 unless asymmetric)
       const asym = -s0v // FC asymptote |FC| = −s0 (positive in the normal FC-limit regime)
       const asymL = -s0L
-      const yTop = yMax * 1.08
-      const xRight = xHi + xPad
+      const xRight = xFarHi
       // Build the SAM boundary path for a given b (uses the actual s0, so it matches applyThreshold).
       // Sample the RIGHT branch from where the curve meets the plot top (avoiding the blow-up near the
       // asymptote) out to the edge, never left of x=0; the LEFT branch mirrors it. Re-sampling on each
       // preview (not scaling a snapshot) keeps the drag preview matching the committed shape.
       const toPath = (pts: Array<[number, number]>): string =>
         pts.map(([x, y], i) => `${i ? 'L' : 'M'}${x},${y}`).join('')
-      // Sample UP TO yCap (above the plot top) so the near-vertical rise toward the asymptote is part
-      // of the path and Plotly clips it at yTop — the curve then visibly shoots off the top near the
-      // FC limit instead of ending flat at the edge.
-      const yCap = statMin + (yTop - statMin) * 2
-      const xLeft = xLo - xPad
+      // Sample UP TO yCap (far above the plot top) so the near-vertical rise toward the asymptote is
+      // part of the path and Plotly clips it at the top — the curve then visibly shoots off the top
+      // near the FC limit instead of ending flat at the edge, zoomed out too.
+      const yCap = Math.max(yFar, statMin + 1)
+      const xLeft = xFarLo
       // One branch of the hyperbola for a given asymptote (positive-x form); the left branch is
       // the same shape sampled with the down side's asymptote and mirrored.
       const branch = (
@@ -266,9 +274,11 @@ export function VolcanoView({
         const xStart = Math.max(0, a + bVal / Math.max(yCap - statMin, 1e-6))
         const pts: Array<[number, number]> = []
         if (xStart < xEnd) {
-          const N = 140
+          // Points packed toward the start (cubic spacing), where the curve climbs steeply — the
+          // far end runs well past the plot, where it's all but flat.
+          const N = 240
           for (let i = 0; i < N; i++) {
-            const x = xStart + ((xEnd - xStart) * i) / (N - 1)
+            const x = xStart + (xEnd - xStart) * (i / (N - 1)) ** 3
             pts.push([x, Math.min(statMin + bVal / (x + s0b), yCap)])
           }
         }
@@ -369,7 +379,7 @@ export function VolcanoView({
             ]
           : []
     for (const need of needs) {
-      const yCap = yMax * 1.08 * 2
+      const yCap = yFar
       const branch = (lim: number, xEnd: number): Array<[number, number]> => {
         const pts: Array<[number, number]> = []
         if (!(xEnd > lim)) return pts
@@ -390,7 +400,7 @@ export function VolcanoView({
           x0 = b
         }
         // Points packed toward the start (cubic spacing), where the boundary climbs steeply.
-        const N = 140
+        const N = 240
         for (let i = 0; i < N; i++) {
           const x = x0 + (xEnd - x0) * (i / (N - 1)) ** 3
           const y = need.at(x, lim)
@@ -404,8 +414,8 @@ export function VolcanoView({
       }
       const toPath = (pts: Array<[number, number]>): string =>
         pts.map(([x, y], i) => `${i ? 'L' : 'M'}${x},${y}`).join('')
-      const right = branch(need.wallUp, xHi + xPad)
-      const left = branch(need.wallDown, -(xLo - xPad)).map(([x, y]) => [-x, y] as [number, number])
+      const right = branch(need.wallUp, xFarHi)
+      const left = branch(need.wallDown, -xFarLo).map(([x, y]) => [-x, y] as [number, number])
       const look = guideLine(p, need.faint ? (gw * 2) / 3 : gw)
       const extra = need.faint ? { opacity: 0.45 } : null
       if (right.length) ccShapes.push({ type: 'path', path: toPath(right), line: look, ...extra })
@@ -447,13 +457,13 @@ export function VolcanoView({
             ? samShapes
             : [
                 // (one-sided: the down side's guides kept in their places for the drags, hidden)
-                { ...line(volcano.fcLow, volcano.fcLow, volcano.statMin, yMax), ...hideDown },
-                line(volcano.fcHigh, volcano.fcHigh, volcano.statMin, yMax),
+                { ...line(volcano.fcLow, volcano.fcLow, volcano.statMin, yFar), ...hideDown },
+                line(volcano.fcHigh, volcano.fcHigh, volcano.statMin, yFar),
                 {
-                  ...line(xLo - xPad, volcano.fcLow, volcano.statMin, volcano.statMin),
+                  ...line(xFarLo, volcano.fcLow, volcano.statMin, volcano.statMin),
                   ...hideDown
                 },
-                line(volcano.fcHigh, xHi + xPad, volcano.statMin, volcano.statMin)
+                line(volcano.fcHigh, xFarHi, volcano.statMin, volcano.statMin)
               ]
     }
     // Collision-managed labels for the genes of every group whose label switch is on (by default
@@ -697,6 +707,8 @@ export function VolcanoView({
       emphasis={emphasis}
       guides={guides}
       onGuide={onGuide}
+      // the guides run far past the pinned range (see FAR): an autoscale would zoom out to them
+      autoscale={false}
     />
   )
 }

@@ -13,6 +13,7 @@ import {
   buildHeatmapSteps,
   clusterRowGroups,
   numericOf,
+  sampleIndex,
   type HeatmapData,
   type SampleOrder,
   type StandardizeResult,
@@ -50,7 +51,8 @@ export function HeatmapTile({
   const [heatmap, setHeatmap] = useState<HeatmapData | null>(null)
   useEffect(() => {
     let live = true
-    const gen = buildHeatmapSteps(std.rows, {
+    // off the result's shared sample index (sampleIndex): rows read as ids, no row built
+    const gen = buildHeatmapSteps(sampleIndex(std), {
       displayMap: std.displayMap,
       log10: false,
       focus,

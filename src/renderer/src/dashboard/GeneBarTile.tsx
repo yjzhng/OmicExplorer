@@ -11,8 +11,11 @@ import { useAppSettings, useRolePalette } from '../ui/useAppSettings'
 import {
   abundanceLabel,
   buildGeneBar,
+  distinctOf,
   isNumericCond,
   numericOf,
+  sampleIndex,
+  valuesOf,
   type ConditionKey,
   type SampleOrder,
   type StandardizeResult,
@@ -60,7 +63,9 @@ function GeneBarBody({
 }) {
   const bar = useMemo(
     () =>
-      buildGeneBar(std.rows, [gene], std.displayMap, range.log, error, {
+      // off the result's shared sample index (sampleIndex): the condition axis made once per
+      // sample, the rows read as ids — no row built
+      buildGeneBar(sampleIndex(std), [gene], std.displayMap, range.log, error, {
         by: sampleOrder,
         samples: std.samples
       }),
@@ -110,7 +115,7 @@ export function GeneBarTile({
   const globalCat = useAppSettings((s) => s.categorical)
   const categorical = CATEGORICAL_SCHEMES[toCategoricalId(config.categorical) ?? globalCat]
   const valuePalette = useRolePalette('data')
-  const present = useMemo(() => new Set(std.rows.map((r) => r.uniqID)), [std])
+  const present = useMemo(() => distinctOf(std, 'uniqID') as Set<string>, [std])
   // Every gene by default; the selected ones (those in this data) once any are selected.
   const pager = useMemo(
     () => (genes.some((id) => present.has(id)) ? genes : [...present]),
@@ -118,7 +123,10 @@ export function GeneBarTile({
   )
   // Global value range, for the bars' colour (shared with the Heatmap tile). Never a log axis of
   // its own: the values already are on the scale Clean data presents them on.
-  const range = useMemo(() => ({ ...valueRange(std.rows.map((r) => r.value)), log: false }), [std])
+  const range = useMemo(
+    () => ({ ...valueRange(valuesOf(std, 'value') as Array<number | null>), log: false }),
+    [std]
+  )
   // Global axis scale: the whole dataset's values (from 0, as bars are), with headroom for the
   // error bars — so paging genes keeps one scale.
   const globalRange = useMemo((): [number, number] | undefined => {

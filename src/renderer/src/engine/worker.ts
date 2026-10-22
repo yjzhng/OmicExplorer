@@ -35,7 +35,7 @@ import { curveFitSteps, driveAsync } from './direct'
 import { responseSurfaceSteps, runResponseSurface, type ResponseInput } from './responseSurface'
 import { enrichmentAllSteps } from './plotData'
 import { configurePool, pool, setUiBusy } from './pool'
-import { clusterRowGroups } from './cluster'
+import { clusterRowGroups, clusterRowTree, type ClusterOrderOptions } from './cluster'
 import { progressTracker, type Progress, type ProgressTracker } from './progress'
 import { decodeValue, encodeValue } from './wire'
 
@@ -55,6 +55,11 @@ export type EngineRequest =
   | { id: number; op: 'configurePool'; payload: { size: number } }
   | { id: number; op: 'uiBusy'; payload: { busy: boolean } }
   | { id: number; op: 'clusterRowGroups'; payload: { flat: Float64Array; m: number; k: number } }
+  | {
+      id: number
+      op: 'clusterRowTree'
+      payload: { flat: Float64Array; m: number; opts: ClusterOrderOptions }
+    }
   | { id: number; op: 'dropDataset'; payload: { key: number } }
   | {
       id: number
@@ -131,6 +136,12 @@ ctx.addEventListener('message', async (e) => {
       const rows: Float64Array[] = []
       for (let i = 0; i + m <= flat.length && m > 0; i += m) rows.push(flat.subarray(i, i + m))
       result = clusterRowGroups(rows as unknown as number[][], k)
+    } else if (msg.op === 'clusterRowTree') {
+      // likewise
+      const { flat, m, opts } = msg.payload
+      const rows: Float64Array[] = []
+      for (let i = 0; i + m <= flat.length && m > 0; i += m) rows.push(flat.subarray(i, i + m))
+      result = clusterRowTree(rows as unknown as number[][], opts)
     } else if (msg.op === 'previewScale')
       result = previewScale(msg.payload.dataText, msg.payload.dataFilename)
     else if (msg.op === 'vehNorm') result = runVehNorm(msg.payload)

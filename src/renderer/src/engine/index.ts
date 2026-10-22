@@ -26,6 +26,40 @@ export {
 } from './accession'
 export { combineStandardize } from './combine'
 export {
+  contextIndices,
+  contextOf,
+  contextRowAt,
+  contrastYRangeOf,
+  distinctOf,
+  facetGroupsOf,
+  hasTermRows,
+  holderWhere,
+  holderWhereNested,
+  idsWhere,
+  rowsOfContexts,
+  rowsWhere,
+  type ContextIndex,
+  type FacetIndexGroup
+} from './contextIndex'
+export { rowsAt } from './lazyRows'
+export {
+  arrayView,
+  nestedCol,
+  nestedPresent,
+  rowView,
+  scanRows,
+  someNested,
+  valuesOf,
+  type RowView
+} from './rowView'
+export {
+  sampleIndex,
+  isSampleIndex,
+  stdLookupOf,
+  type SampleIndex,
+  type StdLookup
+} from './sampleIndex'
+export {
   conditionLevels,
   filterActive,
   keptBy,
@@ -118,6 +152,8 @@ export {
   runContrastPair,
   previewContrastPair,
   abundanceOnScale,
+  contrastYRange,
+  rowOnScale,
   CONTRAST_STAT_DEFAULTS,
   AXIS_TAILS,
   statTails,
@@ -159,6 +195,7 @@ export {
   buildHeatmap,
   buildHeatmapSteps,
   buildFcHeatmap,
+  buildFcHeatmapSteps,
   buildScatter,
   bandEdgePath,
   bandConfAt,
@@ -181,6 +218,8 @@ export {
   buildCluster,
   buildResponseCluster,
   buildQc,
+  buildStdMatrix,
+  type StdMatrixSample,
   buildSampleCorr,
   buildEnrichment,
   facetContextDims,
@@ -194,6 +233,7 @@ export {
   metaValue,
   facetKeyLabel,
   rowsOfKind,
+  showKindOf,
   SHOW_KINDS,
   sortSamples,
   CLUSTER_COLOR
@@ -338,7 +378,7 @@ export {
   type ValueHistogram,
   type ValueScale
 } from './scale'
-export { clusterRowGroups } from './cluster'
+export { clusterRowGroups, clusterRowTree } from './cluster'
 export type { DendroLink, Linkage, LeafOrder } from './cluster'
 export {
   DESCRIBE_Q,

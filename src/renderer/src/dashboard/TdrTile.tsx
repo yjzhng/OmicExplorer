@@ -9,10 +9,9 @@ import {
   ctxNum,
   detectAxisScale,
   replicateLog2FCs,
-  stdByGene,
+  type StdLookup,
   type CompareResultRow,
-  type ConditionKey,
-  type StandardRow
+  type ConditionKey
 } from '../engine'
 import type { ResponseLook } from '../graph/types'
 import type { PaletteRef } from '../ui/palettes'
@@ -37,7 +36,7 @@ export function TdrBody({
   pair: [ConditionKey, ConditionKey]
   gene: string
   /** the Clean data rows the Compare ran on — each level's replicates are drawn from them */
-  std?: StandardRow[]
+  std?: StdLookup
   /** scale: global — the value axis spans every gene in the facet, so paging keeps one scale */
   global?: boolean
   /** a global scale over just these genes (the selection on show); unset = every gene */
@@ -56,7 +55,7 @@ export function TdrBody({
   const [ax, ay] = pair
   // Each level pair of the gene: its log₂FC, the fold change's SE and its replicates.
   const measured = useMemo(() => {
-    const geneStd = (std && stdByGene(std).get(gene)) ?? []
+    const geneStd = std?.get(gene) ?? []
     const mine = rows.filter((r) => r.uniqID === gene)
     const cells: MeasuredCell[] = []
     for (const r of mine) {
@@ -106,9 +105,8 @@ export function TdrBody({
 function tdrValueRange(
   rows: CompareResultRow[],
   [ax, ay]: [ConditionKey, ConditionKey],
-  std: StandardRow[] | undefined
+  byGene: StdLookup | undefined
 ): [number, number] | undefined {
-  const byGene = std ? stdByGene(std) : undefined
   let lo = Infinity
   let hi = -Infinity
   const take = (v: number): void => {

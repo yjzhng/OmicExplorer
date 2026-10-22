@@ -15,6 +15,7 @@ import { GENE_LIST_STYLES } from './geneListStyles'
 import { cssVars, PALETTES, UI } from './theme'
 import { useSelection } from './useSelection'
 import { useUiTheme } from './useUiTheme'
+import { rowWindow } from './rowWindow'
 
 export interface Column {
   key: string
@@ -38,9 +39,28 @@ export interface HeaderLine {
   value: string
 }
 
+/** A table's rows by index, without being an array of them: what a large columnar result shows
+ *  through (its cells read straight off its columns), so a table of hundreds of thousands of rows
+ *  sorts, filters and searches without building them — only the rows on screen are (`row`). */
+export interface TableSource {
+  n: number
+  /** row i's value in column `key` — what search, filters, sort and the column menus read */
+  cell: (key: string, i: number) => unknown
+  /** row i as a display row (its cells by column key) — built only for the rows shown */
+  row: (i: number) => Record<string, unknown>
+}
+
+/** An array of display rows as a TableSource. */
+const arraySource = (rows: ReadonlyArray<Record<string, unknown>>): TableSource => ({
+  n: rows.length,
+  cell: (key, i) => rows[i][key],
+  row: (i) => rows[i]
+})
+
 interface DataTableProps {
   columns: Column[]
-  rows: Array<Record<string, unknown>>
+  /** the display rows, or a source of them (TableSource) */
+  rows: Array<Record<string, unknown>> | TableSource
   maxRows?: number
   caption?: string
   /** row field holding the linked-selection feature id; '' opts the table out */
@@ -72,11 +92,30 @@ const PIN_BG = 'rgba(128,128,128,0.18)'
 const HOVER_BG = 'rgba(128,128,128,0.32)'
 const PIN_BAR = `inset 3px 0 0 ${UI.accent}`
 
+// Row virtualisation: only the rows in (and around) the viewport are in the DOM, spacer rows
+// standing in for the rest — a wide table's 500 rows were ~37k cells of style + layout each time
+// its tab was shown. Rows are one line (cells don't wrap), so a row height measured off the
+// rendered rows places the rest; until measured, a guess. WINDOW_PAD = the margin (and the block
+// the window moves in, so a scroll re-renders every so many rows, not every row).
+const ROW_H_GUESS = 24
+const WINDOW_PAD = 10
+
+/** A cell's text, and that cut to its column's display cap (maxChars). */
+function cellText(
+  c: Column,
+  v: unknown,
+  maxChars: Record<string, number> | undefined
+): { text: string; cut: string } {
+  const text = c.format ? c.format(v) : strKey(v)
+  const cap = maxChars?.[c.key]
+  return { text, cut: cap && text.length > cap ? truncateLabel(text, cap) : text }
+}
+
 /** A column is numeric when every non-blank sampled value parses as a finite number. */
-function inferType(key: string, rows: Array<Record<string, unknown>>): ColType {
+function inferType(key: string, src: TableSource): ColType {
   let sawNumber = false
-  for (const r of rows) {
-    const v = r[key]
+  for (let i = 0; i < src.n; i++) {
+    const v = src.cell(key, i)
     if (v == null || v === '') continue
     if (typeof v === 'boolean') return 'categorical'
     const n = typeof v === 'number' ? v : Number(v)
@@ -116,13 +155,14 @@ export function DataTableView({
   // True while the pointer is over this table — suppresses the follow-scroll so the
   // rows don't shift under the cursor we're hovering with.
   const localHover = useRef(false)
+  const src = useMemo(() => (Array.isArray(rows) ? arraySource(rows) : rows), [rows])
 
   // A column's type is read only by a sort and by its menu — so it's inferred on first ask and
   // kept, not for every column up front (a whole scan of a long table per column).
   const colType = useMemo(() => {
     const t: Record<string, ColType> = {}
-    return (key: string): ColType => (t[key] ??= inferType(key, rows))
-  }, [rows])
+    return (key: string): ColType => (t[key] ??= inferType(key, src))
+  }, [src])
 
   const fmt = (c: Column, v: unknown): string => (c.format ? c.format(v) : strKey(v))
 
@@ -130,13 +170,17 @@ export function DataTableView({
   // `skipKey`'s own, so a column's menu can list the values still available given everything ELSE.
   const passes = useMemo(() => {
     const q = query.trim().toLowerCase()
-    return (r: Record<string, unknown>, skipKey?: string): boolean => {
-      if (selectedOnly && pinnedIds.size > 0 && !pinnedIds.has(idKey ? strKey(r[idKey]) : ''))
+    return (i: number, skipKey?: string): boolean => {
+      if (
+        selectedOnly &&
+        pinnedIds.size > 0 &&
+        !pinnedIds.has(idKey ? strKey(src.cell(idKey, i)) : '')
+      )
         return false
       for (const c of columns) {
         const f = filters[c.key]
         if (!f || c.key === skipKey) continue
-        const v = r[c.key]
+        const v = src.cell(c.key, i)
         if (f.type === 'categorical') {
           if (f.selected.length && !f.selected.includes(strKey(v))) return false
         } else {
@@ -149,7 +193,7 @@ export function DataTableView({
       if (q) {
         let hit = false
         for (const c of columns) {
-          if (fmt(c, r[c.key]).toLowerCase().includes(q)) {
+          if (fmt(c, src.cell(c.key, i)).toLowerCase().includes(q)) {
             hit = true
             break
           }
@@ -158,56 +202,79 @@ export function DataTableView({
       }
       return true
     }
-  }, [columns, filters, query, selectedOnly, pinnedIds, idKey])
+  }, [src, columns, filters, query, selectedOnly, pinnedIds, idKey])
 
   const narrowed = query.trim() !== '' || Object.keys(filters).length > 0 || selectedOnly
-  const processed = useMemo(() => {
+  /** Every row's index, in order (what's shown with nothing narrowed or sorted). */
+  const all = useMemo(() => Int32Array.from({ length: src.n }, (_, i) => i), [src])
+  // The rows on show, as indices into the source: narrowed, then sorted (stable — ties keep their
+  // order). Cells are read for the sort key only, never whole rows.
+  const processed = useMemo((): Int32Array => {
     // Nothing to narrow by: every row passes, so skip the per-row check (a long table's whole scan).
-    let out = narrowed ? rows.filter((r) => passes(r)) : rows
+    let out = narrowed ? all.filter((i) => passes(i)) : all
     if (sort) {
       const { key, dir } = sort
-      const numeric = colType(key) === 'numeric'
-      out = [...out].sort((a, b) => {
-        let cmp: number
-        if (numeric) {
-          const an = Number(a[key])
-          const bn = Number(b[key])
+      const sign = dir === 'asc' ? 1 : -1
+      const order = Array.from(out)
+      if (colType(key) === 'numeric') {
+        const at = new Map<number, number>()
+        for (const i of order) at.set(i, Number(src.cell(key, i)))
+        order.sort((a, b) => {
+          const an = at.get(a)!
+          const bn = at.get(b)!
           const aok = Number.isFinite(an)
           const bok = Number.isFinite(bn)
-          cmp = aok && bok ? an - bn : aok ? -1 : bok ? 1 : 0
-        } else {
-          const as = strKey(a[key])
-          const bs = strKey(b[key])
-          cmp = as < bs ? -1 : as > bs ? 1 : 0
-        }
-        return dir === 'asc' ? cmp : -cmp
-      })
+          return sign * (aok && bok ? an - bn : aok ? -1 : bok ? 1 : 0)
+        })
+      } else {
+        const at = new Map<number, string>()
+        for (const i of order) at.set(i, strKey(src.cell(key, i)))
+        order.sort((a, b) => {
+          const as = at.get(a)!
+          const bs = at.get(b)!
+          return sign * (as < bs ? -1 : as > bs ? 1 : 0)
+        })
+      }
+      out = Int32Array.from(order)
     }
     return out
-  }, [rows, passes, sort, colType, narrowed])
+  }, [src, all, passes, sort, colType, narrowed])
 
   // The rows a column's menu draws its value list from: everything that passes the search and the
   // OTHER columns' filters (not this column's own, or unticked values would disappear from the
   // list and could never be re-ticked).
   const menuRows = useMemo(
-    () => (menu ? rows.filter((r) => passes(r, menu.key)) : rows),
-    [rows, passes, menu]
+    () => (menu ? all.filter((i) => passes(i, menu.key)) : all),
+    [all, passes, menu]
   )
 
-  const shown = processed.slice(0, maxRows)
+  // The rows on screen: the only ones built from a source — each keyed by its index in the
+  // source, which is unique (a long table has many rows per gene) and stable across filtering.
+  const shownAt = useMemo(() => processed.subarray(0, maxRows), [processed, maxRows])
+  const shown = useMemo(() => Array.from(shownAt, (i) => src.row(i)), [src, shownAt])
+  // Each column's longest shown text (over ALL shown rows, rendered or not), laid out in a hidden
+  // zero-height row so the auto layout sizes the columns as it would with every row in the DOM —
+  // and they don't jump as rows with longer values scroll into the window.
+  const widest = useMemo(
+    () =>
+      columns.map((c) => {
+        let best = ''
+        for (const r of shown) {
+          const { cut } = cellText(c, r[c.key], maxChars)
+          if (cut.length > best.length) best = cut
+        }
+        return best
+      }),
+    [columns, shown, maxChars]
+  )
+  // The rendered slice of `shown` [start, end), and the row height the spacers are sized by. Set
+  // by measureEdges (on scroll and resize), only when one changes.
+  const [win, setWin] = useState({ start: 0, end: 5 * WINDOW_PAD, rowH: ROW_H_GUESS })
+  const bodyRef = useRef<HTMLTableSectionElement>(null)
+  const start = Math.min(win.start, shown.length)
+  const end = Math.min(win.end, shown.length)
   const active =
     query.trim() !== '' || sort != null || Object.keys(filters).length > 0 || selectedOnly
-
-  // A row's React key must be unique, but a long table has MANY rows per gene (one per sample /
-  // context), so the id alone collided and rows mis-rendered under search/filter/sort. Key by
-  // id + the row's position in the ORIGINAL array (stable across filtering, unlike the shown index).
-  // Only needed once the rows are narrowed or reordered (otherwise a row's position is its index)
-  // — and then built once per table, not per render.
-  const reordered = processed !== rows
-  const rowIndex = useMemo(
-    () => (reordered ? new Map(rows.map((r, i) => [r, i])) : null),
-    [rows, reordered]
-  )
 
   // Row elements by gene id — a Map per id because a gene can span several rows (long views),
   // and every one of them must light up. `alt` = zebra stripe.
@@ -260,6 +327,17 @@ export function DataTableView({
           const headH = sc.querySelector('thead')?.getBoundingClientRect().height ?? 0
           if (row.top < box.top + headH) sc.scrollTop += row.top - box.top - headH
           else if (row.bottom > box.bottom) sc.scrollTop += row.bottom - box.bottom
+        } else if (sc && idKey && sc.offsetParent !== null) {
+          // Its row is outside the rendered window: scroll to where it sits by index — the scroll
+          // renders it, and this painter (re-run after every render) then lights it.
+          const k = shownAt.findIndex((i) => strKey(src.cell(idKey, i)) === hoverId)
+          if (k >= 0) {
+            const headH = sc.querySelector('thead')?.getBoundingClientRect().height ?? 0
+            const top = headH + k * win.rowH
+            if (top < sc.scrollTop + headH) sc.scrollTop = top - headH
+            else if (top + win.rowH > sc.scrollTop + sc.clientHeight)
+              sc.scrollTop = top + win.rowH - sc.clientHeight
+          }
         }
       }
       lastHover = hoverId
@@ -274,7 +352,9 @@ export function DataTableView({
   const [edges, setEdges] = useState({ top: false, bottom: false, head: 0, barX: 0, barY: 0 })
   const measureEdges = (): void => {
     const sc = scrollRef.current
-    if (!sc) return
+    // Hidden (display:none — a Results tab switched away from) measures all zeros: keep the last
+    // edges, so hiding and showing the tab doesn't re-render every row twice.
+    if (!sc || sc.offsetParent === null) return
     const top = sc.scrollTop > 1
     const bottom = sc.scrollTop + sc.clientHeight < sc.scrollHeight - 1
     // Where the stuck header ends inside the scroller: a header CELL's bottom edge (the cells are
@@ -292,12 +372,29 @@ export function DataTableView({
         ? e
         : { top, bottom, head, barX, barY }
     )
+    // The rendered window for this scroll position, by the rendered rows' average height. Not
+    // clamped to the row count (the render does that), so a filter growing the rows back doesn't
+    // wait on a re-measure to fill the view.
+    const rs = bodyRef.current?.querySelectorAll<HTMLElement>(':scope > tr[data-r]')
+    const first = rs?.[0]
+    const last = rs?.[rs.length - 1]
+    const avg =
+      first && last ? (last.offsetTop + last.offsetHeight - first.offsetTop) / rs.length : 0
+    const headH = sc.querySelector('thead')?.offsetHeight ?? 0
+    const { scrollTop, clientHeight } = sc
+    setWin((w) => {
+      const rowH = avg > 0 && Math.abs(avg - w.rowH) > 0.5 ? avg : w.rowH
+      const { start, end } = rowWindow(scrollTop, clientHeight, headH, rowH, Infinity, WINDOW_PAD)
+      return w.start === start && w.end === end && w.rowH === rowH ? w : { start, end, rowH }
+    })
   }
   // Re-measure when the box or its content resizes (a tile resize, a filter shrinking the rows).
+  // No measure of its own on mount: the observer reports each box once as it starts watching,
+  // after the browser has laid the page out — measuring here instead forced that layout early,
+  // once per table, while the rest of a tab's tiles were still mounting.
   useEffect(() => {
     const sc = scrollRef.current
     if (!sc) return
-    measureEdges()
     const ro = new ResizeObserver(() => measureEdges())
     ro.observe(sc)
     const table = sc.querySelector('table')
@@ -427,13 +524,16 @@ export function DataTableView({
                 })}
               </tr>
             </thead>
-            <tbody>
-              {shown.map((r, i) => {
+            <tbody ref={bodyRef}>
+              {start > 0 && <Spacer height={start * win.rowH} span={columns.length} />}
+              {shown.slice(start, end).map((r, j) => {
+                const i = start + j
                 const id = idKey ? strKey(r[idKey]) : ''
                 const alt = i % 2 === 1
                 return (
                   <tr
-                    key={`${id}\u0000${rowIndex ? (rowIndex.get(r) ?? i) : i}`}
+                    key={`${id}\u0000${shownAt[i]}`}
+                    data-r
                     ref={(el) => {
                       // React 19 ref callbacks may return a cleanup; this one tracks the element
                       // explicitly so the map never holds a stale row.
@@ -452,9 +552,7 @@ export function DataTableView({
                   >
                     {columns.map((c) => {
                       // Cut to the column's display cap (maxChars) — the full text on hover.
-                      const text = fmt(c, r[c.key])
-                      const cap = maxChars?.[c.key]
-                      const shown = cap && text.length > cap ? truncateLabel(text, cap) : text
+                      const { text, cut: shown } = cellText(c, r[c.key], maxChars)
                       return (
                         <td
                           key={c.key}
@@ -472,6 +570,17 @@ export function DataTableView({
                   </tr>
                 )
               })}
+              {end < shown.length && (
+                <Spacer height={(shown.length - end) * win.rowH} span={columns.length} />
+              )}
+              {/* the column-width probe (see `widest`): laid out, never seen, copied or selected */}
+              <tr aria-hidden style={styles.probe}>
+                {columns.map((c, k) => (
+                  <td key={c.key} style={{ ...styles.td, ...styles.probeTd }}>
+                    {widest[k]}
+                  </td>
+                ))}
+              </tr>
             </tbody>
           </table>
         </div>
@@ -492,13 +601,14 @@ export function DataTableView({
       </div>
       <div style={styles.footer}>
         showing {shown.length.toLocaleString()} of {processed.length.toLocaleString()} rows
-        {processed.length !== rows.length ? ` (filtered from ${rows.length.toLocaleString()})` : ''}
+        {processed.length !== src.n ? ` (filtered from ${src.n.toLocaleString()})` : ''}
       </div>
 
       {menu &&
         menuCol &&
         createPortal(
           <ColumnMenu
+            src={src}
             rows={menuRows}
             column={menuCol}
             type={colType(menu.key)}
@@ -523,9 +633,19 @@ export function DataTableView({
   )
 }
 
+/** A blank row standing in for the rows above or below the rendered window. */
+function Spacer({ height, span }: { height: number; span: number }) {
+  return (
+    <tr aria-hidden style={{ height }}>
+      <td colSpan={span} style={styles.spacerTd} />
+    </tr>
+  )
+}
+
 // ── per-column sort + filter popover ──────────────────────────────────────────────
 
 function ColumnMenu({
+  src,
   rows,
   column,
   type,
@@ -537,7 +657,9 @@ function ColumnMenu({
   onFilter,
   onClose
 }: {
-  rows: Array<Record<string, unknown>>
+  src: TableSource
+  /** the rows (indices into `src`) its value list draws from */
+  rows: Int32Array
   column: Column
   type: ColType
   rect: DOMRect
@@ -589,9 +711,9 @@ function ColumnMenu({
   const distinct = useMemo(() => {
     if (type !== 'categorical') return []
     const set = new Set<string>()
-    for (const r of rows) set.add(strKey(r[column.key]))
+    for (const i of rows) set.add(strKey(src.cell(column.key, i)))
     return [...set].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))
-  }, [rows, column.key, type])
+  }, [src, rows, column.key, type])
 
   const selected = filter?.type === 'categorical' ? filter.selected : []
   const toggle = (v: string): void => {
@@ -846,6 +968,10 @@ const styles: Record<string, CSSProperties> = {
     borderBottom: `1px solid ${UI.border}`,
     whiteSpace: 'nowrap'
   },
+  spacerTd: { padding: 0, border: 'none' },
+  // zero height: no vertical padding, border or line box; still as wide as its text
+  probe: { visibility: 'hidden' },
+  probeTd: { paddingTop: 0, paddingBottom: 0, borderBottom: 'none', lineHeight: 0, height: 0 },
   footer: {
     padding: '6px 10px',
     color: UI.textMuted,

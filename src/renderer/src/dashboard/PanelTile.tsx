@@ -3,6 +3,7 @@
  *  bind dragging to the header only, leaving the body free for chart interaction. */
 import {
   memo,
+  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -13,7 +14,7 @@ import {
 } from 'react'
 import type { Edge } from '@xyflow/react'
 
-import { facetDims, type ConditionKey, type ContextRow } from '../engine'
+import { contextOf, facetDims, type ConditionKey, type ContextRow } from '../engine'
 import { copyGd, gdToExportItem } from '../export/plotExport'
 import { sanitize } from '../export/paths'
 import { exportPlotData, plotDataTarget } from '../export/plotData'
@@ -26,11 +27,13 @@ import { PlotAxesContext, swapAxes, type AxisDefaults } from '../ui/plotAxes'
 import { useGraph } from '../graph/store'
 import { UI } from '../ui/theme'
 import { useAppSettings } from '../ui/useAppSettings'
+import { createDrawTracker, TileDrawContext, type DrawTracker } from '../ui/tileDraw'
 import {
   numericOfResult,
   tdrPair,
   type NodeResult,
   type TdrConfig,
+  type LegendConfig,
   type PlotAxes,
   type PlotChild,
   type PlotOrient,
@@ -41,7 +44,7 @@ import { EMPTY_SEL, resolveFacets } from './facet'
 import { SUBSET_TOGGLE_KINDS } from './subset'
 import { PanelBody } from './PanelBody'
 import { PanelErrorBoundary } from './PanelErrorBoundary'
-import { enqueueReveal } from './renderQueue'
+import { enqueueReveal, type Reveal } from './renderQueue'
 import { PanelSettingsDialog, type TilePlotConfig } from './PanelSettingsDialog'
 import type { Anchor } from './TileDialog'
 import { useNearView } from './useInView'
@@ -218,27 +221,36 @@ export const PanelTile = memo(function PanelTile({
   const tileRef = useRef<HTMLDivElement>(null)
   // What the plot shows lags what it's given. A condition switch or a re-run hands EVERY tile its
   // new selection / results at once, and rebuilding them all in one go froze the app for as long
-  // as the whole tab took. So a tile takes the new ones on its own frame (the reveal queue, one
-  // tile per frame, as on first mount), showing a spinner over the old plot until then — tiles on
-  // screen first; one scrolled away (or in a hidden tab) in the background once they're done, or
-  // straight away if it comes back into view first. Gene highlighting and hover-focus don't come
-  // through here (they read the shared selection directly), so they stay live on every tile.
+  // as the whole tab took. So a tile takes the new ones on its own turn (the reveal queue, one
+  // tile at a time, each drawn before the next, as on first mount), showing a spinner over the
+  // old plot until then — tiles on screen first; one scrolled away (or in a hidden tab) in the
+  // background once they're done, or straight away if it comes back into view first. Gene
+  // highlighting and hover-focus don't come through here (they read the shared selection
+  // directly), so they stay live on every tile.
+  // The queue holds the next tile back until this one has drawn: every chart inside reports its
+  // draws to this tracker (see tileDraw.ts).
+  const [draw] = useState(createDrawTracker)
+  useEffect(() => () => draw.disarm(), [draw])
   const near = useNearView(tileRef)
   const [applied, setApplied] = useState({ facetSel, results })
   const behind = applied.facetSel !== facetSel || applied.results !== results
+  const revealApplied = useReveal(draw)
   useEffect(() => {
     if (!behind) return
-    return enqueueReveal(() => setApplied({ facetSel, results }), near)
-  }, [behind, near, facetSel, results])
+    return revealApplied(() => setApplied({ facetSel, results }), near)
+  }, [behind, near, facetSel, results, revealApplied])
+  // The new selection / results committed (charts below have started their draws): see tileDraw.
+  useEffect(() => draw.committed(), [applied, draw])
   const [settingsAt, setSettingsAt] = useState<Anchor | null>(null)
   // What the plot draws on each axis with no override (title + the range actually drawn). The
   // charts report it only while the settings window is open — it's just for its placeholders, so
   // a plot nobody is configuring never pays for the reporting.
   const [axisDefaults, setAxisDefaults] = useState<AxisDefaults>({})
   const axes = (cfg as { axes?: PlotAxes }).axes
+  const legend = (cfg as LegendConfig).legend
   const axesCtx = useMemo(
-    () => ({ axes, ...(settingsAt ? { onDefaults: setAxisDefaults } : null) }),
-    [axes, settingsAt]
+    () => ({ axes, legend, ...(settingsAt ? { onDefaults: setAxisDefaults } : null) }),
+    [axes, legend, settingsAt]
   )
   // The window opens BESIDE the tile (see TileDialog), so it anchors to the tile's box — falling
   // back to the button's own when the tile ref hasn't attached.
@@ -319,8 +331,13 @@ export const PanelTile = memo(function PanelTile({
   function viewed(): { comparison: string | null; context: string[] } {
     const upId = edges.find((e) => e.target === node.id)?.source
     const up = upId ? applied.results[upId] : undefined
+    // its context tuples (contextIndex.ts): the facet resolves over them without building rows
     const rows: ContextRow[] | null =
-      up?.kind === 'compare' ? up.cmp.rows : up?.kind === 'contrast' ? up.ctr.rows : null
+      up?.kind === 'compare'
+        ? contextOf(up.cmp).rows
+        : up?.kind === 'contrast'
+          ? contextOf(up.ctr).rows
+          : null
     const comparisons =
       up?.kind === 'compare'
         ? up.cmp.comparisons
@@ -626,7 +643,7 @@ export const PanelTile = memo(function PanelTile({
       <div style={styles.body} ref={bodyRef}>
         {
           // Built on screen first, then — in the background — the tiles further down the page.
-          <DeferredMount urgent={near}>
+          <DeferredMount urgent={near} draw={draw}>
             {/* The tile's axis overrides reach every PlotlyChart inside (faceted plots too). */}
             <PlotAxesContext.Provider value={axesCtx}>
               {/* One tile that throws must not blank the whole Results page: it reports itself
@@ -654,20 +671,64 @@ export const PanelTile = memo(function PanelTile({
   )
 })
 
-/** Paint a buffering spinner, then reveal `children` via the global reveal queue (one tile per
- *  frame). Building a tile's plot data is synchronous and can block for a while (clustering,
- *  correlation, big pivots); deferring lets the spinner show first, and pacing reveals through
+/** One tile's place in the reveal queue: enqueue `run` (dropped if the caller's deps change
+ *  before its turn — return the result as the effect's cleanup). A new enqueue, or the tile
+ *  unmounting, cancels the previous one outright, releasing the queue if it was waiting on this
+ *  tile's draw. The queue's `done` goes to the tile's draw tracker. */
+function useReveal(draw: DrawTracker): (run: () => void, urgent: boolean) => () => void {
+  const last = useRef<Reveal | null>(null)
+  useEffect(
+    () => () => {
+      last.current?.cancel()
+      last.current = null
+    },
+    []
+  )
+  return useCallback(
+    (run, urgent) => {
+      last.current?.cancel()
+      const r = enqueueReveal((done) => {
+        draw.arm(done)
+        run()
+      }, urgent)
+      last.current = r
+      return () => r.drop()
+    },
+    [draw]
+  )
+}
+
+/** Paint a buffering spinner, then reveal `children` via the global reveal queue (one tile at a
+ *  time, the next only once this one has drawn). Building a tile's plot data is synchronous and
+ *  can block for a while (clustering, correlation, big pivots); deferring lets the spinner show first, and pacing reveals through
  *  the queue keeps the app responsive when many heavy tiles mount at once (tab/project switch)
  *  instead of freezing while they all build in the same frame. `urgent` (on screen) goes ahead of
  *  the rest, which build in the background after; a waiting tile that comes into view moves to
  *  the front. Remounts show the spinner again. */
-function DeferredMount({ children, urgent }: { children: ReactNode; urgent: boolean }): ReactNode {
+function DeferredMount({
+  children,
+  urgent,
+  draw
+}: {
+  children: ReactNode
+  urgent: boolean
+  draw: DrawTracker
+}): ReactNode {
   const [show, setShow] = useState(false)
+  const reveal = useReveal(draw)
   useEffect(() => {
     if (show) return
-    return enqueueReveal(() => setShow(true), urgent)
-  }, [show, urgent])
-  return show ? <>{children}</> : <Spinner />
+    return reveal(() => setShow(true), urgent)
+  }, [show, urgent, reveal])
+  // Shown: the charts inside have started their first draws (child effects run first).
+  useEffect(() => {
+    if (show) draw.committed()
+  }, [show, draw])
+  return show ? (
+    <TileDrawContext.Provider value={draw}>{children}</TileDrawContext.Provider>
+  ) : (
+    <Spinner />
+  )
 }
 
 const styles: Record<string, CSSProperties> = {
