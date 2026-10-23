@@ -1,5 +1,7 @@
-/** Minimal typing for plotly.js-dist-min (ships without types). */
-declare module 'plotly.js-dist-min' {
+/** Minimal typing for plotly.js-strict-dist-min (ships without types). The strict bundle: its
+ *  WebGL code (regl) comes precompiled, so it runs under the production CSP (no 'unsafe-eval') —
+ *  the plain bundle compiles it with Function() at runtime, which that CSP blocks. */
+declare module 'plotly.js-strict-dist-min' {
   export interface PlotlyHoverPoint {
     curveNumber: number
     pointNumber: number

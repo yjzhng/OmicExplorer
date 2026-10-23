@@ -457,3 +457,10 @@ button.oe-palette-builder:focus-visible {
     transition: none;
   }
 }
+
+/* Plotly's "WebGL is not supported" notice on a 2-D plot: never shown. The plot falls back to SVG
+   once the draw settles (PlotlyChart), so the notice would only flash. A 3-D scene keeps it — it
+   has no SVG to fall back to. */
+.oe-plot-2d .no-webgl {
+  display: none;
+}

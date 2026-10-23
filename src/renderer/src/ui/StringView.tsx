@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
-import Plotly, { type PlotlyGraphDiv } from 'plotly.js-dist-min'
+import Plotly, { type PlotlyGraphDiv } from 'plotly.js-strict-dist-min'
 
 import type { CompareResultRow } from '../engine'
 import {

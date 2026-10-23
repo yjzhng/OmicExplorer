@@ -11,7 +11,7 @@
  *  for scatter and bar traces, per trace for a violin/box or a set of box points — through the
  *  shared fading layer (traceFocus), so it combines with a legend selection and nothing re-renders
  *  (a QC violin's density is never recomputed on hover). */
-import type { PlotlyGraphDiv, PlotlyMouseEvent } from 'plotly.js-dist-min'
+import type { PlotlyGraphDiv, PlotlyMouseEvent } from 'plotly.js-strict-dist-min'
 import { create } from 'zustand'
 
 import { setFade, setPointFade } from './traceFocus'

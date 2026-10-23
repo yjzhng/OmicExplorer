@@ -26,7 +26,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
-import Plotly, { type PlotlyGraphDiv } from 'plotly.js-dist-min'
+import Plotly, { type PlotlyGraphDiv } from 'plotly.js-strict-dist-min'
 
 import { useNearView } from '../dashboard/useInView'
 
@@ -601,14 +601,16 @@ export function ResponseSurfaceView({
       : 'mean log₂'
 
     // A log axis labelled at its powers of ten only (Plotly's 3-D log axes otherwise label the
-    // 2s and 5s too) — or, spanning less than two of them, at the measured levels.
+    // 2s and 5s too) — or, spanning less than two of them, at the measured levels: each once, in
+    // order (the axis's padding reads its first and last two ticks — a control's level repeated at
+    // the end would pad the range back inside the data).
     const logTicks = (vals: number[]): number[] => {
       const lo = Math.min(...vals)
       const hi = Math.max(...vals)
       const decades: number[] = []
       for (let e = Math.ceil(Math.log10(lo)); e <= Math.floor(Math.log10(hi)); e++)
         decades.push(10 ** e)
-      return decades.length >= 2 ? decades : vals
+      return decades.length >= 2 ? decades : [...new Set(vals)].sort((a, b) => a - b)
     }
     // The scene's gridlines a step stronger than the 2-D plots' (theme grid): a 3-D box reads by
     // them, and at the theme's strength they faded into its background.

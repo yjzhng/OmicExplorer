@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 
 // the bundle needs a browser; geneTicks doesn't touch it
-vi.mock('plotly.js-dist-min', () => ({ default: {} }))
+vi.mock('plotly.js-strict-dist-min', () => ({ default: {} }))
 
 import { geneTicks } from './heatmapFocus'
 

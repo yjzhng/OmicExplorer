@@ -11,7 +11,7 @@
 import { createElement } from 'react'
 import { createRoot } from 'react-dom/client'
 import type { Edge } from '@xyflow/react'
-import Plotly from 'plotly.js-dist-min'
+import Plotly from 'plotly.js-strict-dist-min'
 
 import { PanelBody } from '../dashboard/PanelBody'
 import { useGraph } from '../graph/store'

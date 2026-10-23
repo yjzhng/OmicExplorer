@@ -15,7 +15,7 @@
  *  shapes relayout redraws every shape, the condition bar's separators included, and lags on a
  *  large heatmap). Pass `(el) => bindHeatmapFocus(el, veil, opts)` as PlotlyChart's
  *  `onGraphMount`; trace 0 is the main heatmap. */
-import Plotly, { type PlotlyGraphDiv, type PlotlyMouseEvent } from 'plotly.js-dist-min'
+import Plotly, { type PlotlyGraphDiv, type PlotlyMouseEvent } from 'plotly.js-strict-dist-min'
 
 import { truncateLabel } from './plotAxes'
 import { sampleMatches, samplesKey, useSampleHover } from './sampleLink'

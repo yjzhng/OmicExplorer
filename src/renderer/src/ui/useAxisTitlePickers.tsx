@@ -4,7 +4,7 @@
  * to render over the chart, inside a `position: relative` box that holds both.
  */
 import { useCallback, useState, type ReactNode } from 'react'
-import type { PlotlyGraphDiv } from 'plotly.js-dist-min'
+import type { PlotlyGraphDiv } from 'plotly.js-strict-dist-min'
 
 import { TitleButton, type Axis, type AxisPick, type Box } from './AxisTitlePicker'
 

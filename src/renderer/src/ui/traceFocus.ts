@@ -16,7 +16,7 @@
  *  Fading is a trace-opacity restyle (a style edit — no recalc, so the tooltip under the pointer
  *  stays). Several sources fade the same trace — this selection, this hover, the sample link — so
  *  each records its factor here, and a trace's opacity is its own times every factor (`setFade`). */
-import Plotly, { type PlotlyGraphDiv } from 'plotly.js-dist-min'
+import Plotly, { type PlotlyGraphDiv } from 'plotly.js-strict-dist-min'
 
 type Trace = Record<string, unknown>
 

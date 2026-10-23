@@ -9,7 +9,7 @@ import {
   type CSSProperties
 } from 'react'
 import { createPortal } from 'react-dom'
-import Plotly, { type PlotlyGraphDiv } from 'plotly.js-dist-min'
+import Plotly, { type PlotlyGraphDiv } from 'plotly.js-strict-dist-min'
 
 import {
   applyPlotAxes,
@@ -1573,7 +1573,7 @@ type Aspect = { x: number; y: number; z: number }
 /** How much faster a trackpad pinch zooms a 3-D scene than Plotly would (see the wheel listener). */
 const PINCH_ZOOM_SPEED = 8
 
-/** Thin React wrapper over plotly.js-dist-min (bundled locally — CSP-safe, no CDN). */
+/** Thin React wrapper over plotly.js-strict-dist-min (bundled locally — CSP-safe, no CDN). */
 export function PlotlyChart({
   data,
   layout,
@@ -2039,11 +2039,20 @@ export function PlotlyChart({
         // A WebGL context Chromium wouldn't create (past its per-page cap, or no usable GPU):
         // Plotly draws its "WebGL is not supported" notice instead of the plot, and no context is
         // ever lost to tell us. SVG from now on, as for a dropped one (a 3-D scene has no SVG to
-        // fall back to — its notice stays).
+        // fall back to — its notice stays). A 2-D plot's notice is never shown (app.css), so
+        // the fallback doesn't flash it.
         if (el.querySelector('.no-webgl') && !sceneCount(data)) {
           // its notice is an overlay Plotly leaves behind when the traces change: cleared, so
-          // the SVG redraw shows
-          el.querySelectorAll('.no-webgl').forEach((n) => n.remove())
+          // the SVG redraw shows — and what Plotly set on its container with it (a white
+          // background, a click opening get.webgl.org)
+          el.querySelectorAll('.no-webgl').forEach((n) => {
+            const box = n.parentElement
+            n.remove()
+            if (box) {
+              box.style.background = ''
+              box.onclick = null
+            }
+          })
           glSlotRef.current?.lost()
         }
         // Bind linked-selection events once per graph div (idempotent).
@@ -3158,7 +3167,12 @@ export function PlotlyChart({
   }, [])
 
   return (
-    <div style={{ position: 'relative', width: '100%', height: '100%' }}>
+    // oe-plot-2d: no 3-D scene, so a WebGL failure falls back to SVG — its notice hidden (on this
+    // box, not the graph div: a className there would overwrite the classes Plotly adds to it)
+    <div
+      className={scenes ? undefined : 'oe-plot-2d'}
+      style={{ position: 'relative', width: '100%', height: '100%' }}
+    >
       <div ref={ref} style={{ width: '100%', height: '100%', ...style }} />
       {geneTitle && (
         <div style={{ ...geneTitleStyle, height: GENE_TITLE_BAND }}>
