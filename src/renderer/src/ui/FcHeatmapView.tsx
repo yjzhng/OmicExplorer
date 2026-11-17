@@ -5,7 +5,7 @@ import { ROLE_DEFAULTS, paletteRange, paletteScale, type PaletteRef } from './pa
 import { tooltip } from './condTooltip'
 import { PlotlyChart } from './PlotlyChart'
 import { truncatedTicks } from './plotAxes'
-import { bindHeatmapFocus, GENE_TICK_PX, LINK_DELAY } from './heatmapFocus'
+import { bindHeatmapFocus, type PickedSamples, GENE_TICK_PX, LINK_DELAY } from './heatmapFocus'
 import { axisBase, CATEGORICAL, PALETTES, plotBase, withAlpha } from './theme'
 import { useSelection } from './useSelection'
 import { useUiTheme } from './useUiTheme'
@@ -104,9 +104,9 @@ function treeLine(
   return { x, y }
 }
 
-/** Where the gene clusters' bars sit, for clicking one: along x (above the cells, landscape) or
- *  along y (to their right, portrait); the cells' end on the other axis (paper share), the gene
- *  count, and each cluster's first and last row. */
+/** Where a side's cluster bars sit, for clicking one: along x (above the cells) or along y (to
+ *  their right); the cells' end on the other axis (paper share), the row (or column) count, and
+ *  each cluster's first and last row. */
 interface GeneBars {
   alongX: boolean
   /** the cells' far edge across the bars: xEnd for bars on the right, yEnd for bars on top */
@@ -246,13 +246,16 @@ export function FcHeatmapView({
   const {
     data: traces,
     layout,
-    geneBars
+    geneBars,
+    condBars
   } = useMemo((): {
     data: Record<string, unknown>[]
     layout: Record<string, unknown>
     geneBars: GeneBars | null
+    condBars: GeneBars | null
   } => {
     let geneBars: GeneBars | null = null
+    let condBars: GeneBars | null = null
     const p = PALETTES[mode]
     const landscape = orient === 'landscape'
     // the colour limit (the 99th percentile of |log₂FC|); beyond it the colour saturates, and
@@ -443,37 +446,92 @@ export function FcHeatmapView({
       if (shapes.length) lay.shapes = shapes
       // The gene side: on the right in portrait (rows along y), on top in landscape.
       const geneCl = landscape ? xCl : yCl
-      if (geneCl?.clusters.length)
-        geneBars = landscape
-          ? { alongX: true, edge: yEnd, span: xEnd, n: nX, clusters: geneCl.clusters }
-          : { alongX: false, edge: xEnd, span: yEnd, n: nY, clusters: geneCl.clusters }
+      const condCl = landscape ? yCl : xCl
+      const onX = (cl: { clusters: Array<[number, number]> }): GeneBars => ({
+        alongX: true,
+        edge: yEnd,
+        span: xEnd,
+        n: nX,
+        clusters: cl.clusters
+      })
+      const onY = (cl: { clusters: Array<[number, number]> }): GeneBars => ({
+        alongX: false,
+        edge: xEnd,
+        span: yEnd,
+        n: nY,
+        clusters: cl.clusters
+      })
+      if (geneCl?.clusters.length && (landscape ? xLook : yLook).modules)
+        geneBars = landscape ? onX(geneCl) : onY(geneCl)
+      if (condCl?.clusters.length && (landscape ? yLook : xLook).modules)
+        condBars = landscape ? onY(condCl) : onX(condCl)
     }
-    return { data: traces, layout: lay, geneBars }
+    return { data: traces, layout: lay, geneBars, condBars }
   }, [data, cells, trees, title, orient, mode, size, area, palette, unsigned])
 
   // Clicking a gene cluster's bar selects its genes (a second click unselects them) — as a legend
-  // group does. Shapes take no Plotly events, so the bars are found by the pointer's position.
-  const barsRef = useRef<{ bars: GeneBars | null; ids: string[] }>({ bars: null, ids: [] })
+  // group does. Clicking a condition cluster's bar picks its columns, adding to any picked already
+  // (again: unpicks them): they light, and with genes selected only the block the two make does
+  // (heatmapFocus). Shapes take no
+  // Plotly events, so the bars are found by the pointer's position.
+  const barsRef = useRef<{ bars: GeneBars | null; cond: GeneBars | null; ids: string[] }>({
+    bars: null,
+    cond: null,
+    ids: []
+  })
   useLayoutEffect(() => {
-    barsRef.current = { bars: geneBars, ids: data.geneIds }
-  }, [geneBars, data.geneIds])
+    barsRef.current = { bars: geneBars, cond: condBars, ids: data.geneIds }
+  }, [geneBars, condBars, data.geneIds])
+  // The picked columns (each picked condition cluster's first and last), read by the focus at
+  // each draw.
+  const pickRef = useRef<{ spans: Array<[number, number]>; redraw: Set<() => void> }>({
+    spans: [],
+    redraw: new Set()
+  })
+  const picked = useMemo(
+    (): PickedSamples => ({
+      get: () => {
+        const out = new Set<number>()
+        for (const [a, b] of pickRef.current.spans) for (let i = a; i <= b; i++) out.add(i)
+        return out
+      },
+      subscribe: (redraw) => {
+        pickRef.current.redraw.add(redraw)
+        return () => pickRef.current.redraw.delete(redraw)
+      }
+    }),
+    []
+  )
+  const pick = (spans: Array<[number, number]>): void => {
+    pickRef.current.spans = spans
+    for (const redraw of pickRef.current.redraw) redraw()
+  }
+  // new columns (a re-run, a re-cluster, the bars switched or cut otherwise): the pick no longer
+  // stands for them
+  useEffect(() => pick([]), [data, orient, condSide])
   const bindBars = (el: HTMLElement & { _fullLayout?: unknown }): (() => void) => {
-    const hit = (e: MouseEvent): [number, number] | null => {
-      const { bars } = barsRef.current
+    const hitOn = (bars: GeneBars | null, e: MouseEvent): [number, number] | null => {
       const sz = (el._fullLayout as { _size?: { l: number; t: number; w: number; h: number } })
         ?._size
       if (!bars || !sz) return null
       const r = el.getBoundingClientRect()
       return barAt(bars, e.clientX - r.left - sz.l, e.clientY - r.top - sz.t, sz.w, sz.h)
     }
+    const hit = (e: MouseEvent): boolean =>
+      !!hitOn(barsRef.current.bars, e) || !!hitOn(barsRef.current.cond, e)
     const onClick = (e: MouseEvent): void => {
-      const c = hit(e)
-      if (c) useSelection.getState().togglePins(barsRef.current.ids.slice(c[0], c[1] + 1))
+      const g = hitOn(barsRef.current.bars, e)
+      if (g) return useSelection.getState().togglePins(barsRef.current.ids.slice(g[0], g[1] + 1))
+      const c = hitOn(barsRef.current.cond, e)
+      if (!c) return
+      const now = pickRef.current.spans
+      const on = now.some(([a, b]) => a === c[0] && b === c[1])
+      pick(on ? now.filter(([a, b]) => a !== c[0] || b !== c[1]) : [...now, c])
     }
     // a pointer over a bar says it can be clicked (Plotly's drag layer sets its own elsewhere)
     let over = false
     const onMove = (e: MouseEvent): void => {
-      const now = !!hit(e)
+      const now = hit(e)
       if (now === over) return
       over = now
       const drag = el.querySelector<HTMLElement>('.nsewdrag')
@@ -504,7 +562,8 @@ export function FcHeatmapView({
             tickPx: GENE_TICK_PX,
             labelInk: PALETTES[mode].text,
             labelBg: PALETTES[mode].panel,
-            geneIds: data.geneIds
+            geneIds: data.geneIds,
+            picked
           })
           // After each draw, the plot area Plotly settled on (kept unless it moved a pixel, so a
           // relayout from it doesn't loop).

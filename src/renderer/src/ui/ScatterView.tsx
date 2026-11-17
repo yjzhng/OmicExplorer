@@ -3,7 +3,6 @@ import { useMemo } from 'react'
 import {
   bandConfAt,
   bandEdgePath,
-  marginalQAt,
   type AxisTail,
   type ScatterData,
   type ScatterPoint
@@ -18,6 +17,7 @@ import { useGraph } from '../graph/store'
 import { tooltip } from './condTooltip'
 import { PlotlyChart, type GuideDrag } from './PlotlyChart'
 import {
+  labelColorOf,
   legendOn,
   QUAD_ORDER,
   resolveGroups,
@@ -37,14 +37,15 @@ import { useSelectedGeneSets } from './useSelection'
 import { useUiTheme } from './useUiTheme'
 
 type Eff = 'up' | 'down' | 'none'
+const twoDecimals = (v: number): string => String(Math.round(v * 100) / 100)
 const EFF_ORDER: Eff[] = ['none', 'down', 'up']
 
 /**
  * Contrast scatter: FC1 (y) vs FC2 (x). The significance boundary follows the contrast's
- * relationship — an OLS fit + prediction band when correlated, a 9-zone per-axis box when
- * independent (see ScatterGuide). Divergent genes are highlighted; the top few by |FCdiff|
- * are labelled. With `onStatDrag`, the boundary is draggable — the band's edges, the axis lines —
- * and a release reports the cutoff it now stands for (a band confidence, an axis q).
+ * relationship — an OLS fit + prediction band when correlated, the linear cutoffs' lines on each
+ * axis when independent (see ScatterGuide). Divergent genes are highlighted; the top few by
+ * |FCdiff| are labelled. With `onStatDrag`, the boundary is draggable — the band's edges, the axis
+ * lines — and a release reports the cutoff it now stands for (a band confidence, an axis value).
  */
 export function ScatterView({
   scatter,
@@ -54,7 +55,8 @@ export function ScatterView({
   effectColors,
   style,
   onStatDrag,
-  asymmetric = false
+  asymmetric = false,
+  cutText = twoDecimals
 }: {
   scatter: ScatterData
   title?: string
@@ -66,11 +68,15 @@ export function ScatterView({
   /** the upstream Compare's effect colours — what each group's automatic colour follows */
   effectColors?: EffectColors
   /** a dragged edge's new cutoff, on release: the band's top / bottom edge → its confidence; an
-   *  axis line (A = y, B = x; up / down of its centre) → its q. Unset = the guides stay put. */
+   *  axis line (A = y, B = x; its up / down tail) → its value where it lands. Unset = the guides
+   *  stay put. */
   onStatDrag?: (edge: 'bandUp' | 'bandDown' | AxisTail, value: number) => void
-  /** the contrast's cutoffs are per tail: the edges move apart (otherwise a band edge drags its
+  /** the band's levels are per edge: the edges move apart (otherwise a band edge drags its
    *  partner with it, mirrored) */
   asymmetric?: boolean
+  /** an axis line's value as its drag reads it (default: to 2 decimals) — a significance axis says
+   *  the p it stands for */
+  cutText?: (v: number) => string
 }) {
   const mode = useUiTheme((s) => s.mode)
   // The selected saved genesets (each its own trace: legend entry, and its colour if set). An
@@ -81,9 +87,10 @@ export function ScatterView({
   const selSets = useSelectedGeneSets(geneSets)
   // Point groups depend on the relationship. A correlated (OLS) contrast colours called genes by
   // the side of the fitted line they broke out on — up (red, above) / down (blue, below) / none
-  // (grey), matching volcano/MA. An independent (marginal) contrast instead colours by QUADRANT: the
-  // composite "<FC1 dir>, <FC2 dir>" effect, so each significant corner reads as its own group.
-  const marginal = scatter.guide?.kind === 'marginal'
+  // (grey), matching volcano/MA. An independent (linear cutoff) contrast instead colours by
+  // QUADRANT: the composite "<FC1 dir>, <FC2 dir>" effect, so each called corner reads as its own
+  // group.
+  const quadrants = scatter.guide?.kind === 'cutoff'
   // Resolved once per config change (stable objects, so PlotlyChart doesn't re-render per hover).
   // Memo inputs kept primitive (the parent hands a fresh `effectLabels` object per render).
   const upName = effectLabels.up
@@ -96,11 +103,11 @@ export function ScatterView({
     () =>
       resolveGroups(
         style,
-        marginal ? 'scatterQuad' : 'scatter',
+        quadrants ? 'scatterQuad' : 'scatter',
         { up: upName, down: downName, none: noneName },
         { up: upColor, down: downColor, none: noneColor }
       ),
-    [style, marginal, upName, downName, noneName, upColor, downColor, noneColor]
+    [style, quadrants, upName, downName, noneName, upColor, downColor, noneColor]
   )
   const emphasis = useMemo(() => resolveHighlight(style), [style])
   const showLegend = legendOn(style)
@@ -142,9 +149,9 @@ export function ScatterView({
         line: { width: g.outline, color: g.outlineColor ?? p.text }
       }
     })
-    // A point's group key: its quadrant (marginal) or effect class; anything unknown is 'none'.
+    // A point's group key: its quadrant (linear cutoff) or effect class; anything unknown is 'none'.
     const keyOf = (pt: ScatterPoint): string =>
-      marginal
+      quadrants
         ? pt.effect && pt.effect !== 'none'
           ? pt.effect
           : 'none'
@@ -163,7 +170,7 @@ export function ScatterView({
       }
 
     let pointTraces: object[]
-    if (marginal) {
+    if (quadrants) {
       const byQuad = new Map<string, ScatterPoint[]>()
       for (const pt of scatter.points) {
         const key = keyOf(pt)
@@ -271,14 +278,19 @@ export function ScatterView({
       line: gLine
     })
     const identity = { type: 'line', x0: lo, x1: hi, y0: lo, y1: hi, line: gLine }
+    // The linear cutoff's lines: one per tail that has a cutoff (A on y, B on x).
+    const cutLines: [AxisTail, 'x' | 'y', number][] = []
+    if (g?.kind === 'cutoff')
+      for (const [key, axis, v] of [
+        ['aDown', 'y', g.yLo],
+        ['aUp', 'y', g.yHi],
+        ['bDown', 'x', g.xLo],
+        ['bUp', 'x', g.xHi]
+      ] as const)
+        if (v != null) cutLines.push([key, axis, v])
     const guideShapes =
-      g?.kind === 'marginal'
-        ? [
-            hLine(g.yLo as number),
-            hLine(g.yHi as number),
-            vLine(g.xLo as number),
-            vLine(g.xHi as number)
-          ]
+      g?.kind === 'cutoff'
+        ? cutLines.map(([, axis, v]) => (axis === 'y' ? hLine(v) : vLine(v)))
         : g?.kind === 'ols'
           ? band
             ? [edge(1), edge(-1)]
@@ -290,8 +302,6 @@ export function ScatterView({
     // axis line slides along its axis, its q read off where it lands.
     // (to 0.001%, as the Statistic panel's finest tail)
     const pctOf = (c: number): string => `${Math.round(Math.max(0, 1 - c) * 1e5) / 1e3}%`
-    const qShown = (q: number): string =>
-      String(Math.min(0.5, Math.max(0.00001, Math.ceil(q * 1e5 - 1e-9) / 1e5)))
     const bandGuide = (i: 0 | 1): GuideDrag => {
       const side = i === 0 ? 1 : -1
       return {
@@ -314,28 +324,21 @@ export function ScatterView({
         format: (c) => `${i === 0 ? 'top' : 'bottom'} ${pctOf(c)} outside the band`
       }
     }
-    const lineGuide = (i: number, axis: 'x' | 'y', key: AxisTail): GuideDrag => ({
+    const lineGuide = (i: number, key: AxisTail, axis: 'x' | 'y', value: number): GuideDrag => ({
       shapeIndex: i,
       axis,
       kind: 'line',
       cursor: axis === 'x' ? 'ew-resize' : 'ns-resize',
       key,
-      value: ({ 0: g?.yLo, 1: g?.yHi, 2: g?.xLo, 3: g?.xHi } as Record<number, number | undefined>)[
-        i
-      ] as number,
-      format: (v) => `${axis === 'y' ? 'A' : 'B'} q < ${qShown(marginalQAt(g!, axis, v))}`
+      value,
+      format: (v) => `${axis === 'y' ? 'A' : 'B'} ${cutText(v)}`
     })
     const guides: GuideDrag[] | undefined = !editable
       ? undefined
       : g?.kind === 'ols' && band
         ? [bandGuide(0), bandGuide(1)]
-        : g?.kind === 'marginal' && g.axes
-          ? [
-              lineGuide(0, 'y', 'aDown'),
-              lineGuide(1, 'y', 'aUp'),
-              lineGuide(2, 'x', 'bDown'),
-              lineGuide(3, 'x', 'bUp')
-            ]
+        : g?.kind === 'cutoff'
+          ? cutLines.map(([key, axis, v], i) => lineGuide(i, key, axis, v))
           : undefined
 
     // Collision-managed labels for the genes of every group whose label switch is on (by default
@@ -346,7 +349,7 @@ export function ScatterView({
     // labelTop keeps; 0 (the default) offers them all, and more appear as you zoom in.
     const fitB = g?.kind === 'ols' ? g.band : undefined
     const distance = (pt: ScatterPoint): number =>
-      marginal
+      quadrants
         ? Math.abs(pt.x) + Math.abs(pt.y)
         : Math.abs(pt.y - (fitB ? fitB.beta0 + fitB.beta1 * pt.x : pt.x))
     const ranked = scatter.points
@@ -358,7 +361,8 @@ export function ScatterView({
       y: pt.y,
       text: pt.label,
       priority: d,
-      id: pt.uniqID
+      id: pt.uniqID,
+      color: labelColorOf(look(keyOf(pt)), p.text)
     }))
 
     const lay: Record<string, unknown> = {
@@ -416,24 +420,20 @@ export function ScatterView({
     title,
     labelTop,
     mode,
-    marginal,
+    quadrants,
     groups,
     showLegend,
     selSets,
     editable,
     asymmetric,
+    cutText,
     gw
   ])
 
-  // A released guide → its cutoff: a band edge reports its solved confidence; an axis line, the q
-  // its new position stands for.
+  // A released guide → its cutoff: a band edge reports its solved confidence; an axis line, the
+  // value it now sits at.
   const onGuide = (key: string, value: number): void => {
-    if (!onStatDrag) return
-    if (key === 'bandUp' || key === 'bandDown') onStatDrag(key, value)
-    else {
-      const axis = key === 'aUp' || key === 'aDown' ? 'y' : 'x'
-      if (scatter.guide) onStatDrag(key as AxisTail, marginalQAt(scatter.guide, axis, value))
-    }
+    onStatDrag?.(key as 'bandUp' | 'bandDown' | AxisTail, value)
   }
 
   return (

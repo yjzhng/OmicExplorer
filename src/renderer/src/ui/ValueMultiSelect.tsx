@@ -2,7 +2,8 @@
  *  a button naming what's kept, opening a portaled window with a search field and a checkbox row
  *  per value. Empty `selected` = unfiltered ("All"); ticking every value collapses back to that,
  *  and the last ticked value can't be cleared (keeping nothing would leave no data). "None" is a
- *  state of the open menu only: everything unticked, nothing committed until a value is ticked. */
+ *  state of the open menu only: everything unticked, nothing committed until a value is ticked.
+ *  As a `members` list (a batch's samples) it's plainly the ticked values instead: empty = none. */
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 
@@ -19,7 +20,10 @@ export function ValueMultiSelect({
   values,
   selected,
   onChange,
-  noun
+  noun,
+  labelOf,
+  members = false,
+  noteOf
 }: {
   /** every value the condition takes upstream, in display order */
   values: string[]
@@ -28,6 +32,14 @@ export function ValueMultiSelect({
   onChange: (next: string[]) => void
   /** what a value is, for the search placeholder ("compound" → "Search 12 compounds…") */
   noun: string
+  /** how a value reads, when not as itself (a sample by its conditions, not its file name) — shown,
+   *  searched and summarised; the value itself is what's selected, and its hover title */
+  labelOf?: (v: string) => string
+  /** `selected` is exactly the ticked values — empty is none, all is all, and it may be emptied —
+   *  rather than a filter whose empty means unfiltered */
+  members?: boolean
+  /** a note beside a value in the list (where a sample is now: "in batch 2") */
+  noteOf?: (v: string) => string | undefined
 }): ReactNode {
   const mode = useUiTheme((s) => s.mode)
   const p = PALETTES[mode]
@@ -36,6 +48,7 @@ export function ValueMultiSelect({
   const [rect, setRect] = useState<DOMRect | null>(null)
   // "None" pressed: every box unticked in the menu, the filter itself unchanged until a tick.
   const [none, setNone] = useState(false)
+  const text = (v: string): string => (labelOf ? labelOf(v) : valueText(v))
   const btnRef = useRef<HTMLButtonElement>(null)
   const menuRef = useRef<HTMLDivElement>(null)
 
@@ -56,7 +69,8 @@ export function ValueMultiSelect({
     }
   }, [open])
 
-  const all = selected.length === 0
+  // (as a members list nothing is the filter's "all": every value is all of them ticked)
+  const all = !members && selected.length === 0
   const kept = useMemo(() => new Set(selected), [selected])
   // A kept value the upstream no longer has (it re-ran) stays listed, so it can be cleared.
   const listed = useMemo(
@@ -65,14 +79,20 @@ export function ValueMultiSelect({
   )
   const filtered = useMemo(() => {
     const needle = q.trim().toLowerCase()
-    return needle ? listed.filter((v) => valueText(v).toLowerCase().includes(needle)) : listed
-  }, [listed, q])
+    return needle
+      ? listed.filter((v) => (labelOf ? labelOf(v) : valueText(v)).toLowerCase().includes(needle))
+      : listed
+  }, [listed, q, labelOf])
 
   const isOn = (v: string): boolean => !none && (all || kept.has(v))
-  // Normalise: every upstream value kept is no filter at all.
+  // Normalise: every upstream value kept is no filter at all (a members list is as ticked).
   const commit = (next: string[]): void =>
-    onChange(values.length > 0 && values.every((v) => next.includes(v)) ? [] : next)
+    onChange(!members && values.length > 0 && values.every((v) => next.includes(v)) ? [] : next)
   const toggle = (v: string): void => {
+    if (members) {
+      commit(kept.has(v) ? selected.filter((x) => x !== v) : [...selected, v])
+      return
+    }
     if (none) {
       setNone(false)
       commit([v])
@@ -84,14 +104,21 @@ export function ValueMultiSelect({
     } else commit([...cur, v])
   }
 
-  const summary = all
-    ? 'All'
-    : selected.length <= 3
-      ? selected.map(valueText).join(', ')
-      : `${selected.length} of ${values.length}`
+  const summary =
+    all || (members && values.length > 0 && values.every((v) => kept.has(v)))
+      ? 'All'
+      : members && selected.length === 0
+        ? 'None'
+        : selected.length <= 3
+          ? selected.map(text).join(', ')
+          : `${selected.length} of ${values.length}`
 
   // Inverse of what's ticked now; inverting everything is None, inverting None is All.
   const invert = (): void => {
+    if (members) {
+      commit(values.filter((v) => !kept.has(v)))
+      return
+    }
     if (none) {
       setNone(false)
       onChange([])
@@ -116,11 +143,18 @@ export function ValueMultiSelect({
       <button
         ref={btnRef}
         onClick={openMenu}
-        title={all ? `Every ${noun} kept` : selected.map(valueText).join(', ')}
+        title={all ? `Every ${noun} kept` : selected.map(text).join(', ')}
         aria-expanded={open}
         style={{ ...styles.btn, color: UI.text, borderColor: open ? UI.accent : UI.border }}
       >
-        <span style={{ ...styles.summary, color: all ? UI.textMuted : UI.text }}>{summary}</span>
+        <span
+          style={{
+            ...styles.summary,
+            color: all || (members && selected.length === 0) ? UI.textMuted : UI.text
+          }}
+        >
+          {summary}
+        </span>
         <Chevron deg={open ? -90 : 90} />
       </button>
       {open &&
@@ -163,7 +197,7 @@ export function ValueMultiSelect({
                 disabled={all && !none}
                 onClick={() => {
                   setNone(false)
-                  onChange([])
+                  onChange(members ? values : [])
                 }}
               >
                 All
@@ -172,7 +206,7 @@ export function ValueMultiSelect({
                 style={{ ...styles.action, color: none ? p.textMuted : p.accent }}
                 disabled={none}
                 title="Untick everything, then tick the values to keep"
-                onClick={() => setNone(true)}
+                onClick={() => (members ? onChange([]) : setNone(true))}
               >
                 None
               </button>
@@ -224,11 +258,18 @@ export function ValueMultiSelect({
                         onChange={() => toggle(v)}
                         style={{ margin: 0, accentColor: p.accent }}
                       />
-                      <span style={{ ...L.geneName, maxWidth: 'none', flex: 1 }}>
-                        {valueText(v)}
+                      <span
+                        style={{ ...L.geneName, maxWidth: 'none', flex: 1 }}
+                        title={labelOf ? v : undefined}
+                      >
+                        {text(v)}
                       </span>
-                      {stale && (
+                      {stale ? (
                         <span style={{ ...L.geneDesc, flex: '0 0 auto' }}>not in data</span>
+                      ) : (
+                        noteOf?.(v) && (
+                          <span style={{ ...L.geneDesc, flex: '0 0 auto' }}>{noteOf(v)}</span>
+                        )
                       )}
                     </label>
                   )

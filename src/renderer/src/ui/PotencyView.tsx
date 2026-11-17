@@ -29,7 +29,7 @@ import {
 import { useGraph } from '../graph/store'
 import { tooltip } from './condTooltip'
 import { PlotlyChart } from './PlotlyChart'
-import { legendOn, resolveGroups, resolveHighlight } from './pointStyle'
+import { labelColorOf, legendOn, resolveGroups, resolveHighlight } from './pointStyle'
 import { axisBase, EFFECT_COLOR, GUIDE_WIDTH, guideLine, PALETTES, plotBase } from './theme'
 import { useSelectedGeneSets } from './useSelection'
 import { useUiTheme } from './useUiTheme'
@@ -337,7 +337,8 @@ export function PotencyView({
         y: flip ? pt.x : pt.y,
         text: pt.label,
         priority: Math.abs(pt.y),
-        id: pt.uniqID
+        id: pt.uniqID,
+        color: labelColorOf(look(pt.effect), p.text)
       }))
     if (labelTop > 0) lab = lab.sort((a, b) => b.priority - a.priority).slice(0, labelTop)
     return { data: traces, layout: lay, labels: lab }

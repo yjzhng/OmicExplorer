@@ -25,6 +25,9 @@ import {
   conditionLevels,
   sampleLevels,
   samplePasses,
+  sampleLabel,
+  sampleIndex,
+  batchesOf,
   sheetSamples,
   isCustomCond,
   enrichSourcesPresent,
@@ -41,8 +44,12 @@ import {
   type ValueHistogram,
   ENRICH_SOURCE_LABEL,
   resolveEnrichSource,
+  type AxisTail,
+  type ContrastFeatureId,
   type ContrastStat,
   statTails,
+  upperOnly,
+  valueCutoffs,
   IMPUTE_DEFAULTS,
   NORMALIZE_REFERENCE_LABEL,
   type NormalizeReference,
@@ -78,9 +85,11 @@ import {
   sheetIssueLines,
   type LeafOrder
 } from '../engine'
+import type { SampleConds } from '../engine/types'
 import { IconCopy, IconGear, IconJump, IconTrash } from '../ui/icons'
 import { ProjectFolderViewer } from '../ui/ProjectFolderViewer'
 import { GeneSearchMenu } from '../dashboard/GeneSearchMenu'
+import { useFacet } from '../dashboard/facet'
 import {
   DEFAULT_OUTLINE,
   defaultGroups,
@@ -150,6 +159,7 @@ import {
 } from './registry'
 import { ApplyStageContext } from './applyStage'
 import { locationOf, useGraph } from './store'
+import { loadCheckInfo } from './loadCheck'
 import { UnitInput } from './UnitInput'
 import { nameChip, nameInput, tileNameText } from './tileNameStyles'
 import { usePlotGroupTitle } from './usePlotGroupTitle'
@@ -1241,8 +1251,8 @@ function HeadName({
 }
 
 /** Whether menus draw at screen scale rather than the canvas zoom: true inside a config panel, which
- *  is always at screen scale (beside its tile it's counter-scaled by 1/zoom — GraphNode; in the
- *  form workflow it's off the canvas), so a menu matches the panel it opens from. A select on a
+ *  is always at screen scale (beside its tile it's drawn above the canvas, out of its zoom —
+ *  GraphNode; in the form workflow it's off the canvas), so a menu matches the panel it opens from. A select on a
  *  tile itself (outside a panel) still follows the canvas zoom. */
 const ScreenScale = createContext(false)
 
@@ -1472,6 +1482,9 @@ function useInputText(name: string | null | undefined): string | null {
 
 function LoadPanel({ id, config }: { id: string; config: LoadConfig }) {
   const update = useGraph((s) => s.updateConfig)
+  const loadCheck = useGraph((s) => s.loadChecks[id])
+  const loadInfo =
+    loadCheck && loadCheck.state !== 'ok' ? loadCheckInfo(loadCheck, resolveLoadMode(config)) : null
   const setUnits = useGraph((s) => s.setLoadUnits)
   const setNumeric = useGraph((s) => s.setLoadNumeric)
   const inputFiles = useGraph((s) => s.inputFiles)
@@ -1679,7 +1692,17 @@ function LoadPanel({ id, config }: { id: string; config: LoadConfig }) {
                 onClick={() => setDialogOpen(true)}
               />
             </div>
-            {converted && (
+            {/* What the tile's check found, when it's more than ready (see the store's checkLoad). */}
+            {converted && loadInfo && (
+              <StatusNote
+                kind={
+                  loadInfo.tone === 'bad' ? 'error' : loadInfo.tone === 'busy' ? 'progress' : 'warn'
+                }
+              >
+                {loadInfo.label}
+              </StatusNote>
+            )}
+            {converted && loadInfo?.tone !== 'bad' && (
               <StatusNote kind="ok" style={styles.doneNote}>
                 {/* The workflow folder's input: convertInteractive writes every generated file
                     (data, samplesheet, ID map) there. */}
@@ -1799,6 +1822,17 @@ function DataScaleSection({
   const dataFile = useGraph(
     (s) => (loadAbove(s, id)?.load.data.config as LoadConfig | undefined)?.data ?? ''
   )
+  // Fed by Clean data (a Merge, a Subset of one): that result, the preview's source — so it
+  // follows a re-run there. Null when fed by Load data.
+  const upStd = useGraph((s) => {
+    const up = s.upstreamId(id)
+    const r = up && wiredKindOf(s, up) === 'standardize' ? s.results[up] : undefined
+    return r?.kind === 'standardize' ? r.std : null
+  })
+  const fedByClean = useGraph((s) => {
+    const up = s.upstreamId(id)
+    return !!up && wiredKindOf(s, up) === 'standardize'
+  })
   const [preview, setPreview] = useState<ScalePreview | null | 'loading'>('loading')
   useEffect(() => {
     let live = true
@@ -1811,7 +1845,7 @@ function DataScaleSection({
     return () => {
       live = false
     }
-  }, [id, dataFile, previewStdScale])
+  }, [id, dataFile, upStd, previewStdScale])
 
   // The data file's preview when there is one; else what the last run recorded.
   const ready = preview !== 'loading' && preview !== null ? preview : null
@@ -1882,8 +1916,9 @@ function DataScaleSection({
         />
       ) : (
         <div style={styles.hint}>
-          No data to preview yet — set the Load step’s data file (an interactive import: convert it
-          first).
+          {fedByClean
+            ? 'No data to preview yet — run the step this one reads from.'
+            : 'No data to preview yet — set the Load step’s data file (an interactive import: convert it first).'}
         </div>
       )}
       {histOut && (
@@ -2262,6 +2297,8 @@ function StandardizePanel({ id, config }: { id: string; config: StandardizeConfi
             )
           })()}
       </Section>
+      {/* Batch correction runs after normalisation and before imputation (see engine batch.ts). */}
+      <BatchSection id={id} config={config} std={std} />
       {/* Imputation runs after clean-up, so it fills only the gaps in genes that were kept. */}
       <Section
         title="Imputation"
@@ -2381,6 +2418,260 @@ function comparisonCount(
   }
 }
 
+/** A condition's values per sample, for filling batches: the conditions that take two or more. */
+function batchSourceConds(samples: SampleConds[]): ConditionKey[] {
+  const vals = new Map<ConditionKey, Set<string>>()
+  const note = (c: ConditionKey, v: unknown): void => {
+    if (v == null || v === '') return
+    let set = vals.get(c)
+    if (!set) vals.set(c, (set = new Set()))
+    set.add(String(v))
+  }
+  for (const m of samples) {
+    for (const c of CONDS) note(c, m[c as 'cell'])
+    for (const [k, v] of Object.entries(m.extra ?? {})) note(customCond(k), v)
+  }
+  return orderConds([...vals].filter(([, set]) => set.size > 1).map(([c]) => c))
+}
+
+/** Clean data's batch correction: the batches its samples were measured in, filled in one go from
+ *  a condition (a TMT plex column) or from the Merge inputs above — then any sample moved by hand.
+ *  Each batch's shift is removed with every condition protected, and a Compare below blocks on
+ *  the batches (engine batch.ts). Defined here, explicitly: nested batches (plexes within merged
+ *  datasets) are corrected step by step — each dataset's plexes first, then the merged datasets. */
+function BatchSection({
+  id,
+  config,
+  std
+}: {
+  id: string
+  config: StandardizeConfig
+  std: StandardizeResult | null
+}) {
+  const update = useGraph((s) => s.updateConfig)
+  // The samples to sort into batches: the table this step is given when it reads Clean data (a
+  // Merge, a Subset of one) — else, off Load data, its own last run's.
+  const upStd = useGraph((s) => {
+    const up = s.upstreamId(id)
+    const r = up && wiredKindOf(s, up) === 'standardize' ? s.results[up] : undefined
+    return r?.kind === 'standardize' ? r.std : null
+  })
+  const fedByClean = useGraph((s) => {
+    const up = s.upstreamId(id)
+    return !!up && wiredKindOf(s, up) === 'standardize'
+  })
+  const input = fedByClean ? upStd : std
+  const samples = useMemo(
+    () => (input ? (input.samples ?? sampleIndex(input).reps) : []),
+    [input]
+  ) as SampleConds[]
+  const labels = useMemo(() => [...new Set(samples.map((m) => sampleLabel(m)))], [samples])
+  const sources = input?.sources
+  // Fed straight by a Merge whose result doesn't say where its samples came from: it ran before
+  // Merge recorded that — a re-run of it does.
+  const fedByMerge = useGraph((s) => {
+    const up = s.upstreamId(id)
+    const n = up ? s.nodes.find((x) => x.id === up) : undefined
+    return !!n && isStep(n) && n.data.kind === 'merge'
+  })
+  const mergeUnrecorded = fedByMerge && !sources
+  const fromConds = useMemo(() => batchSourceConds(samples), [samples])
+  // The batches a condition's values, or the Merge inputs, make: one per value, every sample placed.
+  const groupsFrom = useCallback(
+    (from: string): Array<{ name: string; samples: string[]; value: string }> => {
+      const groups = new Map<string, string[]>()
+      for (const m of samples) {
+        const l = sampleLabel(m)
+        const v =
+          from === 'source'
+            ? (sources?.[l] ?? '')
+            : String(
+                (isCustomCond(from as ConditionKey)
+                  ? m.extra?.[from.slice(1)]
+                  : m[from as 'cell']) ?? ''
+              )
+        if (!v) continue
+        const g = groups.get(v) ?? []
+        if (!g.includes(l)) g.push(l)
+        groups.set(v, g)
+      }
+      return [...groups].map(([value, ls]) => ({ name: value, samples: ls, value }))
+    },
+    [samples, sources]
+  )
+  // Filled and not moved by hand since: the batches follow the data as it is now (and are worked
+  // out the same way on each run — batchSpecOf's live), each value keeping the name given here.
+  const liveFrom = config.batchEdited ? undefined : config.batchFrom
+  const batches = useMemo(() => {
+    if (!liveFrom) return config.batches ?? []
+    const names = new Map((config.batches ?? []).map((b) => [b.value, b.name]))
+    return groupsFrom(liveFrom).map((g) => ({ ...g, name: names.get(g.value) ?? g.name }))
+  }, [liveFrom, config.batches, groupsFrom])
+  const batchOf = useMemo(() => {
+    const m = new Map<string, number>()
+    batches.forEach((b, i) => b.samples.forEach((l) => m.set(l, i)))
+    return m
+  }, [batches])
+  // `edited`: a sample moved, or a batch added or removed, by hand — the batches are these lists
+  // from then on (a rename keeps them following the data).
+  const set = (
+    next: Array<{ name: string; samples: string[]; value?: string }>,
+    edited = !!config.batchEdited
+  ): void => update(id, { batches: next, batchFrom: config.batchFrom, batchEdited: edited })
+  // Fill from a condition's values, or the Merge inputs: one batch per value, every sample placed.
+  const fill = (from: string): void => {
+    if (!from) return
+    update(id, {
+      batches: groupsFrom(from),
+      batchFrom: from as StandardizeConfig['batchFrom'],
+      batchEdited: false
+    })
+  }
+  // Batch `to`'s samples set to `next` — a sample ticked here leaves any other batch (one each).
+  const assign = (to: number, next: string[]): void => {
+    const now = new Set(next)
+    set(
+      batches.map((b, i) =>
+        i === to ? { ...b, samples: next } : { ...b, samples: b.samples.filter((l) => !now.has(l)) }
+      ),
+      true
+    )
+  }
+  const used = batches.filter((b) => b.samples.length > 0).length
+  const summary = std?.batchCorrection
+  return (
+    <Section
+      title="Batch correction"
+      info={
+        <>
+          Remove differences between the batches samples were measured in (merged datasets, TMT
+          plexes) while keeping every condition&apos;s effect. Fill the batches from a condition or
+          the Merge inputs, then move any sample by hand. A Compare below also tests within batches.
+          <br />
+          <br />
+          Batches have to share a condition (a common control) to be told apart from it. For plexes
+          within merged datasets, correct each dataset&apos;s plexes first, then the merged datasets
+          in a Clean data after the Merge.
+        </>
+      }
+      action={
+        <OnOffSwitch
+          on={!!config.batchEnabled}
+          label="Batch correction"
+          onChange={(on) => update(id, { batchEnabled: on })}
+        />
+      }
+    >
+      {config.batchEnabled &&
+        (!input ? (
+          <div style={styles.hint}>
+            {fedByClean
+              ? 'Run the step this one reads from to list its samples.'
+              : 'Run this step once to list its samples.'}
+          </div>
+        ) : (
+          <>
+            <Field label="Fill from">
+              <Select
+                value=""
+                placeholder={
+                  config.batchFrom === 'source'
+                    ? 'Merge inputs'
+                    : config.batchFrom
+                      ? condLabel(config.batchFrom)
+                      : 'Choose…'
+                }
+                onChange={fill}
+                options={[
+                  ...(sources ? [{ value: 'source', label: 'Merge inputs' }] : []),
+                  ...fromConds.map((c) => ({ value: c, label: condLabel(c) }))
+                ]}
+              />
+            </Field>
+            {mergeUnrecorded && (
+              <div style={styles.hint}>
+                Re-run the Merge above to fill the batches from its inputs.
+              </div>
+            )}
+            {config.batchFrom && config.batchFrom !== 'source' && (
+              <div style={styles.hint}>
+                {condLabel(config.batchFrom)} is the batch now, not a condition downstream.
+              </div>
+            )}
+            {/* Each batch: its name, then its samples (one batch each — ticking a sample here
+                moves it from the batch it's in, which the list notes). */}
+            <Field label="Batches">
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 4, width: '100%' }}>
+                {batches.map((b, i) => (
+                  <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <EffectLabelInput
+                      value={b.name}
+                      title="This batch's name"
+                      style={{ flex: '0 0 96px', width: 96 }}
+                      onCommit={(v) =>
+                        v && set(batches.map((x, k) => (k === i ? { ...x, name: v } : x)))
+                      }
+                    />
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <ValueMultiSelect
+                        members
+                        values={labels}
+                        selected={b.samples}
+                        noun="sample"
+                        noteOf={(l) => {
+                          const k = batchOf.get(l)
+                          return k != null && k !== i ? `in ${batches[k].name}` : undefined
+                        }}
+                        onChange={(next) => assign(i, next)}
+                      />
+                    </div>
+                    <button
+                      type="button"
+                      style={styles.iconBtnSm}
+                      title="Remove this batch (its samples go uncorrected)"
+                      onClick={() =>
+                        set(
+                          batches.filter((_, k) => k !== i),
+                          true
+                        )
+                      }
+                    >
+                      ×
+                    </button>
+                  </div>
+                ))}
+                <button
+                  type="button"
+                  style={{ ...styles.resetBtn, alignSelf: 'flex-start', padding: 0 }}
+                  onClick={() =>
+                    set([...batches, { name: `Batch ${batches.length + 1}`, samples: [] }], true)
+                  }
+                >
+                  + batch
+                </button>
+              </div>
+            </Field>
+            {used < 2 ? (
+              <StatusNote kind="info">Put samples in at least two batches to correct.</StatusNote>
+            ) : (
+              summary && (
+                <StatusNote
+                  kind={summary.skipped ? 'warn' : 'ok'}
+                  style={summary.skipped ? undefined : styles.doneNote}
+                >
+                  {`Corrected ${summary.genes.toLocaleString()} genes across ${summary.batches} batches`}
+                  {summary.skipped
+                    ? ` · ${summary.skipped.toLocaleString()} left as they were (their measured samples don't share a condition across batches)`
+                    : ''}
+                </StatusNote>
+              )
+            )}
+          </>
+        ))}
+    </Section>
+  )
+}
+
 /** Subset: one searchable multi-select per condition the upstream dataset carries, keeping the
  *  samples whose conditions take the ticked values (all of a condition's values = unfiltered). */
 function SubsetPanel({ id, config }: { id: string; config: SubsetConfig }) {
@@ -2443,6 +2734,18 @@ function SubsetPanel({ id, config }: { id: string; config: SubsetConfig }) {
     [samples]
   )
   const sampleNames = useMemo(() => (samples ?? []).map((m) => m.sample), [samples])
+  // Each sample named by its conditions (cell_cmpd_dose_time…_r<rep>), not its file name — which
+  // may say nothing (a run number, an acquisition path). Two that would read alike get their file
+  // name after it. What's stored (`drop`) stays the file name, so a renamed condition keeps it.
+  const nameOf = useMemo(() => {
+    const label = new Map((samples ?? []).map((m) => [m.sample, sampleLabel(m)]))
+    const seen = new Map<string, number>()
+    for (const l of label.values()) seen.set(l, (seen.get(l) ?? 0) + 1)
+    return (v: string): string => {
+      const l = label.get(v)
+      return l == null ? v : (seen.get(l) ?? 0) > 1 || l === '' ? `${l || 'sample'} (${v})` : l
+    }
+  }, [samples])
 
   if (above ? !sheet : !std)
     return (
@@ -2508,6 +2811,7 @@ function SubsetPanel({ id, config }: { id: string; config: SubsetConfig }) {
               config.drop?.length ? sampleNames.filter((n) => !config.drop!.includes(n)) : []
             }
             noun="sample"
+            labelOf={nameOf}
             onChange={(next) => {
               const drop = next.length ? sampleNames.filter((n) => !next.includes(n)) : []
               updateConfig(id, { drop: drop.length ? drop : undefined })
@@ -3409,6 +3713,23 @@ function ComparePanel({
             ) : (
               unmet && <StatusNote kind="warn">{unmet}</StatusNote>
             )}
+            {/* Data with batches (Clean data's, or the Merge inputs above): one comparison blocked
+                on them, or one per batch — each batch's own fold change, for a Contrast to pair. */}
+            {config.analysis === 'compare' && std && batchesOf(std) && (
+              <Field label="per batch">
+                <OnOffSwitch
+                  on={!!config.splitBatch}
+                  label="Per batch"
+                  onChange={(on) => update(id, { splitBatch: on })}
+                />
+              </Field>
+            )}
+            {config.analysis === 'compare' && config.splitBatch && std && batchesOf(std) && (
+              <div style={styles.hint}>
+                Each batch compared on its own, as (batch) — a Contrast can pair one batch&apos;s
+                fold change against another&apos;s. Off: one comparison, tested within batches.
+              </div>
+            )}
           </>
         )}
         {/* The comparison itself (what's compared, matched, and over what) — for the analysis above. */}
@@ -3637,17 +3958,21 @@ function ContrastPanel({ id, config }: { id: string; config: ContrastConfig }) {
 }
 
 /** The divergence statistic: correlated (OLS fit of A on B, genes outside its prediction band
- *  diverge) or, off, a linear cutoff per axis (robust z → BH q, plus an optional |value| floor).
+ *  diverge) or, off, a linear cutoff — a value on each axis, as a volcano's lines, per feature.
  *  Shown on the Contrast step, and again on a scatter fed by it — the same settings, written to
  *  the Contrast (`subtitle` then says whose they are). */
 function ContrastStatPanel({
   id,
   config: stored,
-  subtitle
+  subtitle,
+  tab
 }: {
   id: string
   config: ContrastConfig
   subtitle?: ReactNode
+  /** a plot's settings: its results tab (the plot's id), whose feature switcher the linear
+   *  cutoff's boxes follow */
+  tab?: string
 }) {
   const update = useGraph((s) => s.updateConfig)
   // In a plot's settings window (a scatter fed by this Contrast) every edit is held until its
@@ -3698,31 +4023,10 @@ function ContrastStatPanel({
   const sideWord = resolveContrastSource(config, inputCount) === 'pair' ? 'dataset' : 'group'
   const asym = config.stat?.asymmetric ?? false
   // Shown as the TAIL — the % called on that side (1 − confidence): "top 1%" reads more
-  // directly than "99% confidence". Stored as confidence / q as before.
+  // directly than "99% confidence". Stored as confidence as before.
   // To 0.001% (confidence 0.99999), the finest tail.
   const pctOf = (c: number): number => Math.round((1 - c) * 1e5) / 1e3
   const clamp = (v: number): number => Math.min(0.99999, Math.max(0.5, 1 - v / 100))
-  const qOf = (c: number): number => Math.round((1 - c) * 1e5) / 1e5
-  // The primary level drives both models' fields, so switching model keeps it.
-  const setPrimary = (v: number): void => {
-    const c = clamp(v)
-    setStat({ bandConfidence: c, cutoffQ: qOf(c) })
-  }
-  const unit = correlated ? '% outside the band' : '%'
-  const confBox = (value: number, onChange: (v: number) => void, disabled: boolean): ReactNode => (
-    <div style={styles.pctBox}>
-      <NumberInput
-        value={pctOf(value)}
-        step={0.001}
-        ladder={tailStep}
-        min={0.001}
-        max={50}
-        disabled={disabled}
-        title={disabled ? 'Mirrors the top tail — switch on asymmetric to edit' : undefined}
-        onChange={onChange}
-      />
-    </div>
-  )
   const confRow = (
     tag: string,
     value: number,
@@ -3731,12 +4035,21 @@ function ContrastStatPanel({
   ): ReactNode => (
     <div style={styles.cutoffRow}>
       <span style={styles.inlineTag}>{tag}</span>
-      {confBox(value, onChange, disabled)}
-      <span style={styles.inlineTag}>{unit}</span>
+      <div style={styles.pctBox}>
+        <NumberInput
+          value={pctOf(value)}
+          step={0.001}
+          ladder={tailStep}
+          min={0.001}
+          max={50}
+          disabled={disabled}
+          title={disabled ? 'Mirrors the top tail — switch on asymmetric to edit' : undefined}
+          onChange={onChange}
+        />
+      </div>
+      <span style={styles.inlineTag}>% outside the band</span>
     </div>
   )
-  const setTail = (tail: 'aDown' | 'bUp' | 'bDown') => (v: number) =>
-    setStat({ cutoffQTails: { ...config.stat?.cutoffQTails, [tail]: qOf(clamp(v)) } })
   return (
     <Section title="Statistic" subtitle={subtitle}>
       {/* How the two sides relate: correlated (one response, scattered about a fitted line — the
@@ -3770,57 +4083,160 @@ function ContrastStatPanel({
           }
         />
       </Field>
-      {/* One cutoff for both models, entered as the tail called (top 1% = 99% confidence): the
-          prediction band's level when correlated, q per axis under the linear cutoff (both fields
-          are written together so switching model keeps the number). Asymmetric: the correlation
-          band has two tails (top / bottom of the line); the linear cutoff has four (each axis,
-          A = y and B = x, top / bottom of its centre). Mirrored boxes are disabled, like Compare's
-          effect-size cutoffs. */}
-      <Field label="cutoff" top>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-          <div style={styles.cutoffRow}>
-            <span style={styles.inlineTag}>asymmetric</span>
-            <OnOffSwitch
-              on={asym}
-              label="asymmetric confidence"
-              onChange={(on) => setStat({ asymmetric: on })}
-            />
+      {correlated ? (
+        // The prediction band's level, entered as the tail called (top 1% = 99% confidence).
+        // Asymmetric: the band below the line has its own; mirrored, its box is disabled, like
+        // Compare's effect-size cutoffs.
+        <Field label="cutoff" top>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            <div style={styles.cutoffRow}>
+              <span style={styles.inlineTag}>asymmetric</span>
+              <OnOffSwitch
+                on={asym}
+                label="asymmetric confidence"
+                onChange={(on) => setStat({ asymmetric: on })}
+              />
+            </div>
+            {confRow('top', t.confUp, (v) => setStat({ bandConfidence: clamp(v) }), false)}
+            {confRow('bottom', t.confDown, (v) => setStat({ bandConfidenceDown: clamp(v) }), !asym)}
           </div>
-          {correlated ? (
-            <>
-              {confRow('top', t.confUp, setPrimary, false)}
-              {confRow(
-                'bottom',
-                t.confDown,
-                (v) => setStat({ bandConfidenceDown: clamp(v) }),
-                !asym
-              )}
-            </>
+        </Field>
+      ) : (
+        <ValueCutoffFields
+          id={id}
+          tab={tab}
+          stat={config.stat}
+          sideWord={sideWord}
+          setStat={setStat}
+        />
+      )}
+    </Section>
+  )
+}
+
+/** The linear cutoff's values for one feature — in a plot's settings the one its results tab
+ *  shows, on the Contrast itself picked here: each axis's top and bottom line, as a volcano's — significance one line per axis,
+ *  entered as the p (or q) it stands for. Each starts at the axis's own Compare's (shown until
+ *  set); a box left empty cuts nothing on that tail. */
+function ValueCutoffFields({
+  id,
+  tab,
+  stat,
+  sideWord,
+  setStat
+}: {
+  id: string
+  tab?: string
+  stat: ContrastStat | undefined
+  sideWord: string
+  setStat: (patch: Partial<ContrastStat>) => void
+}): ReactNode {
+  const result = useGraph((s) => s.results[id])
+  const ctr = result?.kind === 'contrast' ? result.ctr : undefined
+  // The run's features in switcher order, named as the switcher names them (before a run: the
+  // sides' own value).
+  const features = useMemo(() => {
+    const seen = new Map<ContrastFeatureId, string>()
+    for (const r of ctr?.rows ?? [])
+      if (r.featureId && !seen.has(r.featureId)) seen.set(r.featureId, r.feature ?? r.featureId)
+    if (!seen.size) seen.set('value', ctr?.valueKind === 'abundance' ? 'abundance' : 'log₂FC')
+    return [...seen].map(([fid, label]) => ({ id: fid, label }))
+  }, [ctr])
+  // A plot's settings: the feature on show in its results tab (the switcher's pick, keyed by the
+  // tab — the feature's name), so the boxes and the plotted lines are always the same feature's.
+  // The Contrast's own settings: picked here.
+  const shown = useFacet((s) => (tab ? s.sel[tab]?.feature : undefined))
+  const [picked, setPicked] = useState<ContrastFeatureId | null>(null)
+  const feature =
+    (tab ? features.find((f) => f.label === shown) : features.find((f) => f.id === picked)) ??
+    features[0]
+  const defaults = ctr?.classify?.cutoffDefaults?.[feature.id]
+  const cuts = valueCutoffs(stat, feature.id, defaults)
+  const own = stat?.values?.[feature.id]
+  const sig = upperOnly(feature.id)
+  // what a significance box holds: p or q, as the feature is named
+  const sigWord = feature.label.endsWith('q') ? 'q' : 'p'
+  const unit = sig
+    ? null
+    : feature.id === 'value' && ctr?.valueKind === 'abundance'
+      ? 'log₁₀ abundance'
+      : feature.label
+  const set = (tail: AxisTail, v: number | null): void =>
+    setStat({ values: { ...stat?.values, [feature.id]: { ...own, [tail]: v } } })
+  const box = (tail: AxisTail): ReactNode => {
+    const v = cuts[tail]
+    return (
+      <div style={styles.pctBox}>
+        <OptionalNumberInput
+          // significance: stored as −log₁₀, shown as the p it stands for
+          value={v == null ? null : sig ? roundP(10 ** -v) : v}
+          step={sig ? 0.001 : 0.1}
+          placeholder="none"
+          title="Leave empty for no cutoff on this tail"
+          onChange={(x) => set(tail, x == null ? null : sig ? (x > 0 ? -Math.log10(x) : null) : x)}
+        />
+      </div>
+    )
+  }
+  const axisRows = (side: 'a' | 'b', name: string): ReactNode => (
+    <>
+      <span style={styles.sideTag}>
+        {sideWord} {name}
+      </span>
+      <div style={styles.cutoffRow}>
+        {sig ? (
+          <>
+            <span style={styles.inlineTag}>{sigWord} ≤</span>
+            {box(`${side}Up`)}
+          </>
+        ) : (
+          <>
+            <span style={styles.inlineTag}>top</span>
+            {box(`${side}Up`)}
+            <span style={{ ...styles.inlineTag, marginLeft: 6 }}>bottom</span>
+            {box(`${side}Down`)}
+          </>
+        )}
+      </div>
+    </>
+  )
+  return (
+    <Field label="cutoff" top>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+        {/* which feature's they are — a plot's: the one its tab shows (switched there) */}
+        {features.length > 1 &&
+          (tab ? (
+            <span style={styles.inlineTag}>for {feature.label}</span>
           ) : (
-            <>
-              {/* Per axis: its name on one line, then the up and down tails side by side (the
-                  panel is too narrow for name + two boxes on one row). */}
-              <span style={styles.sideTag}>{sideWord} A (y-axis)</span>
-              <div style={styles.cutoffRow}>
-                <span style={styles.inlineTag}>top</span>
-                {confBox(1 - t.q.aUp, setPrimary, false)}
-                <span style={{ ...styles.inlineTag, marginLeft: 6 }}>bottom</span>
-                {confBox(1 - t.q.aDown, setTail('aDown'), !asym)}
-                <span style={styles.inlineTag}>%</span>
-              </div>
-              <span style={styles.sideTag}>{sideWord} B (x-axis)</span>
-              <div style={styles.cutoffRow}>
-                <span style={styles.inlineTag}>top</span>
-                {confBox(1 - t.q.bUp, setTail('bUp'), !asym)}
-                <span style={{ ...styles.inlineTag, marginLeft: 6 }}>bottom</span>
-                {confBox(1 - t.q.bDown, setTail('bDown'), !asym)}
-                <span style={styles.inlineTag}>%</span>
-              </div>
-            </>
+            <Select
+              value={feature.id}
+              onChange={(v) => setPicked(v as ContrastFeatureId)}
+              options={features.map((f) => ({ value: f.id, label: f.label }))}
+            />
+          ))}
+        {axisRows('a', 'A (y-axis)')}
+        {axisRows('b', 'B (x-axis)')}
+        <div style={styles.cutoffRow}>
+          {/* the unit, unless the feature's name above already says it */}
+          {unit && (features.length <= 1 || unit !== feature.label) && (
+            <span style={styles.inlineTag}>in {unit}</span>
+          )}
+          {/* back to the Compares' own (only while any is set here, and a Compare has one) */}
+          {own && defaults && (
+            <button
+              style={{ ...styles.resetBtn, marginLeft: 'auto' }}
+              onClick={() => {
+                const { [feature.id]: _drop, ...rest } = stat?.values ?? {}
+                void _drop
+                setStat({ values: rest })
+              }}
+            >
+              use the Compare’s
+            </button>
           )}
         </div>
-      </Field>
-    </Section>
+      </div>
+    </Field>
   )
 }
 
@@ -3909,7 +4325,7 @@ function VolcanoPanel({ config, update, edgeNodeId }: PlotPanelProps<VolcanoConf
 function ScatterPanel({ config, update, edgeNodeId }: PlotPanelProps<ScatterConfig>) {
   const names = useEffectNames(edgeNodeId)
   const colors = useEffectColors(edgeNodeId, config.fcPalette)
-  // An independent (marginal) contrast colours by quadrant, so the look is per quadrant group.
+  // An independent (linear cutoff) contrast colours by quadrant, so the look is per quadrant group.
   const up = useUpstreamNode(edgeNodeId)
   const contrast = up && isStep(up) && up.data.kind === 'contrast' ? up : undefined
   const compare = up && isStep(up) && isComparisonKind(up.data.kind) ? up : undefined
@@ -3923,6 +4339,7 @@ function ScatterPanel({ config, update, edgeNodeId }: PlotPanelProps<ScatterConf
           id={contrast.id}
           config={contrast.data.config as ContrastConfig}
           subtitle={`from ${stepTitle(contrast)}`}
+          tab={edgeNodeId}
         />
       )}
       {compare && (
@@ -4102,6 +4519,10 @@ function PointStyleSections({
     const c = style?.groups?.[key]?.color
     return c && c !== AUTO ? c : AUTO
   }
+  const labelChip = (key: string): string => {
+    const c = style?.groups?.[key]?.labelColor
+    return c && c !== AUTO ? c : AUTO
+  }
   /** A group's emphasised marker size: the explicit one, else its own size plus the bump. */
   const hlSize = (g: ResolvedGroup): number => g.highlight.size ?? g.size + g.highlight.bump
   // One template for every block below, so their columns line up under the group they belong to.
@@ -4134,6 +4555,7 @@ function PointStyleSections({
     'opacity',
     'color',
     'label',
+    'labelColor',
     'highlight'
   ]
   const reset = (label: string, onClick: () => void): ReactNode => (
@@ -4192,7 +4614,7 @@ function PointStyleSections({
       >
         {/* One column per group (they share every setting), one row per setting — so a value is
             compared across groups by reading along its row. Scrolls sideways when a plot has many
-            groups (a marginal contrast's eight quadrants). */}
+            groups (a linear cutoff contrast's eight quadrants). */}
         <div style={styles.groupScroll}>
           {/* Every state up front: the settings below all show up here, so a change is judged
               without hunting for the row that drew it. Indented like a sub-block (without its
@@ -4304,12 +4726,28 @@ function PointStyleSections({
                   >
                     label
                   </span>
+                  {/* Whether its genes are labelled, and in what colour: automatic = the group's
+                      marker colour. */}
                   {groups.map((g) => (
-                    <div key={g.key} style={styles.switchCell}>
+                    <div key={g.key} style={styles.ringCell}>
                       <OnOffSwitch
                         on={g.label}
                         label={`${g.name} labels`}
                         onChange={(on) => setGroup(g.key, { label: on })}
+                      />
+                      <ColorChip
+                        color={labelChip(g.key)}
+                        on
+                        label={`${g.name} label colour`}
+                        title={
+                          labelChip(g.key) === AUTO
+                            ? `${g.name} label colour: automatic (the group's colour)`
+                            : `${g.name} label colour`
+                        }
+                        onPick={(c) => setGroup(g.key, { labelColor: c })}
+                        onAuto={() => setGroup(g.key, { labelColor: undefined })}
+                        autoLabel="Automatic (the group's colour)"
+                        style={{ flex: '1 1 auto', width: '100%' }}
                       />
                     </div>
                   ))}
@@ -4391,6 +4829,30 @@ function PointStyleSections({
                       )}
                   </div>
                 ))}
+
+                {/* The selected gene's name colour: automatic = its point's colour. */}
+                <span style={styles.rowLabel}>label colour</span>
+                {groups.map((g) => {
+                  const own = style?.groups?.[g.key]?.highlight?.labelColor
+                  const c = own && own !== AUTO ? own : AUTO
+                  return (
+                    <ColorChip
+                      key={g.key}
+                      color={c}
+                      on
+                      label={`${g.name} selected label colour`}
+                      title={
+                        c === AUTO
+                          ? `${g.name} selected label colour: automatic (the point's colour)`
+                          : `${g.name} selected label colour`
+                      }
+                      onPick={(v) => setGroupHl(g.key, { labelColor: v })}
+                      onAuto={() => setGroupHl(g.key, { labelColor: undefined })}
+                      autoLabel="Automatic (the point's colour)"
+                      style={{ width: '100%', flex: '1 1 auto' }}
+                    />
+                  )
+                })}
               </div>
             </div>
           )}
@@ -7071,13 +7533,15 @@ function TablePanel({ config, update, edgeNodeId }: PlotPanelProps<TableConfig>)
   return (
     <>
       <Section title="Table">
-        <Field label="default view">
+        <Field label={fromClean ? 'view' : 'default view'}>
           <Select
-            value={config.view ?? 'matrix'}
+            value={config.view === 'qc' && !fromClean ? 'matrix' : (config.view ?? 'matrix')}
             onChange={(v) => update({ view: v as TableConfig['view'] })}
             options={[
               { value: 'matrix', label: 'Matrix (gene × column)' },
-              { value: 'long', label: 'Long (one row per value)' }
+              { value: 'long', label: 'Long (one row per value)' },
+              // Clean data's per-sample QC
+              ...(fromClean ? [{ value: 'qc', label: 'QC (one row per sample)' }] : [])
             ]}
           />
         </Field>
@@ -7605,6 +8069,56 @@ function NumberInput({
         } else if (e.key === 'Enter') e.currentTarget.blur()
         else if (e.key === 'Escape') {
           setDraft(null)
+          e.currentTarget.blur()
+        }
+      }}
+    />
+  )
+}
+
+/** A number box that may be left empty: emptied, it commits null (on blur or Enter) — "none". */
+function OptionalNumberInput({
+  value,
+  onChange,
+  step,
+  placeholder,
+  title
+}: {
+  value: number | null
+  onChange: (v: number | null) => void
+  step?: number
+  placeholder?: string
+  title?: string
+}) {
+  // A draft while editing, as NumberInput's; an empty one is committed as null when the box is
+  // left (Escape leaves it as it was).
+  const [draft, setDraft] = useState<string | null>(null)
+  const cancelled = useRef(false)
+  return (
+    <input
+      type="number"
+      className="oe-num"
+      style={{ ...styles.input, textAlign: 'right' }}
+      value={draft ?? (value == null ? '' : String(value))}
+      step={step ?? 1}
+      placeholder={placeholder}
+      title={title}
+      onChange={(e) => {
+        const raw = e.target.value
+        setDraft(raw)
+        if (raw.trim() === '') return
+        const v = Number(raw)
+        if (Number.isFinite(v)) onChange(v)
+      }}
+      onBlur={() => {
+        if (draft != null && draft.trim() === '' && !cancelled.current) onChange(null)
+        cancelled.current = false
+        setDraft(null)
+      }}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter') e.currentTarget.blur()
+        else if (e.key === 'Escape') {
+          cancelled.current = true
           e.currentTarget.blur()
         }
       }}

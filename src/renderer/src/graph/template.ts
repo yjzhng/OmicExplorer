@@ -54,6 +54,9 @@ function templateSpec(spec: InteractiveImport): InteractiveImport {
 
 function loadConfig(cfg: LoadConfig, keepMapping: boolean): LoadConfig {
   const out: LoadConfig = { ...cfg, data: null, samplesheet: null, db: null, matrix: null }
+  // what the files were when read: a template has none
+  delete out.convertedFrom
+  delete out.readStamps
   if (keepMapping && cfg.interactive) out.interactive = templateSpec(cfg.interactive)
   else delete out.interactive
   if (!keepMapping) {

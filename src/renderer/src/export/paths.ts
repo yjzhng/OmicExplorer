@@ -1,6 +1,8 @@
 /** Output-path helpers shared by plot and table export. Kept pure/tiny so both the
  *  renderer planning code and the tests can use them. */
 
+import { namePart } from './fileNames'
+
 /** Make a string safe for a file/dir name. */
 export function sanitize(s: string): string {
   return (
@@ -23,7 +25,9 @@ export function exportPath(
   ext: string,
   selected = false
 ): string {
-  const file = `${sanitize(fileBase)}.${ext}`
+  // A readable title (fileNames.fileTitle) keeps its spaces and units; only what a file system
+  // refuses is replaced.
+  const file = `${namePart(fileBase) || 'item'}.${ext}`
   if (structure === 'subfolder')
     return selected ? `${folder}/selected/${file}` : `${folder}/${file}`
   return selected ? `selected/${folder}__${file}` : `${folder}__${file}`

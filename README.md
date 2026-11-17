@@ -35,6 +35,68 @@ Features:
 > Terminal alternative to the Gatekeeper prompt, once installed:
 > `xattr -dr com.apple.quarantine /Applications/OmicExplorer.app`
 
+### Build directly (no security block)
+
+Requirement: [git](https://git-scm.com), [Node.js](https://nodejs.org).
+
+Don't have them? Install once, then open a new terminal (check with `git --version` and
+`node --version`):
+
+- **macOS**: install [Homebrew](https://brew.sh) (includes git):
+
+  ```sh
+  /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+  ```
+
+  Follow its instructions to complete the install, then install Node.js:
+
+  ```sh
+  brew install node
+  ```
+
+- **Windows** (PowerShell):
+
+  ```powershell
+  winget install Git.Git
+  winget install OpenJS.NodeJS.LTS
+  ```
+
+  Or download the installers from [git-scm.com](https://git-scm.com) and [nodejs.org](https://nodejs.org).
+
+**macOS** (installs to /Applications):
+
+```sh
+git clone https://github.com/yjzhng/OmicExplorer.git ~/OmicExplorer
+cd ~/OmicExplorer
+./scripts/install-from-source.sh
+```
+
+**Windows** (in PowerShell; installs per user, with a Start menu shortcut):
+
+```powershell
+git clone https://github.com/yjzhng/OmicExplorer.git $HOME\OmicExplorer
+cd $HOME\OmicExplorer
+powershell -ExecutionPolicy Bypass -File scripts\install-from-source.ps1
+```
+
+#### Update
+
+The install script pulls the latest version and rebuilds. Run it again:
+
+**macOS**:
+
+```sh
+cd ~/OmicExplorer
+./scripts/install-from-source.sh
+```
+
+**Windows** (PowerShell):
+
+```powershell
+cd $HOME\OmicExplorer
+powershell -ExecutionPolicy Bypass -File scripts\install-from-source.ps1
+```
+
 ### Load your data
 
 A project is a folder with an `input/` directory holding three CSVs: a
@@ -132,10 +194,9 @@ still load.
 
 Needs [Node.js](https://nodejs.org) + git.
 
-- **Native window (macOS):** clone the repo and double-click `OmicExplorer Dev.app`
-  (a dev launcher that runs `npm run dev`), or `npm run make:launcher` to
-  regenerate it.
-- **Browser / any OS:** `npm install && npm run dev` → http://localhost:5673
+- **Any OS:** `npm install && npm run dev` opens the dev build in its own window.
+- **macOS:** or double-click `OmicExplorer Dev.app` (runs `npm run dev`, installing
+  dependencies when needed); `npm run make:launcher` regenerates it.
 
 ## Build the installer
 

@@ -4,7 +4,7 @@ import { BrowserWindow, shell } from 'electron'
 import { WINDOW_PRESETS, type WindowPresetName } from './window-presets'
 import { installCloseGuard } from './close-guard'
 
-// The from-source window's icon on Win/Linux: the master icon with the red dev dot, so it's told
+// The from-source window's icon on Win/Linux: the master icon with a gear badge, so it's told
 // apart from an installed copy (macOS dev takes the same badge from its branded clone — see
 // scripts/brand-dev-electron.mjs; packaged apps use the .icns electron-builder generates from
 // build-resources/icon.png, and don't ship build-resources, so never reach this path).

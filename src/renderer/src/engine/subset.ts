@@ -103,10 +103,11 @@ export function subsetStandardize(
     (c) => !narrowed.has(c) && rows.some((r) => valueOf(r, c) !== '')
   )
   const cmpds = new Set(rows.map((r) => r.cmpd))
-  // Rows stay linear, so they carry over as-is. `inputScale` (and what was detected from it) is
-  // dropped, as Merge drops it: the presented scale is then `scale`, the one Clean data ran with.
+  // Rows stay linear, so they carry over as-is, and so do the scale they're presented on and the
+  // input scale (for a Clean data below). What was detected from the input is Clean data's own
+  // panel's to show, so it's dropped.
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  const { inputScale, scaleEvidence, inputHistogram, ...rest } = std
+  const { scaleEvidence, inputHistogram, ...rest } = std
   return {
     ...rest,
     rows,

@@ -1,12 +1,12 @@
 /** The plot tiles whose data can be exported as tables (Enrichment, STRING — see
  *  export/plotData.ts), and the file names offered for them, after the group tile and plot type:
  *
- *    <group tile name>_Enrichment.csv
- *    <group tile name>_STRING network_nodes.csv / _edges.csv
+ *    <group tile name> - Enrichment.csv
+ *    <group tile name> - STRING network - nodes.csv / - edges.csv
  *
  *  (an unnamed group tile reads "Plot", as on the canvas). Works on the live graph and on a saved
  *  workflow doc alike. */
-import { pathSeg } from './diskNames'
+import { fileTitle } from '../export/fileNames'
 import { plotLabel, stepTitle } from './registry'
 import { plotResultKey, type NodeConfig, type NodeKind, type PlotGroupConfig } from './types'
 
@@ -54,7 +54,7 @@ export function plotTableTargets(
         config,
         upstreamId,
         resultKey: plotResultKey(n.id, childId),
-        stem: pathSeg(`${tile}_${plotLabel(kind, config)}`, 'Plot')
+        stem: fileTitle([tile, plotLabel(kind, config)])
       })
     }
     if (n.data.kind === 'plotGroup')
@@ -66,4 +66,4 @@ export function plotTableTargets(
 
 /** The files a plot's tables are written to, from its stem. */
 export const plotTableFiles = (kind: 'enrich' | 'string', stem: string): string[] =>
-  kind === 'enrich' ? [`${stem}.csv`] : [`${stem}_nodes.csv`, `${stem}_edges.csv`]
+  kind === 'enrich' ? [`${stem}.csv`] : [`${stem} - nodes.csv`, `${stem} - edges.csv`]

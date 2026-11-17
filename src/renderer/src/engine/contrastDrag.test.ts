@@ -11,7 +11,7 @@ import Papa from 'papaparse'
 import { describe, expect, it } from 'vitest'
 
 import { contrastStatDrag, reclassifyContrast, runContrast, type ContrastStat } from './contrast'
-import { bandConfAt, bandEdgePath, buildScatter, marginalQAt } from './plotData'
+import { bandConfAt, bandEdgePath, buildScatter } from './plotData'
 import { studentTppf } from './stats'
 import type { CompareResultRow } from './types'
 
@@ -50,8 +50,11 @@ const calls = (r: { rows: Array<{ uniqID: string; signf: boolean; effect: string
 describe('re-calling a contrast in place', () => {
   for (const relationship of ['correlated', 'independent'] as const)
     it(`${relationship}: equals a fresh run at the new cutoff`, () => {
-      const before = run(relationship, { bandConfidence: 0.99, cutoffQ: 0.01 })
-      const stat = { bandConfidence: 0.9, cutoffQ: 0.1 }
+      const before = run(relationship, {
+        bandConfidence: 0.99,
+        values: { value: { aUp: 1, aDown: -1, bUp: 1, bDown: -1 } }
+      })
+      const stat = { bandConfidence: 0.9, values: { value: { aUp: 0.5, bDown: -0.5 } } }
       const redone = reclassifyContrast(before, relationship, stat)!
       expect(calls(redone)).toEqual(calls(run(relationship, stat)))
       expect(redone.rows[0].thrsh).toBe(run(relationship, stat).rows[0].thrsh)
@@ -70,39 +73,49 @@ describe('a dragged guide maps back to its cutoff', () => {
     const [, x, y] = /L([-\d.e]+),([-\d.e]+)/.exec(path.split('L')[30].replace(/^/, 'L'))!
     expect(bandConfAt(g.band!, Number(x), Number(y))).toBeCloseTo(0.95, 6)
   })
-  it('axis line: a q that keeps the same genes beyond it', () => {
-    const ctr = run('independent', { cutoffQ: 0.05 })
-    const g = buildScatter(ctr.rows).guide!
-    const q = marginalQAt(g, 'y', g.yHi!)
-    // dropped back at its own position, the up line of A re-calls nothing differently
-    const redone = reclassifyContrast(ctr, 'independent', {
-      cutoffQ: 0.05,
-      asymmetric: true,
-      cutoffQTails: { aUp: contrastStatDrag({ asymmetric: true }, 'aUp', q).cutoffQ }
-    })!
-    expect(calls(redone)).toEqual(calls(ctr))
+  it("axis line: re-called in place from the inputs' cutoffs and the dragged value", () => {
+    const defaults = { aUp: 1, aDown: -1, bUp: 1, bDown: -1 }
+    const ctr = runContrast({
+      rows,
+      condition: 'cmpd',
+      pair: ['A', 'B'],
+      relationship: 'independent',
+      cutoffDefaults: defaults
+    })
+    const stat = contrastStatDrag({}, 'aUp', 0.4321)
+    expect(stat).toEqual({ values: { value: { aUp: 0.43 } } })
+    const redone = reclassifyContrast(ctr, 'independent', stat)!
+    const fresh = runContrast({
+      rows,
+      condition: 'cmpd',
+      pair: ['A', 'B'],
+      relationship: 'independent',
+      cutoffDefaults: defaults,
+      stat
+    })
+    expect(calls(redone)).toEqual(calls(fresh))
+    expect(buildScatter(redone.rows).guide).toMatchObject({ yHi: 0.43, yLo: -1, xHi: 1, xLo: -1 })
   })
 })
 
 describe('the drag patch', () => {
-  it('symmetric: any edge sets the primary level, both models', () => {
-    expect(contrastStatDrag({}, 'bandDown', 0.954)).toEqual({
-      bandConfidence: 0.954,
-      cutoffQ: 0.046
-    })
-    // a q rounds UP, to 0.001% (the finest tail)
-    expect(contrastStatDrag({}, 'bDown', 0.012341)).toEqual({
-      cutoffQ: 0.01235,
-      bandConfidence: 0.98765
-    })
+  it('symmetric: either band edge sets the primary level', () => {
+    expect(contrastStatDrag({}, 'bandDown', 0.954)).toEqual({ bandConfidence: 0.954 })
+  })
+  it("an axis line sets that tail's value for the feature on show", () => {
+    expect(contrastStatDrag({}, 'bDown', -1.2345)).toEqual({ values: { value: { bDown: -1.23 } } })
+    // significance snaps to a round p
+    const p = contrastStatDrag({ values: { value: { aUp: 2 } } }, 'aUp', 1.2999, 'p')
+    expect(p.values?.value).toEqual({ aUp: 2 })
+    expect(10 ** -p.values!.p!.aUp!).toBeCloseTo(0.05, 9)
   })
   it('asymmetric: a secondary edge sets its own tail', () => {
     expect(contrastStatDrag({ asymmetric: true }, 'bandDown', 0.9)).toEqual({
       bandConfidenceDown: 0.9
     })
     expect(
-      contrastStatDrag({ asymmetric: true, cutoffQTails: { bUp: 0.02 } }, 'aDown', 0.03)
-    ).toEqual({ cutoffQTails: { bUp: 0.02, aDown: 0.03 } })
+      contrastStatDrag({ asymmetric: true, values: { value: { bUp: 2 } } }, 'aDown', -0.5)
+    ).toEqual({ values: { value: { bUp: 2, aDown: -0.5 } } })
   })
 })
 
@@ -122,7 +135,12 @@ describe('the drawn boundary agrees with the calls', () => {
           : b.sErr * Math.sqrt(1 + 1 / b.n + (p.x - b.xMean) ** 2 / b.Sxx)
         const c = r > 0 ? g.cutoffs!.confUp : g.cutoffs!.confDown
         outside = Math.abs(r) > studentTppf(1 - c, b.df) * lever
-      } else outside = p.y > g.yHi! || p.y < g.yLo! || p.x > g.xHi! || p.x < g.xLo!
+      } else
+        outside =
+          (g.yHi != null && p.y > g.yHi) ||
+          (g.yLo != null && p.y < g.yLo) ||
+          (g.xHi != null && p.x > g.xHi) ||
+          (g.xLo != null && p.x < g.xLo)
       if (outside !== (p.effect !== 'none')) bad++
       // a called gene's colour is the side of the fit it broke out on
       if (g.kind === 'ols' && p.effect !== 'none') {
@@ -171,7 +189,10 @@ describe('the drawn boundary agrees with the calls', () => {
       calls(identity)
     )
   })
-  for (const stat of [{}, { asymmetric: true, cutoffQTails: { aDown: 0.2, bUp: 0.001 } }])
+  for (const stat of [
+    { values: { value: { aUp: 1, aDown: -1, bUp: 1, bDown: -1 } } },
+    { values: { value: { aUp: 0.3, aDown: null, bUp: 2, bDown: -0.2 } } }
+  ])
     it(`independent ${JSON.stringify(stat)}: no called gene on or inside a line`, () => {
       const ctr = runContrast({
         rows,
@@ -181,6 +202,7 @@ describe('the drawn boundary agrees with the calls', () => {
         stat,
         driverMask: false
       })
+      expect(ctr.rows.some((r) => r.signf)).toBe(true)
       expect(mismatches(ctr)).toBe(0)
     })
 })

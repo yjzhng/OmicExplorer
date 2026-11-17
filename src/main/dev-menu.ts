@@ -64,9 +64,15 @@ function runMobile(label: string): void {
  * sections, divider-separated: aspect ratios · desktop OS · mobile OS. All derived from
  * package.json, so a new app configures its platforms in one place.
  */
-export function installAppMenu(): void {
+export function installAppMenu({ newWindow }: { newWindow: () => void }): void {
   const isMac = process.platform === 'darwin'
   const separator: MenuItemConstructorOptions = { type: 'separator' }
+  // A new window is a session of its own (its own project, results and engine).
+  const newWindowItem: MenuItemConstructorOptions = {
+    label: 'New Window',
+    accelerator: 'CmdOrCtrl+N',
+    click: newWindow
+  }
 
   // Aspect ratios — always present.
   const submenu: MenuItemConstructorOptions[] = Object.entries(WINDOW_PRESETS).map(
@@ -91,7 +97,11 @@ export function installAppMenu(): void {
 
   const template: MenuItemConstructorOptions[] = [
     ...(isMac ? [{ role: 'appMenu' } as MenuItemConstructorOptions] : []),
-    { role: 'fileMenu' },
+    // The default File menu (Close on macOS, Quit elsewhere) with New Window above it.
+    {
+      label: 'File',
+      submenu: [newWindowItem, separator, isMac ? { role: 'close' } : { role: 'quit' }]
+    },
     { role: 'editMenu' },
     { role: 'viewMenu' },
     ...(app.isPackaged ? [] : [platformMenu]),
@@ -99,4 +109,6 @@ export function installAppMenu(): void {
   ]
 
   Menu.setApplicationMenu(Menu.buildFromTemplate(template))
+  // macOS: the Dock icon's right-click menu (its open windows are listed above it by the system).
+  app.dock?.setMenu(Menu.buildFromTemplate([{ label: 'New Window', click: newWindow }]))
 }

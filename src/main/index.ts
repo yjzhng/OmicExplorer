@@ -55,13 +55,12 @@ function focusExistingWindow(): void {
 /** The project each window was opened for, by webContents id, until its renderer takes it. */
 const launchProjects = new Map<number, string>()
 
-/** A window; given a project file, one that opens it — set off from the window in front, so it
- *  isn't stacked exactly over it. */
+/** A window (File › New Window, the Dock menu, a launch); given a project file, one that opens it.
+ *  Set off from the window in front, so it isn't stacked exactly over it. */
 function openDefaultWindow(project?: string): void {
   const front = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0]
   const win = createWindowFromPreset(DEFAULT_PRESET, { search: `?preset=${DEFAULT_PRESET}` })
-  if (!project) return
-  launchProjects.set(win.webContents.id, project)
+  if (project) launchProjects.set(win.webContents.id, project)
   if (front && !front.isDestroyed()) {
     const [x, y] = front.getPosition()
     win.setPosition(x + 28, y + 28)
@@ -120,13 +119,14 @@ if (shoot) {
     registerStringNet() // renderer ↔ main STRING network fetch
     registerPark() // inactive workflows' results parked on disk (renderer memory)
     registerRefCache() // Settings › Database: the UniProt / STRING cache's contents
-    installAppMenu() // dev-only aspect-ratio switcher — lives here, not in the app UI
+    initAutoUpdate() // Settings › About › Updates: download and install a newer release
+    // File › New Window and the Dock menu's, plus the dev-only aspect-ratio switcher
+    installAppMenu({ newWindow: () => openDefaultWindow() })
     // Launched to open projects: a window for each; else the one home window.
     const launch = [...queuedProjects, ...projectArgs(process.argv)]
     queuedProjects.length = 0
     if (launch.length) for (const f of launch) openDefaultWindow(f)
     else openDefaultWindow()
-    initAutoUpdate() // no-op unless packaged + appConfig.publish is set
 
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) openDefaultWindow()

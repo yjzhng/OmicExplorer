@@ -48,3 +48,6 @@ docs/
 
 # local UI mockups
 mockup/
+
+# Python bytecode (scripts/make-badge-icons.py)
+__pycache__/

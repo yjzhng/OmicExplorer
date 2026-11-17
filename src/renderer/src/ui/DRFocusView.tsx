@@ -32,12 +32,14 @@ import {
 
 /** No Clean data: no gene's replicates. */
 const NO_STD: StdLookup = new Map()
+import { useGraph } from '../graph/store'
 import { drLook, type DRLook, type EffectColors } from '../graph/types'
 import { AUTO } from './ColorPicker'
 import { tooltip } from './condTooltip'
 import { errorTraces } from './errorTraces'
 import { PlotlyChart } from './PlotlyChart'
 import { axisBase, CATEGORICAL, EFFECT_COLOR, PALETTES, plotBase, withAlpha } from './theme'
+import { useGeneSetColors } from './useSelection'
 import { useUiTheme } from './useUiTheme'
 
 /** Evenly spaced points along a fitted curve (more are added at its turns — curveSampleX). */
@@ -230,6 +232,7 @@ export function DRFocusView({
   const upColor = effectColors?.up ?? EFFECT_COLOR.up
   const downColor = effectColors?.down ?? EFFECT_COLOR.down
   const noneColor = effectColors?.none ?? EFFECT_COLOR.none
+  const setColor = useGeneSetColors(useGraph((s) => s.geneSets))
   // The genes drawn, in colour order, and each one's Clean data rows (for its replicates).
   const ids = useMemo(
     () => genes ?? (gene ? [gene] : [...new Set(rows.map((r) => r.uniqID))]),
@@ -277,17 +280,21 @@ export function DRFocusView({
     // A series' line colour, unless one colour is set for every line: with several genes, the
     // gene's (the global view's palette, by its place); else, with one line, the gene's effect
     // group (up / down / none, as the volcano colours it); with several, one palette colour per
-    // comparison. Points and error follow it unless they have a colour of their own.
+    // comparison. A gene of a selected gene group with a colour takes that colour wherever the gene
+    // is what the colour tells apart (not across one gene's comparisons). Points and error follow
+    // it unless they have a colour of their own.
     const color = (id: string, gRows: CompareResultRow[], c: string): string =>
-      look.lineColor !== AUTO
-        ? look.lineColor
-        : multi
-          ? CATEGORICAL[ids.indexOf(id) % CATEGORICAL.length]
-          : comparisons.length === 1
-            ? { up: upColor, down: downColor, none: noneColor }[
-                geneEffect(gRows.filter((r) => r.comparison === c))
-              ]
-            : CATEGORICAL[comparisons.indexOf(c) % CATEGORICAL.length]
+      (multi || comparisons.length === 1) && setColor.has(id)
+        ? setColor.get(id)!
+        : look.lineColor !== AUTO
+          ? look.lineColor
+          : multi
+            ? CATEGORICAL[ids.indexOf(id) % CATEGORICAL.length]
+            : comparisons.length === 1
+              ? { up: upColor, down: downColor, none: noneColor }[
+                  geneEffect(gRows.filter((r) => r.comparison === c))
+                ]
+              : CATEGORICAL[comparisons.indexOf(c) % CATEGORICAL.length]
     // Several genes over several comparisons: the gene sets the colour, the comparison the dash.
     const dash = (c: string): string | undefined =>
       multi && comparisons.length > 1 ? DASHES[comparisons.indexOf(c) % DASHES.length] : undefined
@@ -605,6 +612,7 @@ export function DRFocusView({
     upColor,
     downColor,
     noneColor,
+    setColor,
     model
   ])
 

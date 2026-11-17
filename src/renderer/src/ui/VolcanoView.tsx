@@ -17,7 +17,7 @@ import {
 import { useGraph } from '../graph/store'
 import { tooltip } from './condTooltip'
 import { PlotlyChart, type GuideDrag } from './PlotlyChart'
-import { legendOn, resolveGroups, resolveHighlight } from './pointStyle'
+import { labelColorOf, legendOn, resolveGroups, resolveHighlight } from './pointStyle'
 import { axisBase, EFFECT_COLOR, GUIDE_WIDTH, guideLine, PALETTES, plotBase } from './theme'
 import { useSelectedGeneSets } from './useSelection'
 import { useUiTheme } from './useUiTheme'
@@ -484,7 +484,8 @@ export function VolcanoView({
       y: pt.y,
       text: pt.label,
       priority: d,
-      id: pt.uniqID
+      id: pt.uniqID,
+      color: labelColorOf(look(pt.effect), p.text)
     }))
     // A bracket CORNER (±fc, statMin) is a 2-D handle adjusting both fold change and stat at once:
     // it live-updates all four bracket segments and commits fcLow/fcHigh/statMin together.

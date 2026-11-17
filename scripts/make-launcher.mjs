@@ -1,11 +1,13 @@
 // Generate a double-clickable "<productName> Dev.app" that launches Path B (live dev) — named
-// and badged (the red-dot icon) apart from an installed copy.
+// and badged (the badged dev icon) apart from an installed copy.
 // Reads name/version from package.json so a renamed derived app regenerates its
 // own launcher. Run: `npm run make:launcher`.
 //
-// The .app is a stub: its executable backgrounds launch.sh and exits, leaving
-// only the Electron window (matches the sibling ChemViewer/uniOme/autumnLab
-// pattern — git pull to update, nothing to reinstall).
+// The .app is a stub: its executable runs launch.sh and stays until the dev app quits, with no
+// Dock icon of its own (LSUIElement), so only the Electron window shows — git pull to update,
+// nothing to reinstall. It can't background launch.sh and exit (the sibling ChemViewer/uniOme/
+// autumnLab pattern): since macOS 27 an app's background children are killed when it exits, so
+// the dev app died before it opened.
 import {
   existsSync,
   mkdirSync,
@@ -34,11 +36,10 @@ const exe = resolve(macos, name)
 writeFileSync(
   exe,
   `#!/bin/bash
-# Double-clickable launcher: resolves the repo it lives in, hands off to
-# launch.sh in the background, and exits so only the Electron window remains.
+# Double-clickable launcher: resolves the repo it lives in and runs launch.sh in
+# its place, until the dev app quits (no Dock icon of its own: LSUIElement).
 DIR="$(cd "$(dirname "$0")/../../.." && pwd)" # repo root: <name>.app/Contents/MacOS -> ../../..
-nohup "$DIR/scripts/launch.sh" >"\${TMPDIR:-/tmp}/${(pkg.name || 'oneproduction').toLowerCase()}-launch.log" 2>&1 &
-exit 0
+exec "$DIR/scripts/launch.sh" >"\${TMPDIR:-/tmp}/${(pkg.name || 'oneproduction').toLowerCase()}-launch.log" 2>&1
 `
 )
 chmodSync(exe, 0o755)
@@ -69,6 +70,7 @@ writeFileSync(
   <key>CFBundleVersion</key><string>1</string>
   <key>LSMinimumSystemVersion</key><string>10.15</string>
   <key>NSHighResolutionCapable</key><true/>
+  <key>LSUIElement</key><true/>
 </dict>
 </plist>
 `

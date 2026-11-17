@@ -56,11 +56,12 @@ import {
   isStep,
   type CanvasFrame,
   type GraphNode,
+  type LoadConfig,
   type NodeKind,
   type StepNode
 } from '../graph/types'
 import { DialogDock, hasDetailsWindow } from '../graph/dialogDock'
-import { RunControl, StatusDot, useStepStatus } from '../graph/StatusDot'
+import { LoadRunControl, RunControl, StatusDot, useStepStatus } from '../graph/StatusDot'
 import { NodeConfigPanel } from '../graph/NodeConfigPanel'
 import { TilePicker } from '../graph/TilePicker'
 import { Chevron } from '../ui/Chevron'
@@ -537,6 +538,9 @@ function StepTile({
           it reads have results — pressing it early only reproduces the error it was always going
           to give. */}
       <div style={styles.tileSide}>
+        {kind === 'load' && (hovered || selected) && (
+          <LoadRunControl id={id} config={node.data.config as LoadConfig} accent={accent} />
+        )}
         {runs && (hovered || selected) && !nothingToRerun(node.data) && (
           <RunControl
             status={status}

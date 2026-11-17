@@ -1,12 +1,15 @@
 import { useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 
 import { UI } from '../ui/theme'
+import { useAppSettings } from '../ui/useAppSettings'
+import { inPlotOrder } from './plotOrder'
 import {
   accentOf,
   categoryOf,
   CATEGORIES,
   entryKey,
   NODE_SPECS,
+  outputKindOf,
   PLOT_SECTIONS,
   type PlotMenuEntry
 } from './registry'
@@ -29,7 +32,10 @@ export function TilePicker({
   header = 'New step',
   upstream,
   style,
-  onCancel
+  onCancel,
+  ticked,
+  onTickedChange,
+  preview = false
 }: {
   ops: NodeKind[]
   /** Chosen picks. One → a single node; two or more plotting picks → a group tile. Each pick may
@@ -43,8 +49,24 @@ export function TilePicker({
   /** Shows a Cancel at the header's right end. The form workflow passes it (its picker is inline,
    *  so there is no outside click to dismiss it); the canvas menu doesn't. */
   onCancel?: () => void
+  /** the plots it opens with ticked (entry keys) — else the user's default plots for a tile made
+   *  from the upstream's kind (Settings › Plot defaults), if any */
+  ticked?: string[]
+  /** each change to the ticked plots (Settings' preview saves them as it goes) */
+  onTickedChange?: (keys: string[]) => void
+  /** Settings' stand-in for the canvas picker: the same list, its footer saying how many plots a
+   *  new tile comes with instead of adding them */
+  preview?: boolean
 }) {
   const avail = upstream ?? UNWIRED
+  // The user's default plots for a tile made from this kind of step (Settings › Plot defaults) —
+  // a Merge's or a Subset's being Clean data's, as that's what they hand on.
+  const defaults = useAppSettings((s) =>
+    upstream?.kind ? s.defaultPlots[outputKindOf(upstream.kind)] : undefined
+  )
+  const plotOrder = useAppSettings((s) =>
+    upstream?.kind ? s.plotOrder[outputKindOf(upstream.kind)] : undefined
+  )
   // `plotGroup` is never user-pickable — checking several plots in the plotting list
   // is what creates a group, so it must not appear as an option here.
   const byCat = CATS.map((cat) => ({
@@ -65,14 +87,21 @@ export function TilePicker({
   const [hovered, setHovered] = useState<string | null>(null)
   // Multi-select is offered only in the plotting category (to build a group tile). Keyed by
   // entryKey (not kind), so each Response plot (Dose response, Time response, …) checks on its own.
-  const [chosen, setChosen] = useState<Set<string>>(new Set())
-  const toggle = (key: string): void =>
-    setChosen((prev) => {
-      const next = new Set(prev)
-      if (next.has(key)) next.delete(key)
-      else next.add(key)
-      return next
-    })
+  // Starts with the default plots ticked; a default the data can't support isn't offered, so it's
+  // never ticked on screen nor added (`picked` keeps only what's offered).
+  const [chosen, setChosenState] = useState<Set<string>>(
+    () => new Set(ticked ?? (defaults?.on ? defaults.keys : []))
+  )
+  const setChosen = (next: Set<string>): void => {
+    setChosenState(next)
+    onTickedChange?.([...next])
+  }
+  const toggle = (key: string): void => {
+    const next = new Set(chosen)
+    if (next.has(key)) next.delete(key)
+    else next.add(key)
+    setChosen(next)
+  }
 
   const row = (
     key: string,
@@ -158,6 +187,13 @@ export function TilePicker({
     plotting && current ? gatePlotEntries(current.ops.flatMap(entriesOf), avail) : []
   // Every offered plot is checked: Select all turns into Clear.
   const allChosen = allEntries.length > 0 && allEntries.every((en) => chosen.has(entryKey(en)))
+  // What Add makes: the ticked plots this upstream offers (a ticked default its data can't support
+  // is left out), in the plot order set for the step (Settings › Plot defaults — the order they're
+  // laid out in on the results page), else the declared one.
+  const picked = inPlotOrder(
+    allEntries.filter((en) => chosen.has(entryKey(en))),
+    plotOrder
+  )
 
   return (
     <div className="nodrag" style={{ ...card, ...style }}>
@@ -252,21 +288,28 @@ export function TilePicker({
       </CrispScroll>
       {plotting && (
         <div style={footer}>
-          <button
-            disabled={chosen.size === 0}
-            onClick={(e) => {
-              e.stopPropagation()
-              // Preserve the declared entry order so subcards read predictably.
-              onPick(allEntries.filter((en) => chosen.has(entryKey(en))))
-            }}
-            style={{ ...addBtn, opacity: chosen.size === 0 ? 0.45 : 1 }}
-          >
-            {chosen.size > 1
-              ? `Add ${chosen.size} visualisations as a group`
-              : chosen.size === 1
-                ? 'Add visualisation'
-                : 'Select visualisation…'}
-          </button>
+          {preview ? (
+            <div style={previewNote}>
+              {picked.length
+                ? `A new plot tile comes with ${picked.length === 1 ? 'this plot' : `these ${picked.length} plots`} ticked`
+                : 'Tick the plots a new plot tile comes with'}
+            </div>
+          ) : (
+            <button
+              disabled={picked.length === 0}
+              onClick={(e) => {
+                e.stopPropagation()
+                onPick(picked)
+              }}
+              style={{ ...addBtn, opacity: picked.length === 0 ? 0.45 : 1 }}
+            >
+              {picked.length > 1
+                ? `Add ${picked.length} visualisations as a group`
+                : picked.length === 1
+                  ? 'Add visualisation'
+                  : 'Select visualisation…'}
+            </button>
+          )}
         </div>
       )}
     </div>
@@ -424,6 +467,12 @@ const checkbox: CSSProperties = {
   lineHeight: 1
 }
 const footer: CSSProperties = { padding: 6, borderTop: `1px solid ${UI.border}` }
+const previewNote: CSSProperties = {
+  padding: '5px 4px',
+  fontSize: 11,
+  color: UI.textMuted,
+  textAlign: 'center'
+}
 const addBtn: CSSProperties = {
   width: '100%',
   background: UI.accent,

@@ -134,7 +134,39 @@ export interface LoadConfig {
   numericConditions?: string[]
   /** interactive mode: the import spec built across the 4-step wizard. */
   interactive?: InteractiveImport
+  /** interactive mode: the raw data file as it was when last converted — a change to it (another
+   *  file picked, or this one rewritten) re-converts (see the store's checkLoad) */
+  convertedFrom?: FileStamp
+  /** the standard files as Clean data last read them (manual mode: your own files) — a change
+   *  since puts Clean data and below out of date */
+  readStamps?: Partial<Record<'data' | 'samplesheet' | 'db', FileStamp>>
 }
+
+/** A file as it was when read: its name as the Load tile names it, its size and modified time,
+ *  and a SHA-1 of its bytes (compared when the time moved but the size didn't). */
+export interface FileStamp {
+  name: string
+  size: number
+  mtime: number
+  hash?: string
+}
+
+/** Whether a Load tile's inputs are as they were read — live (never saved), from the store's
+ *  checkLoad. Absent = not checked yet (or nothing to check: an unconfigured tile). */
+export type LoadCheck =
+  | { state: 'ok' }
+  /** re-converting a changed raw file with the saved import settings */
+  | { state: 'converting' }
+  /** interactive: the raw file is gone, but its converted copy still reads */
+  | { state: 'sourceMissing'; name: string }
+  /** a file Clean data read has changed since (what's below is out of date until it runs) */
+  | { state: 'filesChanged'; names: string[] }
+  /** files the run needs aren't there */
+  | { state: 'filesMissing'; names: string[] }
+  /** interactive: the raw file lacks columns the import settings use */
+  | { state: 'columns'; missing: string[] }
+  /** a re-conversion that failed */
+  | { state: 'error'; message: string }
 
 /** A Load tile's custom conditions declared numeric — whichever mode it is in (one declaration, as
  *  its units), falling back to where an import saved before kept them. */
@@ -214,6 +246,11 @@ export interface InteractiveImport {
   /** token separator the Conditions step splits sample names on (default '_'); spans are token
    *  indexes under it, so changing it clears them */
   separator?: string
+  /** where the Conditions step takes the conditions from: painted off the sample names (absent =
+   *  'names'), or mapped from a samplesheet's columns (`sheet`) */
+  condSource?: 'names' | 'sheet'
+  /** the samplesheet loaded in the Conditions step's samplesheet mode, and how it's mapped */
+  sheet?: LoadedSheet
   /** last wizard stage the user was on (1–5) — reopens the wizard where they left off */
   step?: number
   /** last column-classification preset (Columns step) */
@@ -221,6 +258,23 @@ export interface InteractiveImport {
   /** fetched external annotations (UniProt) merged into the DB, keyed by the feature's ID value
    *  (uniqID/accession). Persisted so a reopened wizard keeps them and they're written on convert. */
   annotations?: AnnotationSet
+}
+
+/** A samplesheet as the interactive import holds it: the file's table as written (any headers), the
+ *  column naming each row's sample, and the conditions mapped onto its columns (see sheetMap). */
+export interface LoadedSheet {
+  /** the file's name, to show */
+  file: string
+  columns: string[]
+  /** each row's cells, in `columns` order */
+  rows: string[][]
+  /** the column holding each row's sample name (null: none picked) */
+  nameCol: string | null
+  /** condition → the column holding it */
+  map: Record<string, string>
+  /** sample column → sheet row, matched by hand (a row dragged onto it); ahead of the automatic
+   *  match */
+  pinned: Record<string, number>
 }
 
 /** External-annotation columns fetched for the feature IDs (e.g. from UniProt). */
@@ -264,6 +318,18 @@ export interface StandardizeConfig {
   normalizeProtein?: string
   /** also equalise each sample's spread, Perseus width adjustment (absent = off) */
   normalizeSpread?: boolean
+  /** batch correction on/off (absent = off) */
+  batchEnabled?: boolean
+  /** the batches, as filled and edited here: each a name and its samples (by sampleLabel), and —
+   *  filled — the value it was filled from. A sample in none isn't corrected. */
+  batches?: Array<{ name: string; samples: string[]; value?: string }>
+  /** what the batches were filled from: a condition (which then stops being one — it's the batch),
+   *  or 'source' — the Merge inputs the samples came from (StandardizeResult.sources) */
+  batchFrom?: ConditionKey | 'source'
+  /** a sample moved between batches (or a batch added / removed) by hand since the fill: the
+   *  batches are then these lists. Else they're worked out from `batchFrom` on each run, so they
+   *  follow the data above (BatchSpec.live). */
+  batchEdited?: boolean
   /** imputation on/off (absent = off) */
   imputeEnabled?: boolean
   /** imputation method while enabled (absent = 'perseus') */
@@ -278,6 +344,33 @@ export interface StandardizeConfig {
  *  without one) a non-zero threshold. */
 export const cleanupOn = (c: StandardizeConfig): boolean =>
   c.cleanupEnabled ?? (c.minSamplePct ?? 0) > 0
+
+/** The batches a Clean data step corrects for, as the engine takes them (batch.ts BatchSpec) — none
+ *  while it's off or fewer than two batches hold samples. */
+export function batchSpecOf(c: StandardizeConfig): import('../engine').BatchSpec | undefined {
+  if (!c.batchEnabled) return undefined
+  const used = (c.batches ?? []).filter((b) => b.samples.length > 0)
+  if (used.length < 2) return undefined
+  const of: Record<string, string> = {}
+  for (const b of used) for (const s of b.samples) of[s] = b.name
+  // Filled and not moved by hand: worked out from the data on each run, each value keeping the
+  // name given here.
+  const from = c.batchEdited ? undefined : c.batchFrom
+  return {
+    of,
+    ...(c.batchFrom && c.batchFrom !== 'source' ? { condition: c.batchFrom } : null),
+    ...(from
+      ? {
+          live: {
+            from,
+            names: Object.fromEntries(
+              (c.batches ?? []).flatMap((b) => (b.value ? [[b.value, b.name]] : []))
+            )
+          }
+        }
+      : null)
+  }
+}
 
 /** Whether imputation applies: its own switch, AND clean-up — without a coverage threshold a gene
  *  seen once would be mostly imputed and could come out as a confident call, so imputation is
@@ -295,6 +388,10 @@ export interface CompareConfig {
    *  Curve fit tile (see migrateCurveCompare). */
   analysis: 'compare' | 'anova' | 'curve_fit'
   method: 'ttest'
+  /** t-test on data with batches (defined in Clean data, or the Merge inputs above): each batch
+   *  its own comparison — the batch matched like-for-like — rather than one blocked on them, so a
+   *  Contrast can pair one batch's fold change against another's (absent = off) */
+  splitBatch?: boolean
   /** curve_fit only: the numeric condition the curve runs over (absent = dose) */
   curveAxis?: ConditionKey
   /** curve_fit: an axis's scale as the user set it in the Curve fit window, per condition; absent =
@@ -900,6 +997,8 @@ export interface GroupStyle {
   outlineColor?: string
   /** whether this group's genes are offered to the collision-managed label layer */
   label?: boolean
+  /** its labels' text colour; unset (or automatic) = the group's own marker colour */
+  labelColor?: string
   /** whether this group has a legend entry (default on; moot while the legend is hidden) */
   legend?: boolean
   /** how THIS group's points look when selected/hovered, and how they fade when others are.
@@ -926,6 +1025,8 @@ export interface HighlightStyle {
   label?: boolean
   /** font size (px) of that name */
   labelSize?: number
+  /** that name's colour; unset (or automatic) = the point's own colour */
+  labelColor?: string
 }
 
 /** Per-tile styling for the point plots: a look per point group, the highlight look, and the
@@ -1135,14 +1236,14 @@ export type QuickAccess = Record<string, boolean>
 /** Quick access a kind's settings start with, where it isn't simply on: a setting not listed is on.
  *  The user's own choice (`quick`) always wins. Cluster: only the plot type, the colouring and the
  *  territory sit on the tile by default — the rest are tuned once, in the settings window. Heatmap:
- *  of the clustering, only the linkage, leaf order and gene modules. */
+ *  of the clustering, only the linkage, leaf order and the gene and condition modules. */
 export const QUICK_DEFAULTS: Partial<Record<NodeKind, Record<string, boolean>>> = {
   pca: { clusterOn: false, clusterCount: false, display: false },
-  // log₂FC heatmap: of its clustering, the linkage, leaf order and gene modules sit on the tile by
-  // default; the trees and the condition modules are tuned in the settings window
+  // log₂FC heatmap: of its clustering, the linkage, leaf order and both sides' modules sit on the
+  // tile by default (a gene module and a condition module pick a block together); the trees are
+  // tuned in the settings window
   heatmap: {
     geneTree: false,
-    condModules: false,
     condTree: false
   },
   // the 3-D projection is set once, in the settings window
@@ -1885,9 +1986,10 @@ export interface CorrConfig {
 /** Data-table tile (plotting): shows the upstream step's results table interactively in the
  *  dashboard. The upstream step already computes the table; this node just opts a tile in. */
 export interface TableConfig {
-  /** initial view for tables that offer a Long ⇆ Matrix toggle (standardize/compare/contrast);
-   *  absent = matrix. */
-  view?: 'long' | 'matrix'
+  /** the view for tables that offer a Long ⇆ Matrix toggle (standardize/compare/contrast) — and,
+   *  of Clean data, its per-sample QC; absent = matrix. A Clean data table's in-tile switch writes
+   *  it (so its download is the view on show); the others start on it. */
+  view?: 'long' | 'matrix' | 'qc'
   /** the gene column's display cap in characters (longer names cut with "…", in full on hover);
    *  unset = TABLE_GENE_MAX */
   geneMaxLen?: number

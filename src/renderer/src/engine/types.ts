@@ -155,6 +155,8 @@ export interface StandardizeInput {
   /** median-normalise the samples after clean-up, before imputation (see normalize.ts);
    *  undefined = leave them as they arrived */
   normalize?: NormalizeOptions
+  /** remove batch effects after normalisation, before imputation (see batch.ts); undefined = none */
+  batch?: import('./batch').BatchSpec
   /** fill missing values after clean-up (see impute.ts); undefined = leave them missing */
   impute?: ImputeOptions
   /** pathway name → KEGG category (global; from the interactive import). Passed straight through to
@@ -209,6 +211,15 @@ export interface StandardizeResult {
   normalization?: NormalizeSummary
   /** imputation summary when it ran (absent = values left missing) */
   imputation?: ImputeSummary
+  /** The batches its samples were measured in (sampleLabel → batch), as a Clean data step defined
+   *  them — its own or one above it. The values are corrected for them (see batch.ts), and a
+   *  Compare below blocks on them. A Merge doesn't pass them on: its datasets are new batches. */
+  batches?: Record<string, string>
+  /** batch correction summary when this step corrected (absent = it didn't) */
+  batchCorrection?: import('./batch').BatchSummary
+  /** A Merge's: which of its inputs each sample came from (sampleLabel → the input's name) — what
+   *  a Clean data below offers to fill its batches from. */
+  sources?: Record<string, string>
   /** The scale the values are PRESENTED on (the table, the written CSV) — `rows` themselves are
    *  always linear (see scale.ts). Absent on results from before scales existed = linear. */
   scale?: ValueScale
@@ -238,6 +249,9 @@ export interface CompareInput {
   den: CondSelector
   /** conditions (not the comparison axis) to match like-for-like; others are pooled */
   match: ConditionKey[]
+  /** the batches the samples were measured in (Clean data's StandardizeResult.batches): each
+   *  t-test blocks on them (batch.ts blockedTTest). Absent = none. */
+  batches?: Record<string, string>
   /** the compared conditions, stated by the Compare dialog (several allowed). Absent = inferred from
    *  the pins: the one condition both sides pin to different values (configs saved before). */
   compared?: ConditionKey[]

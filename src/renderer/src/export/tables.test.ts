@@ -73,9 +73,9 @@ describe('collectTableExports', () => {
 
     const cmp = tables[1]
     expect(cmp.analysis).toBe('A | Veh')
-    // single comparison → no 'comparison' column; boolean signf → 'true'.
+    // a single comparison still has its 'comparison' column; boolean signf → 'true'.
     expect(cmp.columns).toContain('log2FC')
-    expect(cmp.columns).not.toContain('comparison')
+    expect(cmp.columns).toContain('comparison')
     const signfIdx = cmp.columns.indexOf('signf')
     expect(cmp.rows[0][signfIdx]).toBe('true')
   })

@@ -26,12 +26,15 @@ import { createPortal } from 'react-dom'
 
 import {
   columnFacet,
+  filterOn,
+  filterStep,
   groupMembers,
   MATRIX_PRESETS,
   parseMatrix,
   RESERVED_COND_NAMES,
   samplesheetIssues,
   sheetIssueLines,
+  stepBy,
   validCondName,
   type ColumnFacet,
   type FilterSpec,
@@ -57,8 +60,10 @@ import {
   TIME_UNIT_SUGGESTIONS,
   type AnnotationSet,
   type CondUnits,
-  type LoadConfig
+  type LoadConfig,
+  type LoadedSheet
 } from './types'
+import { applySheet, mapColumn, pinRow, readSheet, setNameColumn, sheetMatches } from './sheetMap'
 
 /** The five built-in condition fields. A custom condition adds a sixth, seventh, … — so a Field is
  *  any name, and the preset list is only what's ALWAYS offered. */
@@ -1647,9 +1652,12 @@ export function InteractiveImportDialog({
     }
     if (armed === name) setArmed(null)
     setLoadNumeric(id, name, false, { stale: false })
+    const sheetMap = { ...(interactive?.sheet?.map ?? {}) }
+    delete sheetMap[name]
     setInteractive(id, {
       customConditions: customConditions.filter((n) => n !== name),
       hiddenConditions: hiddenConditions.filter((n) => n !== name),
+      ...(interactive?.sheet ? { sheet: { ...interactive.sheet, map: sheetMap } } : null),
       conditions: nextConditions,
       spans: nextSpans as Record<string, Partial<Record<string, [number, number]>>>
     })
@@ -1661,6 +1669,47 @@ export function InteractiveImportDialog({
     setInteractive(id, {
       conditions: { ...conditions, [h]: withEdited(withCond(cur, field, value), field, true) }
     })
+  }
+
+  // The Conditions step's samplesheet mode: a sheet in any layout, its rows matched to the samples
+  // and its columns mapped to conditions (see sheetMap). Every change to it rewrites the mapped
+  // conditions' values; the sheet is saved with the import, so reopening shows it as it was.
+  const condSource = interactive?.condSource ?? 'names'
+  const sheet = interactive?.sheet
+  const setSheet = (next: LoadedSheet): void => {
+    const out = applySheet(conditions, spans, sampleCols, sheet, next, blank)
+    // A condition just mapped (or moved to another column) is in use: switched back on if it was
+    // off. One mapped before and since switched off stays off — the switch is the user's.
+    const fresh = Object.keys(next.map).filter((f) => sheet?.map[f] !== next.map[f])
+    setInteractive(id, {
+      sheet: next,
+      conditions: out.conditions,
+      spans: out.spans,
+      hiddenConditions: hiddenConditions.filter((f) => !fresh.includes(f))
+    })
+    setActivated((prev) => new Set([...prev, ...fresh]))
+  }
+  const loadSamplesheet = async (): Promise<void> => {
+    const file = await window.api.openFile({
+      title: 'Choose a samplesheet',
+      filters: [
+        { name: 'Samplesheet', extensions: ['csv', 'tsv', 'txt', 'xlsx'] },
+        { name: 'All Files', extensions: ['*'] }
+      ]
+    })
+    if (!file) return
+    // Only to the conditions switched on is a column named as one mapped by itself: mapping one
+    // that's off would fill it, and so switch it on.
+    const on = (f: Field): boolean =>
+      !hidden.has(f) && (activated.has(f) || samples.some((s) => condOf(s, f).trim() !== ''))
+    const next = readSheet(file.name, file.content, sampleCols, fields.filter(on))
+    if (!next.columns.length || !next.rows.length) return setMsg(`${file.name} has no rows`)
+    setSheet(next)
+    const n = sheetMatches(next, sampleCols).size
+    setMsg(
+      `${file.name}: ${n} of ${sampleCols.length} samples matched` +
+        (next.rows.length > n ? ` · ${next.rows.length - n} rows unmatched (red)` : '')
+    )
   }
 
   const setInclude = (i: number, on: boolean): void => {
@@ -1877,7 +1926,7 @@ export function InteractiveImportDialog({
   const metaPreview = ((): { rows: Record<string, string>[]; total: number } | null => {
     if (stage !== 5) return preview
     const active = filterCols
-      .filter((c) => filters[c]?.active)
+      .filter((c) => filters[c] && filterOn(filters[c]))
       .map((c) => ({ col: c, drop: new Set(filters[c].drop ?? []), spec: filters[c] }))
     if (active.length === 0) return { rows: allRows, total: allRows.length }
     const rows: Record<string, string>[] = []
@@ -1933,7 +1982,7 @@ export function InteractiveImportDialog({
     )
     try {
       const active = filterCols
-        .filter((c) => filters[c]?.active)
+        .filter((c) => filters[c] && filterOn(filters[c]))
         .map((c) => ({ col: c, drop: new Set(filters[c].drop ?? []), spec: filters[c] }))
       const passes = (r: Record<string, string>): boolean => {
         for (const { col, drop, spec } of active) {
@@ -2151,6 +2200,15 @@ export function InteractiveImportDialog({
                   setCell={setCell}
                   setInclude={setInclude}
                   onRenameValue={renameConditionValue}
+                  condSource={condSource}
+                  onCondSource={(v) => {
+                    setArmed(null)
+                    setInteractive(id, { condSource: v })
+                  }}
+                  sheet={sheet}
+                  sampleCols={sampleCols}
+                  onLoadSheet={() => void loadSamplesheet()}
+                  onSheet={setSheet}
                   card={condCard}
                   onCard={setCondCard}
                 />
@@ -3218,6 +3276,14 @@ function ConditionsStage(props: {
   setCell: (i: number, field: Field, value: string) => void
   setInclude: (i: number, on: boolean) => void
   onRenameValue: (field: Field, map: Record<string, string>) => void
+  /** where the conditions come from: the sample names, or a samplesheet */
+  condSource: 'names' | 'sheet'
+  onCondSource: (v: 'names' | 'sheet') => void
+  /** the samplesheet loaded (samplesheet mode), the sample columns, and changing the sheet */
+  sheet: LoadedSheet | undefined
+  sampleCols: string[]
+  onLoadSheet: () => void
+  onSheet: (next: LoadedSheet) => void
   /** the card in front — kept by the dialog, whose Next / Back turn the cards too */
   card: CondCard
   onCard: (card: CondCard) => void
@@ -3328,19 +3394,52 @@ function ConditionsStage(props: {
               />
             </div>
             <div style={styles.condSplitRight}>
-              <div style={styles.panelHead}>Map conditions to samples</div>
-              <Stage1
-                samples={props.samples}
-                spans={shownSpans}
-                colorOf={props.colorOf}
-                armed={props.armed}
-                setArmed={props.setArmed}
-                activeFields={cond.activeFields}
-                onAnnotate={props.onAnnotate}
-                delims={props.delims}
-                separator={props.separator}
-                onSeparator={props.onSeparator}
-              />
+              <div style={styles.mapHead}>
+                <div style={styles.panelHead}>Map conditions to samples</div>
+                <ToggleSwitch
+                  size="sm"
+                  label="Conditions from"
+                  value={props.condSource}
+                  onChange={props.onCondSource}
+                  options={[
+                    {
+                      value: 'names',
+                      label: 'Sample names',
+                      title: 'Extract the conditions from the sample names'
+                    },
+                    {
+                      value: 'sheet',
+                      label: 'Samplesheet',
+                      title: "Map the conditions from a samplesheet's columns"
+                    }
+                  ]}
+                />
+              </div>
+              {props.condSource === 'sheet' ? (
+                <SheetMapper
+                  sheet={props.sheet}
+                  sampleCols={props.sampleCols}
+                  activeFields={cond.activeFields}
+                  colorOf={props.colorOf}
+                  armed={props.armed}
+                  setArmed={props.setArmed}
+                  onLoad={props.onLoadSheet}
+                  onSheet={props.onSheet}
+                />
+              ) : (
+                <Stage1
+                  samples={props.samples}
+                  spans={shownSpans}
+                  colorOf={props.colorOf}
+                  armed={props.armed}
+                  setArmed={props.setArmed}
+                  activeFields={cond.activeFields}
+                  onAnnotate={props.onAnnotate}
+                  delims={props.delims}
+                  separator={props.separator}
+                  onSeparator={props.onSeparator}
+                />
+              )}
             </div>
           </div>
         )}
@@ -3389,6 +3488,396 @@ function ConditionsStage(props: {
         </div>
       </div>
     </>
+  )
+}
+
+/** No samplesheet yet: an empty one, so the samples show as they will beside one. */
+const NO_SHEET: LoadedSheet = {
+  file: '',
+  columns: [],
+  rows: [],
+  nameCol: null,
+  map: {},
+  pinned: {}
+}
+
+/** The Conditions step's samplesheet mode: the sample names as they are, each beside its matched
+ *  row of the samplesheet, then the rows that matched no sample, in red. The same painter as the
+ *  names (ConditionPainter), a column at a time: arm a condition and click the column holding it —
+ *  again to unmap; the Sample name chip marks the column naming each row's sample. A red row
+ *  dragged onto a sample is matched to it (× undoes that). */
+function SheetMapper({
+  sheet: loaded,
+  sampleCols,
+  activeFields,
+  colorOf,
+  armed,
+  setArmed,
+  onLoad,
+  onSheet
+}: {
+  sheet: LoadedSheet | undefined
+  sampleCols: string[]
+  /** the conditions switched on (left panel) — the ones offered for mapping, and shown mapped */
+  activeFields: Field[]
+  colorOf: ColorOf
+  armed: Field | null
+  setArmed: (f: Field | null) => void
+  onLoad: () => void
+  onSheet: (next: LoadedSheet) => void
+}): ReactNode {
+  // Marking the sample-name column: a mode of its own, exclusive with a condition armed.
+  const [armName, setArmName] = useState(false)
+  if (armName && armed) setArmName(false)
+  const [dropOn, setDropOn] = useState<string | null>(null)
+  // The column under the pointer while painting: tinted in the armed chip's colour.
+  const [hoverCol, setHoverCol] = useState<string | null>(null)
+  const dragRow = useRef<number | null>(null)
+  // Before a sheet is loaded: the samples alone, under the same painter, waiting for one.
+  const sheet = loaded ?? NO_SHEET
+  const rowOf = sheetMatches(sheet, sampleCols)
+  const matched = new Set(rowOf.values())
+  const unmatched = sheet.rows.map((_, i) => i).filter((i) => !matched.has(i))
+  // The columns mapped to a condition that's on: one switched off keeps its column (switching it
+  // back on restores it) but isn't shown, as a switched-off condition's painted names aren't.
+  const fieldOf = new Map(
+    Object.entries(sheet.map)
+      .filter(([f]) => activeFields.includes(f))
+      .map(([f, c]) => [c, f])
+  )
+  const clickColumn = (col: string): void => {
+    if (armName) {
+      onSheet(setNameColumn(sheet, col))
+      setArmName(false)
+    } else if (armed) onSheet(mapColumn(sheet, armed, col))
+  }
+  const drop = (sample: string): void => {
+    if (dragRow.current != null) onSheet(pinRow(sheet, sample, dragRow.current))
+    dragRow.current = null
+    setDropOn(null)
+  }
+  const cells = (i: number | undefined): ReactNode =>
+    sheet.columns.map((c, j) => {
+      const f = fieldOf.get(c)
+      return (
+        <td
+          key={c}
+          style={{
+            ...styles.td,
+            ...styles.sampleCell,
+            ...(f ? { background: `${colorOf(f)}1f` } : null)
+          }}
+        >
+          {i == null ? '' : sheet.rows[i][j]}
+        </td>
+      )
+    })
+  return (
+    <>
+      {/* In the separator's place: the sheet to map from. */}
+      <div style={styles.sheetBar}>
+        <button style={styles.sheetBtn} onClick={onLoad}>
+          {loaded ? 'Load another…' : 'Load samplesheet…'}
+        </button>
+        {loaded && (
+          <span style={styles.hint}>
+            {loaded.file} · {rowOf.size} of {sampleCols.length} samples matched
+          </span>
+        )}
+      </div>
+      <ConditionPainter
+        activeFields={activeFields}
+        colorOf={colorOf}
+        armed={armed}
+        setArmed={setArmed}
+        applied={(f) => f in sheet.map}
+        nameChip={{
+          on: armName,
+          applied: sheet.nameCol != null,
+          onClick: () => {
+            setArmName(!armName)
+            setArmed(null)
+          }
+        }}
+        info={
+          <>
+            Click a condition, then click the samplesheet column that holds it — the whole column
+            maps to it. Click the column again to clear it. <b>sample name</b> marks the column
+            naming each sample, if the guess is wrong. Drag a red row (one matching no sample) onto
+            the sample it belongs to.
+          </>
+        }
+      >
+        <ScrollFade>
+          <table style={{ ...styles.grid, tableLayout: 'auto' }}>
+            <thead>
+              <tr>
+                <th style={styles.th}>Sample</th>
+                {sheet.columns.map((c) => {
+                  const f = fieldOf.get(c)
+                  const isName = c === sheet.nameCol
+                  return (
+                    <th
+                      key={c}
+                      style={{
+                        ...styles.th,
+                        ...(armName || armed ? styles.sheetTh : null),
+                        ...(f ? { color: colorOf(f) } : null),
+                        ...(hoverCol === c && (armName || armed)
+                          ? { background: `${armName ? NAME_CHIP_COLOR : colorOf(armed!)}33` }
+                          : null)
+                      }}
+                      onClick={() => clickColumn(c)}
+                      onMouseEnter={() => setHoverCol(c)}
+                      onMouseLeave={() => setHoverCol((h) => (h === c ? null : h))}
+                    >
+                      {c}
+                      {/* the painted column's bar, which its chip's connector points at */}
+                      {(f || isName) && (
+                        <span
+                          data-ruler-field={f ?? NAME_CHIP}
+                          style={{
+                            ...styles.sheetBar3,
+                            background: f ? colorOf(f) : NAME_CHIP_COLOR
+                          }}
+                        />
+                      )}
+                    </th>
+                  )
+                })}
+              </tr>
+            </thead>
+            <tbody>
+              {sampleCols.map((h) => {
+                const i = rowOf.get(h)
+                const pinned = sheet.pinned[h] === i && i != null
+                return (
+                  <tr
+                    key={h}
+                    draggable={i != null}
+                    onDragStart={(e) => {
+                      dragRow.current = i ?? null
+                      e.dataTransfer.effectAllowed = 'move'
+                      e.dataTransfer.setData('text/plain', String(i))
+                    }}
+                    onDragOver={(e) => {
+                      if (dragRow.current == null || dragRow.current === i) return
+                      e.preventDefault()
+                      setDropOn(h)
+                    }}
+                    onDragLeave={() => setDropOn((d) => (d === h ? null : d))}
+                    onDrop={() => drop(h)}
+                    style={dropOn === h ? { outline: `2px solid ${UI.accent}` } : undefined}
+                  >
+                    <td
+                      style={{
+                        ...styles.td,
+                        ...styles.sampleCell,
+                        fontFamily: MONO,
+                        ...(i == null && loaded ? styles.sheetMissing : null)
+                      }}
+                      title={i == null && loaded ? 'Not in the samplesheet: left out' : undefined}
+                    >
+                      {h}
+                      {pinned && (
+                        <button
+                          style={styles.sheetUnpin}
+                          title="Undo this match"
+                          onClick={() => onSheet(pinRow(sheet, h, null))}
+                        >
+                          ×
+                        </button>
+                      )}
+                    </td>
+                    {cells(i)}
+                  </tr>
+                )
+              })}
+              {unmatched.map((i) => (
+                <tr
+                  key={`row-${i}`}
+                  draggable
+                  onDragStart={(e) => {
+                    dragRow.current = i
+                    e.dataTransfer.effectAllowed = 'move'
+                    e.dataTransfer.setData('text/plain', String(i))
+                  }}
+                  onDragEnd={() => setDropOn(null)}
+                  style={{ ...styles.removedRow, cursor: 'grab' }}
+                  title="Matches no sample — drag it onto the sample it belongs to"
+                >
+                  <td style={{ ...styles.td, ...styles.sampleCell, ...styles.sheetMissing }}>
+                    no sample
+                  </td>
+                  {cells(i)}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </ScrollFade>
+      </ConditionPainter>
+    </>
+  )
+}
+
+/** The Set condition chip that marks the samplesheet column naming the samples (samplesheet mode),
+ *  and its colour: a grey, as it's no condition. */
+const NAME_CHIP = '(sample name)'
+const NAME_CHIP_COLOR = '#8c8c8c'
+
+/** Map conditions' painter: the Set condition chips — click one to arm it, again to put it down —
+ *  over a table (`children`) the armed condition is painted onto, with a dashed connector in each
+ *  condition's colour from its chip to where it's painted: the element marked
+ *  `data-ruler-field={condition}` in the table (the ruler bar over a name's tokens, a samplesheet
+ *  column's header). Redrawn as the table scrolls or the panel resizes. `nameChip` adds the
+ *  samplesheet's Sample name chip, ahead of the conditions. */
+function ConditionPainter({
+  activeFields,
+  colorOf,
+  armed,
+  setArmed,
+  applied,
+  info,
+  nameChip,
+  children
+}: {
+  activeFields: Field[]
+  colorOf: ColorOf
+  armed: Field | null
+  setArmed: (f: Field | null) => void
+  /** whether a condition is painted anywhere yet (its chip is tinted) */
+  applied: (f: Field) => boolean
+  /** how painting works, in the (i) */
+  info: ReactNode
+  nameChip?: { on: boolean; applied: boolean; onClick: () => void }
+  children: ReactNode
+}): ReactNode {
+  const tone = (f: Field): string => (f === NAME_CHIP ? NAME_CHIP_COLOR : colorOf(f))
+  // The connectors from each Set condition chip to its painted region (in the ruler), measured
+  // from the live layout (see connectorPath). A region scrolled out of the table's view sideways
+  // gets no line.
+  const mapRef = useRef<HTMLDivElement>(null)
+  const chipRefs = useRef(new Map<Field, HTMLElement>())
+  const [connectors, setConnectors] = useState<Array<{ field: Field; d: string; head: string }>>([])
+  const drawConnectors = useCallback((): void => {
+    const box = mapRef.current
+    if (!box) return
+    const at = box.getBoundingClientRect()
+    const view = box.querySelector('.oe-headscroll')?.getBoundingClientRect()
+    const next: Array<{ field: Field; d: string; head: string }> = []
+    for (const [field, chip] of chipRefs.current) {
+      const bar = box.querySelector(`[data-ruler-field="${CSS.escape(field)}"]`)
+      if (!bar) continue
+      const c = chip.getBoundingClientRect()
+      const b = bar.getBoundingClientRect()
+      const x2 = b.left + b.width / 2
+      if (view && (x2 < view.left || x2 > view.right)) continue
+      const x1 = Math.round(c.left + c.width / 2 - at.left)
+      // Starting a little below the chip, not touching it.
+      const y1 = Math.round(c.bottom + CONNECTOR_GAP - at.top)
+      const tx = Math.round(x2 - at.left)
+      // The tip a small gap above the token's text in the first row: past the region's bottom by
+      // the header's bottom padding (2) and border (1) and the row's top padding (3).
+      const ty = Math.round(b.bottom + 6 - CONNECTOR_GAP - at.top)
+      const { line, head } = connectorPath(x1, y1, tx, ty)
+      next.push({ field, d: line, head })
+    }
+    setConnectors((prev) =>
+      prev.length === next.length &&
+      prev.every(
+        (p, k) => p.d === next[k].d && p.head === next[k].head && p.field === next[k].field
+      )
+        ? prev
+        : next
+    )
+  }, [])
+  // After every render (chips, painted regions, columns can all move), and on resize.
+  useLayoutEffect(drawConnectors)
+  useLayoutEffect(() => {
+    const box = mapRef.current
+    if (!box) return
+    const ro = new ResizeObserver(drawConnectors)
+    ro.observe(box)
+    return () => ro.disconnect()
+  }, [drawConnectors])
+  // The chips: the Sample name one first (samplesheet mode), then the conditions switched on.
+  const chips = [
+    ...(nameChip
+      ? [
+          {
+            f: NAME_CHIP,
+            ...nameChip,
+            isApplied: nameChip.applied,
+            title: 'The column naming each sample'
+          }
+        ]
+      : []),
+    ...activeFields.map((f) => ({
+      f,
+      on: armed === f,
+      isApplied: applied(f),
+      onClick: () => setArmed(armed === f ? null : f),
+      title: applied(f) ? `${f} applied — click to re-tag` : `Tag ${f}`
+    }))
+  ]
+  return (
+    <div ref={mapRef} style={styles.mapArea} onScrollCapture={drawConnectors}>
+      {/* Pinned under the title while the table scrolls; only the conditions switched on are
+          offered. */}
+      <div style={styles.chips}>
+        <span style={styles.paintLabel}>
+          <IconPaint />
+          Set condition
+          <InfoTip label="How to map conditions">{info}</InfoTip>
+        </span>
+        {chips.map(({ f, on, isApplied, onClick, title }) => {
+          // An applied chip is tinted in its colour; the armed one is the SAME colour but stronger,
+          // so the current pick stands out from the merely-applied ones.
+          const col = tone(f)
+          return (
+            <button
+              key={f}
+              ref={(el) => {
+                if (el) chipRefs.current.set(f, el)
+                else chipRefs.current.delete(f)
+              }}
+              onClick={onClick}
+              title={title}
+              style={{
+                ...styles.chip,
+                background: on ? `${col}aa` : isApplied ? `${col}26` : 'transparent',
+                color: UI.text,
+                borderColor: on || isApplied ? col : UI.border
+              }}
+            >
+              <span style={{ ...styles.chipDot, background: col }} />
+              {f === NAME_CHIP ? 'sample name' : f}
+            </button>
+          )
+        })}
+        {activeFields.length === 0 && (
+          <span style={styles.chipsLabel}>Switch on a condition on the left to map it.</span>
+        )}
+      </div>
+      {children}
+      <svg style={styles.connectors} aria-hidden>
+        {connectors.map((c) => (
+          <path
+            key={c.field}
+            d={c.d}
+            fill="none"
+            stroke={tone(c.field)}
+            strokeWidth={1.5}
+            strokeDasharray="4 3"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        ))}
+        {connectors.map((c) => (
+          <path key={`${c.field}-head`} d={c.head} fill={tone(c.field)} />
+        ))}
+      </svg>
+    </div>
   )
 }
 
@@ -3460,53 +3949,6 @@ function Stage1({
     anchorRef.current = null
   }
   const activeSamples = samples.filter((s) => !inactive.has(s.sample)).map((s) => s.sample)
-  // The connectors from each Set condition chip to its painted region (in the ruler), measured
-  // from the live layout (see connectorPath). A region scrolled out of the table's view sideways
-  // gets no line.
-  const mapRef = useRef<HTMLDivElement>(null)
-  const chipRefs = useRef(new Map<Field, HTMLElement>())
-  const [connectors, setConnectors] = useState<Array<{ field: Field; d: string; head: string }>>([])
-  const drawConnectors = useCallback((): void => {
-    const box = mapRef.current
-    if (!box) return
-    const at = box.getBoundingClientRect()
-    const view = box.querySelector('.oe-headscroll')?.getBoundingClientRect()
-    const next: Array<{ field: Field; d: string; head: string }> = []
-    for (const [field, chip] of chipRefs.current) {
-      const bar = box.querySelector(`[data-ruler-field="${CSS.escape(field)}"]`)
-      if (!bar) continue
-      const c = chip.getBoundingClientRect()
-      const b = bar.getBoundingClientRect()
-      const x2 = b.left + b.width / 2
-      if (view && (x2 < view.left || x2 > view.right)) continue
-      const x1 = Math.round(c.left + c.width / 2 - at.left)
-      // Starting a little below the chip, not touching it.
-      const y1 = Math.round(c.bottom + CONNECTOR_GAP - at.top)
-      const tx = Math.round(x2 - at.left)
-      // The tip a small gap above the token's text in the first row: past the region's bottom by
-      // the header's bottom padding (2) and border (1) and the row's top padding (3).
-      const ty = Math.round(b.bottom + 6 - CONNECTOR_GAP - at.top)
-      const { line, head } = connectorPath(x1, y1, tx, ty)
-      next.push({ field, d: line, head })
-    }
-    setConnectors((prev) =>
-      prev.length === next.length &&
-      prev.every(
-        (p, k) => p.d === next[k].d && p.head === next[k].head && p.field === next[k].field
-      )
-        ? prev
-        : next
-    )
-  }, [])
-  // After every render (chips, painted regions, columns can all move), and on resize.
-  useLayoutEffect(drawConnectors)
-  useLayoutEffect(() => {
-    const box = mapRef.current
-    if (!box) return
-    const ro = new ResizeObserver(drawConnectors)
-    ro.observe(box)
-    return () => ro.disconnect()
-  }, [drawConnectors])
   // Row under the mouse (tinted, so the whole row reads as one clickable unit).
   const [hoverRow, setHoverRow] = useState<string | null>(null)
   // Clicking a row's empty space toggles it, like its checkbox. The checkbox handles itself, and
@@ -3586,54 +4028,20 @@ function Stage1({
           </span>
         </span>
       </div>
-      {/* The Set condition chips and the names table, with the connectors drawn over both: a dashed
-          line in each condition's colour from its chip to the region it's painted on (in the ruler,
-          just above the first row). Redrawn as the table scrolls or the panel resizes. */}
-      <div ref={mapRef} style={styles.mapArea} onScrollCapture={drawConnectors}>
-        {/* 2 · Map conditions: arm one, then paint it onto name tokens. Pinned under the title while
-            the names scroll; only the conditions switched on are offered. */}
-        <div style={styles.chips}>
-          <span style={styles.paintLabel}>
-            <IconPaint />
-            Set condition
-            <InfoTip label="How to map conditions">
-              Click a condition, then click or drag tokens on a row to tag it. A tag is applied to
-              every <b>checked</b> row — uncheck rows whose names use a different layout (their
-              existing tags are kept) and tag them separately. Click a tag again to clear it.
-            </InfoTip>
-          </span>
-          {activeFields.length === 0 && (
-            <span style={styles.chipsLabel}>Switch on a condition on the left to map it.</span>
-          )}
-          {activeFields.map((f) => {
-            const on = armed === f
-            // `applied` = at least one sample has this field tagged. An applied chip is tinted in the
-            // field colour; the currently-armed chip is the SAME colour but a stronger opacity, so the
-            // current selection stands out from the merely-applied ones.
-            const applied = samples.some((s) => spans[s.sample]?.[f] != null)
-            const col = colorOf(f)
-            return (
-              <button
-                key={f}
-                ref={(el) => {
-                  if (el) chipRefs.current.set(f, el)
-                  else chipRefs.current.delete(f)
-                }}
-                onClick={() => setArmed(on ? null : f)}
-                title={applied ? `${f} applied — click to re-tag` : `Tag ${f}`}
-                style={{
-                  ...styles.chip,
-                  background: on ? `${col}aa` : applied ? `${col}26` : 'transparent',
-                  color: UI.text,
-                  borderColor: on || applied ? col : UI.border
-                }}
-              >
-                <span style={{ ...styles.chipDot, background: col }} />
-                {f}
-              </button>
-            )
-          })}
-        </div>
+      <ConditionPainter
+        activeFields={activeFields}
+        colorOf={colorOf}
+        armed={armed}
+        setArmed={setArmed}
+        applied={(f) => samples.some((s) => spans[s.sample]?.[f] != null)}
+        info={
+          <>
+            Click a condition, then click or drag tokens on a row to tag it. A tag is applied to
+            every <b>checked</b> row — uncheck rows whose names use a different layout (their
+            existing tags are kept) and tag them separately. Click a tag again to clear it.
+          </>
+        }
+      >
         {/* Its own scroll box, filling the rest of the panel; the header row pins to its top, and
             the edges fade where more rows / columns are scrolled out of view. */}
         <ScrollFade>
@@ -3749,24 +4157,7 @@ function Stage1({
             </tbody>
           </table>
         </ScrollFade>
-        <svg style={styles.connectors} aria-hidden>
-          {connectors.map((c) => (
-            <path
-              key={c.field}
-              d={c.d}
-              fill="none"
-              stroke={colorOf(c.field)}
-              strokeWidth={1.5}
-              strokeDasharray="4 3"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            />
-          ))}
-          {connectors.map((c) => (
-            <path key={`${c.field}-head`} d={c.head} fill={colorOf(c.field)} />
-          ))}
-        </svg>
-      </div>
+      </ConditionPainter>
     </>
   )
 }
@@ -4611,7 +5002,7 @@ function FilterStage({
   // the preview below (so the user can see exactly what a filter is removing).
   const { kept, removedTotal, displayRows } = useMemo(() => {
     const active = filterCols
-      .filter((c) => filters[c]?.active)
+      .filter((c) => filters[c] && filterOn(filters[c]))
       .map((c) => ({ col: c, drop: new Set(filters[c].drop ?? []), spec: filters[c] }))
     let keptN = 0
     let removedN = 0
@@ -4674,7 +5065,7 @@ function FilterStage({
         const facet = facets[col]
         const spec = filters[col]
         if (!facet) return null
-        const isActive = spec?.active === true
+        const isActive = filterOn(spec)
         const dropSet = new Set(spec?.drop ?? [])
         return (
           <div
@@ -4706,37 +5097,22 @@ function FilterStage({
               >
                 {facet.numeric ? (
                   <>
-                    <label style={styles.numLabel}>
-                      min
-                      <input
-                        style={styles.numInput}
-                        type="number"
-                        disabled={!isActive}
-                        placeholder={String(facet.min)}
-                        value={spec?.min ?? ''}
-                        onChange={(e) => {
-                          // Blank (or a partial entry like "-") = no bound, never NaN.
-                          const raw = Number(e.target.value)
-                          const v = e.target.value === '' || !Number.isFinite(raw) ? null : raw
-                          setFilter(col, { ...spec, active: true, min: v })
-                        }}
-                      />
-                    </label>
-                    <label style={styles.numLabel}>
-                      max
-                      <input
-                        style={styles.numInput}
-                        type="number"
-                        disabled={!isActive}
-                        placeholder={String(facet.max)}
-                        value={spec?.max ?? ''}
-                        onChange={(e) => {
-                          const raw = Number(e.target.value)
-                          const v = e.target.value === '' || !Number.isFinite(raw) ? null : raw
-                          setFilter(col, { ...spec, active: true, max: v })
-                        }}
-                      />
-                    </label>
+                    <BoundInput
+                      label="min"
+                      value={spec?.min ?? null}
+                      from={facet.min}
+                      step={filterStep(facet.min, facet.max, facet.whole)}
+                      disabled={!isActive}
+                      onChange={(v) => setFilter(col, { ...spec, active: true, min: v })}
+                    />
+                    <BoundInput
+                      label="max"
+                      value={spec?.max ?? null}
+                      from={facet.max}
+                      step={filterStep(facet.min, facet.max, facet.whole)}
+                      disabled={!isActive}
+                      onChange={(v) => setFilter(col, { ...spec, active: true, max: v })}
+                    />
                   </>
                 ) : (
                   // Categorical values are chosen from a floating multiselect dropdown.
@@ -4801,6 +5177,76 @@ function FilterStage({
         </table>
       </ScrollFade>
     </>
+  )
+}
+
+/** A numeric filter's min or max: typed, or stepped by its ▲ ▼ (or the arrow keys) by a step
+ *  sized to the column's range, starting from the column's own min / max when blank. The
+ *  browser's spinner is hidden (oe-num, as the config panels' boxes): its first click on a box
+ *  without focus was often lost, and it stepped a 0–1 q-value by whole 1s. */
+function BoundInput({
+  label,
+  value,
+  from,
+  step,
+  disabled,
+  onChange
+}: {
+  label: string
+  value: number | null
+  /** where a blank box starts stepping: the column's own min (or max) */
+  from: number
+  step: number
+  disabled: boolean
+  onChange: (v: number | null) => void
+}): ReactNode {
+  const move = (dir: number): void => onChange(stepBy(value ?? from, step, dir))
+  const arrow = (dir: number): ReactNode => (
+    <button
+      type="button"
+      tabIndex={-1}
+      disabled={disabled}
+      aria-label={`${dir > 0 ? 'Raise' : 'Lower'} ${label} by ${step}`}
+      // keep the focus where it is (a typed value isn't interrupted)
+      onMouseDown={(e) => e.preventDefault()}
+      onClick={() => move(dir)}
+      style={styles.stepBtn}
+    >
+      <svg width="8" height="5" viewBox="0 0 8 5" aria-hidden>
+        <path d={dir > 0 ? 'M0 5L4 0l4 5z' : 'M0 0l4 5 4-5z'} fill="currentColor" />
+      </svg>
+    </button>
+  )
+  return (
+    <label style={styles.numLabel}>
+      {label}
+      <span style={styles.stepWrap}>
+        <input
+          className="oe-num"
+          style={styles.numInput}
+          type="number"
+          step={step}
+          disabled={disabled}
+          placeholder={String(from)}
+          value={value ?? ''}
+          onKeyDown={(e) => {
+            // the arrow keys step as the buttons do (from the column's own bound when blank)
+            if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return
+            e.preventDefault()
+            move(e.key === 'ArrowUp' ? 1 : -1)
+          }}
+          onChange={(e) => {
+            // Blank (or a partial entry like "-") = no bound, never NaN.
+            const raw = Number(e.target.value)
+            onChange(e.target.value === '' || !Number.isFinite(raw) ? null : raw)
+          }}
+        />
+        <span style={styles.stepBtns}>
+          {arrow(1)}
+          {arrow(-1)}
+        </span>
+      </span>
+    </label>
   )
 }
 
@@ -5032,6 +5478,31 @@ const styles: Record<string, CSSProperties> = {
     gap: 10,
     paddingRight: 14,
     borderRight: `1px solid ${UI.border}`
+  },
+  mapHead: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 },
+  sheetBtn: {
+    background: UI.panelAlt,
+    color: UI.text,
+    border: `1px solid ${UI.border}`,
+    borderRadius: 5,
+    padding: '3px 10px',
+    fontSize: 11,
+    cursor: 'pointer',
+    whiteSpace: 'nowrap'
+  },
+  sheetBar: { display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' },
+  sheetTh: { cursor: 'pointer', userSelect: 'none' },
+  // A painted samplesheet column's bar, along its header's foot.
+  sheetBar3: { position: 'absolute', left: 4, right: 4, bottom: 0, height: 3, borderRadius: 2 },
+  sheetMissing: { color: UI.textMuted, fontStyle: 'italic' },
+  sheetUnpin: {
+    marginLeft: 6,
+    background: 'transparent',
+    border: 'none',
+    color: UI.textMuted,
+    cursor: 'pointer',
+    padding: 0,
+    fontSize: 12
   },
   condSplitRight: {
     flex: '1 1 0',
@@ -5408,8 +5879,31 @@ const styles: Record<string, CSSProperties> = {
     color: UI.text,
     border: `1px solid ${UI.border}`,
     borderRadius: 5,
-    padding: '4px 8px',
+    padding: '4px 22px 4px 8px',
     fontSize: 12
+  },
+  // A bound's ▲ ▼, inside the box's right edge.
+  stepWrap: { position: 'relative', display: 'inline-flex' },
+  stepBtns: {
+    position: 'absolute',
+    top: 2,
+    bottom: 2,
+    right: 2,
+    display: 'flex',
+    flexDirection: 'column'
+  },
+  stepBtn: {
+    flex: 1,
+    width: 16,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 0,
+    border: 'none',
+    borderRadius: 3,
+    background: 'transparent',
+    color: UI.textMuted,
+    cursor: 'pointer'
   },
 
   // Chip-style select for swapping the source data file inside the wizard.

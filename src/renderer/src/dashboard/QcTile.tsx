@@ -31,7 +31,7 @@ export function QcTile({
   std: StandardizeResult
   metric: QcMetric
   plot: 'violin' | 'box' | 'bar'
-  /** the scale abundance is shown on (plotScaleOf) */
+  /** the scale abundance is shown on (presentScaleOf) */
   scale?: ValueScale
   /** the single fill colour (unset = the QC default) */
   color?: string

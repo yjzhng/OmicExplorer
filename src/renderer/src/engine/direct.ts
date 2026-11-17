@@ -42,6 +42,8 @@ import {
   type TargetCurve
 } from './curveFit'
 import { samTest, type SamGene } from './sam'
+import { blockedTTest } from './batch'
+import { sampleLabel } from './sampleLabel'
 import {
   benjaminiHochberg,
   DEFAULT_THRESHOLD,
@@ -545,13 +547,32 @@ export function runCompare(input: CompareInput): CompareTableResult {
   const sampleOf = (r: StandardRow): string =>
     groupKey([...input.activeConditions.map((c) => condValue(r, c)), r.rep])
 
+  // Each value's batch, where the data carries batches ('' = in none) — named once per row, as a
+  // denominator slice is read again for every numerator group.
+  const batches = input.batches
+  const named = new Map<StandardRow, string>()
+  const batchOf = (r: StandardRow): string => {
+    let b = named.get(r)
+    if (b === undefined) named.set(r, (b = batches?.[sampleLabel(r)] ?? ''))
+    return b
+  }
+
   const { slices, comparisons, cmpCond, contextDims } = compareSlices(input)
   const raw: RawStatRow[] = []
   const samStats: Array<SamGene | undefined> = []
   slices.forEach(({ grp, denSlice, label, rep }, si) => {
     const numAgg = grp.map((r) => ({ uniqID: r.uniqID, value: statValue(r) }))
     const denAgg = denSlice.map((r) => ({ uniqID: r.uniqID, value: statValue(r) }))
-    const res = welchTTest(numAgg, denAgg, transformed)
+    const welch = welchTTest(numAgg, denAgg, transformed)
+    // With batches, the test blocks on them (the batch a term of its model — batch.ts).
+    const res = batches
+      ? blockedTTest(
+          grp.map((r) => ({ uniqID: r.uniqID, value: statValue(r), batch: batchOf(r) })),
+          denSlice.map((r) => ({ uniqID: r.uniqID, value: statValue(r), batch: batchOf(r) })),
+          transformed,
+          welch
+        )
+      : welch
     const samRes = sam
       ? samTest(
           grp.map((r) => ({ uniqID: r.uniqID, sample: sampleOf(r), value: statValue(r) })),

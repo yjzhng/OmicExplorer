@@ -89,14 +89,14 @@ describe('resolveFacets — one-sided contrast levels', () => {
   })
 })
 
-describe('a dim not gated by the ones to its left', () => {
+describe('a dim narrowed by the ones to its left', () => {
   // one comparison per compound (each vs DMSO), at two doses
   const rows = ['A', 'B', 'C'].flatMap((c) =>
     [1, 10].map((dose) => ctr({ cmpd: c, dose, comparison: `${c} | DMSO` }))
   )
   const dims = ['comparison', 'cmpd', 'dose'] as const
 
-  it('offers every compound, the others marked as moving the comparison', () => {
+  it('lists every compound, the others marked as not alongside the comparison', () => {
     const { bars } = resolveFacets(rows, [...dims], { comparison: 'A | DMSO' }, numeric)
     expect(bars[1].options).toEqual([
       { value: 'A' },
@@ -104,6 +104,15 @@ describe('a dim not gated by the ones to its left', () => {
       { value: 'C', moves: true }
     ])
     expect(bars[1].value).toBe('A')
+  })
+  it('greys out the ones not alongside the picks to their left', () => {
+    const { bars } = resolveFacets(rows, [...dims], { comparison: 'A | DMSO' }, numeric)
+    const [a, b] = bars[1].options.map((o) => facetChoice('cmpd', o, bars))
+    expect(a.disabled).toBeUndefined()
+    expect(b).toMatchObject({
+      disabled: true,
+      title: "cmpd B isn't measured at comparison A | DMSO"
+    })
   })
   it('picking one brings its comparison along, keeping the dose on show', () => {
     const sel = pickFacet(
@@ -145,5 +154,25 @@ describe('comparisons sharing a denominator', () => {
     const b = bar(['A | DMSO', 'B | Vehicle'])
     expect(facetBarLabel(b)).toBe('comparison')
     expect(facetChoice('comparison', b.options[1], [b]).label).toBe('B | Vehicle')
+  })
+})
+
+describe('a plot that leaves a dim out follows the levels on show', () => {
+  // AU-28 at four doses at 72 h, and at 0.16 also at 6 and 24 h (a partial dose × time design)
+  const rows = [
+    ...[0.04, 0.08, 0.16, 0.3].map((dose) => ctr({ cmp_cond: 'cmpd', dose, time: 72 })),
+    ...[6, 24].map((time) => ctr({ cmp_cond: 'cmpd', dose: 0.16, time }))
+  ]
+  it("a Dose response: the bar's time, not its own first", () => {
+    // the bar: dose 0.3 picked, time never picked — it shows 72 (the only time at 0.3)
+    const bar = resolveFacets(rows, ['dose', 'time'], { dose: '0.3' }, numeric)
+    const resolved = Object.fromEntries(bar.bars.map((b) => [b.dim, String(b.value)]))
+    expect(resolved).toEqual({ dose: '0.3', time: '72' })
+    // the plot leaves dose out: with the stored pick it took the first time (6 h, one dose) …
+    const own = resolveFacets(rows, ['time'], { dose: '0.3' }, numeric)
+    expect(new Set(own.rows.map((r) => r.dose)).size).toBe(1)
+    // … with the bar's resolved levels, 72 h — every dose
+    const shown = resolveFacets(rows, ['time'], resolved, numeric)
+    expect(shown.rows.map((r) => r.dose)).toEqual([0.04, 0.08, 0.16, 0.3])
   })
 })

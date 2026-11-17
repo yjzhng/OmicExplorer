@@ -6,6 +6,7 @@
  * replace-project flows (open another project, new project), alongside the newer-project warning.
  */
 import { BrowserWindow, dialog, ipcMain } from 'electron'
+import { quitCancelled } from './updater'
 
 export type SaveChoice = 'save' | 'discard' | 'cancel'
 
@@ -87,8 +88,9 @@ export function installCloseGuard(win: BrowserWindow): void {
     void (async () => {
       try {
         const choice = await askSave(win, 'closing')
-        if (choice === 'cancel') return
-        if (choice === 'save' && !(await requestRendererSave(win))) return
+        // kept open: a quit (a restart to update among them) stops here
+        if (choice === 'cancel') return quitCancelled()
+        if (choice === 'save' && !(await requestRendererSave(win))) return quitCancelled()
         allowClose = true
         win.close()
       } finally {

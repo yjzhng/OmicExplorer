@@ -1,14 +1,15 @@
 /**
  * Contrast: join two primary comparison tables side-by-side (FC1/FC2/FCdiff) and
- * flag divergent genes with a Gaussian-outlier model. No new statistical test —
- * per-side significance (signf1/signf2) comes from the primary step.
+ * flag divergent genes. No new statistical test — per-side significance (signf1/signf2)
+ * comes from the primary step.
  *
  * Reimplements omicViz scripts/stats/comparisons.py `_compare_from_norm`,
- * `_add_gaussian_outliers` (ols / marginal), and `_mask_by_driver_signf`
+ * `_add_gaussian_outliers` (ols), and `_mask_by_driver_signf`
  * (see [[omicviz-conceptual-reuse]]). relationship: correlated → OLS prediction
- * band; independent → marginal robust per-axis Gaussian.
+ * band; independent → a value cutoff on each axis, as a volcano's (see ValueCutoffs) — in place
+ * of omicViz's robust per-axis Gaussian.
  */
-import { benjaminiHochberg, madNormal, median, normalSf, studentTppf } from './stats'
+import { snapStatMin, studentTppf } from './stats'
 import { fromLog10, type ValueScale } from './scale'
 import {
   condLabel,
@@ -27,20 +28,33 @@ export interface ContrastInput {
   condition: ConditionKey
   /** the two levels of `condition`: [numerator → FC1, denominator → FC2] */
   pair: [string, string]
-  /** correlated → OLS band; independent → marginal per-axis Gaussian */
+  /** correlated → OLS band; independent → a value cutoff per axis */
   relationship?: 'correlated' | 'independent'
   /** the statistic's cutoffs (see ContrastStat) */
   stat?: ContrastStat
+  /** independent: the feature contrasted (absent = the sides' own value) and the cutoffs its
+   *  inputs call by — a Compare's fold change and significance limits — that `stat.values` may
+   *  override (see valueCutoffs) */
+  feature?: ContrastFeatureId
+  cutoffDefaults?: Partial<ValueCutoffs>
   /** keep a divergent call only where a side is itself significant. Off for abundance inputs
    *  (Standardize-fed split) which carry no per-side significance. Defaults to true. */
   driverMask?: boolean
 }
 
-/** The divergence statistic's confidence. Correlated: the OLS prediction band's level. Linear
- *  cutoff (independent): per-axis robust-z BH q ≤ 1 − confidence. One number, applied per model. */
-/** Linear cutoff: the four tails — each axis (A = y, B = x) above and below its centre. */
+/** Linear cutoff: the four tails — each axis (A = y, B = x), above and below. */
 export type AxisTail = 'aUp' | 'aDown' | 'bUp' | 'bDown'
 export const AXIS_TAILS: AxisTail[] = ['aUp', 'aDown', 'bUp', 'bDown']
+
+/** Linear cutoff (independent): a value on each tail, as a volcano's fold-change and significance
+ *  lines — a gene beyond it on either axis is called. In the feature's units as the scatter plots
+ *  it (log₂FC, −log₁₀ p or q, SD, CV, pEC50; an abundance in log₁₀, as stored); null = no cutoff on
+ *  that tail. */
+export type ValueCutoffs = Record<AxisTail, number | null>
+
+/** A feature cut on its upper tails only: significance (−log₁₀ p) — a gene less significant than
+ *  the rest isn't a finding, and the values stop at 0. */
+export const upperOnly = (feature: ContrastFeatureId | undefined): boolean => feature === 'p'
 
 export interface ContrastStat {
   /** correlated only — what the band is centred on: 'linear' (default) a line fitted through the
@@ -50,29 +64,61 @@ export interface ContrastStat {
   /** prediction band confidence, 0–1 (default 0.99); the UP tail (above the line) while
    *  `asymmetric` */
   bandConfidence?: number
-  /** per-axis q cutoff (default 0.01 = 1 − 0.99); every tail unless overridden while
-   *  `asymmetric` */
-  cutoffQ?: number
-  /** separate levels per tail. Correlated: the band below the line (`bandConfidenceDown`).
-   *  Linear cutoff: each axis's up and down tails (`cutoffQTails`). Off (default): mirrored. */
+  /** correlated: a separate level for the band below the line (`bandConfidenceDown`). Off
+   *  (default): mirrored. */
   asymmetric?: boolean
   bandConfidenceDown?: number
-  cutoffQTails?: Partial<Record<AxisTail, number>>
+  /** linear cutoff: the values set per feature and tail, over the ones the inputs call by
+   *  (valueCutoffs) — null there = no cutoff on that tail */
+  values?: Partial<Record<ContrastFeatureId, Partial<ValueCutoffs>>>
 }
-export const CONTRAST_STAT_DEFAULTS = { bandConfidence: 0.99, cutoffQ: 0.01 } as const
+export const CONTRAST_STAT_DEFAULTS = { bandConfidence: 0.99 } as const
 
-/** The cutoffs as the engine applies them (everything mirrors the primary unless asymmetric). */
-export function statTails(stat: ContrastStat = {}): {
-  confUp: number
-  confDown: number
-  q: Record<AxisTail, number>
-} {
+/** The band's levels as the engine applies them (the bottom mirrors the top unless asymmetric). */
+export function statTails(stat: ContrastStat = {}): { confUp: number; confDown: number } {
   const confUp = stat.bandConfidence ?? CONTRAST_STAT_DEFAULTS.bandConfidence
-  const q0 = stat.cutoffQ ?? CONTRAST_STAT_DEFAULTS.cutoffQ
   const confDown = stat.asymmetric ? (stat.bandConfidenceDown ?? confUp) : confUp
-  const q = {} as Record<AxisTail, number>
-  for (const t of AXIS_TAILS) q[t] = stat.asymmetric ? (stat.cutoffQTails?.[t] ?? q0) : q0
-  return { confUp, confDown, q }
+  return { confUp, confDown }
+}
+
+/** A feature's linear cutoffs: each tail as set (`stat.values`, null = none), else the one its
+ *  inputs call by (`defaults`), else none. Significance is cut on its upper tails only. */
+export function valueCutoffs(
+  stat: ContrastStat | undefined,
+  feature: ContrastFeatureId | undefined,
+  defaults: Partial<ValueCutoffs> | undefined
+): ValueCutoffs {
+  const own = stat?.values?.[feature ?? 'value'] ?? {}
+  const out = {} as ValueCutoffs
+  for (const t of AXIS_TAILS) {
+    const v = own[t] !== undefined ? own[t] : defaults?.[t]
+    out[t] = upperOnly(feature) && (t === 'aDown' || t === 'bDown') ? null : (v ?? null)
+  }
+  return out
+}
+
+/** The linear cutoffs as a result's `thrsh` names them — and as the scatter reads them back to
+ *  draw its lines (cutoffsFromLabel): "cutoff A ≥ 1, ≤ -1 · B ≥ 1.3". */
+export function cutoffLabel(c: ValueCutoffs): string {
+  const side = (tag: string, up: number | null, down: number | null): string => {
+    const parts = [up != null ? `≥ ${up}` : null, down != null ? `≤ ${down}` : null].filter(Boolean)
+    return `${tag} ${parts.length ? parts.join(', ') : 'none'}`
+  }
+  return `cutoff ${side('A', c.aUp, c.aDown)} · ${side('B', c.bUp, c.bDown)}`
+}
+
+/** The linear cutoffs a `thrsh` label (cutoffLabel) names; null for another statistic's. */
+export function cutoffsFromLabel(thrsh: string): ValueCutoffs | null {
+  if (!thrsh.startsWith('cutoff ')) return null
+  const num = (part: string | undefined, sign: '≥' | '≤'): number | null => {
+    const m = part ? new RegExp(`${sign} (\\S+?)(?:,|$)`).exec(part) : null
+    return m && Number.isFinite(Number(m[1])) ? Number(m[1]) : null
+  }
+  const [a, b] = thrsh
+    .slice('cutoff '.length)
+    .split(' · ')
+    .map((p) => p.slice(2))
+  return { aUp: num(a, '≥'), aDown: num(a, '≤'), bUp: num(b, '≥'), bDown: num(b, '≤') }
 }
 
 /** What a Contrast compares on its two sides — picked on the results page's switcher row, which
@@ -129,9 +175,14 @@ export interface ContrastResult {
   rows: ContrastResultRow[]
   comparisons: string[]
   /** how the divergence calls were grouped (by comparison + these context conditions) and masked
-   *  (by a side's own significance) — what reclassifyContrast needs to redo them under new
-   *  cutoffs without a re-run. Absent on results from before it was kept. */
-  classify?: { ctxConds: ConditionKey[]; driverMask: boolean }
+   *  (by a side's own significance), and each feature's linear cutoffs from its inputs — what
+   *  reclassifyContrast needs to redo them under new cutoffs without a re-run. Absent on results
+   *  from before it was kept. */
+  classify?: {
+    ctxConds: ConditionKey[]
+    driverMask: boolean
+    cutoffDefaults?: Partial<Record<ContrastFeatureId, Partial<ValueCutoffs>>>
+  }
   /** What the FC1/FC2 side values represent: 'fc' = log2 fold-change (Compare-fed contrasts),
    *  'abundance' = log10 abundance (Standardize-fed pair). Drives axis labelling; defaults to 'fc'. */
   valueKind?: 'abundance' | 'fc'
@@ -140,7 +191,7 @@ export interface ContrastResult {
 const onScale = new WeakMap<ContrastResultRow[], Map<ValueScale, ContrastResultRow[]>>()
 /** An abundance contrast's rows (sides stored as log₁₀ abundance) with their side values, their
  *  errors and their difference put on `scale` — the scale the plots show Clean data on (see
- *  plotScaleOf). A log base is a plain rescale; linear takes the values back out of the log
+ *  presentScaleOf). A log base is a plain rescale; linear takes the values back out of the log
  *  (geometric means), the errors by the delta method and the difference as linear A − B. The
  *  statistics are untouched. Cached per row array and scale. */
 export function abundanceOnScale(
@@ -324,6 +375,9 @@ export interface ContrastPairInput {
   relationship?: 'correlated' | 'independent'
   /** the statistic's cutoffs (see ContrastStat) */
   stat?: ContrastStat
+  /** independent: the feature contrasted and the cutoffs its inputs call by (see ContrastInput) */
+  feature?: ContrastFeatureId
+  cutoffDefaults?: Partial<ValueCutoffs>
   /** axis labels for the two sides (the two input tiles' names). */
   labelA?: string
   labelB?: string
@@ -376,7 +430,7 @@ function matchLevel(v: string | number | null, want: string): boolean {
 
 export function runContrast(input: ContrastInput): ContrastResult {
   const { condition, pair } = input
-  const method = input.relationship === 'independent' ? 'marginal' : 'ols'
+  const method = input.relationship === 'independent' ? 'cutoff' : 'ols'
   if (!input.rows.length) return { rows: [], comparisons: [] }
   const [numVal, denVal] = pair
 
@@ -467,11 +521,24 @@ export function runContrast(input: ContrastInput): ContrastResult {
   }
 
   const driverMask = input.driverMask ?? true
-  addGaussianOutliers(records, ctxConds, method, driverMask, input.stat)
+  addGaussianOutliers(
+    records,
+    ctxConds,
+    method,
+    driverMask,
+    input.stat,
+    valueCutoffs(input.stat, input.feature, input.cutoffDefaults)
+  )
   return {
     rows: records,
     comparisons: records.length ? [comparison] : [],
-    classify: { ctxConds, driverMask }
+    classify: {
+      ctxConds,
+      driverMask,
+      ...(input.cutoffDefaults
+        ? { cutoffDefaults: { [input.feature ?? 'value']: input.cutoffDefaults } }
+        : null)
+    }
   }
 }
 
@@ -544,7 +611,7 @@ function aggregateSide(rows: ContrastSideRow[], ctx: ConditionKey[]): Map<string
  * staying matched-only.
  */
 export function runContrastPair(input: ContrastPairInput): ContrastResult {
-  const method = input.relationship === 'independent' ? 'marginal' : 'ols'
+  const method = input.relationship === 'independent' ? 'cutoff' : 'ols'
   const baseA = input.labelA || 'A'
   const baseB = input.labelB || 'B'
   const present = (rows: ContrastSideRow[], c: ConditionKey): boolean =>
@@ -613,11 +680,24 @@ export function runContrastPair(input: ContrastPairInput): ContrastResult {
   }
 
   const driverMask = input.driverMask ?? true
-  addGaussianOutliers(records, ctxConds, method, driverMask, input.stat)
+  addGaussianOutliers(
+    records,
+    ctxConds,
+    method,
+    driverMask,
+    input.stat,
+    valueCutoffs(input.stat, input.feature, input.cutoffDefaults)
+  )
   return {
     rows: records,
     comparisons: records.length ? [comparison] : [],
-    classify: { ctxConds, driverMask }
+    classify: {
+      ctxConds,
+      driverMask,
+      ...(input.cutoffDefaults
+        ? { cutoffDefaults: { [input.feature ?? 'value']: input.cutoffDefaults } }
+        : null)
+    }
   }
 }
 
@@ -809,43 +889,62 @@ export function previewContrastPair(
   }
 }
 
-/** Add thrsh/signf/effect via OLS or marginal outlier detection, then (when `driverMask`) keep a
- *  divergent call only where a side is itself significant. */
+/** Add thrsh/signf/effect via the OLS band's outliers or the linear cutoffs (`cuts`), then (when
+ *  `driverMask`) keep a divergent call only where a side is itself significant. */
 function addGaussianOutliers(
   rows: ContrastResultRow[],
   ctxCols: ConditionKey[],
-  method: 'ols' | 'marginal',
+  method: 'ols' | 'cutoff',
   driverMask = true,
-  stat: ContrastStat = {}
+  stat: ContrastStat = {},
+  cuts: ValueCutoffs = valueCutoffs(stat, undefined, undefined)
 ): void {
-  const { confUp, confDown, q } = statTails(stat)
+  const { confUp, confDown } = statTails(stat)
   const pct = (c: number): string => `${Math.round(c * 1e5) / 1e3}%`
-  const qSame = AXIS_TAILS.every((t) => q[t] === q.aUp)
   // The label carries the cutoffs (per tail when they differ): the scatter guide parses it to
   // draw the matching boundary.
   const identity = method === 'ols' && stat.model === 'identity'
   const label =
     method === 'ols'
       ? `${identity ? 'identity' : 'ols'} prediction, ${pct(confUp)}${confDown !== confUp ? `/${pct(confDown)}` : ''}`
-      : qSame
-        ? `marginal gaussian (robust), per-axis q < ${q.aUp}`
-        : `marginal gaussian (robust), per-axis q < A ${q.aUp}/${q.aDown}, B ${q.bUp}/${q.bDown}`
+      : cutoffLabel(cuts)
   for (const r of rows) r.thrsh = label
 
-  // group by comparison + context columns
-  const groups = new Map<string, ContrastResultRow[]>()
-  for (const r of rows) {
-    const k = [
-      r.comparison,
-      ...ctxCols.map((c) => String((r as unknown as Record<string, unknown>)[c]))
-    ].join('¦')
-    let arr = groups.get(k)
-    if (!arr) {
-      arr = []
-      groups.set(k, arr)
+  if (method === 'cutoff') {
+    // Linear cutoff: each axis on its own, as a volcano's lines — beyond a tail's value is called
+    // that way (up above, down below). Significance passes AT its cutoff (a Compare's stat ≥
+    // statMin); every other feature, past it (a fold change outside (fcLow, fcHigh)).
+    const geq = upperOnly(rows.find((r) => r.featureId)?.featureId)
+    const side = (v: number, up: number | null, down: number | null): 'up' | 'down' | null =>
+      up != null && (geq ? v >= up : v > up)
+        ? 'up'
+        : down != null && (geq ? v <= down : v < down)
+          ? 'down'
+          : null
+    for (const r of rows) {
+      if (r.FC1 == null || r.FC2 == null) continue
+      const d1 = side(r.FC1, cuts.aUp, cuts.aDown)
+      const d2 = side(r.FC2, cuts.bUp, cuts.bDown)
+      r.signf = !!(d1 || d2)
+      r.effect = d1 || d2 ? `${d1 ?? '—'}, ${d2 ?? '—'}` : 'none'
     }
-    arr.push(r)
   }
+
+  // OLS: per comparison + context columns
+  const groups = new Map<string, ContrastResultRow[]>()
+  if (method === 'ols')
+    for (const r of rows) {
+      const k = [
+        r.comparison,
+        ...ctxCols.map((c) => String((r as unknown as Record<string, unknown>)[c]))
+      ].join('¦')
+      let arr = groups.get(k)
+      if (!arr) {
+        arr = []
+        groups.set(k, arr)
+      }
+      arr.push(r)
+    }
 
   for (const grp of groups.values()) {
     const valid = grp.filter((r) => r.FC1 != null && r.FC2 != null)
@@ -867,7 +966,7 @@ function addGaussianOutliers(
         r.signf = signf
         r.effect = signf ? (resid[i] > 0 ? 'up' : 'down') : 'none'
       })
-    } else if (method === 'ols') {
+    } else {
       // OLS: FC1 = β0 + β1·FC2 + ε  (x = FC2, y = FC1); 99% prediction band.
       const x = fc2
       const y = fc1
@@ -894,33 +993,6 @@ function addGaussianOutliers(
         // the fit runs off the diagonal.)
         r.effect = signf ? (resid[i] > 0 ? 'up' : 'down') : 'none'
       })
-    } else {
-      // marginal: robust per-axis 1-D normal tests (median + MAD), BH-corrected.
-      const mu1 = median(fc1)
-      const mu2 = median(fc2)
-      const s1 = madNormal(fc1)
-      const s2 = madNormal(fc2)
-      if (s1 === 0 || s2 === 0) continue
-      const p1 = fc1.map((v) => 2 * normalSf(Math.abs((v - mu1) / s1)))
-      const p2 = fc2.map((v) => 2 * normalSf(Math.abs((v - mu2) / s2)))
-      const q1 = benjaminiHochberg(p1)
-      const q2 = benjaminiHochberg(p2)
-      // Per axis, a value above its centre is judged against that axis's up tail, below → down.
-      valid.forEach((r, i) => {
-        const sig1 = q1[i] < (fc1[i] >= mu1 ? q.aUp : q.aDown)
-        const sig2 = q2[i] < (fc2[i] >= mu2 ? q.bUp : q.bDown)
-        const dir1 = fc1[i] >= 0 ? 'up' : 'down'
-        const dir2 = fc2[i] >= 0 ? 'up' : 'down'
-        r.signf = sig1 || sig2
-        r.effect =
-          sig1 && sig2
-            ? `${dir1}, ${dir2}`
-            : sig1 && !sig2
-              ? `${dir1}, —`
-              : !sig1 && sig2
-                ? `—, ${dir2}`
-                : 'none'
-      })
     }
   }
 
@@ -944,8 +1016,8 @@ export function reclassifyContrast(
   stat: ContrastStat
 ): ContrastResult | null {
   if (!ctr.classify) return null
-  const { ctxConds, driverMask } = ctr.classify
-  const method = relationship === 'independent' ? 'marginal' : 'ols'
+  const { ctxConds, driverMask, cutoffDefaults } = ctr.classify
+  const method = relationship === 'independent' ? 'cutoff' : 'ols'
   const rows = ctr.rows.map((r) => ({ ...r, signf: false, effect: 'none' }))
   const byFeature = new Map<string, ContrastResultRow[]>()
   for (const r of rows) {
@@ -954,35 +1026,34 @@ export function reclassifyContrast(
     if (!arr) byFeature.set(k, (arr = []))
     arr.push(r)
   }
-  for (const part of byFeature.values())
-    addGaussianOutliers(part, ctxConds, method, driverMask, stat)
+  for (const part of byFeature.values()) {
+    const f = part[0].featureId
+    const cuts = valueCutoffs(stat, f, cutoffDefaults?.[f ?? 'value'])
+    addGaussianOutliers(part, ctxConds, method, driverMask, stat, cuts)
+  }
   return { ...ctr, rows }
 }
 
-/** A dragged scatter guide as a stat patch, written the way the Statistic panel writes it: the
- *  primary level (the band's top edge, A's up line) sets both models' fields, so switching model
- *  keeps it; under `asymmetric`, any other edge sets its own tail. Not asymmetric, every edge sets
- *  the primary (the edges mirror). `value` is a band confidence or an axis q. */
+/** A dragged scatter guide as a stat patch, written the way the Statistic panel writes it. A band
+ *  edge: its confidence — the top edge (or, not asymmetric, either) the primary level, the bottom
+ *  its own while asymmetric. An axis line: that tail's value for the feature on show (`feature`),
+ *  rounded as the panel shows it — significance to a round p, as a volcano's line snaps. */
 export function contrastStatDrag(
   stat: ContrastStat | undefined,
   edge: 'bandUp' | 'bandDown' | AxisTail,
-  value: number
+  value: number,
+  feature?: ContrastFeatureId
 ): Partial<ContrastStat> {
-  const asym = stat?.asymmetric ?? false
-  // to 0.001% (the Statistic panel's finest tail)
-  const round5 = (v: number): number => Math.round(v * 1e5) / 1e5
-  const conf = (c: number): number => round5(Math.min(0.99999, Math.max(0.5, c)))
-  // up, not to nearest: a q just above the passing genes' must stay above them once stored
-  const q = (v: number): number =>
-    Math.min(0.5, Math.max(0.00001, Math.ceil(v * 1e5 - 1e-9) / 1e5))
   if (edge === 'bandUp' || edge === 'bandDown') {
-    const c = conf(value)
-    if (edge === 'bandDown' && asym) return { bandConfidenceDown: c }
-    return { bandConfidence: c, cutoffQ: round5(1 - c) }
+    // to 0.001% (the Statistic panel's finest tail)
+    const c = Math.round(Math.min(0.99999, Math.max(0.5, value)) * 1e5) / 1e5
+    return edge === 'bandDown' && stat?.asymmetric
+      ? { bandConfidenceDown: c }
+      : { bandConfidence: c }
   }
-  const v = q(value)
-  if (edge === 'aUp' || !asym) return { cutoffQ: v, bandConfidence: round5(1 - v) }
-  return { cutoffQTails: { ...stat?.cutoffQTails, [edge]: v } }
+  const f = feature ?? 'value'
+  const v = upperOnly(f) ? snapStatMin(value) : Math.round(value * 100) / 100
+  return { values: { ...stat?.values, [f]: { ...stat?.values?.[f], [edge]: v } } }
 }
 
 function mean(a: number[]): number {

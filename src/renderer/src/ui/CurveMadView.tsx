@@ -514,11 +514,13 @@ export function CurveMadView({
           layout={layout}
           emphasis={emphasis}
           onGraphMount={pickers.onGraphMount}
+          // its own note says why it's empty (the metric no curve has)
+          emptyNote={false}
         />
         {pickers.overlay}
       </div>
     )
-  return <PlotlyChart data={data} layout={layout} emphasis={emphasis} />
+  return <PlotlyChart data={data} layout={layout} emphasis={emphasis} emptyNote={false} />
 }
 
 type Palette = (typeof PALETTES)[keyof typeof PALETTES]

@@ -14,18 +14,26 @@ export const ROW_HEIGHT = 20
 export const GRID_MARGIN: [number, number] = [12, 6]
 export const GRID_PADDING: [number, number] = [4, 4]
 
-/** Default tile footprint: half-width (24 of 48 cols), ~340px tall (matches the S1 CSS grid). */
-const DEFAULT_W = 24
-const DEFAULT_H = 16
+/** Plots per row a dashboard is laid out with before it's arranged by hand (Settings). */
+export type PlotsPerRow = 2 | 3 | 4
+export const DEFAULT_PER_ROW: PlotsPerRow = 3
 
-/** Tile members 2-up in member order. Pure — same input, same layout. */
-export function autoLayout(ids: string[]): PanelLayout {
+/** A tile's default footprint at `perRow` across: an equal share of the 48 columns, and a little
+ *  shorter as it narrows (~340px tall two-up, ~300 three-up, ~260 four-up), so a plot keeps a
+ *  usable shape. */
+function footprint(perRow: PlotsPerRow): { w: number; h: number } {
+  return { w: GRID_COLS / perRow, h: { 2: 16, 3: 14, 4: 12 }[perRow] }
+}
+
+/** Tile members `perRow`-up in member order. Pure — same input, same layout. */
+export function autoLayout(ids: string[], perRow: PlotsPerRow = DEFAULT_PER_ROW): PanelLayout {
+  const { w, h } = footprint(perRow)
   return ids.map((id, i) => ({
     i: id,
-    x: (i % 2) * DEFAULT_W,
-    y: Math.floor(i / 2) * DEFAULT_H,
-    w: DEFAULT_W,
-    h: DEFAULT_H
+    x: (i % perRow) * w,
+    y: Math.floor(i / perRow) * h,
+    w,
+    h
   }))
 }
 
@@ -34,7 +42,12 @@ export function autoLayout(ids: string[]): PanelLayout {
  * append auto-placed items for new members, drop items whose member is gone.
  * New members are stacked below the tallest existing row so they never overlap.
  */
-export function reconcileLayout(existing: PanelLayout, ids: string[]): PanelLayout {
+export function reconcileLayout(
+  existing: PanelLayout,
+  ids: string[],
+  perRow: PlotsPerRow = DEFAULT_PER_ROW
+): PanelLayout {
+  const { w, h } = footprint(perRow)
   const byId = new Map(existing.map((it) => [it.i, it]))
   const idSet = new Set(ids)
   const kept = existing.filter((it) => idSet.has(it.i))
@@ -43,8 +56,8 @@ export function reconcileLayout(existing: PanelLayout, ids: string[]): PanelLayo
   let col = 0
   for (const id of ids) {
     if (byId.has(id)) continue
-    out.push({ i: id, x: col * DEFAULT_W, y: nextY, w: DEFAULT_W, h: DEFAULT_H })
-    col = col === 0 ? 1 : ((nextY += DEFAULT_H), 0)
+    out.push({ i: id, x: col * w, y: nextY, w, h })
+    col = col + 1 < perRow ? col + 1 : ((nextY += h), 0)
   }
   return out
 }

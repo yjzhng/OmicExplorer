@@ -18,13 +18,16 @@ import {
   someNested,
   stdByGene,
   termless,
+  withBatchCond,
   xUnits,
   type CompareResultRow,
   type CondSelector,
   type ConditionKey,
   type ContrastFeatureId,
   type ContrastSideRow,
-  type StandardRow
+  type StandardRow,
+  type ThresholdConfig,
+  type ValueCutoffs
 } from '../engine'
 import { rowCount } from '../engine/lazyRows'
 import {
@@ -204,6 +207,44 @@ function potencyLabel(linear: boolean, axis: ConditionKey, units: CondUnits | un
   if (unit)
     return linear ? `EC50 (${unit})` : isMolar(unit) ? 'pEC50 (M)' : `pEC50 (−log₁₀ ${unit})`
   return axis === 'dose' ? what : `${what} (${condLabel(axis)})`
+}
+
+/** A Compare threshold's fold-change limits, [up, down], as its Statistic panel shows them: a
+ *  linear (or CurveCurator) cutoff's fcHigh / fcLow; a SAM curve's asymptote FC_lim (stored as
+ *  s0 = −FC_lim, the down side's s0Down while asymmetric) — its fcHigh / fcLow are unused there.
+ *  SAM's permutation FDR has none. */
+function fcLimits(t: ThresholdConfig | undefined): [number | undefined, number | undefined] {
+  if (!t || t.type === 'sam_fdr') return [undefined, undefined]
+  if (t.type === 'non-linear') {
+    // (a legacy curve, s0 ≥ 0, has no fold-change floor)
+    const down = t.s0Down ?? t.s0
+    return [t.s0 < 0 ? -t.s0 : undefined, down < 0 ? down : undefined]
+  }
+  return [t.fcHigh, t.fcLow]
+}
+
+/** A Compare threshold's significance floor (−log₁₀ p or q): the linear cutoff's, or the SAM
+ *  curve's P_lim — none where it isn't one on the p (or q) values (SAM's permutation FDR,
+ *  CurveCurator's relevance score). */
+const statFloor = (t: ThresholdConfig | undefined): number | undefined =>
+  t && (t.type === 'linear' || t.type === 'non-linear') ? t.statMin : undefined
+
+/** A feature's linear cutoffs as its inputs call by — each axis its own input Compare's (`a` for
+ *  side A, `b` for B): log₂FC its fold-change limits, significance its stat floor. None for a
+ *  feature a Compare doesn't cut (SD, CV, pEC50) or an input that isn't a Compare (abundance). */
+export function cutoffDefaults(
+  a: ThresholdConfig | undefined,
+  b: ThresholdConfig | undefined,
+  feature: ContrastFeatureId
+): Partial<ValueCutoffs> | undefined {
+  if (!a && !b) return undefined
+  if (feature === 'value') {
+    const [aUp, aDown] = fcLimits(a)
+    const [bUp, bDown] = fcLimits(b)
+    return { aUp, aDown, bUp, bDown }
+  }
+  if (feature === 'p') return { aUp: statFloor(a), bUp: statFloor(b) }
+  return undefined
 }
 
 /** The features a Contrast of this input can switch between, in switcher order (the sides' own
@@ -615,8 +656,10 @@ export function selectorRowsOf(r: NodeResult | undefined): {
   rows: StandardRow[]
   present: ConditionKey[]
 } {
-  // (read off the columns: no row built)
-  const holder = r?.kind === 'compare' ? r.cmp : r?.kind === 'standardize' ? r.std : undefined
+  // (read off the columns: no row built) — a Clean data's with its batches as a condition to pick
+  // sides by (withBatchCond: the batches it defined, or the Merge inputs above it)
+  const holder =
+    r?.kind === 'compare' ? r.cmp : r?.kind === 'standardize' ? withBatchCond(r.std) : undefined
   const raw: Array<Record<string, unknown>> = []
   if (holder) {
     // a Compare's signed rows (cmpRows); every Clean data row

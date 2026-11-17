@@ -255,8 +255,10 @@ export function ResponseCompareView({
     // a categorical axis (a single self-closing polygon does not). Drawn behind the line.
     // One pair PER CONTIGUOUS RUN of points that have both a value and an error: Plotly closes a
     // `tonexty` fill with the previous trace's path joined ACROSS its gaps, so a band with a null
-    // in it (a single-replicate dose with no SE, or a dose present on one side only) came out as
-    // a polygon cutting diagonally across the gap, no longer following the line.
+    // in it came out as a polygon cutting diagonally across the gap, no longer following the line.
+    // A dose this side wasn't measured at (only the other side was) isn't a gap: the line runs
+    // straight past it (connectgaps), so the band leaves it out and runs on with the line. Only a
+    // dose with a value but no error (a single replicate, no SE) breaks the band.
     const band = (
       y: (number | null)[],
       e: (number | null)[],
@@ -270,14 +272,15 @@ export function ResponseCompareView({
         showlegend: false,
         line: { width: 0 }
       }
-      // Split into runs first (a null starts a new run), then shade each run of ≥2 points — a
-      // lone point has no area.
+      // Split into runs first (a missing error starts a new run), then shade each run of ≥2 points
+      // — a lone point has no area.
       const runs: { x: string[]; lo: number[]; hi: number[] }[] = []
       let open = false
       for (let i = 0; i < cats.length; i++) {
         const v = y[i]
         const err = e[i]
-        if (v == null || err == null || !Number.isFinite(v) || !Number.isFinite(err)) {
+        if (v == null || !Number.isFinite(v)) continue
+        if (err == null || !Number.isFinite(err)) {
           open = false
           continue
         }

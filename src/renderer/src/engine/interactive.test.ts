@@ -3,11 +3,15 @@ import { describe, expect, it } from 'vitest'
 import {
   applyFieldRule,
   buildStandardInputs,
+  filterStep,
   deriveFieldRule,
   guessRoles,
   guessRolesPreset,
+  matchSheetRows,
   MATRIX_PRESETS,
   parseMatrix,
+  stepBy,
+  type FilterSpec,
   type InteractiveSampleCond
 } from './interactive'
 import { standardize } from './ingest'
@@ -167,6 +171,18 @@ describe('buildStandardInputs', () => {
     expect(a.dbText).toContain('PRT001,G1,') // gene from the label (Genes) column
   })
 
+  it('applies a filter column unless it was switched off — each starts on', () => {
+    const matrix = ['Protein.Group,Genes,Q,s1', 'P1,G1,0.001,10', 'P2,G2,0.5,20'].join('\n')
+    const roles = { 'Protein.Group': 'id', Genes: 'label', Q: 'filter', s1: 'sample' } as const
+    const kept = (filters: Record<string, FilterSpec>): string[] =>
+      buildStandardInputs(matrix, { roles, conditions: {}, filters })
+        .dataText.split(/\r?\n/)
+        .slice(1)
+        .map((l) => l.split(',')[0])
+    expect(kept({ Q: { max: 0.01 } })).toEqual(['P1'])
+    expect(kept({ Q: { max: 0.01, active: false } })).toEqual(['P1', 'P2'])
+  })
+
   it('writes one db row per protein — unique, keyed by accession — each with its own annotation', () => {
     const matrix = [
       'Protein.Group,Genes,s1,s2',
@@ -276,5 +292,45 @@ describe('buildStandardInputs', () => {
     })
     expect(std.displayMap['PRT001']).toBe('FetchedA') // fetched gene name drives the display
     expect(std.displayMap['PRT002']).toBe('PRT002') // no Name, no fetch → falls back to the ID
+  })
+})
+
+describe('matching samplesheet rows to sample columns', () => {
+  it('matches exactly, by run name, then by the name found whole — never ambiguously', () => {
+    const headers = [
+      'D:\\runs\\A1.raw',
+      '/data/a2.mzML',
+      'B1',
+      'x/C1.raw',
+      'y/C1.d',
+      '20240101_proj_D4_r1.raw',
+      'E5x.raw'
+    ]
+    const m = matchSheetRows(['A1', 'A2', 'B1', 'C1', 'Z9', 'D4', 'E5'], headers)
+    expect([...m].sort()).toEqual([
+      ['/data/a2.mzML', 1],
+      ['20240101_proj_D4_r1.raw', 5],
+      ['B1', 2],
+      ['D:\\runs\\A1.raw', 0]
+    ])
+  })
+
+  it('takes a row matched by hand first, and the column it was meant for goes free', () => {
+    const m = matchSheetRows(['A1', 'weird'], ['A1', 'A2'], { A2: 0 })
+    expect([...m]).toEqual([['A2', 0]])
+  })
+})
+
+describe('stepping a numeric filter bound', () => {
+  it('steps a count by one, else by a power of ten under a hundredth of the range', () => {
+    expect(filterStep(0, 1)).toBe(0.01)
+    expect(filterStep(0.0001, 0.05)).toBe(0.0001)
+    expect(filterStep(0, 3e6)).toBe(10000)
+    // a count steps by one, whatever its range
+    expect(filterStep(1, 40, true)).toBe(1)
+    expect(filterStep(0, 300, true)).toBe(1)
+    expect(filterStep(3, 3)).toBe(1)
+    expect(stepBy(0.07, 0.01, 1)).toBe(0.08)
+    expect(stepBy(0.2, 0.1, 1)).toBe(0.3)
   })
 })

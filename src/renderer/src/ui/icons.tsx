@@ -68,18 +68,18 @@ export function IconJump({ size = 11 }: { size?: number } = {}): ReactNode {
 }
 
 /** Edit (a pencil). */
-export function IconEdit(): ReactNode {
+export function IconEdit({ size = 13 }: { size?: number } = {}): ReactNode {
   return (
-    <svg {...base}>
+    <svg {...base} width={size} height={size}>
       <path d="M4 20h4L19 9l-4-4L4 16v4zM13.5 6.5l4 4" />
     </svg>
   )
 }
 
 /** Confirm / apply (a check mark). */
-export function IconCheck(): ReactNode {
+export function IconCheck({ size = 13 }: { size?: number } = {}): ReactNode {
   return (
-    <svg {...base}>
+    <svg {...base} width={size} height={size}>
       <path d="M5 12.5l4.5 4.5L19 7.5" />
     </svg>
   )

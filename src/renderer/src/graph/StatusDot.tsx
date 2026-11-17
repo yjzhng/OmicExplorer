@@ -5,10 +5,11 @@
 import type { CSSProperties, ReactNode } from 'react'
 
 import { UI } from '../ui/theme'
+import { loadCheckInfo, type LoadTone } from './loadCheck'
 import { loadAbove, NODE_SPECS, plotLabel, runsIn } from './registry'
 import { unmetRequirement } from './requirements'
 import { useGraph } from './store'
-import { unconfiguredLoad } from './types'
+import { resolveLoadMode, unconfiguredLoad } from './types'
 import type { LoadConfig, NodeData, NodeKind, PlotGroupConfig, StepStatus } from './types'
 import { useUpstreamFacts } from './useUpstreamFacts'
 
@@ -43,6 +44,15 @@ export function plotStatusInfo(
   return block ? { color: UI.textMuted, label: block, pulse: false } : runStatusInfo('idle')
 }
 
+/** A Load tile's check, as its dot shows it: green when it runs as is (amber when there's
+ *  something to know), amber pulsing while it converts, red when it can't run. */
+const TONE: Record<LoadTone, Omit<StatusInfo, 'label'>> = {
+  ok: { color: '#3fae5a', pulse: false, ok: true },
+  warn: { color: '#e2b93b', pulse: false, ok: true },
+  busy: { color: '#e2b93b', pulse: true },
+  bad: { color: '#e5484d', pulse: false }
+}
+
 /** Status shown for a runnable step from its run lifecycle. */
 function runStatusInfo(status: StepStatus): StatusInfo {
   switch (status) {
@@ -72,6 +82,8 @@ export function useStepStatus(id: string, data: NodeData): StatusInfo {
     const load = loadAbove(s, id)?.load
     return load ? unconfiguredLoad(load.data.config as LoadConfig) : 'Waiting for data'
   })
+  // a Load tile's files against what was converted / read (the store's checkLoad)
+  const loadCheck = useGraph((s) => (data.kind === 'load' ? s.loadChecks[id] : undefined))
   const runs = spec.hasRun && subsetLoad === undefined
   // a running step's progress (curve fits report it): its stage and how far along
   const progress = useGraph((s) => (data.status === 'running' ? s.progress[id] : undefined))
@@ -98,6 +110,10 @@ export function useStepStatus(id: string, data: NodeData): StatusInfo {
   }
   if (upRunning && data.status === 'done')
     return { color: '#e2b93b', label: 'Updating — upstream re-running', pulse: true }
+  if (data.kind === 'load' && loadCheck && !unconfiguredLoad(data.config as LoadConfig)) {
+    const { tone, label } = loadCheckInfo(loadCheck, resolveLoadMode(data.config as LoadConfig))
+    return { ...TONE[tone], label }
+  }
   const block = ((): string | null => {
     if (data.kind === 'load') return unconfiguredLoad(data.config as LoadConfig)
     if (!upId) return 'Waiting for data'
@@ -216,6 +232,44 @@ export function RunControl({
   if (status === 'done') return chip('Re-run', accent, onRun)
   if (status === 'error') return chip('Retry', '#e15759', onRun)
   return chip('Run', accent, onRun)
+}
+
+/** A Load tile's run pill: Load has no run of its own, so its Run is the conversion — an
+ *  interactive tile converts its raw data again with the saved import settings (done for it, too,
+ *  when the raw file changes); a manual one checks its files again. Blocked until it's set up. */
+export function LoadRunControl({
+  id,
+  config,
+  accent
+}: {
+  id: string
+  config: LoadConfig
+  accent: string
+}): ReactNode {
+  const check = useGraph((s) => s.loadChecks[id])
+  const reconvert = useGraph((s) => s.reconvertLoad)
+  const recheck = useGraph((s) => s.checkLoad)
+  const interactive = resolveLoadMode(config) === 'interactive'
+  const unset = unconfiguredLoad(config)
+  const failed = check?.state === 'error' || check?.state === 'columns'
+  return (
+    <RunControl
+      status={unset ? 'idle' : failed ? 'error' : 'done'}
+      accent={accent}
+      onRun={() => void (interactive ? reconvert(id) : recheck(id))}
+      onStop={() => undefined}
+      gate={
+        check?.state === 'converting'
+          ? 'Converting the raw data with the saved import settings…'
+          : unset
+            ? interactive
+              ? 'Configure samples first'
+              : unset
+            : null
+      }
+      gateLabel={check?.state === 'converting' ? 'Converting…' : 'Set up first'}
+    />
+  )
 }
 
 const runChip: CSSProperties = {

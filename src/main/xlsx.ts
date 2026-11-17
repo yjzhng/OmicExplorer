@@ -1,7 +1,8 @@
 /** Minimal, dependency-free XLSX (OOXML) writer: one sheet, inline strings, DEFLATE-zipped
  *  with Node's zlib. Enough to write a data table Excel opens cleanly — no styles, no shared
- *  strings, no formulas. Cells are string | number | null (null → blank). */
-import { deflateRawSync } from 'node:zlib'
+ *  strings, no formulas. Cells are string | number | null (null → blank). And a reader of the same
+ *  scope: a workbook's first sheet as a table of text (readXlsx). */
+import { deflateRawSync, inflateRawSync } from 'node:zlib'
 
 type Cell = string | number | null
 
@@ -191,4 +192,109 @@ export function buildCsv(columns: string[], rows: Cell[][]): string {
   }
   const lines = [columns, ...rows].map((r) => r.map(esc).join(','))
   return lines.join('\r\n')
+}
+
+// ── reading ─────────────────────────────────────────────────────────────────────
+
+/** A ZIP archive's entries (name → text), read through its central directory — so an entry whose
+ *  local header leaves its sizes to a trailing descriptor (as Excel writes them) reads too. */
+function unzip(buf: Buffer): Map<string, string> {
+  let eocd = buf.length - 22
+  while (eocd >= 0 && buf.readUInt32LE(eocd) !== 0x06054b50) eocd--
+  if (eocd < 0) throw new Error('Not an .xlsx file (no ZIP directory).')
+  const count = buf.readUInt16LE(eocd + 10)
+  const out = new Map<string, string>()
+  let p = buf.readUInt32LE(eocd + 16)
+  for (let i = 0; i < count && buf.readUInt32LE(p) === 0x02014b50; i++) {
+    const method = buf.readUInt16LE(p + 10)
+    const size = buf.readUInt32LE(p + 20)
+    const nameLen = buf.readUInt16LE(p + 28)
+    const extraLen = buf.readUInt16LE(p + 30)
+    const commentLen = buf.readUInt16LE(p + 32)
+    const local = buf.readUInt32LE(p + 42)
+    const name = buf.toString('utf8', p + 46, p + 46 + nameLen)
+    const start = local + 30 + buf.readUInt16LE(local + 26) + buf.readUInt16LE(local + 28)
+    const data = buf.subarray(start, start + size)
+    if (method === 0 || method === 8)
+      out.set(name, (method === 8 ? inflateRawSync(data) : data).toString('utf8'))
+    p += 46 + nameLen + extraLen + commentLen
+  }
+  return out
+}
+
+const unescapeXml = (s: string): string =>
+  s.replace(/&(#x[0-9a-f]+|#\d+|lt|gt|amp|quot|apos);/gi, (_, e: string) => {
+    const k = e.toLowerCase()
+    if (k[0] === '#')
+      return String.fromCodePoint(
+        k[1] === 'x' ? parseInt(k.slice(2), 16) : parseInt(k.slice(1), 10)
+      )
+    return { lt: '<', gt: '>', amp: '&', quot: '"', apos: "'" }[k] ?? _
+  })
+
+/** A string item's text: its runs' <t>s joined, without phonetic (<rPh>) guides. */
+const itemText = (xml: string): string =>
+  [...xml.replace(/<rPh\b[\s\S]*?<\/rPh>/g, '').matchAll(/<t\b[^>]*>([\s\S]*?)<\/t>/g)]
+    .map((m) => unescapeXml(m[1]))
+    .join('')
+
+const attr = (attrs: string, name: string): string | undefined =>
+  new RegExp(`\\b${name}="([^"]*)"`).exec(attrs)?.[1]
+
+/** "B12" → column 1 (A = 0). */
+const colIndex = (ref: string): number =>
+  [...(/^[A-Z]+/.exec(ref)?.[0] ?? '')].reduce((n, ch) => n * 26 + ch.charCodeAt(0) - 64, 0) - 1
+
+/** The first sheet of a workbook, from its unzipped parts: each row's cells as text (shared and
+ *  inline strings, numbers as stored, booleans as TRUE / FALSE), placed by their references. */
+export function readXlsxParts(parts: Map<string, string>): string[][] {
+  const workbook = parts.get('xl/workbook.xml') ?? ''
+  const rid = attr(/<sheet\b([^>]*)\/?>/.exec(workbook)?.[1] ?? '', 'r:id')
+  const rels = parts.get('xl/_rels/workbook.xml.rels') ?? ''
+  const target = [...rels.matchAll(/<Relationship\b([^>]*)\/?>/g)]
+    .map((m) => m[1])
+    .find((a) => attr(a, 'Id') === rid)
+  const path = target
+    ? (attr(target, 'Target') ?? '').replace(/^\//, '').replace(/^(?!xl\/)/, 'xl/')
+    : 'xl/worksheets/sheet1.xml'
+  const sheet = parts.get(path)
+  if (sheet == null) throw new Error('The workbook has no sheet to read.')
+  const shared = [
+    ...(parts.get('xl/sharedStrings.xml') ?? '').matchAll(/<si>([\s\S]*?)<\/si>/g)
+  ].map((m) => itemText(m[1]))
+  const rows: string[][] = []
+  let r = 0
+  for (const row of sheet.matchAll(/<row\b([^>]*?)(?:\/>|>([\s\S]*?)<\/row>)/g)) {
+    r = Number(attr(row[1], 'r') ?? r + 1)
+    const cells: string[] = []
+    let c = -1
+    for (const cell of (row[2] ?? '').matchAll(/<c\b([^>]*?)(?:\/>|>([\s\S]*?)<\/c>)/g)) {
+      const ref = attr(cell[1], 'r')
+      c = ref ? colIndex(ref) : c + 1
+      const body = cell[2] ?? ''
+      const v = /<v>([\s\S]*?)<\/v>/.exec(body)?.[1]
+      const type = attr(cell[1], 't')
+      const text =
+        type === 's'
+          ? (shared[Number(v)] ?? '')
+          : type === 'inlineStr'
+            ? itemText(body)
+            : type === 'b'
+              ? v === '1'
+                ? 'TRUE'
+                : 'FALSE'
+              : unescapeXml(v ?? '')
+      while (cells.length < c) cells.push('')
+      cells[c] = text
+    }
+    while (rows.length < r - 1) rows.push([])
+    rows[r - 1] = cells
+  }
+  while (rows.length && rows[rows.length - 1].every((x) => x === '')) rows.pop()
+  return rows
+}
+
+/** A workbook's first sheet as a table of text (see readXlsxParts). */
+export function readXlsx(buf: Buffer): string[][] {
+  return readXlsxParts(unzip(buf))
 }

@@ -81,7 +81,7 @@ describe('subsetStandardize', () => {
     ])
   })
 
-  it('drops a condition no kept sample carries, and presents on the run scale', () => {
+  it('drops a condition no kept sample carries, and carries the input scale', () => {
     // only s5 (B2 · 1, no geno): geno goes as no kept sample carries it — and cmpd and dose too,
     // narrowed to a single value each (narrowedConds)
     const out = subsetStandardize(std(), { '@geno': [''] })
@@ -91,7 +91,8 @@ describe('subsetStandardize', () => {
       'cmpd',
       '@geno'
     ])
-    expect(out.inputScale).toBeUndefined()
+    // the Clean data step above sets the log-transform it's shown on (registry cleanStepAbove)
+    expect(out.inputScale).toBe('linear')
     expect(out.scale).toBe('log10')
   })
 

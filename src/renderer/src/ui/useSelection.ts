@@ -28,7 +28,16 @@ interface SelectionState {
   /** Replace the whole pinned set with `ids` (e.g. loading a saved geneset). */
   setPins: (ids: string[]) => void
   clearPins: () => void
+  /** How several gene groups picked in the gene selector combine: their genes together (union),
+   *  or only the genes every one of them holds (intersect). */
+  groupCombine: GroupCombine
+  /** intersect: the gene groups picked (geneset ids) — the selection is the genes they share */
+  pickedGroups: string[]
+  setGroupCombine: (mode: GroupCombine) => void
+  setPickedGroups: (ids: string[]) => void
 }
+
+export type GroupCombine = 'union' | 'intersect'
 
 const NO_MEMBERS: readonly string[] = []
 
@@ -71,8 +80,23 @@ export const useSelection = create<SelectionState>((set) => ({
       return { pinnedIds: new Set([id]) }
     }),
   setPins: (ids) => set({ pinnedIds: new Set(ids) }),
-  clearPins: () => set((s) => (s.pinnedIds.size === 0 ? s : { pinnedIds: new Set() }))
+  clearPins: () => set((s) => (s.pinnedIds.size === 0 ? s : { pinnedIds: new Set() })),
+  groupCombine: 'union',
+  pickedGroups: [],
+  setGroupCombine: (groupCombine) => set({ groupCombine }),
+  setPickedGroups: (pickedGroups) => set({ pickedGroups })
 }))
+
+/** The genes every one of these sets holds (none for no sets). */
+export function commonGenes(sets: ReadonlyArray<Pick<GeneSet, 'genes'>>): string[] {
+  if (!sets.length) return []
+  let common = new Set(sets[0].genes.map((g) => g.id))
+  for (const gs of sets.slice(1)) {
+    const ids = new Set(gs.genes.map((g) => g.id))
+    common = new Set([...common].filter((id) => ids.has(id)))
+  }
+  return [...common]
+}
 
 /** The saved genesets the pinned selection is made of: every (non-empty) set whose genes are all
  *  pinned — provided together they account for the whole selection. A selection with any ad-hoc
@@ -107,4 +131,17 @@ export function useSelectedGeneSets(
         ids: new Set(gs.genes.map((g) => g.id))
       }))
   }, [key, geneSets])
+}
+
+/** uniqID → its selected geneset's colour, for the views that colour a gene rather than draw a
+ *  set's own trace (the response curves). Only sets with a colour; a gene in several takes the
+ *  first (the gene groups' order). Stable as `useSelectedGeneSets` is. */
+export function useGeneSetColors(geneSets: GeneSet[]): Map<string, string> {
+  const sets = useSelectedGeneSets(geneSets)
+  return useMemo(() => {
+    const m = new Map<string, string>()
+    for (const set of sets)
+      if (set.color) for (const id of set.ids) if (!m.has(id)) m.set(id, set.color)
+    return m
+  }, [sets])
 }

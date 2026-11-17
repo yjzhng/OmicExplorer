@@ -8,7 +8,8 @@
  *    pinned that this heatmap shows.
  *  A track trace sharing the sample axis (the abundance heatmap's condition bar) follows the lit
  *  samples: in each track the cells in a lit sample's group stay lit (`focusKeys`) and the rest
- *  are veiled; hovering a track cell lights that sample.
+ *  are veiled; hovering a track cell lights that sample. Picked columns (a condition module) light
+ *  too — and with genes pinned, only the block the two make.
  *
  *  The veil is plain divs laid between Plotly's plot and its hover layer, placed in pixels from
  *  the axes' own scales — a rectangle per veiled block. Nothing in Plotly is redrawn on a hover (a
@@ -53,6 +54,15 @@ export interface HeatmapFocusOptions {
   tickPx: number
   labelInk: string
   labelBg: string
+  /** the sample-axis positions picked (a condition module clicked): lit, and while genes are
+   *  pinned, only the block they make together — the pinned genes in these columns — is */
+  picked?: PickedSamples
+}
+
+/** A heatmap's picked sample-axis positions, read at each draw, and a hook for when they change. */
+export interface PickedSamples {
+  get: () => ReadonlySet<number>
+  subscribe: (redraw: () => void) => () => void
 }
 
 /** The gene ticks for an axis `len` px long showing positions `lo` … `hi`: every `step`-th gene,
@@ -205,6 +215,29 @@ function veilRects(
   return rects
 }
 
+/** The veiled cells of an nX × nY grid outside one block: the cells in both a lit column and a lit
+ *  row stay, every other is veiled. */
+export function blockVeilRects(
+  ax: Axis,
+  ay: Axis,
+  nX: number,
+  nY: number,
+  litX: Set<number>,
+  litY: Set<number>
+): Array<[Px, Px]> {
+  const rects: Array<[Px, Px]> = []
+  const add = (sx: Span, sy: Span): void => {
+    const px = toPx(ax, sx)
+    const py = toPx(ay, sy)
+    if (px && py) rects.push([px, py])
+  }
+  // the columns outside it whole; in its columns, the rows outside it
+  for (const sx of unlitRuns(nX, (j) => litX.has(j))) add(sx, [-0.5, nY - 0.5])
+  const ys = unlitRuns(nY, (j) => litY.has(j))
+  for (const sx of unlitRuns(nX, (j) => !litX.has(j))) for (const sy of ys) add(sx, sy)
+  return rects
+}
+
 /** The lit genes' bold labels: plain divs over the axis's own labels (which a hover never
  *  relays out — that redraws the axis, lags, and moves its title as the bold labels widen it),
  *  each on the panel colour so it hides the dimmed label it lands on. Same layer place as the
@@ -263,7 +296,16 @@ function clearOwnSample(el: HTMLElement): void {
 export function bindHeatmapFocus(
   el: PlotlyGraphDiv,
   veil: string,
-  { landscape, geneIds, sampleKeys, geneLabels, tickPx, labelInk, labelBg }: HeatmapFocusOptions
+  {
+    landscape,
+    geneIds,
+    sampleKeys,
+    geneLabels,
+    tickPx,
+    labelInk,
+    labelBg,
+    picked
+  }: HeatmapFocusOptions
 ): () => void {
   const ev = el as unknown as {
     on: (e: string, cb: (...a: unknown[]) => void) => void
@@ -311,6 +353,7 @@ export function bindHeatmapFocus(
       if (h && sampleKeys) sampleKeys.forEach((k, i) => sampleMatches(h, k) && samples.add(i))
     }
     for (const id of sel.pinnedIds) for (const i of geneAt.get(id) ?? []) genes.add(i)
+    for (const i of picked?.get() ?? []) samples.add(i)
     return { genes, samples }
   }
 
@@ -376,7 +419,20 @@ export function bindHeatmapFocus(
     const rects: Array<[Px, Px]> = []
     const ax = axis(mx)
     const ay = axis(my)
-    if (ax && ay && (genes.size || samples.size)) {
+    // Picked columns with pinned genes: just their block is lit (a hover here still lights its
+    // own row and column beside it).
+    const pickedSet = picked?.get() ?? new Set<number>()
+    const blockGenes = new Set<number>()
+    if (pickedSet.size)
+      for (const id of useSelection.getState().pinnedIds)
+        for (const i of geneAt.get(id) ?? []) blockGenes.add(i)
+    if (ax && ay && blockGenes.size) {
+      const bx = new Set(landscape ? blockGenes : pickedSet)
+      const by = new Set(landscape ? pickedSet : blockGenes)
+      if (own?.gene != null) (landscape ? bx : by).add(own.gene)
+      if (own?.sample != null) (landscape ? by : bx).add(own.sample)
+      rects.push(...blockVeilRects(ax, ay, nX, nY, bx, by))
+    } else if (ax && ay && (genes.size || samples.size)) {
       const litX = landscape ? genes : samples
       const litY = landscape ? samples : genes
       rects.push(...veilRects(ax, ay, nX, nY, litX, litY))
@@ -421,7 +477,7 @@ export function bindHeatmapFocus(
     const cell = own && own.gene != null && own.sample != null ? [own.gene, own.sample] : null
     const bandGenes = own ? pinned : genes
     const bandSamples: Set<number> = own
-      ? new Set(own.gene == null && own.sample != null ? [own.sample] : [])
+      ? new Set([...(own.gene == null && own.sample != null ? [own.sample] : []), ...pickedSet])
       : samples
     const outlines =
       ax && ay
@@ -494,10 +550,12 @@ export function bindHeatmapFocus(
   const unsubSample = useSampleHover.subscribe((s, prev) => {
     if (!own && s.hover !== prev.hover) render()
   })
+  const unsubPicked = picked?.subscribe(render)
   relaid()
   return () => {
     unsubSel()
     unsubSample()
+    unsubPicked?.()
     clearTimeout(sampleTimer)
     clearOwnSample(el)
     ev.removeListener?.('plotly_hover', onHover as (...a: unknown[]) => void)

@@ -23,8 +23,11 @@ import { condPresent, condValue } from './compare'
 import { filterActive, keptBy, narrowedConds, samplePasses } from './subset'
 import { imputeMissing, sampleKey } from './impute'
 import { normalizeSamples } from './normalize'
+import { correctBatches, resolveBatches, type BatchSpec } from './batch'
+import { sampleIndex } from './sampleIndex'
 import {
   detectScale,
+  fromLinear,
   histogram,
   outputScale,
   sampleValues,
@@ -393,6 +396,22 @@ export function previewScale(dataText: string, dataFilename: string): ScalePrevi
   return { inputScale: scale, evidence, sample: sampleValues(values) }
 }
 
+/** The data scale of a Clean data result, as a Clean data step fed by it (through a Merge or a
+ *  Subset) previews it: its values on the scale it presents them on (its rows are linear) — what
+ *  it passes on, already log-transformed if it was — and that scale, the one the result carries,
+ *  not one guessed again from values a clean-up may have changed. */
+export function previewOfResult(std: StandardizeResult): ScalePreview {
+  const inputScale = std.scale ?? std.inputScale ?? 'linear'
+  const linear = sampleIndex(std).value
+  const values: number[] = []
+  for (const v of linear) {
+    const x = Number.isNaN(v) ? null : fromLinear(v, inputScale)
+    if (x != null) values.push(x)
+  }
+  const sample = sampleValues(values)
+  return { inputScale, evidence: detectScale(sample).evidence, sample }
+}
+
 /** Every numeric data value in a parsed data file, as it arrived: a wide file's sample columns
  *  (all but the first, the id), or a long file's `value` column. */
 function arrivedValues(
@@ -717,6 +736,19 @@ export function standardize(input: StandardizeInput): StandardizeResult {
     normalization = res.summary
   }
 
+  // ── batch correction: each batch's shift removed, every condition protected (batch.ts) ──
+  // After normalisation (a sample's loading is its own, not its batch's) and before imputation,
+  // which draws each gap from its sample's — corrected — distribution.
+  let batchCorrection: StandardizeResult['batchCorrection']
+  let batch: BatchSpec | undefined
+  if (input.batch) {
+    const conds = (input.activeConditions ?? condsIn(rows)).filter((c) => condPresent(rows, c))
+    batch = resolveBatches(input.batch, rows)
+    const res = correctBatches(rows, batch, conds)
+    rows = res.rows
+    batchCorrection = res.summary
+  }
+
   // ── imputation: fill what's still missing after clean-up ─────────────────────
   let imputation: StandardizeResult['imputation']
   if (input.impute) {
@@ -726,7 +758,10 @@ export function standardize(input: StandardizeInput): StandardizeResult {
   }
 
   // ── which conditions are active (present with any non-empty value) ──────────
-  const requested = input.activeConditions ?? condsIn(rows)
+  // (not the one the batches were filled from: it's the batch now)
+  const requested = (input.activeConditions ?? condsIn(rows)).filter(
+    (c) => c !== input.batch?.condition
+  )
   // …less those a Subset before Clean data narrowed to one value (narrowedConds), over the
   // samplesheet's samples in the data
   const narrowed = subsets.length
@@ -764,6 +799,7 @@ export function standardize(input: StandardizeInput): StandardizeResult {
     compounds,
     cleanup: { droppedGenes, sampleCount, minSamplePct, ...(grouped ? { by: groupBy } : {}) },
     ...(normalization ? { normalization } : {}),
+    ...(batch ? { batches: batch.of, batchCorrection } : {}),
     ...(imputation ? { imputation } : {}),
     scale: outputScale(input.logTransform, inputScale),
     inputScale,
@@ -776,7 +812,7 @@ export function standardize(input: StandardizeInput): StandardizeResult {
  *  normalisation, imputation and presented scale. */
 export type RecleanInput = Pick<
   StandardizeInput,
-  'minSamplePct' | 'minSamplePctBy' | 'normalize' | 'impute' | 'logTransform'
+  'minSamplePct' | 'minSamplePctBy' | 'normalize' | 'batch' | 'impute' | 'logTransform'
 > & { std: StandardizeResult }
 
 /**
@@ -788,6 +824,7 @@ export type RecleanInput = Pick<
  */
 export function recleanStandardized(input: RecleanInput): StandardizeResult {
   const prev = input.std
+  const fed = prev.scale ?? prev.inputScale ?? 'linear'
   let rows = prev.rows
   // Per-gene presence, and each sample's clean-up group (the tuple of the `minSamplePctBy`
   // conditions; '' pooled), as standardize builds them from the import.
@@ -816,6 +853,17 @@ export function recleanStandardized(input: RecleanInput): StandardizeResult {
     rows = res.rows
     normalization = res.summary
   }
+  // ── batch correction: each batch's shift removed, every condition protected (batch.ts) ──
+  // After normalisation (a sample's loading is its own, not its batch's) and before imputation,
+  // which draws each gap from its sample's — corrected — distribution.
+  let batchCorrection: StandardizeResult['batchCorrection']
+  // (the Merge inputs live on the result fed in)
+  const batch = input.batch && resolveBatches(input.batch, rows, prev.sources)
+  if (batch) {
+    const res = correctBatches(rows, batch, prev.activeConditions)
+    rows = res.rows
+    batchCorrection = res.summary
+  }
   let imputation: StandardizeResult['imputation']
   if (input.impute) {
     const res = imputeMissing(rows, input.impute)
@@ -827,11 +875,12 @@ export function recleanStandardized(input: RecleanInput): StandardizeResult {
   const genes = new Set(rows.map((r) => r.uniqID))
   const only = <T>(m: Record<string, T>): Record<string, T> =>
     Object.fromEntries(Object.entries(m).filter(([k]) => genes.has(k)))
-  // this step's own summaries, not the input's
-  const { normalization: _n, imputation: _i, cleanup: _c, ...carried } = prev
+  // this step's own summaries, not the input's (its batches carry on, unless it defines its own)
+  const { normalization: _n, imputation: _i, cleanup: _c, batchCorrection: _b, ...carried } = prev
   void _n
   void _i
   void _c
+  void _b
   return {
     ...carried,
     rows,
@@ -844,7 +893,22 @@ export function recleanStandardized(input: RecleanInput): StandardizeResult {
       ...(grouped ? { by: groupBy } : {})
     },
     ...(normalization ? { normalization } : {}),
+    ...(batch
+      ? {
+          batches: batch.of,
+          batchCorrection,
+          activeConditions: prev.activeConditions.filter((c) => c !== batch.condition),
+          ...(prev.numericConditions
+            ? {
+                numericConditions: prev.numericConditions.filter((c) => c !== batch.condition)
+              }
+            : null)
+        }
+      : {}),
     ...(imputation ? { imputation } : {}),
-    scale: outputScale(input.logTransform, prev.inputScale ?? 'linear')
+    // It arrives on the scale the step above presents it on: logged there, it's logged here
+    // without being asked again ('none' keeps it so); a log choice here re-presents it.
+    inputScale: fed,
+    scale: outputScale(input.logTransform, fed)
   }
 }

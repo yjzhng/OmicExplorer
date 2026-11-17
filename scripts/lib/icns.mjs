@@ -1,5 +1,5 @@
 // Shared: generate build-resources/icon.icns from icon.png (macOS only) — or, with `variant`
-// 'dev', icon-dev.icns from icon-dev.png (the logo with the red dev dot: the from-source app).
+// 'dev', icon-dev.icns from icon-dev.png (the logo with a gear badge: the from-source app; scripts/make-badge-icons.py).
 // Cached — regenerates only when the .icns is missing or older than the .png.
 // Returns the .icns path, or null if unavailable (non-mac / no png / tooling error).
 import { existsSync, statSync, mkdirSync, rmSync } from 'node:fs'

@@ -9,7 +9,7 @@ import { cp, rename, rm, stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join, relative, isAbsolute, resolve } from 'node:path'
 
-import { app, ipcMain } from 'electron'
+import { app, ipcMain, shell } from 'electron'
 
 /** One app run's scratch root; an unsaved project writes under `<scratch>/<folder id>/…`. Removed
  *  on quit (an unsaved project's files go with it, like its unsaved edits). */
@@ -115,9 +115,12 @@ async function applyDirOps(ops: DirOp[]): Promise<DirOpResult[]> {
 }
 
 /**
- * Delete files and folders (recursively) for a project folder clean-up — each only if it lies
- * strictly inside `root` (the project's data folder), so a bad plan can never reach outside it.
- * One failing path doesn't stop the rest; returns what couldn't be removed.
+ * Move files and folders to the Bin (Trash / Recycle Bin) for a project folder clean-up — never
+ * deleted outright, so a clean-up that took too much can be undone from there. Each only if it
+ * lies strictly inside `root` (the project's data folder), so a bad plan can never reach outside
+ * it; one already gone is skipped. A path the system can't bin (a volume with no Bin) is left in
+ * place and reported, not deleted. One failing path doesn't stop the rest; returns what couldn't
+ * be removed.
  */
 async function removeInside(root: string, paths: string[]): Promise<string[]> {
   const base = resolve(root)
@@ -129,10 +132,17 @@ async function removeInside(root: string, paths: string[]): Promise<string[]> {
       errors.push(`${p}: outside the project data folder — not removed`)
       continue
     }
+    const there = await stat(full).then(
+      () => true,
+      () => false
+    )
+    if (!there) continue
     try {
-      await rm(full, { recursive: true, force: true })
+      await shell.trashItem(full)
     } catch (e) {
-      errors.push(`${p}: ${e instanceof Error ? e.message : String(e)}`)
+      errors.push(
+        `${p}: couldn’t move it to the Bin (${e instanceof Error ? e.message : String(e)})`
+      )
     }
   }
   return errors

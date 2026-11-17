@@ -6,6 +6,7 @@
 import { xUnits } from './axisModel'
 import { pairsOf } from './accession'
 import { condValue } from './compare'
+import { sampleLabel } from './sampleLabel'
 import {
   clusterRowGroups,
   clusterRowOrder,
@@ -16,21 +17,13 @@ import {
   type LeafOrder,
   type Linkage
 } from './cluster'
-import type { ContrastResultRow } from './contrast'
+import { cutoffsFromLabel, type ContrastResultRow } from './contrast'
 import { curveSampleX, logistic } from './curveFit'
 import { embed2D, type ClusterMethod } from './embed'
 import { isSampleIndex, labelGroups, sampleIndex, type SampleIndex } from './sampleIndex'
 import { descValue } from './splineFit'
-import { abundanceLabel, fromLinear, type ValueScale } from './scale'
-import {
-  benjaminiHochberg,
-  madNormal,
-  median,
-  normalSf,
-  studentTppf,
-  studentTTwoSided,
-  type Effect
-} from './stats'
+import { abundanceLabel, fromLinear, fromLog10, toLinear, type ValueScale } from './scale'
+import { benjaminiHochberg, studentTppf, studentTTwoSided, type Effect } from './stats'
 import {
   condLabel,
   condsIn,
@@ -466,16 +459,16 @@ export interface ScatterPoint {
  *  - `ols` (correlated) → the model's line — the OLS fit, or y = x for the identity model —
  *    plus its prediction-band envelope (99% by default), centred where contrast.ts measures
  *    each gene's residual from, so the genes outside the band are exactly the called ones.
- *  - `marginal` (independent) → a robust per-axis box at the effective BH boundary: two
- *    thresholds on each axis, carving the plane into 9 zones. No line of identity.
+ *  - `cutoff` (independent) → the linear cutoffs' lines, as a volcano's: up to two on each axis
+ *    (a tail with no cutoff draws none), carving the plane into up to 9 zones. No line of identity.
  */
 export interface ScatterGuide {
-  kind: 'ols' | 'marginal'
+  kind: 'ols' | 'cutoff'
   /** ols: sampled polylines across the data range */
   fit?: { x: number[]; y: number[] }
   upper?: { x: number[]; y: number[] }
   lower?: { x: number[]; y: number[] }
-  /** marginal: per-axis thresholds (x = FC2 axis, y = FC1 axis) */
+  /** cutoff: per-axis lines (x = FC2 axis, y = FC1 axis); absent = none on that tail */
   xLo?: number
   xHi?: number
   yLo?: number
@@ -498,15 +491,8 @@ export interface ScatterGuide {
     /** identity: nothing fitted, so the half-width is a constant t·sErr (no leverage term) */
     fixed?: boolean
   }
-  /** marginal: each axis's values, robust centre and spread — so a dragged line maps back to the
-   *  q cutoff that puts its boundary there (marginalQAt) */
-  axes?: Record<'x' | 'y', { vals: number[]; mu: number; s: number }>
-  /** the cutoffs it's drawn at (from the rows' `thrsh`): a drag's starting value */
-  cutoffs?: {
-    confUp: number
-    confDown: number
-    q: { aUp: number; aDown: number; bUp: number; bDown: number }
-  }
+  /** ols: the band's levels it's drawn at (from the rows' `thrsh`): a drag's starting value */
+  cutoffs?: { confUp: number; confDown: number }
 }
 
 /** The band's half-width at x for critical t. */
@@ -537,30 +523,6 @@ export function bandConfAt(b: NonNullable<ScatterGuide['band']>, x: number, y: n
   return 1 - studentTTwoSided(t, b.df)
 }
 
-/** The q cutoff that calls exactly the genes beyond `pos` on `axis` (on the `pos` side of its
- *  centre): just above the q of the least extreme gene beyond it; with none beyond, a cutoff
- *  nothing on that side passes. (Redrawn, the boundary then sits midway between that gene and
- *  the next one in — bhZBound.) */
-export function marginalQAt(g: ScatterGuide, axis: 'x' | 'y', pos: number): number {
-  const a = g.axes?.[axis]
-  if (!a) return 0.01
-  const up = pos >= a.mu
-  const zb = Math.abs(pos - a.mu) / a.s
-  const z = a.vals.map((v) => (v - a.mu) / a.s)
-  const q = benjaminiHochberg(z.map((v) => 2 * normalSf(Math.abs(v))))
-  let qOut = -Infinity // largest q among the genes beyond the line (they must pass)
-  let qIn = Infinity // smallest q among the genes inside it (they must not)
-  z.forEach((zi, i) => {
-    if (up ? zi < 0 : zi > 0) return
-    if (Math.abs(zi) >= zb) qOut = Math.max(qOut, q[i])
-    else qIn = Math.min(qIn, q[i])
-  })
-  // none beyond: a cutoff nothing on that side passes (the line's own nominal q when it's empty)
-  if (!Number.isFinite(qOut)) return Number.isFinite(qIn) ? qIn : 2 * normalSf(zb)
-  // just above the passing genes' q (a gene passes at q < cutoff)
-  return qOut + 1e-12
-}
-
 export interface ScatterData {
   points: ScatterPoint[]
   /** axis labels from the contrast sides (e.g. "E28 | DMSO") */
@@ -586,65 +548,45 @@ export interface ScatterOptions {
   valueLabel?: string | null
 }
 
-/** The statistic's cutoffs, read back off the rows' `thrsh` label (written by contrast.ts) so the
- *  drawn boundary matches the colouring: "ols prediction, 95%" / "… per-axis q < 0.05". */
-function statFromLabel(thrsh: string): {
-  confUp: number
-  confDown: number
-  q: { aUp: number; aDown: number; bUp: number; bDown: number }
-} {
+/** A linear cutoff of an abundance contrast's own value (stored, and cut, in log₁₀) where the
+ *  scatter draws it — on `scale` — and back (a dragged line's value). */
+export const cutoffOnScale = (v: number, scale: ValueScale): number => fromLog10(v, scale)
+export const cutoffFromScale = (v: number, scale: ValueScale): number =>
+  scale === 'log10' ? v : Math.log10(toLinear(v, scale))
+
+/** The band's levels, read back off the rows' `thrsh` label (written by contrast.ts) so the drawn
+ *  band matches the colouring: "ols prediction, 95%" / "… 99.9%/90%" (top / bottom). */
+function bandFromLabel(thrsh: string): { confUp: number; confDown: number } {
   const pct = /(\d+(?:\.\d+)?)%(?:\/(\d+(?:\.\d+)?)%)?/.exec(thrsh)
   const confUp = pct ? Number(pct[1]) / 100 : 0.99
   const confDown = pct?.[2] ? Number(pct[2]) / 100 : confUp
-  // "q < 0.01" (all tails) or "q < A 0.01/0.05, B 0.02/0.02" (A up/down, B up/down).
-  const per = /q < A (\d*\.?\d+)\/(\d*\.?\d+), B (\d*\.?\d+)\/(\d*\.?\d+)/.exec(thrsh)
-  const one = /q < (\d*\.?\d+)/.exec(thrsh)
-  const q0 = one ? Number(one[1]) : 0.01
-  const q = per
-    ? { aUp: Number(per[1]), aDown: Number(per[2]), bUp: Number(per[3]), bDown: Number(per[4]) }
-    : { aUp: q0, aDown: q0, bUp: q0, bDown: q0 }
-  return { confUp, confDown, q }
+  return { confUp, confDown }
 }
 
 const avg = (a: number[]): number => a.reduce((s, v) => s + v, 0) / a.length
-const stdev = (a: number[]): number => {
-  const m = avg(a)
-  return Math.sqrt(a.reduce((s, v) => s + (v - m) * (v - m), 0) / Math.max(1, a.length - 1))
-}
 
-/** Where one side's boundary is drawn, as |z| off the centre: midway between the least extreme
- *  gene called on that side and the most extreme one not — so every called gene sits clearly
- *  beyond the line and every other one inside it (a line THROUGH the least extreme called gene
- *  read as a called gene within the threshold). Judged as the run judges it: q (BH over the whole
- *  axis) against that side's cutoff, for the genes on that side of the centre. With none called,
- *  beyond the side's most extreme gene (at least the nominal |z| for the cutoff). */
-function bhZBound(vals: number[], mu: number, s: number, qCut: number, side: 1 | -1): number {
-  const z = vals.map((v) => (v - mu) / s)
-  const q = benjaminiHochberg(z.map((v) => 2 * normalSf(Math.abs(v))))
-  let minIn = Infinity // least extreme called gene on this side
-  let maxOut = 0 // most extreme gene on this side not called
-  z.forEach((zi, i) => {
-    if (side > 0 ? zi < 0 : zi > 0) return
-    const a = Math.abs(zi)
-    if (q[i] < qCut) minIn = Math.min(minIn, a)
-    else maxOut = Math.max(maxOut, a)
-  })
-  // studentTppf takes a TWO-SIDED p: the nominal |z| for qCut.
-  if (!Number.isFinite(minIn)) return Math.max(studentTppf(qCut, 1e6), maxOut * 1.02 + 1e-9)
-  // q falls as |z| rises, so the uncalled sit below the called; midway between the two
-  const below = z.reduce((m, zi, i) => {
-    const a = Math.abs(zi)
-    return (side > 0 ? zi >= 0 : zi <= 0) && q[i] >= qCut && a < minIn ? Math.max(m, a) : m
-  }, 0)
-  return (minIn + below) / 2
-}
-
-/** Build the guide for the contrast's relationship, read off the rows' `thrsh` label. */
-function scatterGuide(pts: ScatterPoint[], thrsh: string): ScatterGuide | undefined {
+/** Build the guide for the contrast's relationship, read off the rows' `thrsh` label. A linear
+ *  cutoff's values are put where the axes show them (`place`: an abundance's, off log₁₀). */
+function scatterGuide(
+  pts: ScatterPoint[],
+  thrsh: string,
+  place: (v: number) => number = (v) => v
+): ScatterGuide | undefined {
+  const cuts = cutoffsFromLabel(thrsh)
+  if (cuts) {
+    const at = (v: number | null): number | undefined => (v == null ? undefined : place(v))
+    return {
+      kind: 'cutoff',
+      xLo: at(cuts.bDown),
+      xHi: at(cuts.bUp),
+      yLo: at(cuts.aDown),
+      yHi: at(cuts.aUp)
+    }
+  }
   if (pts.length < 3) return undefined
   const x = pts.map((p) => p.x) // FC2
   const y = pts.map((p) => p.y) // FC1
-  const stat = statFromLabel(thrsh)
+  const stat = bandFromLabel(thrsh)
 
   const identity = thrsh.startsWith('identity')
   if (thrsh.startsWith('ols') || identity) {
@@ -716,22 +658,7 @@ function scatterGuide(pts: ScatterPoint[], thrsh: string): ScatterGuide | undefi
       cutoffs: stat
     }
   }
-
-  // marginal (independent): robust centre ± effective BH boundary on each axis → 9 zones
-  const muX = median(x)
-  const muY = median(y)
-  const sX = madNormal(x) || stdev(x) || 1
-  const sY = madNormal(y) || stdev(y) || 1
-  // Each tail has its own boundary when the cutoffs differ (x = B, y = A).
-  return {
-    kind: 'marginal',
-    xLo: muX - bhZBound(x, muX, sX, stat.q.bDown, -1) * sX,
-    xHi: muX + bhZBound(x, muX, sX, stat.q.bUp, 1) * sX,
-    yLo: muY - bhZBound(y, muY, sY, stat.q.aDown, -1) * sY,
-    yHi: muY + bhZBound(y, muY, sY, stat.q.aUp, 1) * sY,
-    axes: { x: { vals: x, mu: muX, s: sX }, y: { vals: y, mu: muY, s: sY } },
-    cutoffs: stat
-  }
+  return undefined
 }
 
 /** Build FC1-vs-FC2 scatter points from contrast rows (identity line drawn by the view). */
@@ -759,7 +686,14 @@ export function buildScatter(rows: ContrastResultRow[], opts: ScatterOptions = {
     points,
     xLabel: `${unit} · ${rows[0]?.cmp2 ?? 'group B'}`,
     yLabel: `${unit} · ${rows[0]?.cmp1 ?? 'group A'}`,
-    guide: scatterGuide(points, thrsh),
+    // an abundance's own value is cut in log₁₀ (as stored), drawn on the plots' scale
+    guide: scatterGuide(
+      points,
+      thrsh,
+      opts.valueKind === 'abundance' && !opts.valueLabel
+        ? (v) => cutoffOnScale(v, opts.scale ?? 'log10')
+        : undefined
+    ),
     valueKind: opts.valueLabel ? 'other' : (opts.valueKind ?? 'fc')
   }
 }
@@ -2323,22 +2257,6 @@ export interface HeatmapOptions {
   focus?: string[]
 }
 
-function sampleLabel(r: StandardRow): string {
-  // Custom conditions belong in the identity, before the replicate suffix: two samples differing
-  // only in one are different samples, and a shared label would pivot them into one column.
-  const parts = [
-    r.cell,
-    r.cmpd,
-    r.dose ?? '',
-    r.time ?? '',
-    ...Object.keys(r.extra ?? {})
-      .sort()
-      .map((k) => r.extra![k]),
-    r.rep != null ? `r${r.rep}` : ''
-  ]
-  return parts.filter((p) => p !== '').join('_')
-}
-
 /** Sample condition identity without the replicate — replicates of one condition
  *  share it, so the cluster can group them into a centroid. */
 function sampleCond(r: StandardRow): string {
@@ -2934,6 +2852,108 @@ export function buildQc(
   })
   sortGroups(groups, false)
   return { groups, yLabel: 'CV %', metric, summary: 'median' }
+}
+
+/** One sample's QC, as the Clean data table's QC view lists it (sampleQc). */
+export interface SampleQc {
+  /** the sample's conditions and replicate */
+  meta: SampleMeta
+  /** proteins measured in it, filled in by imputation, and neither — of every protein the table
+   *  holds */
+  measured: number
+  imputed: number
+  missing: number
+  /** missing, as a % of every protein */
+  missingPct: number
+  /** its measured abundances' median and quartiles, on `scale`; null with none measured */
+  median: number | null
+  q1: number | null
+  q3: number | null
+  /** the median %CV across replicates of its condition group's proteins (as the QC plot's CV) —
+   *  shared by the group's samples; null with fewer than two replicates */
+  groupCv: number | null
+}
+
+/** A sorted list's p-quantile, interpolated between its neighbours. */
+function quantileOf(sorted: number[], p: number): number | null {
+  if (!sorted.length) return null
+  const at = (sorted.length - 1) * p
+  const lo = Math.floor(at)
+  const hi = Math.ceil(at)
+  return sorted[lo] + (sorted[hi] - sorted[lo]) * (at - lo)
+}
+
+/**
+ * Per-sample QC for a Clean data result, one entry per sample in sample order: how many proteins
+ * it measured, how many were imputed or missing, its measured abundances' median and quartiles
+ * (on `scale`, the plots' abundance scale), and its condition group's median CV — the numbers
+ * behind the QC plot's bars and boxes, as a table.
+ */
+export function sampleQc(std: StandardizeResult, scale: ValueScale): SampleQc[] {
+  const ix = sampleIndex(std)
+  const total = ix.genes.length
+  const conds = std.activeConditions
+  const groupOf = (r: StandardRow): string =>
+    conds.map((c) => String(condValue(r, c) ?? '')).join('\u0000')
+  const { of: groupId, labels } = labelGroups(ix, groupOf)
+  const ns = ix.reps.length
+  const measured = new Int32Array(ns)
+  const imputed = new Int32Array(ns)
+  const vals: number[][] = Array.from({ length: ns }, () => [])
+  // per condition group: gene → its replicates' values (linear), for the CV
+  const byGroup: Array<Map<number, number[]>> = labels.map(() => new Map())
+  for (let r = 0; r < ix.n; r++) {
+    const v = ix.value[r]
+    if (Number.isNaN(v)) continue
+    const s = ix.sample[r]
+    if (ix.imputed[r]) imputed[s]++
+    else {
+      measured[s]++
+      const x = fromLinear(v, scale)
+      if (x != null) vals[s].push(x)
+    }
+    const gm = byGroup[groupId[s]]
+    const a = gm.get(ix.gene[r])
+    if (a) a.push(v)
+    else gm.set(ix.gene[r], [v])
+  }
+  const groupCv = byGroup.map((gm) => {
+    const cvs: number[] = []
+    for (const a of gm.values()) {
+      if (a.length < 2) continue
+      const mean = a.reduce((x, y) => x + y, 0) / a.length
+      if (mean <= 0) continue
+      const sd = Math.sqrt(a.reduce((x, y) => x + (y - mean) * (y - mean), 0) / (a.length - 1))
+      cvs.push((100 * sd) / mean)
+    }
+    return quantileOf(
+      cvs.sort((a, b) => a - b),
+      0.5
+    )
+  })
+  const out = ix.reps.map((rep, s): SampleQc => {
+    const sorted = vals[s].sort((a, b) => a - b)
+    const missing = total - measured[s] - imputed[s]
+    return {
+      meta: {
+        cell: rep.cell,
+        cmpd: rep.cmpd,
+        dose: rep.dose,
+        time: rep.time,
+        rep: rep.rep,
+        ...(rep.extra ? { extra: { ...rep.extra } } : null)
+      },
+      measured: measured[s],
+      imputed: imputed[s],
+      missing,
+      missingPct: total ? (100 * missing) / total : 0,
+      median: quantileOf(sorted, 0.5),
+      q1: quantileOf(sorted, 0.25),
+      q3: quantileOf(sorted, 0.75),
+      groupCv: groupCv[groupId[s]]
+    }
+  })
+  return sortSamples(out, { by: 'natural' }, (q) => q.meta, true)
 }
 
 // ── standardize matrix view (gene × sample table) ─────────────────────────────────

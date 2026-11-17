@@ -15,6 +15,8 @@ import { engine } from '../engine/client'
 import {
   buildStandardInputs,
   guessRolesPreset,
+  matrixColumns,
+  missingImportColumns,
   parseMatrix,
   type MatrixPreset
 } from '../engine/interactive'
@@ -24,6 +26,11 @@ import {
   combineStandardize,
   subsetStandardize,
   presentScaleOf,
+  previewOfResult,
+  BATCH_COND,
+  batchesOf,
+  withBatchCond,
+  withLogTransform,
   replicateLog2FCs,
   stdByGene,
   termless,
@@ -110,6 +117,7 @@ import {
 import {
   compareFeatureValue,
   contrastFeatures,
+  cutoffDefaults,
   isPairable,
   isSurfaceRow,
   surfaceSideRows,
@@ -134,6 +142,7 @@ import {
   numericUnion,
   resolveContrastSource,
   resolveLoadMode,
+  unconfiguredLoad,
   declaredNumeric,
   loadCustomConditions,
   loadNumericConditions,
@@ -144,6 +153,7 @@ import {
   type EffectLabels,
   type ContrastConfig,
   type FavGene,
+  batchSpecOf,
   cleanupOn,
   imputeOn,
   type CanvasFrame,
@@ -151,6 +161,7 @@ import {
   type GraphNode,
   type GroupMeta,
   type InteractiveImport,
+  type LoadCheck,
   type LoadConfig,
   type NodeConfig,
   type NodeData,
@@ -171,6 +182,7 @@ import { rowCount } from '../engine/lazyRows'
 import { compactResult } from './compactResults'
 import { HistoryCache } from './historyCache'
 import { restoreResults, underConfig, type PendingLoad } from './undoResults'
+import { restampScales } from './resultScales'
 import {
   buildWorkflowDoc,
   parseWorkflowDoc,
@@ -180,8 +192,10 @@ import {
 import { useAppSettings } from '../ui/useAppSettings'
 import { useAppView } from '../ui/useAppView'
 import { loadLastView, saveLastView } from './lastView'
-import { groupInto, ungroupFrom, withoutTiles } from './frames'
+import { editMembers, groupInto, ungroupFrom, withoutTiles } from './frames'
 import { isLonePlot, wrapPlot } from './plotGroups'
+import { againstStamp, loadCheckProblem, stampOf, type FileStat } from './loadCheck'
+import { copyTiles as clipOf, pasteTiles as pastePlan, type TileClip } from './tileClipboard'
 import { tidyLayout } from './tidy'
 import { downstreamOf, runOrder } from './runOrder'
 
@@ -279,18 +293,6 @@ const history = new HistoryCache({
   unpack: unpackParked
 })
 
-/** The log transform of the Clean data step a plot reads (its direct input), for the scale its
- *  run follows; undefined when that input isn't a Clean data step. */
-function cleanTransformOf(
-  nodes: GraphNode[],
-  upId: string | undefined
-): StandardizeConfig['logTransform'] {
-  const n = upId ? nodes.find((x) => x.id === upId) : undefined
-  return n && isStep(n) && n.data.kind === 'standardize'
-    ? (n.data.config as StandardizeConfig).logTransform
-    : undefined
-}
-
 /** Keep the node list consistent with the wiring: a step never sits before one of its inputs — and
  *  each group's steps sit together wherever the wiring allows (see frameOrder.groupedOrder). The
  *  list is the form layout's section order, so it has to agree with the edges and groups no matter
@@ -354,6 +356,19 @@ interface GraphState {
   duplicateNode: (id: string) => void
   /** Duplicate several tiles at once; the copies land on top and become the selection. */
   duplicateNodes: (ids: string[]) => void
+  /** These tiles as a copy for the clipboard (see tileClipboard): their configs, links among
+   *  them, whole groups and results layouts — null when none is a tile. */
+  copyTiles: (ids: string[]) => TileClip | null
+  /** Whether a copy came from the open workflow (a paste then lands beside its originals). */
+  copiedHere: (clip: TileClip) => boolean
+  /** Paste a copy into the open workflow, its top-left tile at `at`: fresh ids, not run, the
+   *  pasted tiles selected; a Load tile's converted inputs are copied into this workflow's
+   *  folder first. One undo step. Resolves to what was pasted, and the input files that couldn't
+   *  be copied. */
+  pasteTiles: (
+    clip: TileClip,
+    at: { x: number; y: number }
+  ) => Promise<{ tiles: number; groups: number; errors: string[] }>
   selectNode: (id: string | null) => void
   /** Select a subcard within a group tile (opens that child's config). */
   selectChildCard: (groupId: string, childId: string) => void
@@ -396,7 +411,8 @@ interface GraphState {
   setStdLogTransform: (id: string, logTransform: 'none' | 'log2' | 'log10') => void
   /** Clean data's data-scale preview, straight from its upstream Load step's data file — no run
    *  needed: the detected scale and a value sample. Null when there's no data file to read yet
-   *  (no Load wired, or an interactive import not converted). Cached per file name. */
+   *  (no Load wired, or an interactive import not converted). Cached per file name. Fed by Clean
+   *  data (a Merge, a Subset of one), from that result instead — null until it has run. */
   previewStdScale: (id: string) => Promise<ScalePreview | null>
   /** Set (or clear, with '') a tile's user-given name. Label only — never invalidates results. */
   renameNode: (id: string, name: string) => void
@@ -565,8 +581,22 @@ interface GraphState {
   convertInteractive: (id: string) => Promise<{
     ok: boolean
     error?: string
+    /** the import's columns the raw file lacks (the conversion didn't run) */
+    missing?: string[]
     files?: { data: string; samplesheet: string; db: string }
   }>
+  /** Each Load tile's inputs against what was converted / read (checkLoad) — live, never saved. */
+  loadChecks: Record<string, LoadCheck>
+  /** Check a Load tile's files against what was last converted (interactive) or read by Clean
+   *  data (manual): a changed raw file is re-converted with the saved import settings when its
+   *  columns still fit; a file changed under Clean data puts it and below out of date. The same
+   *  file moved or re-synced (new time, same bytes) is just re-stamped. Sets `loadChecks`. */
+  checkLoad: (id: string) => Promise<LoadCheck | undefined>
+  /** checkLoad for every Load tile of the open workflow (a project or workflow opened, the window
+   *  focused, the data folder re-read). */
+  checkLoads: () => Promise<void>
+  /** Re-convert an interactive Load tile's raw file with its saved import settings. */
+  reconvertLoad: (id: string) => Promise<LoadCheck | undefined>
 
   /** folders (each a data location with its own workflows) */
   addFolder: () => Promise<void>
@@ -613,6 +643,8 @@ interface GraphState {
   frameNodes: (ids: string[]) => void
   /** Ungroup the selected tiles' frames, handing their members back (see frames.ungroupFrom). */
   unframeNodes: (ids: string[]) => void
+  /** Add tiles to a frame and take others out of it (see frames.editMembers); one undo step. */
+  editFrame: (id: string, add: string[], remove: string[]) => void
   /** Set the canvas selection to these tiles (or add them, `additive`); a connection is selected
    *  when both its ends are. Selection is kept on tiles only — a frame is selected when all of its
    *  tiles are. Not an undo step. */
@@ -781,6 +813,8 @@ const activeFolder = (s: GraphState): ProjectFolder | undefined =>
  *  per session for its preview; a re-converted import writes a new set of rows the next run sees,
  *  and the preview follows on the next session. */
 const scalePreviews = new Map<string, ScalePreview>()
+/** …and per Clean data result, for a Clean data step fed by one (previewOfResult). */
+const resultPreviews = new WeakMap<object, ScalePreview>()
 
 /** Where a workflow's files live: its data folder (`dir`, also where your own input files are
  *  read from) and its folder in the project data layout (`scope.base` — see graph/diskNames.ts),
@@ -863,6 +897,139 @@ async function checkUpgrades(
       // unreadable now: no answer, so no amber tag
     }
   }
+}
+
+// ── Load tile checks: are its files still the ones converted / read? ─────────────────────────────
+
+/** The named data files' sizes and times (hashed with `hash`), as data:read finds them; nulls
+ *  for each with a main process from before a restart (no data:stat). */
+async function statFiles(
+  dir: string,
+  names: string[],
+  scope?: WorkflowLocation['scope'],
+  hash = false
+): Promise<Array<FileStat | null>> {
+  if (typeof window.api.statDataFiles !== 'function') return names.map(() => null)
+  return window.api.statDataFiles(dir, names, scope, hash).catch(() => names.map(() => null))
+}
+
+const loadCheckRuns = new Map<string, Promise<LoadCheck | undefined>>()
+
+/** Set (or clear) a Load tile's check — unless the tile is gone meanwhile. */
+function putCheck(
+  get: Getter,
+  set: Setter,
+  id: string,
+  check: LoadCheck | undefined
+): LoadCheck | undefined {
+  if (!get().nodes.some((n) => n.id === id)) return check
+  const loadChecks = { ...get().loadChecks }
+  if (check) loadChecks[id] = check
+  else delete loadChecks[id]
+  set({ loadChecks })
+  return check
+}
+
+/** A Load tile's stamps updated in place — not an edit (no undo step, nothing out of date). */
+function patchLoadStamps(get: Getter, set: Setter, id: string, patch: Partial<LoadConfig>): void {
+  if (!Object.keys(patch).length) return
+  set({
+    nodes: get().nodes.map((n) =>
+      n.id === id && isStep(n)
+        ? { ...n, data: { ...n.data, config: { ...n.data.config, ...patch } as NodeConfig } }
+        : n
+    )
+  })
+}
+
+/** The checkLoad itself (one at a time per tile — see the store's checkLoad). */
+async function checkLoadNow(get: Getter, set: Setter, id: string): Promise<LoadCheck | undefined> {
+  const s = get()
+  const node = s.nodes.find((n) => n.id === id)
+  if (!node || !isStep(node) || node.data.kind !== 'load') return undefined
+  const cfg = node.data.config as LoadConfig
+  const dir = s.dataDir
+  // Nothing to check yet (the tile says what it needs), or no way to (an older main process).
+  if (!dir || unconfiguredLoad(cfg) || typeof window.api.statDataFiles !== 'function')
+    return putCheck(get, set, id, undefined)
+  const scope = locationOf(s)?.scope
+  const fields = (['data', 'samplesheet', 'db'] as const).filter((f) => !!cfg[f])
+  const names = fields.map((f) => cfg[f] as string)
+  const stats = await statFiles(dir, names, scope)
+  const missing = names.filter((_, i) => !stats[i])
+
+  if (resolveLoadMode(cfg) === 'interactive') {
+    // The raw file is read as the conversion reads it (the data folder; or a path picked outside it).
+    const matrix = cfg.matrix
+    const [src] = matrix ? await statFiles(dir, [matrix]) : [null]
+    let changed = false
+    if (matrix && src) {
+      const from = cfg.convertedFrom
+      if (!from) {
+        // Converted before tiles kept a stamp: its files are named after the raw file they came
+        // from, so another one picked since shows; else this one is taken as converted from.
+        changed =
+          cfg.data !== `${matrix.replace(/^.*[\\/]/, '').replace(/\.[^.]+$/, '')}_datamatrix.csv`
+        if (!changed) {
+          const [h] = await statFiles(dir, [matrix], undefined, true)
+          if (h) patchLoadStamps(get, set, id, { convertedFrom: stampOf(matrix, h) })
+        }
+      } else {
+        const v = await againstStamp(from, matrix, src, async () => {
+          const [h] = await statFiles(dir, [matrix], undefined, true)
+          return h
+        })
+        if (v === 'changed') changed = true
+        else if (v !== 'same') patchLoadStamps(get, set, id, { convertedFrom: v })
+      }
+    }
+    // A changed raw file, or converted files gone with the raw one still there: convert again.
+    if (src && (changed || missing.length)) return get().reconvertLoad(id)
+    if (missing.length) return putCheck(get, set, id, { state: 'filesMissing', names: missing })
+    if (!src && matrix) return putCheck(get, set, id, { state: 'sourceMissing', name: matrix })
+    return putCheck(get, set, id, { state: 'ok' })
+  }
+
+  // Manual: your own files, against what Clean data last read.
+  if (missing.length) return putCheck(get, set, id, { state: 'filesMissing', names: missing })
+  const read = cfg.readStamps ?? {}
+  const restamp: NonNullable<LoadConfig['readStamps']> = {}
+  const changedNames: string[] = []
+  // What reads this tile has a result: a file with no stamp yet is taken as the one it read.
+  const hasRead = s.edges.some((e) => e.source === id && !!s.results[e.target])
+  for (let i = 0; i < fields.length; i++) {
+    const f = fields[i]
+    const st = stats[i]!
+    const was = read[f]
+    const hashNow = async (): Promise<FileStat | null> =>
+      (await statFiles(dir, [names[i]], scope, true))[0]
+    if (!was) {
+      if (hasRead) {
+        const h = await hashNow()
+        if (h) restamp[f] = stampOf(names[i], h)
+      }
+      continue
+    }
+    const v = await againstStamp(was, names[i], st, hashNow)
+    if (v === 'changed') changedNames.push(names[i])
+    else if (v !== 'same') restamp[f] = v
+  }
+  if (Object.keys(restamp).length)
+    patchLoadStamps(get, set, id, { readStamps: { ...read, ...restamp } })
+  if (changedNames.length) {
+    // Out of date below, once (a check that finds it so again leaves it as it is).
+    const before = get().loadChecks[id]
+    if (before?.state !== 'filesChanged') get().invalidateDownstream(id)
+    return putCheck(get, set, id, { state: 'filesChanged', names: changedNames })
+  }
+  return putCheck(get, set, id, { state: 'ok' })
+}
+
+/** The open workflow as a copy's origin: the project file (or this window's unsaved session) and
+ *  the workflow in it. */
+const SESSION = `session-${Date.now()}-${Math.random().toString(36).slice(2)}`
+function clipOrigin(s: GraphState): string {
+  return `${s.projectPath ?? SESSION}|${s.activeFolderId}|${s.activeWorkflowId}`
 }
 
 /** Pin output/ folder names for these processing steps of a workflow (the active one by default;
@@ -1304,8 +1471,9 @@ function loadSlot(get: Getter, set: Setter, folderId: string, workflowId?: strin
   const slot = folder.workflows.find((w) => w.id === wfId) ?? folder.workflows[0]
   if (!slot) return
   const loaded: LoadedWorkflow = parseWorkflowDoc(slot.doc)
-  // A parked workflow's results come back from disk a moment later (unparkActive).
-  const results = slot.parked ? {} : (slot.results ?? {})
+  // A parked workflow's results come back from disk a moment later (unparkActive). Saved results'
+  // scales follow their steps (a result from before they carried one may hold a stale one).
+  const results = slot.parked ? {} : restampScales(loaded.nodes, loaded.edges, slot.results ?? {})
   // Restore run state so a resumed session shows results (Re-run, not Run).
   const nodes: GraphNode[] = restoredStatuses(loaded.nodes, results)
   set({
@@ -1326,6 +1494,8 @@ function loadSlot(get: Getter, set: Setter, folderId: string, workflowId?: strin
     activeWorkflowId: slot.id,
     dataDir: folder.path || null,
     selectedId: null,
+    // another workflow's tiles (ids repeat across workflows): checked afresh
+    loadChecks: {},
     past: [],
     future: []
   })
@@ -1463,8 +1633,9 @@ function unparkActive(
     }
     const s = get()
     if (s.activeFolderId !== folderId || s.activeWorkflowId !== workflowId) return // left again
-    // Anything run in the meantime wins over what was parked.
-    const results = { ...loaded, ...s.results }
+    // Anything run in the meantime wins over what was parked — its scales following their steps,
+    // as loadSlot's do.
+    const results = restampScales(s.nodes, s.edges, { ...loaded, ...s.results })
     fromPark.set(workflowId, { key, results })
     set({
       results,
@@ -1633,6 +1804,7 @@ export const useGraph = create<GraphState>()((set, get) => ({
   clearSaveError: () => set({ saveError: null, saveWarning: null }),
   groupLayouts: {},
   groupMeta: {},
+  loadChecks: {},
   geneSets: [],
   frames: [],
   frameNodes: (ids) => {
@@ -1654,6 +1826,12 @@ export const useGraph = create<GraphState>()((set, get) => ({
   },
   unframeNodes: (ids) => {
     const next = ungroupFrom(get().frames, ids)
+    if (next === get().frames) return
+    get().commit()
+    set({ frames: next, nodes: sortStepsByWiring(get().nodes, get().edges, next) })
+  },
+  editFrame: (id, add, remove) => {
+    const next = editMembers(get().frames, id, add, remove)
     if (next === get().frames) return
     get().commit()
     set({ frames: next, nodes: sortStepsByWiring(get().nodes, get().edges, next) })
@@ -1876,6 +2054,10 @@ export const useGraph = create<GraphState>()((set, get) => ({
       selectedId: null,
       selectedSub: null
     }))
+    // Dragged out of a step that's already done: its data is there, so the plots run straight away.
+    const source = edges.find((e) => e.target === id)?.source
+    const up = source ? nodes.find((n) => n.id === source) : undefined
+    if (up && isStep(up) && up.data.status === 'done') void get().runNode(id)
   },
 
   cancelPlaceholder: (id) => {
@@ -1912,15 +2094,25 @@ export const useGraph = create<GraphState>()((set, get) => ({
     get().commit()
     let nextId = get().nextId
     const copies: StepNode[] = []
+    // A copied plot's results tab keeps the original's tile layout: its panels' ids moved onto the
+    // copy's (the tab is keyed by the plot's id, a subcard's panel by the group's and its own).
+    const layouts: Record<string, PanelLayoutItem[]> = {}
     for (const node of sel) {
       const newId = `${node.data.kind}-${nextId++}`
       let config = structuredClone(node.data.config)
+      const panelIds = new Map<string, string>([[node.id, newId]])
       // A group's subcards get fresh ids so no two groups ever share a child id.
       if (node.data.kind === 'plotGroup') {
         const src = (node.data.config as PlotGroupConfig).children
-        config = { ...(config as PlotGroupConfig), children: toChildren(src, nextId) }
+        const children = toChildren(src, nextId)
+        config = { ...(config as PlotGroupConfig), children }
         nextId += src.length
+        src.forEach((c, i) =>
+          panelIds.set(childPanelId(node.id, c.id), childPanelId(newId, children[i].id))
+        )
       }
+      const layout = get().groupLayouts[node.id]
+      if (layout) layouts[newId] = layout.map((it) => ({ ...it, i: panelIds.get(it.i) ?? it.i }))
       copies.push({
         id: newId,
         type: 'step',
@@ -1939,10 +2131,82 @@ export const useGraph = create<GraphState>()((set, get) => ({
         copies.length === 1 ? copies[0].id : null
       ),
       nextId,
+      ...(Object.keys(layouts).length ? { groupLayouts: { ...s.groupLayouts, ...layouts } } : null),
       // Copies stay selected on the canvas but aren't opened (see addNode).
       selectedId: null,
       selectedSub: null
     }))
+  },
+
+  copyTiles: (ids) => {
+    const s = get()
+    return clipOf(s, ids, locationOf(s), clipOrigin(s))
+  },
+  copiedHere: (clip) => clip.origin === clipOrigin(get()),
+
+  pasteTiles: async (clip, at) => {
+    // A Load tile's converted inputs live in the workflow it was copied from: copied here first
+    // (renamed where this workflow reads another file by the name), so it reads them here too.
+    const here = locationOf(get())
+    const from = clip.from
+    let src = clip
+    const errors: string[] = []
+    if (
+      from &&
+      here &&
+      (from.dir !== here.dir || from.scope.base !== here.scope.base) &&
+      typeof window.api.copyWorkflowInputs === 'function'
+    ) {
+      const fields = ['data', 'samplesheet', 'db'] as const
+      const nodes = await Promise.all(
+        clip.nodes.map(async (n) => {
+          const cfg = n.config as LoadConfig
+          if (n.kind !== 'load' || resolveLoadMode(cfg) !== 'interactive') return n
+          const names = fields.flatMap((f) => (cfg[f] ? [cfg[f]] : []))
+          if (!names.length) return n
+          const got = await diskWrite(() => window.api.copyWorkflowInputs(from, here, names))
+          errors.push(...got.errors)
+          const patch = Object.fromEntries(
+            fields.flatMap((f) => (cfg[f] && got.names[cfg[f]] ? [[f, got.names[cfg[f]]]] : []))
+          )
+          return { ...n, config: { ...cfg, ...patch } as NodeConfig }
+        })
+      )
+      src = { ...clip, nodes }
+    }
+    const s = get()
+    const taken = new Set([...s.nodes.map((n) => n.id), ...s.frames.map((f) => f.id)])
+    for (const n of s.nodes)
+      if (isStep(n) && n.data.kind === 'plotGroup')
+        for (const c of (n.data.config as PlotGroupConfig).children) taken.add(c.id)
+    const p = pastePlan(src, { taken, nextId: s.nextId }, at)
+    // A pasted group keeps its name unless this workflow has one by it (then the next Group n).
+    const frames = [...s.frames]
+    for (const f of p.frames)
+      frames.push(
+        frames.some((g) => g.label === f.label) ? { ...f, label: nextGroupName(frames) } : f
+      )
+    get().commit()
+    set((st) => {
+      const edges = [...st.edges, ...p.edges]
+      const nodes = [
+        ...st.nodes.map((n) => (n.selected ? { ...n, selected: false } : n)),
+        ...p.nodes
+      ]
+      return {
+        nodes: sortStepsByWiring(elevate(nodes, null), edges, frames),
+        edges,
+        frames,
+        nextId: p.nextId,
+        ...(Object.keys(p.layouts).length
+          ? { groupLayouts: { ...st.groupLayouts, ...p.layouts } }
+          : null),
+        selectedId: null,
+        selectedSub: null
+      }
+    })
+    if (src !== clip) await get().refreshDataFiles()
+    return { tiles: p.nodes.length, groups: p.frames.length, errors }
   },
 
   // A group tile always has a plot selected: its details panel shows one plot's settings, so the
@@ -1981,6 +2245,16 @@ export const useGraph = create<GraphState>()((set, get) => ({
     const after = get().nodes.find((n) => n.id === id)
     // A Subset off Load data has no run (runsIn): like Load data, its edit stales what's below.
     if (kind === 'subset' && !runsIn(get(), id)) get().invalidateDownstream(id)
+    // Load data has no run either: another file picked puts what reads it out of date (manual
+    // mode — an interactive tile's re-conversion does so itself), and the tile is checked again
+    // (an interactive one re-converts a newly picked raw file — see checkLoad).
+    if (kind === 'load' && prevConfig) {
+      const was = prevConfig as LoadConfig
+      const now = { ...was, ...partial } as LoadConfig
+      const files = (['data', 'samplesheet', 'db'] as const).some((f) => was[f] !== now[f])
+      if (files && resolveLoadMode(now) === 'manual') get().invalidateDownstream(id)
+      if (files || was.matrix !== now.matrix) void get().checkLoad(id)
+    }
     const stale =
       !!spec?.hasRun &&
       runsIn(get(), id) &&
@@ -2100,6 +2374,14 @@ export const useGraph = create<GraphState>()((set, get) => ({
   },
   previewStdScale: async (id) => {
     const state = get()
+    const up = state.upstreamId(id)
+    if (up && wiredKindOf(state, up) === 'standardize') {
+      const r = state.results[up]
+      if (r?.kind !== 'standardize') return null
+      let p = resultPreviews.get(r.std)
+      if (!p) resultPreviews.set(r.std, (p = previewOfResult(r.std)))
+      return p
+    }
     const load = (loadAbove(state, id)?.load.data.config as LoadConfig | undefined) ?? null
     const dir = state.dataDir
     if (!load?.data || !dir) return null
@@ -2118,17 +2400,30 @@ export const useGraph = create<GraphState>()((set, get) => ({
     if (!node || !isStep(node) || node.data.kind !== 'standardize') return
     const cfg = node.data.config as StandardizeConfig
     get().commit()
-    // Its own result is left exactly as it is — the scale is read from this choice where the table
-    // and plots are drawn (presentScaleOf / plotScaleOf). But a Compare tests on it (logged or
-    // not), so whatever was computed downstream is stale.
-    set((s) => ({
-      nodes: s.nodes.map((n) =>
-        n.id === id && isStep(n)
-          ? { ...n, data: { ...n.data, config: { ...cfg, logTransform } as NodeConfig } }
-          : n
-      ),
-      dirty: true
-    }))
+    // Its own result isn't re-run: its rows are linear whatever the choice, so it's only re-stamped
+    // with the scale it's now presented on (withLogTransform) — what everything it feeds reads.
+    // But a Compare tests on that scale (logged or not), so whatever was computed downstream is
+    // stale. (An undo restores the result as it was: the config differs, so its recorded version
+    // comes back — see undoResults.ts.)
+    set((s) => {
+      const res = s.results[id]
+      return {
+        nodes: s.nodes.map((n) =>
+          n.id === id && isStep(n)
+            ? { ...n, data: { ...n.data, config: { ...cfg, logTransform } as NodeConfig } }
+            : n
+        ),
+        ...(res?.kind === 'standardize'
+          ? {
+              results: {
+                ...s.results,
+                [id]: { ...res, std: withLogTransform(res.std, logTransform) }
+              }
+            }
+          : null),
+        dirty: true
+      }
+    })
     if ((cfg.logTransform ?? 'none') !== logTransform) get().invalidateDownstream(id)
   },
   setCompareThreshold: (id, partial) => {
@@ -2817,7 +3112,6 @@ export const useGraph = create<GraphState>()((set, get) => ({
           node.data.config,
           upId ? get().results[upId] : undefined,
           () => get().nodes.find((n) => n.id === id)?.data.status !== 'running',
-          cleanTransformOf(get().nodes, upId),
           axisAvailFor(get(), upId)
         )
         if (get().nodes.find((n) => n.id === id)?.data.status !== 'running') return // cancelled
@@ -2858,6 +3152,7 @@ export const useGraph = create<GraphState>()((set, get) => ({
                 ...(cfg.normalizeReference === 'protein' ? { protein: cfg.normalizeProtein } : null)
               }
             : undefined,
+          batch: batchSpecOf(cfg),
           impute: imputeOn(cfg)
             ? {
                 method: cfg.imputeMethod ?? 'perseus',
@@ -2876,7 +3171,7 @@ export const useGraph = create<GraphState>()((set, get) => ({
         const above = loadAbove(state, id)
         const loadNode = above?.load
         const dir = state.dataDir
-        const load = loadNode && isStep(loadNode) ? (loadNode.data.config as LoadConfig) : undefined
+        let load = loadNode && isStep(loadNode) ? (loadNode.data.config as LoadConfig) : undefined
         if (!loadNode || !isStep(loadNode) || loadNode.data.kind !== 'load' || !dir) {
           setStatus('error', 'Connect a Load tile and set the project data folder.')
           return
@@ -2893,6 +3188,22 @@ export const useGraph = create<GraphState>()((set, get) => ({
           return
         }
         setStatus('running')
+        // Its files as they are now: a changed raw file is converted again first; files that are
+        // gone (or a raw file the import no longer fits) stop the run with why. A re-conversion
+        // puts this step out of date as it goes, so it's marked running again after.
+        const check = await get().checkLoad(loadNode.id)
+        const why = check && loadCheckProblem(check, resolveLoadMode(load))
+        if (why) {
+          setStatus('error', why)
+          return
+        }
+        setStatus('running')
+        const freshLoad = get().nodes.find((n) => n.id === loadNode.id)
+        if (freshLoad && isStep(freshLoad)) load = freshLoad.data.config as LoadConfig
+        if (!load.data || !load.samplesheet) {
+          setStatus('error', 'Connect a Load tile with a data file and samplesheet.')
+          return
+        }
         // Generated standard files live in the workflow's folder; the read falls back to the shared
         // data-folder root, so your own input files and older projects' flat ones still resolve.
         const wf = locationOf(state)?.scope
@@ -2911,6 +3222,23 @@ export const useGraph = create<GraphState>()((set, get) => ({
             `Input file not found in the data folder (${load.data}, ${load.samplesheet}).`
           )
           return
+        }
+        // What was read, to tell when your own files change under it (manual mode — checkLoad).
+        if (resolveLoadMode(load) === 'manual') {
+          const fields = (['data', 'samplesheet', 'db'] as const).filter((f) => !!load?.[f])
+          const read = await statFiles(
+            dir,
+            fields.map((f) => load![f] as string),
+            wf,
+            true
+          )
+          const readStamps: NonNullable<LoadConfig['readStamps']> = {}
+          fields.forEach((f, i) => {
+            const st = read[i]
+            if (st) readStamps[f] = stampOf(load![f] as string, st)
+          })
+          patchLoadStamps(get, set, loadNode.id, { readStamps })
+          putCheck(get, set, loadNode.id, { state: 'ok' })
         }
         const dataFilename = load.data
         const cfg = node.data.config as StandardizeConfig
@@ -2937,6 +3265,7 @@ export const useGraph = create<GraphState>()((set, get) => ({
                 ...(cfg.normalizeReference === 'protein' ? { protein: cfg.normalizeProtein } : null)
               }
             : undefined,
+          batch: batchSpecOf(cfg),
           impute: imputeOn(cfg)
             ? {
                 method: cfg.imputeMethod ?? 'perseus',
@@ -2964,18 +3293,27 @@ export const useGraph = create<GraphState>()((set, get) => ({
         // Pool every upstream Clean data (or Merge — it emits the same result kind) into one
         // dataset, so downstream tiles see the datasets as a single experiment. Genes are matched
         // across inputs by uniqID; samples sharing a condition pool as replicates.
-        const stds = state
-          .upstreamIds(id)
-          .map((u) => state.results[u])
-          .filter(
-            (r): r is Extract<NodeResult, { kind: 'standardize' }> => r?.kind === 'standardize'
-          )
-          .map((r) => r.std)
-        if (stds.length === 0) {
+        const ins = state.upstreamIds(id).flatMap((u) => {
+          const r = state.results[u]
+          return r?.kind === 'standardize' ? [{ id: u, std: r.std }] : []
+        })
+        if (ins.length === 0) {
           setStatus('error', 'Connect and run two or more Clean data tiles upstream.')
           return
         }
-        const std = combineStandardize(stds)
+        // Each sample's source, by its input's name (two alike told apart by their step ids) — what
+        // a Clean data below can fill its batches from.
+        const titles = ins.map((x) => {
+          const n = state.nodes.find((m) => m.id === x.id)
+          return n && isStep(n) ? stepTitle(n) : x.id
+        })
+        const names = titles.map((t, i) =>
+          titles.indexOf(t) !== titles.lastIndexOf(t) ? `${t} · ${ins[i].id}` : t
+        )
+        const std = combineStandardize(
+          ins.map((x) => x.std),
+          names
+        )
         set((s) => ({ results: { ...s.results, [id]: { kind: 'standardize', std } } }))
         setStatus('done')
         get().invalidateDownstream(id)
@@ -3024,15 +3362,8 @@ export const useGraph = create<GraphState>()((set, get) => ({
           return
         }
         const std = combineStandardize(stds)
-        const cleanId = state.upstreamIds(id).find((u) => state.results[u]?.kind === 'standardize')
-        const cleanNode = cleanId ? state.nodes.find((n) => n.id === cleanId) : undefined
-        const testsLogged =
-          presentScaleOf(
-            stds[0],
-            cleanNode && isStep(cleanNode)
-              ? (cleanNode.data.config as StandardizeConfig).logTransform
-              : undefined
-          ) !== 'linear'
+        // on the scale the pooled data carries (the first input's, as combineStandardize presents it)
+        const testsLogged = presentScaleOf(std) !== 'linear'
         // Migrate any legacy veh_norm/direct config to the explicit num/den/match model, and
         // persist it so the stored workflow is updated on first run.
         const cfg = normalizeCompareConfig(node.data.config as CompareConfig)
@@ -3125,16 +3456,22 @@ export const useGraph = create<GraphState>()((set, get) => ({
             return
           }
           setStatus('running')
+          // Per batch: the batch a condition matched like-for-like, so each batch is its own
+          // comparison (and its own fold change, for a Contrast to pair) — nothing to block on then.
+          const split = !!cfg.splitBatch && !!batchesOf(std)
+          const data = split ? withBatchCond(std) : std
           cmp = await engine.compare({
-            rows: std.rows,
+            rows: data.rows,
             num: cfg.num,
             den: cfg.den,
-            match: cfg.match,
+            match: split ? [...cfg.match, BATCH_COND] : cfg.match,
             // as the dialog states them (absent on configs saved before: inferred, nothing pooled)
             compared: cfg.compared,
             pool: cfg.pool,
-            activeConditions: std.activeConditions,
+            activeConditions: split ? [...std.activeConditions, BATCH_COND] : std.activeConditions,
             numericConditions: std.numericConditions ?? [],
+            // each t-test blocks on the batches the data was measured in (Clean data's)
+            ...(std.batches && !split ? { batches: std.batches } : null),
             method: cfg.method,
             // Tested on Clean data's scale: in log space when it presents its values logged (a
             // log₂ or log₁₀ choice, or an already-logged input left as it arrived), on the values
@@ -3200,7 +3537,12 @@ export const useGraph = create<GraphState>()((set, get) => ({
               (r): r is Extract<NodeResult, { kind: 'standardize' }> => r?.kind === 'standardize'
             )
             .map((r) => r.std)
-          return stds.length ? combineStandardize(stds).rows : undefined
+          if (!stds.length) return undefined
+          // a per-batch Compare's rows carry the batch: its replicates are matched on rows that do
+          const n = state.nodes.find((x) => x.id === cid)
+          const split = !!n && isStep(n) && !!(n.data.config as CompareConfig).splitBatch
+          const pooled = combineStandardize(stds)
+          return (split ? withBatchCond(pooled) : pooled).rows
         }
         // The active conditions of the Clean data a contrast input reads (itself, or above a
         // Compare): what the sides' names may state a slice of (ContrastPairInput.nameConds).
@@ -3223,6 +3565,9 @@ export const useGraph = create<GraphState>()((set, get) => ({
             doseScale: curveDoseUnit(cmpCfg, condUnitsFor(state, cid)).scale
           }
         }
+        // The threshold a Compare input called by — what a linear cutoff starts from.
+        const thresholdOf = (r: NodeResult | undefined): ThresholdConfig | undefined =>
+          r?.kind === 'compare' ? r.cmp.threshold : undefined
         // A surface's sides carry the level of the axis it's sliced along (one row per slice — see
         // surfaceSideRows): matched on it, never pinned.
         const withSlice = (match: ConditionKey[], c: ConditionKey | undefined): ConditionKey[] =>
@@ -3244,8 +3589,21 @@ export const useGraph = create<GraphState>()((set, get) => ({
           }
           const parts: Array<{ f: ContrastFeature; ctr: ContrastResult }> = []
           for (const f of features) parts.push({ f, ctr: await run(f) })
+          const classify = parts[0].ctr.classify
           return {
             ...parts[0].ctr,
+            // every feature's linear cutoffs from its inputs, for re-calling in place
+            ...(classify
+              ? {
+                  classify: {
+                    ...classify,
+                    cutoffDefaults: Object.assign(
+                      {},
+                      ...parts.map((p) => p.ctr.classify?.cutoffDefaults)
+                    )
+                  }
+                }
+              : null),
             rows: parts.flatMap(({ f, ctr: c }) =>
               c.rows.map((r) => ({ ...r, featureId: f.id, feature: f.label }))
             )
@@ -3298,6 +3656,9 @@ export const useGraph = create<GraphState>()((set, get) => ({
               fix: cfg.pairFix,
               relationship: cfg.relationship,
               stat: cfg.stat,
+              // each axis's linear cutoffs start at its own Compare's
+              feature: f.id,
+              cutoffDefaults: cutoffDefaults(thresholdOf(ra), thresholdOf(rb), f.id),
               labelA: label(idA, 'A'),
               labelB: label(idB, 'B'),
               nameConds: [...new Set([...activeOf(idA), ...activeOf(idB)])],
@@ -3376,7 +3737,8 @@ export const useGraph = create<GraphState>()((set, get) => ({
             ? (() => {
                 // One per gene × condition context (custom conditions included in the key) — read
                 // off the tables' columns (no row built).
-                return stdGroupsOf(stds.map((r) => r.std)).map(
+                // (each batch its own group: withBatchCond — a side may pin one)
+                return stdGroupsOf(stds.map((r) => withBatchCond(r.std))).map(
                   ({ row, logs }): CompareResultRow => {
                     const out = poolRow(row, logs)
                     repsOf.set(out, logs)
@@ -3473,6 +3835,13 @@ export const useGraph = create<GraphState>()((set, get) => ({
               match: withSlice(cfg.match ?? [], surf),
               relationship: cfg.relationship,
               stat: cfg.stat,
+              // both axes' linear cutoffs start at the Compare's
+              feature: f.id,
+              cutoffDefaults: cutoffDefaults(
+                thresholdOf(compares[0]),
+                thresholdOf(compares[0]),
+                f.id
+              ),
               labelA: selLabel(num),
               labelB: selLabel(den),
               nameConds: [...new Set(fromIds.flatMap(activeOf))],
@@ -3600,7 +3969,6 @@ export const useGraph = create<GraphState>()((set, get) => ({
         child.config,
         upId ? get().results[upId] : undefined,
         () => childOf()?.status !== 'running',
-        cleanTransformOf(get().nodes, upId),
         axisAvailFor(get(), upId)
       )
       if (childOf()?.status !== 'running') return // cancelled
@@ -4042,6 +4410,8 @@ export const useGraph = create<GraphState>()((set, get) => ({
     if (get().dataDir !== dir) return // switched folders while awaiting
     if (missing) {
       set({ inputFiles: [], dataDirMissing: true })
+      // the Load tiles' files went with it: their status says so
+      void get().checkLoads()
       return
     }
     const scope = locationOf(get())?.scope
@@ -4052,6 +4422,35 @@ export const useGraph = create<GraphState>()((set, get) => ({
       inputFileFolders: folders ?? {},
       dataDirMissing: false
     })
+    void get().checkLoads()
+  },
+
+  checkLoad: (id) => {
+    const running = loadCheckRuns.get(id)
+    if (running) return running
+    const run = checkLoadNow(get, set, id).finally(() => loadCheckRuns.delete(id))
+    loadCheckRuns.set(id, run)
+    return run
+  },
+  checkLoads: async () => {
+    const ids = get()
+      .nodes.filter((n) => isStep(n) && n.data.kind === 'load')
+      .map((n) => n.id)
+    await Promise.all(ids.map((id) => get().checkLoad(id)))
+  },
+  reconvertLoad: async (id) => {
+    putCheck(get, set, id, { state: 'converting' })
+    const res = await get().convertInteractive(id)
+    return putCheck(
+      get,
+      set,
+      id,
+      res.ok
+        ? { state: 'ok' }
+        : res.missing?.length
+          ? { state: 'columns', missing: res.missing }
+          : { state: 'error', message: res.error ?? 'The re-conversion failed.' }
+    )
   },
 
   detectInteractive: async (id, preset = 'none') => {
@@ -4112,6 +4511,17 @@ export const useGraph = create<GraphState>()((set, get) => ({
       return { ok: false, error: `Matrix not found in the data folder (${cfg.matrix}).` }
     const interactive = cfg.interactive
     if (!interactive) return { ok: false, error: 'Set up the columns first (step 1).' }
+    // The saved settings read columns by name: a raw file without them can't be converted with them.
+    const missing = missingImportColumns(matrixColumns(matrixText), interactive.roles)
+    if (missing.length) {
+      const named = missing.slice(0, 3).map((c) => `“${c}”`)
+      if (missing.length > 3) named.push(`${missing.length - 3} more`)
+      return {
+        ok: false,
+        missing,
+        error: `The raw data has no ${missing.length === 1 ? 'column' : 'columns'} ${named.join(', ')} — edit the import to match it.`
+      }
+    }
     let adapted
     try {
       adapted = buildStandardInputs(matrixText, {
@@ -4150,9 +4560,17 @@ export const useGraph = create<GraphState>()((set, get) => ({
       void get().refreshDataFiles()
       return { ok: false, error: e instanceof Error ? e.message : 'Failed to write inputs.' }
     }
+    // What it was converted from, to tell when the raw file changes (checkLoad).
+    const [src] = await statFiles(dir, [cfg.matrix], undefined, true)
     // Point the Load tile's standard fields at the generated files — from here the
     // pipeline runs the standard path, identical to a manual custom-format project.
-    get().updateConfig(id, { data: files.data, samplesheet: files.samplesheet, db: files.db })
+    get().updateConfig(id, {
+      data: files.data,
+      samplesheet: files.samplesheet,
+      db: files.db,
+      convertedFrom: src ? stampOf(cfg.matrix, src) : undefined
+    })
+    set((st) => ({ loadChecks: { ...st.loadChecks, [id]: { state: 'ok' } } }))
     // Load is `hasRun: false`, so updateConfig won't stale the pipeline — do it here so a
     // (re)conversion forces Standardize to re-run against the freshly written files.
     get().invalidateDownstream(id)

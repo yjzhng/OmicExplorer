@@ -74,7 +74,13 @@ module.exports = {
   // Defaults otherwise drop the arch on x64 dmgs and use "OmicExplorer Setup
   // <version>.exe" (spaces, no arch) for the installer.
   dmg: { artifactName: '${productName}-${version}-${arch}.${ext}' },
-  nsis: { artifactName: '${productName}-${version}-${arch}.${ext}' },
+  nsis: {
+    artifactName: '${productName}-${version}-${arch}.${ext}',
+    // Badged so neither is taken for the app: the setup .exe a download mark, the uninstaller a
+    // bin (otherwise it inherits the installer's). Both from scripts/make-badge-icons.py.
+    installerIcon: 'installerIcon.ico',
+    uninstallerIcon: 'uninstallerIcon.ico'
+  },
   linux: { target: 'AppImage' },
   ...(publish ? { publish } : {})
 }

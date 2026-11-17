@@ -28,9 +28,6 @@ describe('tailStep', () => {
 
 describe('contrastStatDrag', () => {
   it('keeps a band dragged to a 0.001% tail', () => {
-    expect(contrastStatDrag(undefined, 'bandUp', 0.999999)).toEqual({
-      bandConfidence: 0.99999,
-      cutoffQ: 0.00001
-    })
+    expect(contrastStatDrag(undefined, 'bandUp', 0.999999)).toEqual({ bandConfidence: 0.99999 })
   })
 })

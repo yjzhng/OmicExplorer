@@ -5,9 +5,12 @@
  * a single control in the results header drives this store, keyed by group id, and every
  * FacetedPlot in the group reads the resolved selection.
  */
+import { useMemo } from 'react'
 import { create } from 'zustand'
 
 import {
+  contextOf,
+  facetDims,
   facetCompareRows,
   facetKeyLabel,
   facetPaired,
@@ -17,6 +20,8 @@ import {
   type FacetKey,
   type NumericConds
 } from '../engine'
+import type { AnalysisGroup } from '../graph/groups'
+import { numericOfResult, type NodeResult } from '../graph/types'
 
 export interface FacetOption {
   value: string | number
@@ -24,9 +29,9 @@ export interface FacetOption {
    *  sides: a contrast context measured on one side only, carried by the engine's outer join.
    *  Names the side(s) that do carry data; the tab is greyed out and can't be chosen. */
   onlyOn?: string
-  /** Set when the level isn't found alongside the levels picked to its left (another compound's
-   *  dose, a comparison's other compound): still offered — picking it moves those picks to the
-   *  nearest tuple that has it (pickFacet) — so a dim is never gated by the ones before it. */
+  /** Set when the level isn't found alongside the levels picked to its left (a dose another
+   *  compound has, a time another dose has): shown greyed, not selectable — the dims form a
+   *  hierarchy, each narrowed by the picks before it. */
   moves?: boolean
 }
 
@@ -38,17 +43,17 @@ export const isNumericFacet = (dim: FacetKey, numeric: NumericConds): boolean =>
 export interface FacetBar {
   dim: FacetKey
   value: string | number
-  /** the levels valid alongside the dims already fixed to the left */
+  /** every level of the dim; those not alongside the dims fixed to the left marked `moves` */
   options: FacetOption[]
 }
 
 /**
  * Resolve a facet selection against a comparison's rows: the options per dim and the chosen
  * tuple's rows. The selection is resolved left to right (a now-invalid or one-sided choice falls
- * back to the first paired level alongside the dims to its left); every dim still offers ALL its
- * levels, the ones not found alongside its left dims marked `moves` — picking one goes through
- * pickFacet, which moves those. Shared by the global control and each FacetedPlot so they always
- * agree.
+ * back to the first paired level alongside the dims to its left); every dim lists ALL its levels,
+ * the ones not found alongside its left dims marked `moves` (greyed — facetChoice), so the bar
+ * keeps its shape as the picks change. Shared by the global control and each FacetedPlot so they
+ * always agree.
  */
 export function resolveFacets<T extends ContextRow>(
   rows: T[],
@@ -205,7 +210,8 @@ export function facetBarLabel(bar: FacetBar): string {
 }
 
 /** A level as a switch's option: a one-sided contrast level greyed (the tooltip says which side
- *  has the data); one that moves the picks to its left says which. */
+ *  has the data), and one not found alongside the picks to its left greyed (the tooltip names
+ *  them). */
 export function facetChoice(
   dim: FacetKey,
   o: FacetOption,
@@ -228,11 +234,12 @@ export function facetChoice(
         0,
         bars.findIndex((b) => b.dim === dim)
       )
-      .map((b) => facetKeyLabel(b.dim))
+      .map((b) => `${facetKeyLabel(b.dim)} ${b.value}`)
     return {
       value: v,
       label,
-      title: `Not at the ${left.join(' / ')} on show — picking it switches ${left.length > 1 ? 'them' : 'it'}`
+      disabled: true,
+      title: `${facetKeyLabel(dim)} ${v} isn't measured at ${left.join(', ')}`
     }
   }
   return { value: v, label }
@@ -257,3 +264,42 @@ export const useFacet = create<FacetState>((set) => ({
     })),
   setSel: (groupId, sel) => set((s) => ({ sel: { ...s.sel, [groupId]: sel } }))
 }))
+
+/** A group's facets as its bar resolves them: the rows, dims and bars, and — what its plots are
+ *  handed — the selection as resolved (each dim's level on show, `EMPTY_SEL` when none). The
+ *  resolved, not the stored, selection: a dim the user never picked shows a level that depends on
+ *  the dims to its left, and a plot that leaves one of those out (a Dose response, dose) would
+ *  otherwise resolve it afresh — to another level than the one on show. */
+export function useGroupFacets(
+  group: AnalysisGroup | null | undefined,
+  results: Record<string, NodeResult>
+): {
+  rows: ContextRow[] | null
+  dims: ReturnType<typeof facetDims>
+  bars: ReturnType<typeof resolveFacets>['bars']
+  numeric: ReturnType<typeof numericOfResult>
+  sel: Record<string, string>
+  resolved: Record<string, string>
+} {
+  const r = group ? results[group.rootId] : undefined
+  // The result's context tuples, not its rows: what the switchers resolve over (contextIndex.ts) —
+  // reading `rows` here built every row of a large result just to list its levels, and held them.
+  const rows: ContextRow[] | null =
+    r?.kind === 'compare'
+      ? contextOf(r.cmp).rows
+      : r?.kind === 'contrast'
+        ? contextOf(r.ctr).rows
+        : null
+  const numeric = useMemo(() => numericOfResult(r), [r])
+  const sel = useFacet((s) => (group ? s.sel[group.id] : undefined)) ?? EMPTY_SEL
+  const dims = useMemo(() => (rows ? facetDims(rows) : []), [rows])
+  const bars = useMemo(
+    () => (rows && dims.length ? resolveFacets(rows, dims, sel, numeric).bars : []),
+    [rows, dims, sel, numeric]
+  )
+  const resolved = useMemo(
+    () => (bars.length ? Object.fromEntries(bars.map((b) => [b.dim, String(b.value)])) : EMPTY_SEL),
+    [bars]
+  )
+  return { rows, dims, bars, numeric, sel, resolved }
+}

@@ -26,8 +26,8 @@ describe('plotTableTargets', () => {
       ]
     )
     expect(t.map((x) => [x.key, x.upstreamId, x.stem])).toEqual([
-      [tileKey('g1', 's1'), 'cmp', 'Plot_Enrichment'],
-      [tileKey('g2', 's2'), 'cmp', 'Hubs_STRING network']
+      [tileKey('g1', 's1'), 'cmp', 'Plot - Enrichment'],
+      [tileKey('g2', 's2'), 'cmp', 'Hubs - STRING network']
     ])
   })
   it('skips unwired plots and non-step nodes', () => {
@@ -41,10 +41,10 @@ describe('plotTableTargets', () => {
 
 describe('plotTableFiles', () => {
   it('gives one file for enrichment, nodes + edges for STRING', () => {
-    expect(plotTableFiles('enrich', 'Plot_Enrichment')).toEqual(['Plot_Enrichment.csv'])
-    expect(plotTableFiles('string', 'Hubs_STRING network')).toEqual([
-      'Hubs_STRING network_nodes.csv',
-      'Hubs_STRING network_edges.csv'
+    expect(plotTableFiles('enrich', 'Plot - Enrichment')).toEqual(['Plot - Enrichment.csv'])
+    expect(plotTableFiles('string', 'Hubs - STRING network')).toEqual([
+      'Hubs - STRING network - nodes.csv',
+      'Hubs - STRING network - edges.csv'
     ])
   })
 })

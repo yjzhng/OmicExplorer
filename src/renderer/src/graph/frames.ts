@@ -157,3 +157,39 @@ export function ungroupFrom(frames: CanvasFrame[], tiles: string[]): CanvasFrame
 export function withoutTiles(frames: CanvasFrame[], gone: Set<string>): CanvasFrame[] {
   return pruneEmpty(frames.map((f) => ({ ...f, members: f.members.filter((m) => !gone.has(m)) })))
 }
+
+/** Whether frame `frameId` holds item `id` (a tile or a frame), directly or through nesting. */
+export function frameHolds(frames: CanvasFrame[], frameId: string, id: string): boolean {
+  const parent = parentMap(frames)
+  for (let p = parent.get(id), n = 0; p && n <= frames.length; p = parent.get(p), n++)
+    if (p === frameId) return true
+  return false
+}
+
+/** Edit a frame's members — tiles, and whole groups. Each of `add` (outside it) leaves the frame
+ *  it was in and joins this one directly — a group whole, never one holding this frame (it would
+ *  hold itself); each of `remove` (inside it, through any nested frame) leaves the frame holding
+ *  it for the edited frame's own parent (or for no frame). Frames left empty are dropped. */
+export function editMembers(
+  frames: CanvasFrame[],
+  frameId: string,
+  add: string[],
+  remove: string[]
+): CanvasFrame[] {
+  if (!frames.some((f) => f.id === frameId)) return frames
+  const adding = add.filter(
+    (t) => t !== frameId && !frameHolds(frames, frameId, t) && !frameHolds(frames, t, frameId)
+  )
+  const removing = remove.filter((t) => frameHolds(frames, frameId, t))
+  if (!adding.length && !removing.length) return frames
+  const moving = new Set([...adding, ...removing])
+  const home = parentMap(frames).get(frameId)
+  return pruneEmpty(
+    frames.map((f) => {
+      const members = f.members.filter((m) => !moving.has(m))
+      if (f.id === frameId) members.push(...adding)
+      if (f.id === home) members.push(...removing)
+      return { ...f, members }
+    })
+  )
+}

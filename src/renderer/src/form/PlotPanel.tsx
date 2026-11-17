@@ -25,7 +25,7 @@ import {
 } from '../graph/registry'
 import { useGraph } from '../graph/store'
 import type { PlotGroupConfig, StepNode } from '../graph/types'
-import { EMPTY_SEL, useFacet } from '../dashboard/facet'
+import { useGroupFacets } from '../dashboard/facet'
 import { FacetContextBar } from '../dashboard/FacetContextBar'
 import { PanelTile } from '../dashboard/PanelTile'
 import { IconCopy, IconTrash } from '../ui/icons'
@@ -55,7 +55,8 @@ export default function PlotPanel({ node }: { node: StepNode }): ReactNode {
   const mine = pages.filter((p) => parsePanelId(p.panelId).nodeId === node.id)
   const page = mine.find((p) => parsePanelId(p.panelId).childId === selectedSub) ?? mine[0]
   const analysis = analyses.find((g) => g.id === page?.groupId)
-  const facetSel = useFacet((s) => (page ? (s.sel[page.groupId] ?? EMPTY_SEL) : EMPTY_SEL))
+  // as the switcher resolves it (see useGroupFacets)
+  const facetSel = useGroupFacets(analysis, results).resolved
 
   const childId = page ? parsePanelId(page.panelId).childId : undefined
   const child = childId

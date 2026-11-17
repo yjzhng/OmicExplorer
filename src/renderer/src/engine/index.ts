@@ -5,6 +5,7 @@
 export {
   manualSheetConditions,
   manualSheetIssues,
+  previewOfResult,
   previewScale,
   samplesheetIssues,
   sheetIssueLines,
@@ -25,6 +26,16 @@ export {
   unionValues
 } from './accession'
 export { combineStandardize } from './combine'
+export {
+  BATCH_COND,
+  batchesOf,
+  blockedTTest,
+  correctBatches,
+  withBatchCond,
+  type BatchSpec,
+  type BatchSummary
+} from './batch'
+export { sampleLabel } from './sampleLabel'
 export {
   contextIndices,
   contextOf,
@@ -95,6 +106,10 @@ export {
   deriveFieldRule,
   applyFieldRule,
   fieldRuleSpan,
+  filterOn,
+  filterStep,
+  stepBy,
+  matchSheetRows,
   type InteractiveSampleCond,
   type InteractiveRole,
   type FilterSpec,
@@ -157,6 +172,8 @@ export {
   CONTRAST_STAT_DEFAULTS,
   AXIS_TAILS,
   statTails,
+  valueCutoffs,
+  upperOnly,
   reclassifyContrast,
   contrastStatDrag,
   contrastFeatureLabel,
@@ -170,6 +187,7 @@ export type {
   ContrastPairPreview,
   ContrastStat,
   AxisTail,
+  ValueCutoffs,
   PairFix,
   PairValueAlignment,
   ContrastFeatureId
@@ -199,7 +217,8 @@ export {
   buildScatter,
   bandEdgePath,
   bandConfAt,
-  marginalQAt,
+  cutoffOnScale,
+  cutoffFromScale,
   buildIntensityScatter,
   buildMA,
   buildDR,
@@ -218,8 +237,10 @@ export {
   buildCluster,
   buildResponseCluster,
   buildQc,
+  sampleQc,
   buildStdMatrix,
   type StdMatrixSample,
+  type SampleQc,
   buildSampleCorr,
   buildEnrichment,
   facetContextDims,
@@ -369,7 +390,8 @@ export {
   toLinear,
   presentStd,
   presentScaleOf,
-  plotScaleOf,
+  withLogTransform,
+  withScale,
   abundanceLabel,
   fromLog10,
   type LogTransform,

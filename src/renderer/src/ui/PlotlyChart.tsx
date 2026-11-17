@@ -22,6 +22,7 @@ import {
   type AxisDefault,
   type AxisDefaults
 } from './plotAxes'
+import { AUTO, CLEAR } from './ColorPicker'
 import { DEFAULT_HIGHLIGHT, type ResolvedHighlight } from './pointStyle'
 import { glSlot, type GlSlot } from './glBudget'
 import {
@@ -35,8 +36,9 @@ import {
 } from './densityBins'
 import { hasGlTraces, sceneCount, toGlOverlay, toGlTraces } from './glTraces'
 import { Spinner } from './Spinner'
+import { hasPlotValues, NO_DATA_NOTE } from './plotEmpty'
 import { GENE_TITLE_BAND, GeneTitleContext, geneTitleLayout } from './geneTitle'
-import { PALETTES } from './theme'
+import { PALETTES, UI } from './theme'
 import { TileDrawContext } from './tileDraw'
 import { applyFocus, hoverFocus, legendClear, legendSelect } from './traceFocus'
 import { useSelection } from './useSelection'
@@ -59,6 +61,8 @@ export interface PlotLabel {
   fontSize?: number
   /** feature uniqID — when a linked selection is active, labels whose id isn't selected fade. */
   id?: string
+  /** this label's text colour (its group's — see labelColorOf); unset = the chart's `labelColor` */
+  color?: string
 }
 
 interface PlotlyChartProps {
@@ -138,6 +142,10 @@ interface PlotlyChartProps {
    *  line(s) and previews the value in a tooltip; re-classification happens on this commit. The view
    *  maps `key` to its own threshold field. */
   onGuide?: (key: string, value: number, done: boolean) => void
+  /** What the chart says, in place of the figure, when no trace has a point to draw
+   *  (hasPlotValues) — default NO_DATA_NOTE; false for a view that writes its own (the enrichment
+   *  plot's "No enriched terms"). */
+  emptyNote?: string | false
 }
 
 /** One draggable guide line/curve. `value` is the field it controls (the drag baseline); `key`
@@ -201,6 +209,9 @@ type HoverPt = {
   xaxis?: { _offset: number; d2p: (v: unknown) => number }
   yaxis?: { _offset: number; d2p: (v: unknown) => number }
   fullData?: { marker?: { size?: number | number[] } }
+  /** where Plotly anchored the hover — the hovered mark's own pixel box (a dot as drawn, jitter
+   *  and box offsets included; a bar's width), offset by the graph div's offsetLeft / offsetTop */
+  bbox?: { x0: number; x1: number; y0: number; y1: number }
 }
 
 /**
@@ -229,7 +240,21 @@ function parkHoverLabels(el: PlotlyGraphDiv, mouseX: number, mouseY: number): vo
   let px = mouseX
   let py = mouseY
   let r = 6
-  if (pt?.xaxis && pt.yaxis && pt.x !== undefined && pt.y !== undefined) {
+  // The mark's own box first: a box plot's or a bar plot's replicate dots sit off their category
+  // (jitter, grouped boxes), and a box's hover has no single data point — read through the axes,
+  // either put the tooltip over the very dot hovered.
+  const host = el as unknown as HTMLElement
+  const bbox = pt?.bbox
+  if (bbox && [bbox.x0, bbox.x1, bbox.y0, bbox.y1].every(Number.isFinite)) {
+    const ox = host.offsetLeft + host.clientLeft
+    const oy = host.offsetTop + host.clientTop
+    px = (bbox.x0 + bbox.x1) / 2 - ox
+    py = (bbox.y0 + bbox.y1) / 2 - oy
+    r = Math.max((bbox.x1 - bbox.x0) / 2, (bbox.y1 - bbox.y0) / 2)
+    const ms = pt?.fullData?.marker?.size
+    const d = Array.isArray(ms) ? ms[pt?.pointNumber ?? 0] : ms
+    if (typeof d === 'number') r = Math.max(r, d / 2)
+  } else if (pt?.xaxis && pt.yaxis && pt.x !== undefined && pt.y !== undefined) {
     const x = pt.xaxis._offset + pt.xaxis.d2p(pt.x)
     const y = pt.yaxis._offset + pt.yaxis.d2p(pt.y)
     if (Number.isFinite(x) && Number.isFinite(y)) {
@@ -563,6 +588,20 @@ function buildOverlay(data: unknown[], active: Set<string>, emph: ResolvedHighli
   const ringW: number[] = []
   const ringC: string[] = []
   const fontSize: number[] = []
+  // …and the name's colour: the look's own, else (automatic — a point plot's) the point's colour;
+  // a look with none (any other chart) names it in the theme text.
+  const textC: string[] = []
+  // each point's look, and whether it's its own group's (see the merge of repeats below)
+  const emAt: ResolvedHighlight[] = []
+  const ownAt: boolean[] = []
+  const nameColor = (em: ResolvedHighlight, c: string | number): string =>
+    em.labelColor === undefined
+      ? ink
+      : em.labelColor !== AUTO
+        ? em.labelColor
+        : typeof c === 'string' && c !== CLEAR
+          ? c
+          : ink
   // each point's own symbol, so an emphasised point keeps its shape (a bubble's hollow, not
   // significant circle stays hollow — an open symbol strokes in the marker colour)
   const symbol: string[] = []
@@ -588,6 +627,8 @@ function buildOverlay(data: unknown[], active: Set<string>, emph: ResolvedHighli
     const mk = t.marker
     const { colorer, numeric } = info
     const em = emphOf(t, emph)
+    // the trace carries its own look (a point plot's group), not just the chart's
+    const own = !!(t as Record<string, unknown>)[EMPH_KEY]
     const xk = (t.x as unknown[])[k]
     const yk = (t.y as unknown[])[k]
     const posKey = `${id}|${String(xk)}|${String(yk)}`
@@ -597,12 +638,23 @@ function buildOverlay(data: unknown[], active: Set<string>, emph: ResolvedHighli
     const sz = em.size ?? renderedSize(t.marker, k) + em.bump
     const prev = seen.get(posKey)
     if (prev != null) {
-      size[prev] = Math.min(size[prev], sz)
+      // The point's own group look wins over the chart-wide one of a trace drawn on top of it (a
+      // selected gene group's trace carries none): its selected size, outline and name are what
+      // the group's settings say — the smaller size kept only between looks of the same standing.
+      if (own && !ownAt[prev]) {
+        ownAt[prev] = true
+        emAt[prev] = em
+        size[prev] = sz
+        ringW[prev] = em.ring
+        ringC[prev] = em.ringColor ?? ink
+        fontSize[prev] = em.labelSize
+      } else if (own === ownAt[prev]) size[prev] = Math.min(size[prev], sz)
       // …but COLOURED from the LAST trace drawn there: Plotly paints later traces on top, so
       // that is the colour the eye sees (e.g. a view's pinned-genes trace in a geneset's colour
       // over the effect-coloured cloud).
       if (colorer) color[prev] = colorer(at(mk?.color as number[], k, 0))
       else if (!numeric) color[prev] = at(mk?.color as string | string[], k, color[prev] as string)
+      textC[prev] = nameColor(emAt[prev], color[prev])
       continue
     }
     seen.set(posKey, x.length)
@@ -613,6 +665,8 @@ function buildOverlay(data: unknown[], active: Set<string>, emph: ResolvedHighli
     ringW.push(em.ring)
     ringC.push(em.ringColor ?? ink)
     fontSize.push(em.labelSize)
+    emAt.push(em)
+    ownAt.push(own)
     symbol.push(at(mk?.symbol, k, 'circle'))
     // Numeric → keep the raw value so the overlay's colorscale maps it; else the
     // point's own colour string.
@@ -623,6 +677,7 @@ function buildOverlay(data: unknown[], active: Set<string>, emph: ResolvedHighli
           ? at(mk?.color as number[], k, 0)
           : at(mk?.color as string | string[], k, '#888')
     )
+    textC.push(nameColor(em, color[color.length - 1]))
     // Carry the point's own label so the emphasised gene is named in place — this is
     // what surfaces a name on hover in the scatter/etc. A trace can opt out (bubble,
     // whose gene names already sit on the axis) via __oeNoLabel, and a tile's highlight
@@ -643,10 +698,10 @@ function buildOverlay(data: unknown[], active: Set<string>, emph: ResolvedHighli
     mode: 'markers+text',
     text,
     textposition: 'top center',
-    // Selected/hovered gene names in the theme's text colour (black was invisible on the dark
-    // theme — plots draw on a transparent paper over the dark panel), bold so they read as the
-    // emphasised labels.
-    textfont: { size: fontSize, color: ink, weight: 700 },
+    // Selected/hovered gene names, bold so they read as the emphasised labels: in the theme's text
+    // colour (black was invisible on the dark theme — plots draw on a transparent paper over the
+    // dark panel), or in a point plot's, their point's colour (or the one set — see nameColor).
+    textfont: { size: fontSize, color: textC, weight: 700 },
     cliponaxis: false,
     // The underlying point still answers hover; the overlay stays inert to avoid doubled tooltips.
     hoverinfo: 'skip',
@@ -795,7 +850,8 @@ function overlayRestyle(top: Trace): Record<string, unknown[]> {
     'marker.line.color': [mk.line?.color],
     'marker.line.width': [mk.line?.width],
     'marker.symbol': [mk.symbol ?? 'circle'],
-    'textfont.size': [(top.textfont as { size?: unknown } | undefined)?.size]
+    'textfont.size': [(top.textfont as { size?: unknown } | undefined)?.size],
+    'textfont.color': [(top.textfont as { color?: unknown } | undefined)?.color]
   }
   // A colorscale (bubble) travels with the points so numeric colours map the same way.
   for (const key of ['colorscale', 'cmid', 'cmin', 'cmax'])
@@ -1351,7 +1407,7 @@ function placeLabelAnnotations(
             ay: (by0 + by1) / 2 - py,
             arrowhead: 0,
             arrowwidth: 1,
-            arrowcolor: color,
+            arrowcolor: it.lab.color ?? color,
             standoff: 0
           }
         : { ...ann, showarrow: false }
@@ -1363,7 +1419,7 @@ function placeLabelAnnotations(
       xref: 'x',
       yref: 'y',
       ...pos,
-      font: { size: it.fs, color },
+      font: { size: it.fs, color: it.lab.color ?? color },
       opacity: labelOpacity(it.lab.id, active, inPlace),
       __oeLabelId: it.lab.id,
       __oeLabelText: it.lab.text,
@@ -1592,9 +1648,11 @@ export function PlotlyChart({
   modeBar = true,
   autoscale = true,
   linkDelay,
-  onCamera
+  onCamera,
+  emptyNote = NO_DATA_NOTE
 }: PlotlyChartProps) {
   const ref = useRef<HTMLDivElement>(null)
+  const empty = useMemo(() => emptyNote !== false && !hasPlotValues(data), [data, emptyNote])
   // The latest camera callback, for the once-bound relayout handler.
   const onCameraRef = useRef(onCamera)
   useEffect(() => {
@@ -3173,13 +3231,24 @@ export function PlotlyChart({
       className={scenes ? undefined : 'oe-plot-2d'}
       style={{ position: 'relative', width: '100%', height: '100%' }}
     >
-      <div ref={ref} style={{ width: '100%', height: '100%', ...style }} />
+      {/* Nothing to draw: the figure (axes, legend, control bar) hidden, the note alone — kept
+          mounted, so the next conditions with data draw into it as ever. */}
+      <div
+        ref={ref}
+        style={{
+          width: '100%',
+          height: '100%',
+          ...style,
+          ...(empty ? { visibility: 'hidden' } : null)
+        }}
+      />
       {geneTitle && (
         <div style={{ ...geneTitleStyle, height: GENE_TITLE_BAND }}>
           <span style={{ pointerEvents: 'auto', display: 'flex' }}>{geneTitle.picker}</span>
         </div>
       )}
       {!ready && <Spinner />}
+      {ready && empty && <div style={emptyNoteStyle}>{emptyNote}</div>}
       {/* Drag preview: portaled to <body> so the tile's overflow can't crop it. Positioned
           imperatively (viewport coords) while a guide is being dragged. */}
       {createPortal(<div ref={tipRef} hidden style={tipStyle} />, document.body)}
@@ -3199,6 +3268,20 @@ const geneTitleStyle: CSSProperties = {
   display: 'flex',
   alignItems: 'center',
   justifyContent: 'center',
+  pointerEvents: 'none'
+}
+
+/** The no-data note, centred in the chart's box (the figure under it hidden). */
+const emptyNoteStyle: CSSProperties = {
+  position: 'absolute',
+  inset: 0,
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  padding: 16,
+  textAlign: 'center',
+  color: UI.textMuted,
+  fontSize: 13,
   pointerEvents: 'none'
 }
 

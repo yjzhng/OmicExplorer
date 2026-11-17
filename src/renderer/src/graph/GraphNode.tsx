@@ -1,4 +1,13 @@
-import { Handle, Position, useReactFlow, useStore, type NodeProps, type Node } from '@xyflow/react'
+import {
+  Handle,
+  Position,
+  useReactFlow,
+  useStore,
+  useStoreApi,
+  type NodeProps,
+  type Node
+} from '@xyflow/react'
+import { createPortal } from 'react-dom'
 import { rowCount } from '../engine/lazyRows'
 import {
   Fragment,
@@ -35,7 +44,13 @@ import { unmetRequirement } from './requirements'
 import { usePlotGroupTitle } from './usePlotGroupTitle'
 import { useUpstreamFacts } from './useUpstreamFacts'
 import { useGraph } from './store'
+import { loadCheckInfo } from './loadCheck'
+import { deriveTabs } from './groups'
+import { IconJump } from '../ui/icons'
+import { useAppView } from '../ui/useAppView'
+import { useFrameEdit, useFrameEditMark } from './frameEdit'
 import {
+  LoadRunControl,
   plotStatusInfo,
   RunControl,
   StatusDot,
@@ -317,6 +332,14 @@ export function GraphNode({ id, data, selected: rfSelected }: NodeProps<Node<Nod
   const selected = configOpen || (!!rfSelected && !inSelectedGroup)
   const [hovered, setHovered] = useState(false)
   const sideColor = selected ? accent : UI.border
+  // A plot tile is a Results tab of its own: offered, under the pointer or selected, as a jump
+  // straight to that tab (only looked up then, so idle tiles don't derive the tabs).
+  const isTab = useGraph(
+    (s) =>
+      (hovered || selected) &&
+      category === 'plotting' &&
+      deriveTabs(s.nodes, s.edges).some((t) => t.id === id)
+  )
 
   const statusInfo = useStepStatus(id, data)
   // A done plot tile whose plots compute nothing offers no Re-run (registry.nothingToRerun).
@@ -380,14 +403,19 @@ export function GraphNode({ id, data, selected: rfSelected }: NodeProps<Node<Nod
     setEditing(false)
   }
 
+  // While a group is edited, a click on the tile marks it to add to / take out of the group (see
+  // frameEdit) instead of selecting it or opening its panel.
+  const editingGroup = useFrameEdit((s) => !!s.edit)
+  const groupMark = useFrameEditMark(id)
   const rf = useReactFlow()
+  const flowStore = useStoreApi()
   const cardRef = useRef<HTMLDivElement>(null)
   // Which side the detail panel opens on. Default right of the tile; flip to the left when the
   // panel would run past the canvas's right edge and there's room on the left. Decided ONCE when
   // the panel opens — it stays put while the user pans/zooms, so it never jumps mid-edit.
   const [panelSide, setPanelSide] = useState<'right' | 'left'>('right')
-  // The canvas zoom, which the open panel undoes to stay full size. Read only while it's shown, so
-  // zooming doesn't re-render every tile.
+  // The canvas zoom, which places the panel beside the tile (the panel itself is never zoomed). Read
+  // only while it's shown, so zooming doesn't re-render every tile.
   const zoom = useStore((s) => (configMounted ? s.transform[2] : 1))
   // Where the panel's middle sits, from the tile's outer top edge in flow units: the canvas's
   // vertical middle at the moment it opens. Fixed from then on, so the panel pans with the canvas
@@ -438,21 +466,55 @@ export function GraphNode({ id, data, selected: rfSelected }: NodeProps<Node<Nod
   // it top-aligns. In flow units from the tile's outer top edge.
   const half = panelH / 2 / zoom
   const mid = panelH ? Math.min(half, Math.max(Math.min(half, tileH - half), panelMid)) : panelMid
+  // The panel sits ABOVE the canvas, not in it: drawn into the React Flow container (outside its
+  // zoomed viewport), so no zoom ever scales its text — text through a scale and its undo landed
+  // off the pixel grid, and blurred, whenever the canvas was zoomed out. Placed in screen px beside
+  // the tile, on whole device pixels, and placed again as the view pans / zooms or the tile moves.
+  const container = useStore((s) => (configMounted ? s.domNode : null))
+  const viewport = useStore((s) => (configMounted ? s.transform.join(',') : ''))
+  const tileAt = useStore((s) => {
+    if (!configMounted) return ''
+    const p = s.nodeLookup.get(id)?.internals.positionAbsolute
+    return p ? `${p.x},${p.y}` : ''
+  })
+  const [panelAt, setPanelAt] = useState<{ top: number; left?: number; right?: number } | null>(
+    null
+  )
+  useLayoutEffect(() => {
+    const el = cardRef.current
+    if (!configMounted || !el || !container) return
+    const card = el.getBoundingClientRect()
+    const box = container.getBoundingClientRect()
+    const dpr = window.devicePixelRatio || 1
+    const px = (v: number): number => Math.round(v * dpr) / dpr
+    // centred on `mid` (flow units from the tile's outer top), its height from layout — not its own
+    // box, which the open animation moves and scales
+    const top = px(card.top + mid * zoom - (panelRef.current?.offsetHeight ?? 0) / 2 - box.top)
+    setPanelAt(
+      panelSide === 'left'
+        ? { top, right: px(box.right - card.left + PANEL_GAP) }
+        : { top, left: px(card.right - box.left + PANEL_GAP) }
+    )
+  }, [configMounted, container, viewport, tileAt, mid, zoom, panelH, tileH, panelSide])
   // Scrolling over a tile pans (React Flow's pan-on-scroll, same as empty canvas) and zoom is
   // pinch / ctrl+scroll — except inside the detail window (`.nowheel`), which React Flow ignores
   // entirely so its content can scroll natively. A pinch there (a trackpad pinch arrives as a
   // wheel event with ctrlKey) would otherwise be lost, so it's handled here and drives the
   // viewport directly.
   useEffect(() => {
-    const el = cardRef.current
-    if (!el) return
+    // the card, and the panel (drawn outside it, above the canvas) while it's shown
+    const els = [cardRef.current, configMounted ? panelRef.current : null].filter(
+      (x): x is HTMLDivElement => !!x
+    )
     const onWheel = (e: WheelEvent): void => {
       if (!e.ctrlKey || !(e.target as HTMLElement).closest?.('.nowheel')) return
       e.preventDefault()
       e.stopPropagation()
       const { x, y, zoom } = rf.getViewport()
-      // Pinch deltas are small, so (like d3-zoom) they get a 10× rate.
-      const nextZoom = Math.min(2, Math.max(0.5, zoom * Math.pow(1.0015, -e.deltaY * 10)))
+      // Pinch deltas are small, so (like d3-zoom) they get a 10× rate. Held to the canvas's own
+      // zoom range.
+      const { minZoom, maxZoom } = flowStore.getState()
+      const nextZoom = Math.min(maxZoom, Math.max(minZoom, zoom * Math.pow(1.0015, -e.deltaY * 10)))
       if (nextZoom === zoom) return
       // Keep the flow point under the cursor fixed: new translate = old + p·(zoom − nextZoom).
       const p = rf.screenToFlowPosition({ x: e.clientX, y: e.clientY })
@@ -462,18 +524,34 @@ export function GraphNode({ id, data, selected: rfSelected }: NodeProps<Node<Nod
         zoom: nextZoom
       })
     }
-    el.addEventListener('wheel', onWheel, { passive: false })
-    return () => el.removeEventListener('wheel', onWheel)
-  }, [rf])
+    for (const el of els) el.addEventListener('wheel', onWheel, { passive: false })
+    return () => {
+      for (const el of els) el.removeEventListener('wheel', onWheel)
+    }
+  }, [rf, flowStore, configMounted])
 
   return (
     <div
       ref={cardRef}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
+      // Capture: ahead of the tile's own controls (its name, a group's subcards), and of the
+      // canvas's click, which never sees it.
+      onClickCapture={
+        editingGroup
+          ? (e) => {
+              // (not a click in the detail panel, a React child drawn outside the card)
+              if (!e.currentTarget.contains(e.target as HTMLElement)) return
+              e.stopPropagation()
+              e.preventDefault()
+              useFrameEdit.getState().toggle(id)
+            }
+          : undefined
+      }
       style={{
         ...card,
         position: 'relative',
+        cursor: editingGroup ? 'pointer' : undefined,
         // Set each side explicitly (never the `borderColor` shorthand): React's style
         // diffing writes the shorthand into the DOM and clobbers borderTopColor without
         // rewriting it, which made the accent top strip vanish on deselect.
@@ -491,6 +569,13 @@ export function GraphNode({ id, data, selected: rfSelected }: NodeProps<Node<Nod
         boxShadow: selected ? `0 0 0 1px ${accent}, 0 3px 14px rgba(0,0,0,0.4)` : card.boxShadow
       }}
     >
+      {groupMark && (
+        <div style={{ ...markRing, borderColor: groupMark === 'add' ? UI.ok : UI.err }}>
+          <span style={{ ...markBadge, background: groupMark === 'add' ? UI.ok : UI.err }}>
+            {groupMark === 'add' ? '+' : '−'}
+          </span>
+        </div>
+      )}
       {/* the accent strip fills with the run as it goes (faded before, full colour when done) */}
       <ProgressStrip
         id={id}
@@ -552,6 +637,25 @@ export function GraphNode({ id, data, selected: rfSelected }: NodeProps<Node<Nod
           )}
         </span>
         <div style={headerRight}>
+          {isTab && (
+            <button
+              className="nodrag"
+              title="Open this plot's tab in Results"
+              aria-label="Open in Results"
+              onClick={(e) => {
+                e.stopPropagation()
+                const view = useAppView.getState()
+                view.setResultsTab(id)
+                view.setView('results')
+              }}
+              style={{ ...resultsJump, color: accent, borderColor: accent }}
+            >
+              <IconJump size={11} />
+            </button>
+          )}
+          {data.kind === 'load' && (hovered || selected) && (
+            <LoadRunControl id={id} config={data.config as LoadConfig} accent={accent} />
+          )}
           {runs && (hovered || selected) && !noRerun && (
             <RunControl
               status={data.status}
@@ -645,33 +749,25 @@ export function GraphNode({ id, data, selected: rfSelected }: NodeProps<Node<Nod
           )}
         </svg>
       )}
-      {configMounted && (
-        // Stop clicks inside the panel from bubbling to the node's onNodeClick, which
-        // calls selectNode → clears selectedSub — that reset the active subcard to the
-        // first on every interaction with a group's config.
-        // It slides in from (and out toward) the tile's side, fading.
-        // Beside the tile, centred on the canvas's vertical middle as it opened (then panning with
-        // the tile), in three layers: the outer one sits on that line and undoes the canvas zoom (scale 1/zoom
-        // about its corner on the tile's side), so the panel is always drawn at full size — crisp
-        // and readable however far out the canvas is zoomed; the middle one lifts the panel by half
-        // its height to centre it (by layout — a −50% translate could land on a half pixel and
-        // blur the text again); the inner one animates (its own transform, so none fight) and
-        // holds the gap, in screen px.
-        <div
-          style={{
-            ...configFloat,
-            top: mid - TILE_STRIP,
-            ...(panelSide === 'left' ? { right: '100%' } : { left: '100%' }),
-            transform: `scale(${1 / zoom})`,
-            transformOrigin: panelSide === 'left' ? 'top right' : 'top left'
-          }}
-        >
-          <div style={centreOnLine}>
+      {configMounted &&
+        container &&
+        createPortal(
+          // Above the canvas (see panelAt), hidden until first placed. Two layers: the outer one is
+          // placed; the inner one slides in from (and out toward) the tile's side, fading — its own
+          // transform, so the two don't fight.
+          // Clicks inside stop here: React bubbles them through the portal to the node's
+          // onNodeClick, which calls selectNode → clears selectedSub — that reset the active
+          // subcard to the first on every interaction with a group's config.
+          <div
+            style={{
+              ...configFloat,
+              ...(panelAt ?? { top: 0, left: 0, visibility: 'hidden' })
+            }}
+          >
             <div
               ref={panelRef}
               className={`nodrag nowheel ${configLeaving ? 'oe-config-out' : 'oe-config-in'}`}
               style={{
-                ...(panelSide === 'left' ? { marginRight: PANEL_GAP } : { marginLeft: PANEL_GAP }),
                 ['--oe-config-from' as string]: panelSide === 'left' ? '10px' : '-10px',
                 // Scaled about its middle on the tile's side, so it stays centred throughout.
                 transformOrigin: panelSide === 'left' ? 'center right' : 'center left',
@@ -684,9 +780,9 @@ export function GraphNode({ id, data, selected: rfSelected }: NodeProps<Node<Nod
             >
               <NodeConfigPanel id={id} />
             </div>
-          </div>
-        </div>
-      )}
+          </div>,
+          container
+        )}
     </div>
   )
 }
@@ -803,6 +899,7 @@ function summaryCounts(
 
 function NodeSummary({
   kind,
+  id,
   result,
   config
 }: {
@@ -815,15 +912,26 @@ function NodeSummary({
   // re-render of the tile (e.g. a hover toggle) — that stalled on large comparison tables.
   // (A Contrast's row count likewise: its value rows, counted once.)
   const { signfCount, valueRows } = useMemo(() => summaryCounts(result), [result])
+  // a Load tile's files against what was converted / read (the store's checkLoad)
+  const check = useGraph((s) => (kind === 'load' ? s.loadChecks[id] : undefined))
   if (kind === 'load') {
     const cfg = config as LoadConfig
     const loaded = !!cfg.data && !!cfg.samplesheet
+    const mode = resolveLoadMode(cfg)
+    const info = loaded && check && check.state !== 'ok' ? loadCheckInfo(check, mode) : null
     return (
-      <div style={muted}>
-        {loaded
-          ? `Data loaded ${resolveLoadMode(cfg) === 'interactive' ? 'interactively' : 'manually'}`
-          : 'Data not yet loaded'}
-      </div>
+      <>
+        <div style={muted}>
+          {loaded
+            ? `Data loaded ${mode === 'interactive' ? 'interactively' : 'manually'}`
+            : 'Data not yet loaded'}
+        </div>
+        {info && (
+          <div style={{ ...muted, color: info.tone === 'bad' ? '#e5484d' : '#e2b93b' }}>
+            {info.label}
+          </div>
+        )}
+      </>
     )
   }
   if (kind === 'standardize') {
@@ -1117,6 +1225,28 @@ function ProgressStrip({
   )
 }
 
+/** A tile marked to add to (green) or take out of (red) the group being edited. */
+const markRing: CSSProperties = {
+  position: 'absolute',
+  inset: -7,
+  border: '2px dashed',
+  borderRadius: 12,
+  pointerEvents: 'none',
+  zIndex: 2
+}
+const markBadge: CSSProperties = {
+  position: 'absolute',
+  top: -11,
+  right: -11,
+  width: 20,
+  height: 20,
+  borderRadius: 10,
+  color: '#fff',
+  fontSize: 15,
+  fontWeight: 700,
+  lineHeight: '20px',
+  textAlign: 'center'
+}
 const card: CSSProperties = {
   width: 230,
   background: UI.panel,
@@ -1149,6 +1279,16 @@ const titleWrap: CSSProperties = {
 // Header right cluster: the run chip (on hover) and the always-on status dot. The fixed
 // minHeight matches the run chip so the dot keeps its vertical position whether or not the
 // chip is present (otherwise the taller chip re-centers the dot when it appears).
+/** The jump to a plot tile's Results tab: an icon chip, the run chip's shape. */
+const resultsJump: CSSProperties = {
+  display: 'inline-flex',
+  alignItems: 'center',
+  border: '1px solid',
+  background: 'transparent',
+  borderRadius: 10,
+  padding: '3px 7px',
+  cursor: 'pointer'
+}
 const headerRight: CSSProperties = {
   display: 'flex',
   alignItems: 'center',
@@ -1233,14 +1373,11 @@ const stat: CSSProperties = {
 const PANEL_LIFT = 40
 /** Gap between a tile and its detail panel (screen px — the panel isn't zoomed). */
 const PANEL_GAP = 14
-/** Centres its one child on this element's top edge: a zero-height flex row, the child overflowing
- *  equally above and below. */
-const centreOnLine: CSSProperties = { display: 'flex', alignItems: 'center', height: 0 }
-/** Detail panel float: beside the tile, the side chosen at render (see panelSide), its `top` set
- *  there to the canvas's vertical middle as the panel opened. Placed inside the card, whose `top: 0` is below its
- *  category strip — so offsets from the tile's outer edge are lifted by the strip. */
+/** Detail panel float: in the React Flow container, above the canvas — over the tiles (the
+ *  renderer's z 4, drawn after it), under React Flow's own panels (z 5). Placed in screen px beside
+ *  its tile (see panelAt). */
 const configFloat: CSSProperties = {
   position: 'absolute',
-  zIndex: 1000,
+  zIndex: 4,
   cursor: 'default'
 }

@@ -2,7 +2,16 @@
  *  of panel tiles. Replaces the old two-level (section pill → tile tab) OutputDock
  *  that showed a single plot at a time. Grouping is derived from the pipeline DAG;
  *  tile layout is drag/resizable in edit mode (persisted with the workflow later). */
-import { Fragment, useMemo, useState, type CSSProperties, type ReactNode } from 'react'
+import {
+  Fragment,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type ReactNode
+} from 'react'
 import type { Edge } from '@xyflow/react'
 
 import {
@@ -17,10 +26,12 @@ import { safeTileName } from '../graph/registry'
 import { useGraph } from '../graph/store'
 import { isStep, type NodeResult, type PlotGroupConfig, type StepNode } from '../graph/types'
 import type { PanelLayoutItem } from '../graph/types'
+import { Chevron } from '../ui/Chevron'
 import { UI } from '../ui/theme'
+import { useAppSettings } from '../ui/useAppSettings'
 import { useAppView } from '../ui/useAppView'
 import { DashboardGrid } from './DashboardGrid'
-import { EMPTY_SEL, useFacet } from './facet'
+import { useGroupFacets } from './facet'
 import { FacetContextBar } from './FacetContextBar'
 import { autoLayout, geometryChanged, reconcileLayout, type PanelLayout } from './panels'
 import { PanelTile } from './PanelTile'
@@ -87,6 +98,20 @@ export function ResultsView(): ReactNode {
       .map((x) => x.g)
   }, [nodes, edges, groupMeta])
   const titles = useMemo(() => tabTitles(groups, nodes), [groups, nodes])
+
+  // Whether the tabs overflow their row: then a menu button at its right end lists every tab, to
+  // jump to one or drag it to a new place (TabMenu).
+  const tabsRef = useRef<HTMLDivElement>(null)
+  const [overflow, setOverflow] = useState(false)
+  useLayoutEffect(() => {
+    const el = tabsRef.current
+    if (!el) return
+    const check = (): void => setOverflow(el.scrollWidth > el.clientWidth + 1)
+    check()
+    const ro = new ResizeObserver(check)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [groups, titles])
 
   // Drop `fromId` into insertion slot `index` (0..n in the current order) and persist.
   const dropTabAt = (fromId: string, index: number): void => {
@@ -160,6 +185,7 @@ export function ResultsView(): ReactNode {
               group. */}
           <span style={styles.tabLabel}>Group</span>
           <div
+            ref={tabsRef}
             className="oe-tabscroll"
             style={styles.tabs}
             // A plain mouse wheel only scrolls vertically; turn it sideways here so a long row of
@@ -204,6 +230,7 @@ export function ResultsView(): ReactNode {
                   ) : (
                     <button
                       draggable
+                      data-tab={g.id}
                       onClick={(e) => {
                         const own = nodeById.get(g.id)
                         if (isActive && own)
@@ -258,6 +285,25 @@ export function ResultsView(): ReactNode {
             })}
             {dropIndex === groups.length && dragId && <div style={styles.dropMark} />}
           </div>
+          {overflow && (
+            <TabMenu
+              tabs={groups.map((g) => ({
+                id: g.id,
+                title: titles.get(g.id) ?? g.label,
+                tip: groupTitle(g, results),
+                count: expandMembers(g.memberIds, nodes).length
+              }))}
+              activeId={active?.id}
+              onOpen={(id) => {
+                openTab(id)
+                // bring it into view in the row
+                tabsRef.current
+                  ?.querySelector<HTMLElement>(`[data-tab="${CSS.escape(id)}"]`)
+                  ?.scrollIntoView({ inline: 'nearest', block: 'nearest' })
+              }}
+              onMove={dropTabAt}
+            />
+          )}
         </div>
         {/* Controls row below the tabs: the shared condition switchers. Kept off the tab row so
             the tabs scroll horizontally on their own when many analyses don't fit. The gene
@@ -299,6 +345,123 @@ export function ResultsView(): ReactNode {
   )
 }
 
+/** The tab row's overflow menu: a button at the row's right end (shown while the tabs don't fit)
+ *  opening a list of every tab — click one to open it, drag one up or down to move it (the same
+ *  order the row shows). Closes on a pick, a click outside, or Escape. */
+function TabMenu({
+  tabs,
+  activeId,
+  onOpen,
+  onMove
+}: {
+  tabs: Array<{ id: string; title: string; tip: string; count: number }>
+  activeId: string | undefined
+  onOpen: (id: string) => void
+  /** drop tab `id` into insertion slot `index` (0..n in the current order) */
+  onMove: (id: string, index: number) => void
+}): ReactNode {
+  const [open, setOpen] = useState(false)
+  const [drag, setDrag] = useState<string | null>(null)
+  const [slot, setSlot] = useState<number | null>(null)
+  const [hover, setHover] = useState<string | null>(null)
+  const boxRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (!open) return
+    const away = (e: PointerEvent): void => {
+      if (!boxRef.current?.contains(e.target as Node)) setOpen(false)
+    }
+    const esc = (e: KeyboardEvent): void => {
+      if (e.key === 'Escape') setOpen(false)
+    }
+    window.addEventListener('pointerdown', away)
+    window.addEventListener('keydown', esc)
+    return () => {
+      window.removeEventListener('pointerdown', away)
+      window.removeEventListener('keydown', esc)
+    }
+  }, [open])
+  const end = (): void => {
+    setDrag(null)
+    setSlot(null)
+  }
+  const drop = (): void => {
+    if (drag && slot != null) onMove(drag, slot)
+    end()
+  }
+  return (
+    <div ref={boxRef} style={styles.menuBox}>
+      <button
+        className="oe-press"
+        style={{ ...styles.menuBtn, ...(open ? styles.menuBtnOpen : null) }}
+        title="All groups — pick one, or drag to reorder"
+        onClick={() => setOpen((o) => !o)}
+      >
+        {tabs.length}
+        <Chevron deg={open ? -90 : 90} size={10} color="currentColor" />
+      </button>
+      {open && (
+        <div
+          className="oe-tabscroll"
+          style={styles.menu}
+          onDragOver={(e) => {
+            if (drag) e.preventDefault()
+          }}
+          onDrop={(e) => {
+            e.preventDefault()
+            drop()
+          }}
+        >
+          {tabs.map((t, i) => (
+            <Fragment key={t.id}>
+              {slot === i && drag && <div style={styles.menuDropMark} />}
+              <div
+                draggable
+                role="button"
+                title={t.tip}
+                onClick={() => {
+                  onOpen(t.id)
+                  setOpen(false)
+                }}
+                onDragStart={(e) => {
+                  setDrag(t.id)
+                  e.dataTransfer.effectAllowed = 'move'
+                }}
+                onDragOver={(e) => {
+                  if (!drag) return
+                  e.preventDefault()
+                  e.dataTransfer.dropEffect = 'move'
+                  // before this row or after it, by which half the cursor is over
+                  const r = e.currentTarget.getBoundingClientRect()
+                  const idx = i + (e.clientY > r.top + r.height / 2 ? 1 : 0)
+                  if (idx !== slot) setSlot(idx)
+                }}
+                onDrop={(e) => {
+                  e.preventDefault()
+                  drop()
+                }}
+                onDragEnd={end}
+                onMouseEnter={() => setHover(t.id)}
+                onMouseLeave={() => setHover((h) => (h === t.id ? null : h))}
+                style={{
+                  ...styles.menuItem,
+                  ...(hover === t.id ? { background: UI.panelAlt } : null),
+                  ...(t.id === activeId ? styles.menuItemActive : null),
+                  ...(drag === t.id ? { opacity: 0.4 } : null)
+                }}
+              >
+                <span style={styles.menuGrip}>⋮⋮</span>
+                <span style={styles.menuTitle}>{t.title}</span>
+                <span style={styles.tabCount}>{t.count}</span>
+              </div>
+            </Fragment>
+          ))}
+          {slot === tabs.length && drag && <div style={styles.menuDropMark} />}
+        </div>
+      )}
+    </div>
+  )
+}
+
 function GroupPane({
   group,
   nodeById,
@@ -317,10 +480,12 @@ function GroupPane({
   // Group tiles are transparent in Results: each subcard becomes its own panel.
   const nodes = [...nodeById.values()]
   const panelIds = expandMembers(group.memberIds, nodes)
-  const layout = reconcileLayout(saved ?? autoLayout(panelIds), panelIds)
-  // The shared facet selection for this group (from the header control); every faceted
-  // plot reads it in place of its own tabs. Stable EMPTY_SEL until the user picks a level.
-  const facetSel = useFacet((s) => s.sel[group.id]) ?? EMPTY_SEL
+  // Laid out `plotsPerRow` across (Settings) until arranged by hand; new plots join that way too.
+  const perRow = useAppSettings((s) => s.plotsPerRow)
+  const layout = reconcileLayout(saved ?? autoLayout(panelIds, perRow), panelIds, perRow)
+  // The shared facet selection for this group as the header control resolves it (every dim's level
+  // on show, picked or not); every faceted plot reads it in place of its own tabs.
+  const facetSel = useGroupFacets(group, results).resolved
   return (
     <DashboardGrid
       ids={panelIds}
@@ -466,6 +631,69 @@ const styles: Record<string, CSSProperties> = {
     cursor: 'text'
   },
   tabCount: { fontSize: 10, opacity: 0.7 },
+  // The overflow menu (TabMenu): its button at the tab row's right end, sized like a tab, and the
+  // list it opens below, right-aligned to it.
+  // Shown only while the tabs overflow, so the tabs' scrollbar strip (4px, .oe-tabscroll) sits under
+  // them: the same strip under the button keeps it level with them.
+  menuBox: { position: 'relative', flex: '0 0 auto', paddingBottom: 4 },
+  menuBtn: {
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: 5,
+    background: 'transparent',
+    color: UI.textMuted,
+    border: `1px solid ${UI.border}`,
+    borderRadius: 16,
+    padding: '5px 10px',
+    fontSize: 12,
+    fontWeight: 600,
+    cursor: 'pointer'
+  },
+  menuBtnOpen: { color: UI.text, background: UI.panelAlt },
+  menu: {
+    position: 'absolute',
+    top: 'calc(100% + 2px)',
+    right: 0,
+    zIndex: 50,
+    minWidth: 220,
+    maxWidth: 360,
+    maxHeight: '60vh',
+    overflowY: 'auto',
+    padding: 4,
+    background: UI.panelRaised,
+    border: `1px solid ${UI.border}`,
+    borderRadius: 8,
+    boxShadow: '0 8px 30px rgba(0,0,0,0.3)'
+  },
+  menuItem: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 8,
+    padding: '6px 10px 6px 6px',
+    borderRadius: 6,
+    fontSize: 12,
+    fontWeight: 600,
+    color: UI.text,
+    cursor: 'pointer'
+  },
+  // The open tab, as the row shows it.
+  menuItemActive: { background: UI.accent, color: UI.accentText },
+  menuGrip: { fontSize: 10, letterSpacing: -2, opacity: 0.45, cursor: 'grab' },
+  menuTitle: {
+    flex: 1,
+    minWidth: 0,
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap'
+  },
+  // Where a dragged row would land: a thin accent bar between rows.
+  menuDropMark: {
+    height: 3,
+    margin: '-2px 4px',
+    borderRadius: 2,
+    background: UI.accent,
+    pointerEvents: 'none'
+  },
   // The open tab while it's being renamed: the tab itself, as a text field.
   // The open tab while it's being renamed: the same chip, its colours flipped (the accent becomes
   // the text and outline, the accent's text colour the fill), so it reads as being edited.

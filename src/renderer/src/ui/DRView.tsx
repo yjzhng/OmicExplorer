@@ -1,6 +1,7 @@
 import { useMemo } from 'react'
 
 import type { DRData, DRSeries } from '../engine'
+import { useGraph } from '../graph/store'
 import { drLook, type DRLook } from '../graph/types'
 import { AUTO } from './ColorPicker'
 import { tooltip } from './condTooltip'
@@ -9,7 +10,7 @@ import { truncateLabel } from './plotAxes'
 import { divergeColor } from './colormap'
 import { ROLE_DEFAULTS, type PaletteRef } from './palettes'
 import { axisBase, CATEGORICAL, PALETTES, plotBase } from './theme'
-import { useSelection } from './useSelection'
+import { useGeneSetColors, useSelection } from './useSelection'
 import { useUiTheme } from './useUiTheme'
 
 /**
@@ -20,7 +21,8 @@ import { useUiTheme } from './useUiTheme'
  *
  * A hovered/pinned gene (from any plot or the table) is pulled out of the grey
  * background and coloured too, ALONGSIDE the top-N — so linked selection highlights any
- * curve, not only the pre-chosen ones.
+ * curve, not only the pre-chosen ones. A gene of a selected gene group with a colour is drawn in
+ * that colour (as the volcano draws the group's points), over the palette's.
  */
 /** Fold-change axis title, naming the comparison ("log₂FC · A | B") when the rows share one. */
 const fcLabel = (dr: DRData): string => (dr.comparison ? `log₂FC · ${dr.comparison}` : 'log₂FC')
@@ -51,6 +53,7 @@ export function DRView({
   // a hovered group's genes (a STRING cluster, an enrichment term) are in focus as a hovered gene
   const hoverMembers = useSelection((s) => s.hoverMembers)
   const pinnedIds = useSelection((s) => s.pinnedIds)
+  const setColor = useGeneSetColors(useGraph((s) => s.geneSets))
 
   // The faint grey background (all genes, one null-separated trace) is BUILT ONCE per data/theme,
   // NOT per hover — it's thousands of points, and rebuilding+redrawing it on every mouse move is
@@ -197,18 +200,29 @@ export function DRView({
   const data = useMemo(() => {
     const { top, topIds, resting, line, fixed, dcolor, peak } = base
     const active = new Set(activeKey ? activeKey.split('\0') : [])
-    // An active top-N curve: its resting trace with the thicker line, sharing its x/y arrays.
+    // An active top-N curve: its resting trace with the thicker line (in its gene group's colour,
+    // if it has one), sharing its x/y arrays.
     const colored = resting.map((t, i) =>
-      active.has(top[i].uniqID) ? { ...t, line: { ...t.line, width: look.lineWidth + 2 } } : t
+      active.has(top[i].uniqID)
+        ? {
+            ...t,
+            line: {
+              color: setColor.get(top[i].uniqID) ?? t.line.color,
+              width: look.lineWidth + 2
+            }
+          }
+        : t
     )
     // A hovered/pinned gene that ISN'T a top-N curve has no colour of its own (it lives in the grey
     // background), so draw it as an emphasis overlay — coloured by its peak |log₂FC| on the shared
     // diverging (down→up) scale (not a flat accent), so it matches the bubble/heatmap palette.
     const extra = dr.series.filter((s) => active.has(s.uniqID) && !topIds.has(s.uniqID))
     for (const s of extra)
-      colored.push(line(s, fixed ?? dcolor(peak(s)), look.lineWidth + 1.5, false))
+      colored.push(
+        line(s, setColor.get(s.uniqID) ?? fixed ?? dcolor(peak(s)), look.lineWidth + 1.5, false)
+      )
     return [background, ...colored]
-  }, [base, dr, activeKey, background, look])
+  }, [base, dr, activeKey, background, look, setColor])
   const layout = base.layout
 
   return <PlotlyChart data={data} layout={layout} />

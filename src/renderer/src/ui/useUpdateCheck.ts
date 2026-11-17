@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 
-// Lightweight "is there a newer release?" check: compares the app's bundled version
-// (__APP_VERSION__, injected at build time) against the latest GitHub release. No auto-update
-// (that needs code signing) — this just surfaces a dot on the settings gear + the About page's
-// Updates section. One unauthenticated request per app session, and one per "Check now"; a
-// failure (offline, rate-limit, CSP) shows no update, and the Updates section says it failed. Adapted from the sibling UniOme app's useUpdateCheck.
+// "Is there a newer release?": compares the app's bundled version (__APP_VERSION__, injected at
+// build time) against the latest GitHub release, and surfaces a dot on the settings gear + the
+// About page's Updates section. Installing it is the main process's (main/updater.ts): `install`
+// is its state (downloading, ready to restart, failed, or why this copy can't), `download` and
+// `restart` its actions. One check per app session, and one per "Check now"; a failure (offline)
+// shows no update, and the Updates section says it failed. Adapted from the sibling UniOme app's
+// useUpdateCheck.
 const REPO = 'yjzhng/OmicExplorer'
 export const REPO_URL = `https://github.com/${REPO}`
 export const RELEASES_URL = `${REPO_URL}/releases`
@@ -22,7 +24,15 @@ export interface UpdateInfo {
   failed: boolean
   /** check again now (Settings → About → Updates) */
   check: () => void
+  /** the in-app update: downloading / ready / failed, or why this copy can't update itself */
+  install: InstallState
+  /** download the latest release's installer */
+  download: () => void
+  /** quit, install it and start the new version */
+  restart: () => void
 }
+
+export type InstallState = Awaited<ReturnType<typeof window.api.updateState>>
 
 /** Compare dotted versions numerically ("0.2.0" > "0.1.5"); tolerant of a leading "v". */
 function isNewer(a: string, b: string): boolean {
@@ -41,9 +51,31 @@ function isNewer(a: string, b: string): boolean {
   return false
 }
 
+/** The main process's update state, kept current. */
+function useInstallState(): InstallState {
+  const [install, setInstall] = useState<InstallState>({ phase: 'idle' })
+  useEffect(() => {
+    const api = window.api
+    if (!api?.updateState) return
+    let live = true
+    api.updateState().then(
+      (s) => live && setInstall(s),
+      () => undefined // no updater in this window (the screenshot harness)
+    )
+    const off = api.onUpdateState((s) => setInstall(s))
+    return () => {
+      live = false
+      off()
+    }
+  }, [])
+  return install
+}
+
 export function useUpdateCheck(): UpdateInfo {
   const current = typeof __APP_VERSION__ === 'string' ? __APP_VERSION__ : '0.0.0'
-  const [state, setState] = useState<Omit<UpdateInfo, 'current' | 'check'>>({
+  const [state, setState] = useState<
+    Omit<UpdateInfo, 'current' | 'check' | 'install' | 'download' | 'restart'>
+  >({
     latest: null,
     updateAvailable: false,
     releaseUrl: RELEASES_URL,
@@ -54,27 +86,28 @@ export function useUpdateCheck(): UpdateInfo {
   const [run, setRun] = useState(0)
   useEffect(() => {
     let cancelled = false
-    fetch(`https://api.github.com/repos/${REPO}/releases/latest`, {
-      headers: { Accept: 'application/vnd.github+json' }
-    })
-      .then((r) => (r.ok ? r.json() : null))
-      .then((rel: { tag_name?: string; html_url?: string } | null) => {
+    // asked of the main process: it reads github.com's /releases/latest redirect, not the GitHub
+    // API, whose 60-an-hour limit per IP address a whole institute shares (main/updater.ts)
+    const ask = window.api?.latestRelease
+      ? window.api.latestRelease()
+      : Promise.resolve({ error: 'no main process' })
+    ask
+      .then((rel) => {
         if (cancelled) return
-        if (!rel?.tag_name) {
+        if ('error' in rel) {
           setState((s) => ({ ...s, checking: false, failed: true }))
           return
         }
-        const latest = rel.tag_name.replace(/^v/, '')
         setState({
-          latest,
-          updateAvailable: isNewer(latest, current),
-          releaseUrl: rel.html_url || RELEASES_URL,
+          latest: rel.version,
+          updateAvailable: isNewer(rel.version, current),
+          releaseUrl: rel.url || RELEASES_URL,
           checking: false,
           failed: false
         })
       })
       .catch(() => {
-        // offline / rate-limited / blocked → no update shown; the Updates section says so
+        // offline / blocked → no update shown; the Updates section says so
         if (!cancelled) setState((s) => ({ ...s, checking: false, failed: true }))
       })
     return () => {
@@ -86,5 +119,11 @@ export function useUpdateCheck(): UpdateInfo {
     setState((s) => ({ ...s, checking: true }))
     setRun((n) => n + 1)
   }, [])
-  return useMemo(() => ({ current, ...state, check }), [current, state, check])
+  const install = useInstallState()
+  const download = useCallback(() => void window.api?.downloadUpdate?.(), [])
+  const restart = useCallback(() => void window.api?.installUpdate?.(), [])
+  return useMemo(
+    () => ({ current, ...state, check, install, download, restart }),
+    [current, state, check, install, download, restart]
+  )
 }

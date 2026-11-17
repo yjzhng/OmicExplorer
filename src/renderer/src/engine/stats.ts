@@ -510,9 +510,9 @@ export const DEFAULT_THRESHOLD: ThresholdConfig = {
   fcHigh: 1.0,
   statMin: -Math.log10(DEFAULT_P_CUTOFF),
   // SAM curve, stored as a hyperbola with a positive FC asymptote FC_lim = −s0 (see applyThreshold).
-  // Defaults: P_lim (statMin) = −log10(0.05), FC_lim = 0.5 (s0 = −0.5), b = 1.
-  b: 1,
-  s0: -0.5,
+  // Defaults: P_lim (statMin) = −log10(0.05), FC_lim = 0.3 (s0 = −0.3), b = 0.2.
+  b: 0.2,
+  s0: -0.3,
   statType: 'pQ'
 }
 

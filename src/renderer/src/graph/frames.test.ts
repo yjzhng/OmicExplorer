@@ -2,6 +2,8 @@
 import { describe, expect, it } from 'vitest'
 
 import {
+  editMembers,
+  frameHolds,
   frameDepths,
   frameTiles,
   groupInto,
@@ -72,5 +74,42 @@ describe('nested frames', () => {
   it('a deleted tile leaves its frame; frames emptied by it go too, nested ones included', () => {
     const nested: CanvasFrame[] = [g2, { id: 'f3', label: 'G3', members: ['f2'] }]
     expect(withoutTiles(nested, new Set(['c']))).toEqual([])
+  })
+})
+
+describe('editing a group', () => {
+  it('adds an outside tile, taking it out of the group it was in', () => {
+    expect(editMembers([g1, g2], 'f1', ['c', 'd'], [])).toEqual([
+      { ...g1, members: ['a', 'b', 'c', 'd'] }
+    ])
+  })
+
+  it('takes a tile out, nested ones included, to the group around the edited one', () => {
+    const outer: CanvasFrame = { id: 'f3', label: 'Group 3', members: ['f1', 'f4', 'e'] }
+    const inner: CanvasFrame = { id: 'f4', label: 'Group 4', members: ['f2', 'd'] }
+    const out = editMembers([g1, g2, outer, inner], 'f4', [], ['c', 'd'])
+    // f2 emptied, so dropped; f4 emptied too, so dropped from f3
+    expect(out).toEqual([g1, { ...outer, members: ['f1', 'e', 'c', 'd'] }])
+  })
+
+  it('adds another group whole, and takes a nested one out whole', () => {
+    // f2 (c) joins f1 as a member, nested
+    const added = editMembers([g1, g2], 'f1', ['f2'], [])
+    expect(added).toEqual([{ ...g1, members: ['a', 'b', 'f2'] }, g2])
+    expect(frameHolds(added, 'f1', 'c')).toBe(true)
+    // and back out, to no group
+    expect(editMembers(added, 'f1', [], ['f2'])).toEqual([g1, g2])
+  })
+
+  it('never adds a group holding the edited one, nor the edited one itself', () => {
+    const outer: CanvasFrame = { id: 'f3', label: 'Group 3', members: ['f1', 'd'] }
+    const frames = [g1, outer]
+    expect(editMembers(frames, 'f1', ['f3', 'f1'], [])).toBe(frames)
+  })
+
+  it('ignores a tile already where it would go, and an unknown group', () => {
+    expect(editMembers([g1, g2], 'f1', ['a'], ['c'])).toEqual([g1, g2])
+    const frames = [g1]
+    expect(editMembers(frames, 'nope', ['c'], [])).toBe(frames)
   })
 })

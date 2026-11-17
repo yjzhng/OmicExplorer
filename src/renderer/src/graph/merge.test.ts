@@ -3,7 +3,9 @@
  *  `acceptsFrom` having to name it. */
 import { describe, expect, it } from 'vitest'
 
-import { combineStandardize, customCond } from '../engine'
+import type { Edge } from '@xyflow/react'
+
+import { combineStandardize, customCond, presentScaleOf, withLogTransform } from '../engine'
 import type { StandardizeResult, StandardRow } from '../engine'
 import {
   ALL_OPS,
@@ -15,7 +17,8 @@ import {
   type AxisGraph
 } from './registry'
 import { deriveGroups } from './groups'
-import type { GraphNode, NodeKind } from './types'
+import { restampScales } from './resultScales'
+import type { GraphNode, NodeKind, NodeResult } from './types'
 
 const node = (id: string, kind: NodeKind): GraphNode =>
   ({
@@ -148,5 +151,105 @@ describe('merge semantics', () => {
   it('passes a single input straight through, by reference', () => {
     const a = std([row('P1', 'A1', 1)])
     expect(combineStandardize([a])).toBe(a)
+  })
+
+  it("numbers a later input's replicates past an earlier one's, so no two are one sample", () => {
+    const r = (uniqID: string, cmpd: string, rep: number | null): StandardRow =>
+      ({ uniqID, cmpd, rep, value: 1 }) as unknown as StandardRow
+    const s = (cmpd: string, rep: number | null) => ({ sample: `${cmpd}${rep}`, cmpd, rep })
+    const a = std([r('P1', 'x', 1), r('P1', 'x', 2), r('P1', 'y', 1)], {
+      samples: [s('x', 1), s('x', 2), s('y', 1)] as StandardizeResult['samples']
+    })
+    // x clashes (r1, r2 taken) → r3, r4 in order; z is new → as it was
+    const b = std([r('P1', 'x', 2), r('P1', 'x', 1), r('P2', 'x', 1), r('P1', 'z', 1)], {
+      samples: [s('x', 2), s('x', 1), s('z', 1)] as StandardizeResult['samples']
+    })
+    const m = combineStandardize([a, b])
+    expect(m.rows.map((x) => `${x.cmpd}${x.rep}`)).toEqual([
+      'x1',
+      'x2',
+      'y1',
+      'x4',
+      'x3',
+      'x3',
+      'z1'
+    ])
+    expect(m.samples!.map((x) => `${x.cmpd}${x.rep}`)).toEqual(['x1', 'x2', 'y1', 'x4', 'x3', 'z1'])
+    // the first input's rows, and a row left as it was, are the same objects
+    expect(m.rows[0]).toBe(a.rows[0])
+    expect(m.rows[6]).toBe(b.rows[3])
+    // a third input moves past both
+    expect(combineStandardize([a, b, std([r('P1', 'x', 1)])]).rows.at(-1)!.rep).toBe(5)
+    // no replicate in either: the second becomes r2 (a missing one counting as 1)
+    const n = combineStandardize([std([r('P1', 'w', null)]), std([r('P1', 'w', null)])])
+    expect(n.rows.map((x) => x.rep)).toEqual([null, 2])
+  })
+
+  it('leaves inputs whose samples are already distinct untouched', () => {
+    const a = std([row('P1', 'A1', 1)], { activeConditions: ['cmpd'], compounds: ['x'] })
+    const b = std([{ ...row('P1', 'B1', 2), rep: 2 } as StandardRow])
+    const m = combineStandardize([{ ...a, rows: [{ ...a.rows[0], rep: 1 }] }, b])
+    expect(m.rows[1]).toBe(b.rows[0])
+  })
+
+  it("carries the scale its first input is presented on — re-stamped when that's flipped", () => {
+    // run with no transform (scale linear), then switched to log₁₀ — the result isn't re-run, only
+    // re-stamped; the Merge below re-runs on it
+    const a = std([row('P1', 'A1', 1)], { scale: 'linear', inputScale: 'linear' })
+    const b = std([row('P1', 'B1', 2)], { scale: 'linear', inputScale: 'linear' })
+    expect(presentScaleOf(combineStandardize([a, b]))).toBe('linear')
+    const flipped = withLogTransform(a, 'log10')
+    expect(flipped.rows).toBe(a.rows)
+    expect(presentScaleOf(combineStandardize([flipped, b]))).toBe('log10')
+    expect(withLogTransform(flipped, 'log10')).toBe(flipped)
+  })
+})
+
+describe("a Merge's scale, on a workflow opened from before results carried it", () => {
+  const edge = (source: string, target: string): Edge => ({
+    id: `${source}-${target}`,
+    source,
+    target
+  })
+  const stdNode = (id: string, logTransform?: 'none' | 'log2' | 'log10'): GraphNode =>
+    ({
+      ...node(id, 'standardize'),
+      data: { ...node(id, 'standardize').data, config: { logTransform } }
+    }) as GraphNode
+  const clean = (scale: 'linear' | 'log10'): NodeResult => ({
+    kind: 'standardize',
+    std: { rows: [], scale, inputScale: 'linear' } as unknown as StandardizeResult
+  })
+  // std1 ran unlogged and was switched to log₁₀ after; the Merge and Subset hold its run's scale
+  const nodes = [
+    stdNode('std1', 'log10'),
+    stdNode('std2'),
+    node('merge', 'merge'),
+    node('sub', 'subset')
+  ]
+  const edges = [edge('std1', 'merge'), edge('std2', 'merge'), edge('merge', 'sub')]
+
+  it("re-stamps each from what the graph says: Clean data's choice, a Merge's first input", () => {
+    const results = {
+      sub: clean('linear'),
+      merge: clean('linear'),
+      std1: clean('linear'),
+      std2: clean('linear')
+    }
+    const out = restampScales(nodes, edges, results)
+    const scale = (k: string): unknown => (out[k] as { std: StandardizeResult }).std.scale
+    expect(['std1', 'std2', 'merge', 'sub'].map(scale)).toEqual([
+      'log10',
+      'linear',
+      'log10',
+      'log10'
+    ])
+    // the one already right is the same object
+    expect(out.std2).toBe(results.std2)
+  })
+
+  it('leaves results already in line as they were', () => {
+    const results = { std1: clean('log10'), std2: clean('linear'), merge: clean('log10') }
+    expect(restampScales(nodes, edges, results)).toBe(results)
   })
 })

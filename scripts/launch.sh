@@ -20,6 +20,10 @@ note() {
 if [ ! -d node_modules ]; then
   note "First run: installing dependencies… (a few minutes)"
   npm install
+elif [ package-lock.json -nt node_modules/.package-lock.json ]; then
+  # a pull changed the dependencies: bring node_modules up to date before starting
+  note "Updating dependencies…"
+  npm install
 fi
 
 note "Starting $APP_NAME…"

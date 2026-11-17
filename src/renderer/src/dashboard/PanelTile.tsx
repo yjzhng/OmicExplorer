@@ -16,9 +16,10 @@ import type { Edge } from '@xyflow/react'
 
 import { contextOf, facetDims, type ConditionKey, type ContextRow } from '../engine'
 import { copyGd, gdToExportItem } from '../export/plotExport'
-import { sanitize } from '../export/paths'
+import { comparisonText, contextText, fileTitle } from '../export/fileNames'
+import { shownTableExport, tableOnShow } from './tableOnShow'
 import { exportPlotData, plotDataTarget } from '../export/plotData'
-import { collectTableExports } from '../export/tables'
+import { collectTableExports, sampleQcExport, stdMatrixExport } from '../export/tables'
 import { deriveTabs, tabTitles } from '../graph/groups'
 import { pathSeg } from '../graph/diskNames'
 import { accentOf, categoryOf, PLOT_CONFIG_KINDS, plotLabel } from '../graph/registry'
@@ -29,7 +30,9 @@ import { UI } from '../ui/theme'
 import { useAppSettings } from '../ui/useAppSettings'
 import { createDrawTracker, TileDrawContext, type DrawTracker } from '../ui/tileDraw'
 import {
+  condUnitsFor,
   numericOfResult,
+  plotResultKey,
   tdrPair,
   type NodeResult,
   type TdrConfig,
@@ -37,7 +40,8 @@ import {
   type PlotAxes,
   type PlotChild,
   type PlotOrient,
-  type StepNode
+  type StepNode,
+  type TableConfig
 } from '../graph/types'
 import { Spinner } from '../ui/Spinner'
 import { EMPTY_SEL, resolveFacets } from './facet'
@@ -123,9 +127,6 @@ function IconDownload(): ReactNode {
 }
 
 /** Gear glyph for the panel-settings button. */
-/** A file-name-safe token: runs of anything outside [A-Za-z0-9._-] become one '-'; " | " → "-". */
-const fileSafe = (v: string): string => v.replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/^-+|-+$/g, '')
-
 /** Header buttons never take focus from a mouse click: Chromium kept the focus ring on them after
  *  the click (accent-coloured — near-black in the light theme — it read as a stuck outline).
  *  Keyboard users still reach them by Tab and get the focus-visible ring. */
@@ -324,11 +325,14 @@ export const PanelTile = memo(function PanelTile({
   }
 
   /** What this plot is showing, for its file name: the comparison on view (a multi-comparison
-   *  tile's `comparison` switch, else the analysis's single comparison) and the context tuple as
-   *  `WT`, `Amk`, `10`, `24` parts in hierarchy order. The shared facet selection is resolved
-   *  exactly as FacetedPlot resolves it, with the dims a plot consumes as an axis left out
-   *  (DR/bubble axis; TDR's dose × time). */
-  function viewed(): { comparison: string | null; context: string[] } {
+   *  tile's `comparison` switch, else the analysis's single comparison) and the condition values
+   *  on show, in hierarchy order. The shared facet selection is resolved exactly as FacetedPlot
+   *  resolves it, with the dims a plot consumes as an axis left out (DR/bubble axis; TDR's dose ×
+   *  time). */
+  function viewed(): {
+    comparison: string | null
+    context: Array<{ dim: ConditionKey; value: string | number }>
+  } {
     const upId = edges.find((e) => e.target === node.id)?.source
     const up = upId ? applied.results[upId] : undefined
     // its context tuples (contextIndex.ts): the facet resolves over them without building rows
@@ -360,11 +364,29 @@ export const PanelTile = memo(function PanelTile({
       // Bare values in hierarchy order (cell, cmpd, dose, time, then any custom condition) — the
       // order says which is which. `facetDims` already returns them in that order, so no re-sort:
       // a fixed key list would put an unlisted custom condition first instead of last.
-      .map((b) => fileSafe(String(b.value)))
+      .map((b) => ({ dim: b.dim as ConditionKey, value: b.value }))
     const onView = bars.find((b) => b.dim === 'comparison')?.value
     const comparison =
       onView != null ? String(onView) : comparisons.length === 1 ? comparisons[0] : null
     return { comparison, context }
+  }
+
+  /** The table on show, for its file name: a Clean data table by its view (matrix, long rows or
+   *  sample QC), else the step's table. */
+  function tableTitle(): string {
+    // the table by the view on show (tableOnShow), else by the tile's setting
+    const onShow = tableOnShow(plotResultKey(node.id, child?.id))
+    if (onShow?.name) return onShow.name
+    const up = tableRootId ? applied.results[tableRootId] : undefined
+    if (up?.kind === 'standardize') {
+      const view = (cfg as TableConfig).view ?? 'matrix'
+      return view === 'qc'
+        ? 'Sample QC'
+        : view === 'long'
+          ? 'Clean data (long)'
+          : 'Clean data matrix'
+    }
+    return up?.kind === 'contrast' ? 'Contrast table' : 'Comparison table'
   }
 
   /** Download straight to the OS save window in the app-wide default format/DPI (Settings →
@@ -377,18 +399,22 @@ export const PanelTile = memo(function PanelTile({
       window.clearTimeout(savedTimer.current)
       savedTimer.current = window.setTimeout(() => setSaved(null), 3000)
     }
-    // File names: `<plot type>-<comparison>_<context…>` — the comparison on view ("Amk | DMSO" →
-    // "Amk-DMSO"; none for a Clean-data plot) then the context tuple (`Volcano-Amk-DMSO_WT_10`).
-    // Tables: `<table>-<comparison>` or `<table>_<node id>`.
-    const v = viewed()
-    const cmp = v.comparison ? fileSafe(v.comparison) : null
-    // Plot type and comparison are joined with '-' (one "what" token); '_' separates the context.
-    const head = cmp ? `${label}-${cmp}` : label
-    const base = sanitize(
-      [head, ...(isPlot ? v.context : cmp ? [] : [child ? `${node.id}_${child.id}` : node.id])]
-        .filter(Boolean)
-        .join('_')
-    )
+    // File names read as the results page does (export/fileNames.ts): the tab, the plot, then
+    // what's on show — `AU28 r3 - Volcano - AU-28 vs DMSO - 0.16 µM, 72 h`; a table, the tab and
+    // the table on show — `AU28 r3 - Clean data matrix`.
+    const g0 = useGraph.getState()
+    const tab = tabTitles(deriveTabs(g0.nodes, edges), g0.nodes).get(node.id)
+    const base = isPlot
+      ? ((): string => {
+          const v = viewed()
+          return fileTitle([
+            tab,
+            label,
+            v.comparison ? comparisonText(v.comparison) : null,
+            contextText(v.context, condUnitsFor({ nodes: g0.nodes, edges }, node.id))
+          ])
+        })()
+      : fileTitle([tab, tableTitle()], 'Table')
     const fmt = isPlot ? downloadFormat : tableFormat
     const dpi = downloadDpi
     // Native save-as: the OS window names the file and picks its folder. It opens in the workflow's
@@ -441,12 +467,26 @@ export const PanelTile = memo(function PanelTile({
         written = res.written
         errors = res.errors
       } else {
-        const [t] = collectTableExports(
+        const [t0] = collectTableExports(
           useGraph.getState().nodes,
           edges,
           applied.results,
           new Set([tableRootId!])
         )
+        // A Clean data table saves the view on show: its matrix (gene × sample), its long rows, or
+        // its QC (one row per sample).
+        const up = applied.results[tableRootId!]
+        const view = (cfg as TableConfig).view ?? 'matrix'
+        // A table saves what it shows: its view (matrix, long or QC), the columns as headed on
+        // screen (a numeric condition's with its unit), a matrix's "Show" field (tableOnShow).
+        const onShow = tableOnShow(plotResultKey(node.id, child?.id))
+        const t = onShow
+          ? { label: t0?.label ?? 'Table', key: t0?.key ?? '', ...shownTableExport(onShow) }
+          : t0 && kind === 'table' && up?.kind === 'standardize' && view !== 'long'
+            ? view === 'qc'
+              ? { ...t0, label: 'Sample QC', ...sampleQcExport(up) }
+              : { ...t0, ...stdMatrixExport(up) }
+            : t0
         if (t) {
           const res = await window.api.exportTables({
             baseDir,
@@ -477,8 +517,9 @@ export const PanelTile = memo(function PanelTile({
   }
 
   /** Enrichment / STRING: save the plot's data — every facet, not just the one drawn — as tables,
-   *  through the OS save window (export/plotData.ts). STRING writes `<name>_nodes` and
-   *  `<name>_edges`. Opens in the step's output/ folder, like Download. */
+   *  through the OS save window (export/plotData.ts), named as Download names a plot (its tab,
+   *  then the plot). STRING writes `<name> - nodes` and `<name> - edges`. Opens in the step's
+   *  output/ folder, like Download. */
   const canExportData = kind === 'enrich' || kind === 'string'
   async function runDataExport(): Promise<void> {
     if (busy) return
@@ -502,10 +543,12 @@ export const PanelTile = memo(function PanelTile({
       ? (plotGroupDir(node.id, edges) ?? g.outputDirFor(target.upstreamId))
       : null
     const fmt = tableFormat
+    const tab = tabTitles(deriveTabs(g.nodes, edges), g.nodes).get(node.id)
+    const stem = tab ? fileTitle([tab, label]) : target.stem
     let path: string | null
     try {
       path = await window.api.pickSavePath({
-        defaultPath: dir ? `${dir}/${target.stem}.${fmt}` : `${target.stem}.${fmt}`,
+        defaultPath: dir ? `${dir}/${stem}.${fmt}` : `${stem}.${fmt}`,
         ext: fmt,
         typeName: fmt === 'xlsx' ? 'Excel workbook' : 'CSV table'
       })
@@ -648,7 +691,9 @@ export const PanelTile = memo(function PanelTile({
             <PlotAxesContext.Provider value={axesCtx}>
               {/* One tile that throws must not blank the whole Results page: it reports itself
                   in place, and the other tiles still draw. */}
-              <PanelErrorBoundary label={`${label} · ${child ? `${node.id}/${child.id}` : node.id}`}>
+              <PanelErrorBoundary
+                label={`${label} · ${child ? `${node.id}/${child.id}` : node.id}`}
+              >
                 <PlotBody
                   key={`${categorical}|${customKey}|${plotFont}`}
                   node={node}

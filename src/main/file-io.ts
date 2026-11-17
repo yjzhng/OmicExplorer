@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { createReadStream, createWriteStream } from 'node:fs'
 import {
   copyFile,
@@ -18,6 +19,7 @@ import { basename, dirname, isAbsolute, join, relative, sep } from 'node:path'
 import { dialog, ipcMain, shell } from 'electron'
 
 import { registerDataLayout } from './data-layout'
+import { buildCsv, readXlsx } from './xlsx'
 import { parkFileOf } from './park'
 
 const gunzipAsync = promisify(gunzip)
@@ -173,7 +175,11 @@ export function registerFileIo(): void {
       })
       if (res.canceled || res.filePaths.length === 0) return null
       const path = res.filePaths[0]
-      const content = await readFile(path, 'utf8')
+      // An Excel workbook comes back as CSV text (its first sheet), so a table reads the same
+      // whichever format it was saved in.
+      const content = /\.xlsx$/i.test(path)
+        ? ((rows) => buildCsv(rows[0] ?? [], rows.slice(1)))(readXlsx(await readFile(path)))
+        : await readFile(path, 'utf8')
       return { path, name: basename(path), content }
     }
   )
@@ -542,6 +548,109 @@ export function registerFileIo(): void {
         }
       }
       return { copied, errors }
+    }
+  )
+
+  // Tiles pasted from another workflow (the canvas's copy / paste): a Load tile's converted input
+  // files copied from that workflow's locations into this one's input/, under the same name — or,
+  // where this workflow already reads a different file by that name, a free one (never
+  // overwriting). Returns each name as it's now read; a file this workflow already reads (the
+  // same one, or an identical copy) isn't copied again.
+  ipcMain.handle(
+    'data:copyWorkflowInputs',
+    async (
+      _evt,
+      from: { dir: string; scope: Scope },
+      to: { dir: string; scope: Scope },
+      names: string[]
+    ): Promise<{ names: Record<string, string>; errors: string[] }> => {
+      const isFile = (p: string): Promise<boolean> =>
+        stat(p).then(
+          (st) => st.isFile(),
+          () => false
+        )
+      const find = async (dir: string, scope: Scope, name: string): Promise<string | null> => {
+        for (const root of readRoots(dir, scope))
+          for (const sub of DATA_SUBDIRS)
+            if (await isFile(join(root, sub, name))) return join(root, sub, name)
+        return null
+      }
+      const out: Record<string, string> = {}
+      const errors: string[] = []
+      for (const name of names) {
+        if (!name || isAbsolute(name) || name !== basename(name)) continue
+        try {
+          const src = await find(from.dir, from.scope, name)
+          if (!src) {
+            errors.push(`${name}: not found in the workflow it was copied from`)
+            continue
+          }
+          const there = await find(to.dir, to.scope, name)
+          if (there === src) {
+            out[name] = name
+            continue
+          }
+          const bytes = await readFile(src)
+          if (there && bytes.equals(await readFile(there))) {
+            out[name] = name
+            continue
+          }
+          await requireDataDir(to.dir)
+          const inputDir = join(writeRoot(to.dir, to.scope), 'input')
+          await mkdir(inputDir, { recursive: true })
+          // a name this workflow reads nothing by: "<stem> (copy)", "<stem> (copy 2)", …
+          const dot = name.lastIndexOf('.')
+          const [stem, ext] = dot > 0 ? [name.slice(0, dot), name.slice(dot)] : [name, '']
+          let free = name
+          for (let k = 1; there && free === name; k++) {
+            const cand = `${stem} (copy${k > 1 ? ` ${k}` : ''})${ext}`
+            if (!(await find(to.dir, to.scope, cand))) free = cand
+          }
+          await copyFile(src, join(inputDir, free), constants.COPYFILE_EXCL)
+          out[name] = free
+        } catch (e) {
+          errors.push(`${name}: ${e instanceof Error ? e.message : String(e)}`)
+        }
+      }
+      return { names: out, errors }
+    }
+  )
+
+  // What a Load tile's inputs are now, to tell whether they changed since they were read (the
+  // tile's status — see the store's checkLoad): each file's size and modified time, found the way
+  // data:read finds it; with `hash`, also a SHA-1 of its bytes (when the time moved but the size
+  // didn't — a copy, a sync — so the content says whether it's the same). null for one not found.
+  ipcMain.handle(
+    'data:stat',
+    async (
+      _evt,
+      dir: string,
+      names: string[],
+      scope?: Scope,
+      hash?: boolean
+    ): Promise<Array<{ size: number; mtime: number; hash?: string } | null>> => {
+      const one = async (
+        path: string
+      ): Promise<{ size: number; mtime: number; hash?: string } | null> => {
+        const st = await stat(path).catch(() => null)
+        if (!st?.isFile()) return null
+        if (!hash) return { size: st.size, mtime: st.mtimeMs }
+        const h = createHash('sha1')
+        await pipeline(createReadStream(path), h)
+        return { size: st.size, mtime: st.mtimeMs, hash: h.digest('hex') }
+      }
+      return Promise.all(
+        names.map(async (name) => {
+          if (!name) return null
+          if (isAbsolute(name)) return one(name)
+          for (const root of readRoots(dir, scope))
+            for (const sub of DATA_SUBDIRS) {
+              const got = await one(join(root, sub, name))
+              if (got) return got
+            }
+          return null
+        })
+      )
     }
   )
 

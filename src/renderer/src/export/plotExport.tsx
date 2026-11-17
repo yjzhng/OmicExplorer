@@ -15,7 +15,9 @@ import Plotly from 'plotly.js-strict-dist-min'
 
 import { PanelBody } from '../dashboard/PanelBody'
 import { useGraph } from '../graph/store'
-import type { NodeResult } from '../graph/types'
+import { condUnitsFor, isStep, type NodeResult } from '../graph/types'
+import { plotLabel, stepTitle } from '../graph/registry'
+import type { ConditionKey } from '../engine'
 import { hasGeneTitle, revealGeneTitle } from '../ui/geneTitle'
 import { hasGlTraces, sceneCount, toSvgTraces } from '../ui/glTraces'
 import { PALETTES, plotFontName } from '../ui/theme'
@@ -32,7 +34,9 @@ import {
 import { cleanSvgForEditors } from './svgClean'
 import { deriveTabs, tabTitles } from '../graph/groups'
 import { pathSeg } from '../graph/diskNames'
+import { clipShapesToRanges } from './clipShapes'
 import { exportPath } from './paths'
+import { comparisonText, contextText, fileTitle, uniqueNames } from './fileNames'
 import { collectSpecs, type ExportSpec } from './specs'
 import { collectTableExports } from './tables'
 
@@ -193,14 +197,21 @@ async function lightCapture(gd: Element, dpi: number): Promise<Capture> {
   // A single-gene plot's title is hidden under its picker on screen; the capture shows it.
   const geneTitle = hasGeneTitle(live.layout)
   const scenes = sceneCount(live.data ?? []) > 0
-  if (!dark && !gl && !geneTitle && !scenes)
+  // Guides drawn far past the axes (the volcano's) cut to what shows — else they set the SVG's
+  // bounds and an editor pastes the plot far off its page (see clipShapes).
+  const shapes = clipShapesToRanges(live.layout?.shapes, live._fullLayout)
+  const cut = shapes !== live.layout?.shapes
+  if (!dark && !gl && !geneTitle && !scenes && !cut)
     return { el: gd, sceneEl: null, done: () => {}, scenes: [] }
   const { w, h } = liveSize(gd)
   const sub = dark ? lightSubstitutions() : new Map<string, string>()
   // Back to SVG first: recolor drops our private keys, which toSvgTraces still reads.
   const data = recolor(toSvgTraces(live.data ?? []), sub)
   const layout = revealGeneTitle(
-    recolor({ ...(live.layout ?? {}) }, sub) as Record<string, unknown>,
+    recolor({ ...(live.layout ?? {}), ...(cut ? { shapes } : null) }, sub) as Record<
+      string,
+      unknown
+    >,
     PALETTES.light.text
   )
   // Pin what the live plot actually shows: its size and each axis's drawn range (an autoranged
@@ -641,10 +652,37 @@ export async function runExport(
 
   // Plots: render each job off-screen, then write in one batch. Selected-only variants are filed
   // under a `selected` subfolder; each facet tuple gets its own file (suffix names the facet).
+  // Named as a tile's Download names it (export/fileNames.ts): the tab, the plot, then the facet —
+  // its comparison (else the analysis's one) and condition values, with units.
+  const fileBaseOf = (job: (typeof jobs)[number]): string => {
+    const { spec } = job
+    const kind = spec.child ? spec.child.kind : spec.node.data.kind
+    const config = spec.child ? spec.child.config : spec.node.data.config
+    const upId = edges.find((e) => e.target === spec.node.id)?.source
+    const up = upId ? results[upId] : undefined
+    const comparisons =
+      up?.kind === 'compare'
+        ? up.cmp.comparisons
+        : up?.kind === 'contrast'
+          ? up.ctr.comparisons
+          : []
+    const onView = job.values.find((v) => v.dim === 'comparison')?.value
+    const comparison =
+      onView != null ? String(onView) : comparisons.length === 1 ? comparisons[0] : null
+    const context = job.values
+      .filter((v) => v.dim !== 'comparison')
+      .map((v) => ({ dim: v.dim as ConditionKey, value: v.value }))
+    return fileTitle([
+      tabName.get(spec.node.id),
+      plotLabel(kind, config),
+      comparison ? comparisonText(comparison) : null,
+      contextText(context, condUnitsFor({ nodes, edges }, spec.node.id))
+    ])
+  }
   const plotItems: ExportItem[] = []
   for (const job of jobs) {
     const fold = plotFolder(job.spec)
-    const fileBase = `${job.spec.plot}_${job.spec.key}${job.suffix ? `__${job.suffix}` : ''}`
+    const fileBase = fileBaseOf(job)
     onProgress(done, total)
     const base64 = await renderSpecToPng(
       job.spec,
@@ -666,6 +704,8 @@ export async function runExport(
       skipped++
     }
   }
+  // Two plots read the same (two Volcanoes in one tab): " (2)" on the second.
+  uniqueNames(plotItems.map((it) => it.relPath)).forEach((p, i) => (plotItems[i].relPath = p))
   if (plotItems.length) {
     // A failing IPC (e.g. a stale preload after HMR, so the handler is absent) must surface
     // as an error, never leave the caller awaiting forever.
@@ -681,14 +721,27 @@ export async function runExport(
   // Tables: serialise (fast) and write in one batch.
   if (tables.length) {
     onProgress(done, total)
-    const tableItems = tables.map((t) => ({
-      relPath: exportPath(
-        folder.get(t.key) ?? 'export',
-        `${t.label}_${t.key}`,
-        opts.structure,
-        opts.tableFormat,
-        false
-      ),
+    // A step's table, named after the step: `Compare AU28 - Comparison table` (the step's own name
+    // left out where it's just its kind's).
+    const titleOf = (t: (typeof tables)[number]): string => {
+      const n = nodes.find((x) => x.id === t.key)
+      const step = n && isStep(n) ? stepTitle(n) : null
+      const table = `${t.label} table`
+      return fileTitle([step && step !== t.label ? step : null, table], 'Table')
+    }
+    const paths = uniqueNames(
+      tables.map((t) =>
+        exportPath(
+          folder.get(t.key) ?? 'export',
+          titleOf(t),
+          opts.structure,
+          opts.tableFormat,
+          false
+        )
+      )
+    )
+    const tableItems = tables.map((t, i) => ({
+      relPath: paths[i],
       sheetName: `${t.label} ${t.key}`,
       columns: t.columns,
       rows: t.rows

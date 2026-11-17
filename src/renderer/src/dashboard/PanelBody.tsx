@@ -2,7 +2,15 @@
  *  Salvaged from the retired OutputDock's OutputBody: the per-kind dispatch and
  *  the comparison/contrast column builders live here now. */
 import { firstRow, holderTable, rowCount, rowsAt } from '../engine/lazyRows'
-import { useCallback, useMemo, useState, type CSSProperties, type ReactNode } from 'react'
+import { showTable } from './tableOnShow'
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+  type CSSProperties,
+  type ReactNode
+} from 'react'
 import type { Edge } from '@xyflow/react'
 
 import {
@@ -22,12 +30,17 @@ import {
   type CompareResultRow,
   type ClusterColorBy,
   type AxisTail,
+  type ContrastFeatureId,
   contrastStatDrag,
+  cutoffFromScale,
+  roundP,
+  upperOnly,
   type ConditionKey,
   type ContrastResultRow,
   type QcMetric,
   type StandardizeResult,
   CLUSTER_COLOR,
+  sampleQc,
   condLabel,
   condPresent,
   condsIn,
@@ -40,7 +53,7 @@ import {
   VALID_CONDITIONS,
   presentStd,
   presentScaleOf,
-  plotScaleOf,
+  withBatchCond,
   abundanceLabel,
   contrastFeatureLabel,
   rowsOfFeatureNamed,
@@ -154,6 +167,7 @@ import {
   type BubbleConfig,
   type CompareConfig,
   axisTitle,
+  type CondUnits,
   curveAxisUnit,
   curveDoseUnit,
   effectLabelsOf,
@@ -212,7 +226,6 @@ import {
   type QcConfig,
   quickOn,
   type ScatterConfig,
-  type StandardizeConfig,
   type StepNode,
   type StepStatus,
   TABLE_GENE_MAX,
@@ -388,24 +401,26 @@ function tableRows<T extends { uniqID: string; extra?: Record<string, string> }>
 function condColumns(
   rows: Array<{ extra?: Record<string, string> }>,
   numeric: NumericConds,
-  only?: ConditionKey[]
+  only?: ConditionKey[],
+  /** the imported units: a numeric condition's column says its unit — `dose (nM)` */
+  units?: CondUnits
 ): Column[] {
   return condsIn(rows)
     .filter((c) => (only ? only.includes(c) || isCustomCond(c) : true) && condPresent(rows, c))
     .map((c) => ({
       key: c,
-      label: condLabel(c),
+      label: units ? axisTitle(c, units) : condLabel(c),
       ...(isNumericCond(c, numeric) ? { align: 'right' as const } : null)
     }))
 }
 
 /** stdColumns for a Clean data result, worked out from its context tuples and its rep column —
  *  no row built. */
-function stdColumnsOf(std: StandardizeResult, numeric: NumericConds): Column[] {
+function stdColumnsOf(std: StandardizeResult, numeric: NumericConds, units?: CondUnits): Column[] {
   const cols: Column[] = [
     { key: 'uniqID', label: 'uniqID' },
     { key: 'gene', label: 'gene' },
-    ...condColumns(contextOf(std).rows, numeric)
+    ...condColumns(contextOf(std).rows, numeric, undefined, units)
   ]
   if ([...distinctOf(std, 'rep')].some((v) => v != null))
     cols.push({ key: 'rep', label: 'rep', align: 'right' })
@@ -470,20 +485,85 @@ interface TableColour {
   palette?: PaletteRef
 }
 
-/** The standardized table with a Long ⇆ Matrix (gene × sample) view toggle. */
+/** The Clean data table's QC view: one row per sample — its conditions and replicate, then how
+ *  many proteins it measured / had imputed / missed, its measured abundances' median and quartiles
+ *  (on the plots' scale) and its condition group's median CV. Numbers coloured per column. */
+function sampleQcTable(
+  std: StandardizeResult,
+  palette: PaletteRef,
+  units?: CondUnits
+): { columns: Column[]; rows: Record<string, unknown>[] } {
+  const scale = presentScaleOf(std)
+  const qc = sampleQc(std, scale)
+  const rows: Record<string, unknown>[] = qc.map((q) => ({
+    ...q.meta,
+    ...flatConds(q.meta),
+    measured: q.measured,
+    imputed: q.imputed,
+    missing: q.missing,
+    missingPct: q.missingPct,
+    median: q.median,
+    q1: q.q1,
+    q3: q.q3,
+    groupCv: q.groupCv
+  }))
+  const num = (key: string, label: string, digits: number): Column => ({
+    key,
+    label,
+    align: 'right',
+    format: fixed(digits),
+    cellStyle: heatStyle(valueRange(rows.map((r) => r[key] as number | null)), palette)
+  })
+  const unit = abundanceLabel(scale)
+  return {
+    columns: [
+      ...condColumns(contextOf(std).rows, numericOf(std), undefined, units),
+      ...(qc.some((q) => q.meta.rep != null)
+        ? [{ key: 'rep', label: 'rep', align: 'right' as const }]
+        : []),
+      num('measured', 'measured', 0),
+      // only when anything was imputed
+      ...(qc.some((q) => q.imputed) ? [num('imputed', 'imputed', 0)] : []),
+      num('missing', 'missing', 0),
+      num('missingPct', 'missing %', 1),
+      num('median', `median · ${unit}`, 3),
+      num('q1', `Q1 · ${unit}`, 3),
+      num('q3', `Q3 · ${unit}`, 3),
+      num('groupCv', 'group CV %', 1)
+    ],
+    rows
+  }
+}
+
+type StdView = 'matrix' | 'long' | 'qc'
+
+/** The standardized table with a Matrix (gene × sample) ⇆ Long ⇆ QC (per sample) view toggle. */
 function StdTable({
   std,
-  initialView = 'matrix',
+  view: tileView,
+  setView: setTileView,
   maxChars,
-  colour
+  colour,
+  units,
+  showKey
 }: {
+  /** the imported units, for the numeric conditions' column headers */
+  units?: CondUnits
+  /** the tile's key (plotResultKey): the table on show is registered under it, so the tile's
+   *  Download writes exactly it (see tableOnShow) */
+  showKey?: string
   std: StandardizeResult
-  initialView?: 'matrix' | 'long'
+  /** the view on show — a Data table tile's setting, which its download follows; unset, the
+   *  table's own */
+  view?: StdView
+  setView?: (view: StdView) => void
   /** the id / gene columns' display caps (characters, by column key) */
   maxChars?: Record<string, number>
   colour?: TableColour
 }): ReactNode {
-  const [view, setView] = useState<'matrix' | 'long'>(initialView)
+  const [localView, setLocalView] = useState<StdView>('matrix')
+  const view = tileView ?? localView
+  const setView = setTileView ?? setLocalView
   const [localColored, setLocalColored] = useState(true)
   const colored = colour?.on ?? localColored
   const setColored = colour?.set ?? setLocalColored
@@ -494,15 +574,37 @@ function StdTable({
     const heat = makeValueHeat(std, palette)
     return {
       // Colour the long view's `value` column with the same viridis heat scale as the matrix.
-      columns: stdColumnsOf(std, numericOf(std)).map((c) =>
+      columns: stdColumnsOf(std, numericOf(std), units).map((c) =>
         c.key === 'value' ? { ...c, cellStyle: heat } : c
       ),
       // the rows built only as the table shows them (longSource)
       rows: longSource(rowView(std), std.displayMap)
     }
-  }, [std, palette])
+  }, [std, palette, units])
   const matrix = useMemo(() => standardizeMatrix(std, palette), [std, palette])
-  const cur = view === 'matrix' ? matrix : long
+  // built only once the QC view is opened
+  const qc = useMemo(
+    () => (view === 'qc' ? sampleQcTable(std, palette, units) : null),
+    [view, std, palette, units]
+  )
+  const cur = qc ?? (view === 'matrix' ? matrix : long)
+  // What's on show is what the tile's Download writes: this view and its columns.
+  useEffect(
+    () =>
+      showKey
+        ? showTable(showKey, {
+            columns: cur.columns,
+            rows: cur.rows,
+            name:
+              view === 'qc'
+                ? 'Sample QC'
+                : view === 'long'
+                  ? 'Clean data (long)'
+                  : 'Clean data matrix'
+          })
+        : undefined,
+    [showKey, cur, view]
+  )
   // Drop the per-cell heat styling when colouring is off.
   const columns = colored
     ? cur.columns
@@ -512,9 +614,9 @@ function StdTable({
       <div className="oe-switch-row" style={{ display: 'flex', flexWrap: 'wrap' }}>
         <SwitchBar
           label="View"
-          value={view === 'matrix' ? 'Matrix' : 'Long'}
-          options={['Matrix', 'Long']}
-          onChange={(v) => setView(v === 'Matrix' ? 'matrix' : 'long')}
+          value={view === 'matrix' ? 'Matrix' : view === 'qc' ? 'QC' : 'Long'}
+          options={['Matrix', 'Long', 'QC']}
+          onChange={(v) => setView(v === 'Matrix' ? 'matrix' : v === 'QC' ? 'qc' : 'long')}
         />
         <SwitchBarToggle label="Colour" on={colored} onChange={setColored} />
       </div>
@@ -543,18 +645,18 @@ function compareColumns(
   statType: 'pP' | 'pQ',
   numeric: NumericConds,
   threshold?: ThresholdConfig,
-  doseUnit?: string
+  doseUnit?: string,
+  units?: CondUnits
 ): Column[] {
   const cols: Column[] = [
     { key: 'uniqID', label: 'uniqID' },
     { key: 'gene', label: 'gene' }
   ]
-  // Show the comparison label when several coexist (e.g. two-way factor combos) — and always for a
-  // curve fit, where it says what each curve is against: "drugA | baseline".
-  if (analysis === 'curve_fit' || new Set(rows.map((r) => r.comparison)).size > 1) {
-    cols.push({ key: 'comparison', label: 'comparison' })
-  }
-  cols.push(...condColumns(rows, numeric))
+  // Always the comparison, one Compare or several: a row says what it compares ("drugA | DMSO";
+  // a curve fit, what each curve is against), and every table has the same columns — downloads
+  // too (export/tables.ts), so they line up when combined.
+  cols.push({ key: 'comparison', label: 'comparison' })
+  cols.push(...condColumns(rows, numeric, undefined, units))
   // The response surface method (a Curve fit with detection model Spline): its own columns below.
   const response = analysis === 'curve_fit' && rows.some((r) => r.rs)
   // A two-way ANOVA's term rows: their unsigned effect size in its own column, beside the 2×2s'
@@ -977,7 +1079,10 @@ function contrastTableData(
   if (!d) {
     const ix = contextOf(holder)
     const ctx = rowsOfFeatureNamed(ix.rows as ContrastResultRow[], feature) as ContextRow[]
-    const view = rowView(holder, ctx.length === ix.rows.length ? undefined : contextIndices(ix, ctx))
+    const view = rowView(
+      holder,
+      ctx.length === ix.rows.length ? undefined : contextIndices(ix, ctx)
+    )
     const all = contextRowAt(ix)
     d = { view, ctx, ctxAt: (i) => all[view.at(i)] }
     m.set(key, d)
@@ -1233,7 +1338,10 @@ function compareTableData(
       ctx: ix.rows,
       ctxAt: (i) => all[i],
       cell,
-      reps: rowsAt(cmp, [...seen.values()].sort((a, b) => a - b))
+      reps: rowsAt(
+        cmp,
+        [...seen.values()].sort((a, b) => a - b)
+      )
     }
   }
   compareTables.set(at, out)
@@ -1280,8 +1388,15 @@ function CompareTable({
   dose = NO_DOSE,
   initialView = 'matrix',
   maxChars,
-  colour
+  colour,
+  showKey,
+  units
 }: {
+  /** the imported units, for the numeric conditions' column headers */
+  units?: CondUnits
+  /** the tile's key (plotResultKey): the table on show is registered under it, so the tile's
+   *  Download writes exactly it (see tableOnShow) */
+  showKey?: string
   /** the Compare's result (or the part of it on show) */
   cmp: { rows: readonly CompareResultRow[] }
   /** the dataset's numeric conditions (numericOfResult): their columns align right */
@@ -1339,12 +1454,15 @@ function CompareTable({
         statType,
         numeric,
         threshold,
-        dose.unit
+        dose.unit,
+        units
       ),
       // a curve fit's comparison as the plots read it ("drugA | baseline"); the key itself
       // stays on the result rows
       rows: data
-        ? longSource(data.view, displayMap, data.cell, (r) => compareCellRow(r, threshold, dose.scale))
+        ? longSource(data.view, displayMap, data.cell, (r) =>
+            compareCellRow(r, threshold, dose.scale)
+          )
         : tableRows(cellRows!, displayMap).map((t) =>
             analysis === 'curve_fit'
               ? {
@@ -1366,7 +1484,8 @@ function CompareTable({
       threshold,
       dose.unit,
       dose.scale,
-      numeric
+      numeric,
+      units
     ]
   )
   const matrix = useMemo(() => {
@@ -1374,13 +1493,30 @@ function CompareTable({
     const uid = data.view.col('uniqID')
     return compareMatrixOver(
       data.ctx,
-      { n: data.view.n, uid: (i) => uid(i) as string, ctx: data.ctxAt, value: data.cell(field.key) },
+      {
+        n: data.view.n,
+        uid: (i) => uid(i) as string,
+        ctx: data.ctxAt,
+        value: data.cell(field.key)
+      },
       displayMap,
       field,
       palettes
     )
   }, [data, cellRows, displayMap, field, palettes])
   const cur = view === 'matrix' ? matrix : long
+  // What's on show is what the tile's Download writes: this view, its columns, its "Show" field.
+  useEffect(
+    () =>
+      showKey
+        ? showTable(showKey, {
+            columns: cur.columns,
+            rows: cur.rows,
+            name: view === 'matrix' ? `Comparison matrix (${field.label})` : 'Comparison table'
+          })
+        : undefined,
+    [showKey, cur, view, field.label]
+  )
   const columns = colored
     ? cur.columns
     : cur.columns.map((c) => (c.cellStyle ? { ...c, cellStyle: undefined } : c))
@@ -1466,12 +1602,12 @@ const valueLabel = (label: string, name: string): string =>
   name === 'FC' || !label.startsWith('FC') ? label : `${name} ${label.slice(2)}`
 
 /** Columns for a contrast (compare-vs-compare) table. */
-function contrastColumns(rows: ContextRow[], numeric: NumericConds): Column[] {
+function contrastColumns(rows: ContextRow[], numeric: NumericConds, units?: CondUnits): Column[] {
   const name = contrastValueName(rows)
   const cols: Column[] = [
     { key: 'uniqID', label: 'uniqID' },
     { key: 'gene', label: 'gene' },
-    ...condColumns(rows, numeric, ['cell', 'dose', 'time'])
+    ...condColumns(rows, numeric, ['cell', 'dose', 'time'], units)
   ]
   cols.push(
     { key: 'FC1', label: valueLabel('FC1', name), align: 'right', format: fixed(3) },
@@ -1529,7 +1665,12 @@ function contrastMatrix(
   }
   const uid = data.view.col('uniqID')
   return pivotOver(
-    { n: data.view.n, uid: (i) => uid(i) as string, ctx: data.ctxAt, value: data.view.col(field.key) },
+    {
+      n: data.view.n,
+      uid: (i) => uid(i) as string,
+      ctx: data.ctxAt,
+      value: data.view.col(field.key)
+    },
     displayMap,
     field,
     colOf,
@@ -1548,8 +1689,15 @@ function ContrastTable({
   numeric,
   initialView = 'matrix',
   maxChars,
-  colour
+  colour,
+  showKey,
+  units
 }: {
+  /** the imported units, for the numeric conditions' column headers */
+  units?: CondUnits
+  /** the tile's key (plotResultKey): the table on show is registered under it, so the tile's
+   *  Download writes exactly it (see tableOnShow) */
+  showKey?: string
   /** its rows of the feature on show (contrastTableData) */
   data: TableData<ContrastResultRow>
   /** the dataset's numeric conditions (numericOfResult): their columns align right */
@@ -1586,16 +1734,28 @@ function ContrastTable({
   const field = fields.find((f) => f.key === fieldKey) ?? fields[0] ?? CONTRAST_FIELDS[0]
   const long = useMemo(
     () => ({
-      columns: contrastColumns(data.ctx, numeric),
+      columns: contrastColumns(data.ctx, numeric, units),
       rows: longSource(data.view, displayMap)
     }),
-    [data, displayMap, numeric]
+    [data, displayMap, numeric, units]
   )
   const matrix = useMemo(
     () => contrastMatrix(data, displayMap, field, palettes),
     [data, displayMap, field, palettes]
   )
   const cur = view === 'matrix' ? matrix : long
+  // What's on show is what the tile's Download writes: this view, its columns, its "Show" field.
+  useEffect(
+    () =>
+      showKey
+        ? showTable(showKey, {
+            columns: cur.columns,
+            rows: cur.rows,
+            name: view === 'matrix' ? `Contrast matrix (${field.label})` : 'Contrast table'
+          })
+        : undefined,
+    [showKey, cur, view, field.label]
+  )
   const columns = colored
     ? cur.columns
     : cur.columns.map((c) => (c.cellStyle ? { ...c, cellStyle: undefined } : c))
@@ -1758,19 +1918,24 @@ export function PanelBody({
   // A condition's legend heading with its unit — dose (nM), time (min) — for the condition
   // legends (QC, gene bar, cluster); one function per units, so the plots don't redraw for nothing.
   const condTitle = useCallback((c: ConditionKey): string => axisTitle(c, units), [units])
-  // The scale every abundance plot shows Clean data on (see plotScaleOf), from the Clean data step
-  // this plot reads — directly, or through a Compare / Contrast. Log₁₀ when there's none.
+  // The scale every abundance plot shows Clean data on (see presentScaleOf): the one the Clean-data
+  // result this plot reads carries — directly, or through a Compare / Contrast. Log₁₀ when there's
+  // none.
   const cleanId = useMemo(
     () => (upId ? cleanDataUpstream(upId, edges, results) : undefined),
     [upId, edges, results]
   )
-  const cleanTransform = useGraph((s) => {
-    const n = cleanId ? s.nodes.find((x) => x.id === cleanId) : undefined
-    return n && isStep(n) ? (n.data.config as StandardizeConfig).logTransform : undefined
-  })
   const cleanResult = cleanId ? results[cleanId] : undefined
+  // The rows a fold change's replicates are found on: a per-batch Compare's rows carry the batch,
+  // so its replicates are matched on rows that do too (withBatchCond).
+  const repStd =
+    cleanResult?.kind === 'standardize'
+      ? upCompareCfg?.splitBatch
+        ? withBatchCond(cleanResult.std)
+        : cleanResult.std
+      : undefined
   const abScale: ValueScale =
-    cleanResult?.kind === 'standardize' ? plotScaleOf(cleanResult.std, cleanTransform) : 'log10'
+    cleanResult?.kind === 'standardize' ? presentScaleOf(cleanResult.std) : 'log10'
   /** A contrast as a faceted plot's source: its rows built a facet at a time (FacetSource), an
    *  abundance contrast's sides (stored as log₁₀) moved onto abScale (abundanceOnScale) and
    *  fold-change contrasts as they are. */
@@ -1858,9 +2023,12 @@ export function PanelBody({
     if (result?.kind !== 'standardize')
       return <Empty text="Run this tile to produce the clean data table." />
     // Shown on Clean data's chosen scale (its log-transform); analyses read the linear rows.
-    const stdCfg = node.data.config as StandardizeConfig
     return (
-      <StdTable std={presentStd(result.std, presentScaleOf(result.std, stdCfg.logTransform))} />
+      <StdTable
+        std={presentStd(result.std, presentScaleOf(result.std))}
+        units={units}
+        showKey={plotResultKey(node.id, child?.id)}
+      />
     )
   }
   if (kind === 'compare' || kind === 'curveFit') {
@@ -1873,6 +2041,8 @@ export function PanelBody({
     const cmpCfg = node.data.config as CompareConfig
     return (
       <CompareTable
+        showKey={plotResultKey(node.id, child?.id)}
+        units={units}
         cmp={result.cmp}
         analysis={cmpCfg.analysis}
         effectLabels={effectLabelsOf(cmpCfg)}
@@ -1890,6 +2060,8 @@ export function PanelBody({
       return <Empty text="Connect a Compare tile, pick two levels to contrast, and run." />
     return (
       <ContrastTable
+        showKey={plotResultKey(node.id, child?.id)}
+        units={units}
         // the feature on the switcher (a table isn't faceted, but it shows one feature)
         data={contrastTableData(result.ctr, facetSel?.feature)}
         displayMap={result.displayMap}
@@ -1900,9 +2072,11 @@ export function PanelBody({
   }
   // The Data-table tile renders the UPSTREAM step's results table interactively.
   if (kind === 'table') {
-    // The configured default view seeds each table's own View switch; keying on it means a change
-    // from the settings gear takes effect immediately instead of only on the next mount.
+    // The configured view seeds each table's own View switch; keying on it means a change from the
+    // settings gear takes effect immediately instead of only on the next mount. Clean data's
+    // switch writes it (its QC view is Clean data's only).
     const view = (cfgSource as TableConfig).view
+    const startView = view === 'qc' ? 'matrix' : view
     // The uniqID and gene columns' display caps (cut with "…", whole on hover — display only).
     const tableCfg = cfgSource as TableConfig
     const maxChars = {
@@ -1919,15 +2093,11 @@ export function PanelBody({
     if (upstream.kind === 'standardize')
       return (
         <StdTable
-          key={view}
-          std={presentStd(
-            upstream.std,
-            presentScaleOf(
-              upstream.std,
-              (upStep?.data.config as StandardizeConfig | undefined)?.logTransform
-            )
-          )}
-          initialView={view}
+          std={presentStd(upstream.std, presentScaleOf(upstream.std))}
+          units={units}
+          showKey={plotResultKey(node.id, child?.id)}
+          view={view ?? 'matrix'}
+          setView={(v) => patchConfig({ view: v })}
           maxChars={maxChars}
           colour={colour}
         />
@@ -1937,6 +2107,8 @@ export function PanelBody({
       return (
         <CompareTable
           key={view}
+          showKey={plotResultKey(node.id, child?.id)}
+          units={units}
           // a two-way ANOVA: the group's `show` pick — its overall 2×2 rows or its factors
           cmp={facetSel ? cmpOfKind(upstream.cmp, facetSel.show) : upstream.cmp}
           analysis={upCfg?.analysis ?? 'compare'}
@@ -1947,7 +2119,7 @@ export function PanelBody({
           threshold={upstream.cmp.threshold ?? upCfg?.threshold}
           dose={curveDoseUnit(upCfg, units)}
           numeric={numeric}
-          initialView={view}
+          initialView={startView}
           maxChars={maxChars}
           colour={colour}
         />
@@ -1957,12 +2129,14 @@ export function PanelBody({
       return (
         <ContrastTable
           key={view}
+          showKey={plotResultKey(node.id, child?.id)}
+          units={units}
           // the feature on the switcher (a table isn't faceted, but it shows one feature)
           data={contrastTableData(upstream.ctr, facetSel?.feature)}
           displayMap={upstream.displayMap}
           comparisons={upstream.ctr.comparisons}
           numeric={numeric}
-          initialView={view}
+          initialView={startView}
           maxChars={maxChars}
           colour={colour}
         />
@@ -2076,7 +2250,7 @@ export function PanelBody({
     const cfg = cfgSource as InteractionConfig
     // x and the lines as picked (the model's first two by default); further factors averaged
     const { x, line } = interactionAxes(anova, cfg.xFactor, cfg.lineFactor)
-    const std = cleanResult?.kind === 'standardize' ? stdLookupOf(cleanResult.std) : undefined
+    const std = repStd ? stdLookupOf(repStd) : undefined
     return (
       <div style={styles.chart}>
         <div style={styles.stack}>
@@ -2385,10 +2559,26 @@ export function PanelBody({
     // Compare): the new cutoff, written the way its Statistic panel writes it.
     const ctrStep = upStep?.data.kind === 'contrast' ? upStep : undefined
     const ctrStat = (ctrStep?.data.config as ContrastConfig | undefined)?.stat
-    const onStatDrag = ctrStep
-      ? (edge: 'bandUp' | 'bandDown' | AxisTail, value: number) =>
-          useGraph.getState().setContrastStat(ctrStep.id, contrastStatDrag(ctrStat, edge, value))
-      : undefined
+    // An axis line's value is the facet's feature's (an abundance's own, back in log₁₀ as it's
+    // cut); a significance line reads as the p it stands for.
+    const abundance = upstream.ctr.valueKind === 'abundance'
+    const statDrag = (feature: ContrastFeatureId) =>
+      ctrStep
+        ? (edge: 'bandUp' | 'bandDown' | AxisTail, value: number) =>
+            useGraph
+              .getState()
+              .setContrastStat(
+                ctrStep.id,
+                contrastStatDrag(
+                  ctrStat,
+                  edge,
+                  abundance && feature === 'value' && edge !== 'bandUp' && edge !== 'bandDown'
+                    ? cutoffFromScale(value, abScale)
+                    : value,
+                  feature
+                )
+              )
+        : undefined
     return (
       <div style={styles.chart}>
         <FacetedPlot numeric={numeric} rows={contrastSource(upstream)} facetSel={facetSel}>
@@ -2409,8 +2599,15 @@ export function PanelBody({
                   scatter={scatter}
                   labelTop={labelCapOn(cfg) ? cfg.labelTop : 0}
                   style={cfg.style}
-                  onStatDrag={onStatDrag}
+                  onStatDrag={statDrag(featureOf(rows))}
                   asymmetric={ctrStat?.asymmetric ?? false}
+                  cutText={
+                    upperOnly(featureOf(rows))
+                      ? rows.some((r) => r.feature?.endsWith('q'))
+                        ? qText
+                        : pText
+                      : undefined
+                  }
                 />
               )}
             </Built>
@@ -2687,6 +2884,12 @@ export function PanelBody({
     const missing = noAxis(contextOf(upstream.cmp).rows)
     if (missing) return missing
     const drView = cfg.view ?? 'overview'
+    // A facet with one level of the axis has no response to draw: say so (and which conditions to
+    // change) rather than leave the plot empty. A curve fit's rows are whole curves — never one.
+    const levelled =
+      (draw: (rows: CompareResultRow[]) => ReactNode) =>
+      (rows: CompareResultRow[]): ReactNode =>
+        oneAxisLevel(rows, axis, axisTitle(axis, units)) ?? draw(rows)
     // Fed by a Curve fit: its look's defaults differ (no confidence band unless asked — drLook).
     const drCurveFit = upStep?.data.kind === 'curveFit'
     // A response surface method curve fit: its description 4PL ('curve') or its detection spline.
@@ -2772,23 +2975,21 @@ export function PanelBody({
                     exclude={[axis]}
                     facetSel={facetSel}
                   >
-                    {(rows) => (
+                    {levelled((rows) => (
                       <DRFocusView
                         rows={rows.filter((r) => r.uniqID === gene)}
                         axis={axis}
                         axisLabel={axisTitle(axis, units)}
                         gene={gene}
-                        std={cleanResult?.kind === 'standardize' ? stdLookupOf(cleanResult.std) : undefined}
+                        std={repStd ? stdLookupOf(repStd) : undefined}
                         look={drLook(cfg, drCurveFit)}
                         effectColors={effectsOf(cfg, upCompareCfg)}
                         model={model}
                         // Global: one y scale for the WHOLE Compare, so paging genes (or switching
                         // facets) doesn't rescale. Per gene (default): each gene's own range.
-                        scaleOf={
-                          drYScale(cfg, false) === 'global' ? upstream.cmp : undefined
-                        }
+                        scaleOf={drYScale(cfg, false) === 'global' ? upstream.cmp : undefined}
                       />
-                    )}
+                    ))}
                   </FacetedPlot>
                 )}
               </GeneSwitch>
@@ -2802,7 +3003,7 @@ export function PanelBody({
                 exclude={[axis]}
                 facetSel={facetSel}
               >
-                {(rows) => (
+                {levelled((rows) => (
                   <Built
                     build={() =>
                       buildDR(rows, {
@@ -2825,22 +3026,16 @@ export function PanelBody({
                           displayMap={dm}
                           axis={axis}
                           axisLabel={axisTitle(axis, units)}
-                          std={
-                            cleanResult?.kind === 'standardize'
-                              ? stdLookupOf(cleanResult.std)
-                              : undefined
-                          }
+                          std={repStd ? stdLookupOf(repStd) : undefined}
                           look={drLook(cfg, drCurveFit)}
                           effectColors={effectsOf(cfg, upCompareCfg)}
                           model={model}
-                          scaleOf={
-                            drYScale(cfg, false) === 'global' ? upstream.cmp : undefined
-                          }
+                          scaleOf={drYScale(cfg, false) === 'global' ? upstream.cmp : undefined}
                         />
                       )
                     }}
                   </Built>
-                )}
+                ))}
               </FacetedPlot>
             ) : (
               // DR/TR always draws every gene as a faint background curve; the selection only
@@ -2852,7 +3047,7 @@ export function PanelBody({
                 exclude={[axis]}
                 facetSel={facetSel}
               >
-                {(rows) => (
+                {levelled((rows) => (
                   <Built
                     build={() =>
                       buildDR(rows, {
@@ -2874,7 +3069,7 @@ export function PanelBody({
                       />
                     )}
                   </Built>
-                )}
+                ))}
               </FacetedPlot>
             )}
           </div>
@@ -2933,7 +3128,7 @@ export function PanelBody({
                 <CurveMadView
                   rows={rows}
                   displayMap={upstream.displayMap}
-                  std={cleanResult?.kind === 'standardize' ? stdLookupOf(cleanResult.std) : undefined}
+                  std={repStd ? stdLookupOf(repStd) : undefined}
                   unit={curveDoseUnit(upCfg, units).unit}
                   style={cfg.style}
                   yScale={cfg.yScale}
@@ -3427,7 +3622,7 @@ export function PanelBody({
                       rows={rows}
                       pair={pair}
                       gene={gene}
-                      std={cleanResult?.kind === 'standardize' ? stdLookupOf(cleanResult.std) : undefined}
+                      std={repStd ? stdLookupOf(repStd) : undefined}
                       global={yScale === 'global'}
                       scaleGenes={scaleGenes}
                       dim={dim}
@@ -3912,13 +4107,25 @@ function qcPlotOptions(metric: QcMetric): QcConfig['plot'][] {
 }
 
 /** Why a volcano has nothing to draw: its genes carry a fold change but no p-value — a side with
- *  one replicate can't be tested — and, of the whole Compare, the compounds that were tested (where
- *  to look instead). */
+ *  one replicate can't be tested, or (both sides replicated) the t-test blocks on Clean data's
+ *  batches and the two sides share none, so the comparison can't be told from the batch — and, of
+ *  the whole Compare, the compounds that were tested (where to look instead). */
 function untestedNote(
   all: { rows: readonly CompareResultRow[] },
   shown: CompareResultRow[],
   stat: 'pP' | 'pQ'
 ): string {
+  const word = stat === 'pQ' ? 'q' : 'p'
+  const spread = (v: number | null | undefined): boolean => v != null && Number.isFinite(v)
+  // a replicate SD on both sides: the test had replicates, so the batches stopped it
+  if (shown.some((r) => spread(r.sd1) && spread(r.sd2)))
+    return (
+      `No ${word}-values here: both sides have replicates, but the t-test blocks on Clean data's ` +
+      `batches, and here the two sides are never in the same batch (or too few samples are left ` +
+      `once each batch is allowed for), so the comparison can't be told apart from the batch. Put ` +
+      `samples of both sides in a shared batch, or clear the batches in Clean data for an ` +
+      `unblocked t-test.`
+    )
   // the compounds of the tested rows, read off the columns (no row built)
   const view = rowView(all)
   const p = view.col(stat)
@@ -3934,10 +4141,45 @@ function untestedNote(
     ? ' No comparison in this Compare has one.'
     : ` Tested: ${cmpds.length > 6 ? `${cmpds.slice(0, 6).join(', ')} and ${cmpds.length - 6} more` : cmpds.join(', ')}.`
   return (
-    `No ${stat === 'pQ' ? 'q' : 'p'}-values here: these ${shown.length.toLocaleString()} genes have a ` +
+    `No ${word}-values here: these ${shown.length.toLocaleString()} genes have a ` +
     `fold change only — a side with one replicate can't be tested.${where}`
   )
 }
+
+/** A Response plot's facet with fewer than two levels of its axis (`axis`, titled `title`): a note
+ *  saying so — a response needs two — else null. A curve fit's rows (whole curves) always draw. */
+function oneAxisLevel(
+  rows: readonly CompareResultRow[],
+  axis: ConditionKey,
+  title: string
+): ReactNode | null {
+  const levels = new Set<number>()
+  for (const r of rows) {
+    if (r.curve || r.rs) return null
+    const v = ctxNum(r, axis)
+    if (v != null) levels.add(v)
+    if (levels.size > 1) return null
+  }
+  if (!rows.length) return null
+  const [only] = levels
+  return (
+    <Empty
+      text={
+        only == null
+          ? `No ${title} levels at the conditions on show — pick others above.`
+          : `Only one ${title} level (${only}) at the conditions on show — a response needs two or more. Pick other conditions above.`
+      }
+    />
+  )
+}
+
+/** A significance line's value (−log₁₀ p or q) as the p or q it stands for. */
+const pText = (v: number): string => `p ≤ ${roundP(10 ** -v)}`
+const qText = (v: number): string => `q ≤ ${roundP(10 ** -v)}`
+
+/** The feature a contrast facet's rows show (the sides' own value when it offers one). */
+const featureOf = (rows: ContrastResultRow[]): ContrastFeatureId =>
+  rows.find((r) => r.featureId)?.featureId ?? 'value'
 
 function Empty({ text }: { text: string }): ReactNode {
   return <div style={styles.empty}>{text}</div>

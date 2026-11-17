@@ -85,9 +85,7 @@ export function FacetedPlot<T extends ContextRow>({
   const realise = (ctx: ContextRow[]): T[] => {
     if (!of || !ix) return ctx as T[]
     const built = rowsOfContexts(of, ix, ctx)
-    return (
-      scale ? abundanceOnScale(built as unknown as ContrastResultRow[], scale) : built
-    ) as T[]
+    return (scale ? abundanceOnScale(built as unknown as ContrastResultRow[], scale) : built) as T[]
   }
   const dims = useMemo(
     () => facetDims(rows, exclude).filter((d) => !(together && d === 'comparison')),
@@ -123,8 +121,8 @@ export function FacetedPlot<T extends ContextRow>({
             <div key={dim} style={styles.bar}>
               <span style={styles.barLabel}>{facetBarLabel(bar)}</span>
               {/* The plot tiles' switch (as in SwitchBar). A one-sided contrast level (outer-join
-                rows with nothing to pair) is greyed, not selectable — the tooltip says which side
-                has the data. Past PILL_CAP levels of a categorical condition, a searchable
+                rows with nothing to pair), or one not measured alongside the picks to its left, is
+                greyed, not selectable — the tooltip says why. Past PILL_CAP levels of a categorical condition, a searchable
                 dropdown. */}
               <ChoiceSwitch
                 size="sm"

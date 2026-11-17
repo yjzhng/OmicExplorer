@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import { canConnect } from '../graph/registry'
-import { recleanStandardized } from './ingest'
+import { previewOfResult, recleanStandardized } from './ingest'
 import type { StandardizeResult, StandardRow } from './types'
 
 /** A Clean data result: genes g0…g9 in 4 samples (reps 1–4, cmpd A), sample 2 loaded 2×; g9
@@ -63,7 +63,10 @@ describe('Clean data on Clean data', () => {
     expect(out.normalization).toMatchObject({ used: 'protein', protein: 'g0', samples: 4 })
     // the import's settlement carries over; the summaries are this step's
     expect(out.activeConditions).toEqual(['cmpd'])
-    expect(out.inputScale).toBe('linear')
+    // it arrives as the step above presents it — logged — and stays so unless told otherwise
+    expect(out.inputScale).toBe('log10')
+    expect(out.scale).toBe('log10')
+    expect(recleanStandardized({ std: prev, logTransform: 'log2' }).scale).toBe('log2')
     expect(out.imputation).toBeUndefined()
     // the input itself is untouched
     expect(prev.rows.some((r) => r.uniqID === 'g9')).toBe(true)
@@ -74,5 +77,16 @@ describe('Clean data on Clean data', () => {
     expect(out.normalization).toBeUndefined()
     expect(out.cleanup.droppedGenes).toBe(0)
     expect(out.rows).toHaveLength(40)
+  })
+
+  it("previews the table it's given on the scale it's presented on — no Load data above", () => {
+    // the values on the scale the step above presents them: here log₂ (rows are linear)
+    const prev = { ...cleanResult(), scale: 'log2' as const }
+    const p = previewOfResult(prev)
+    expect(p.inputScale).toBe('log2')
+    // 37 measured values (g9 in one sample only), the missing ones left out
+    expect(p.sample).toHaveLength(37)
+    expect(Math.min(...p.sample)).toBeCloseTo(Math.log2(100), 6)
+    expect(p.evidence.max).toBeCloseTo(Math.log2(1800), 6)
   })
 })

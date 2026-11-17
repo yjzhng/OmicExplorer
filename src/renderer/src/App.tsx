@@ -24,7 +24,8 @@ import {
   type FinalConnectionState,
   type Node,
   type NodeChange,
-  type OnConnectStartParams
+  type OnConnectStartParams,
+  type Viewport
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 import './app.css'
@@ -39,21 +40,28 @@ import { SaveAsMenu } from './ui/SaveAsMenu'
 import { REPO_URL, useUpdateCheck, type UpdateInfo } from './ui/useUpdateCheck'
 import { edgeTypes } from './graph/GraphEdge'
 import { FRAME_LABEL_H, FRAME_PAD, type FrameData } from './graph/FrameNode'
-import { frameDepths, frameTiles, outermostFrame, topFullFrames } from './graph/frames'
+import { editMembers, frameDepths, frameTiles, outermostFrame, topFullFrames } from './graph/frames'
+import { useFrameEdit } from './graph/frameEdit'
 import { nodeTypes } from './graph/GraphNode'
 import { useGraph } from './graph/store'
+import { clipCorner, parseClip, type TileClip } from './graph/tileClipboard'
 import {
   accentOf,
   ALL_OPS,
   canConnect,
   wiredKindOf,
   categoryOf,
+  DEFAULT_AXES,
   entryKey,
   NODE_SPECS,
+  outputKindOf,
   PLOT_SECTIONS,
   plotEntriesFor,
   type PlotMenuEntry
 } from './graph/registry'
+import { orderedKeys } from './graph/plotOrder'
+import { TilePicker } from './graph/TilePicker'
+import { ChoiceSwitch } from './ui/ChoiceSwitch'
 import { PlotConfig, PlotEntryMenu } from './graph/NodeConfigPanel'
 import { projectStanding } from './graph/project'
 import {
@@ -307,6 +315,25 @@ const CONNECTION_LINE: CSSProperties = {
   opacity: 0.85
 }
 
+/** ⌘ on macOS, Ctrl+ elsewhere — for the shortcut the canvas menu names. */
+const MOD = /Mac/i.test(navigator.platform) ? '⌘' : 'Ctrl+'
+const plural = (n: number, what: string): string => `${n} ${what}${n === 1 ? '' : 's'}`
+/** "3 tiles", "3 tiles and 1 group" — what a copy holds. */
+const countText = (tiles: number, groups: number): string =>
+  groups ? `${plural(tiles, 'tile')} and ${plural(groups, 'group')}` : plural(tiles, 'tile')
+
+/** Each selection-bar action as its button says it's done (a tick, for a moment). */
+const ACT_DONE: Record<string, string> = {
+  Group: 'Grouped',
+  Ungroup: 'Ungrouped',
+  Tidy: 'Tidied',
+  Cascade: 'Cascaded',
+  Expand: 'Expanded',
+  Collapse: 'Collapsed',
+  Duplicate: 'Duplicated',
+  Copy: 'Copied'
+}
+
 /** Action bar for the current marquee selection (Group/Ungroup/Duplicate/Delete). */
 function SelectionActions({
   count,
@@ -321,7 +348,9 @@ function SelectionActions({
   onExpand,
   onCollapse,
   onDuplicate,
-  onDelete
+  onCopy,
+  onDelete,
+  done
 }: {
   count: number
   canGroup: boolean
@@ -335,23 +364,31 @@ function SelectionActions({
   onCollapse: () => void
   onCascade: () => void
   onDuplicate: () => void
+  onCopy: () => void
   onDelete: () => void
+  /** the action just done: its button shows the tick (held by the canvas, so a selection that
+   *  changes with it — Duplicate's — keeps it) */
+  done: string | null
 }) {
-  const btn = (label: string, enabled: boolean, fn: () => void, title: string, danger = false) => (
-    <button
-      disabled={!enabled}
-      title={title}
-      onClick={fn}
-      style={{
-        ...styles.actBtn,
-        ...(danger ? styles.actBtnDanger : {}),
-        opacity: enabled ? 1 : 0.4,
-        cursor: enabled ? 'pointer' : 'not-allowed'
-      }}
-    >
-      {label}
-    </button>
-  )
+  const btn = (label: string, enabled: boolean, fn: () => void, title: string, danger = false) => {
+    const ticked = done === label
+    return (
+      <button
+        disabled={!enabled && !ticked}
+        title={title}
+        onClick={fn}
+        style={{
+          ...styles.actBtn,
+          ...(danger ? styles.actBtnDanger : {}),
+          ...(ticked ? styles.actBtnDone : {}),
+          opacity: enabled || ticked ? 1 : 0.4,
+          cursor: enabled ? 'pointer' : 'not-allowed'
+        }}
+      >
+        {ticked ? `✓ ${ACT_DONE[label] ?? label}` : label}
+      </button>
+    )
+  }
   return (
     <Panel position="bottom-center">
       <div style={styles.actBar}>
@@ -383,10 +420,64 @@ function SelectionActions({
           'Fold away the plots in the selected plot groups'
         )}
         {btn('Duplicate', true, onDuplicate, 'Duplicate the selection')}
+        {btn(
+          'Copy',
+          true,
+          onCopy,
+          'Copy the selection (⌘C) — paste it with ⌘V into any workflow, window or project'
+        )}
         {btn('Delete', true, onDelete, 'Delete the selection', true)}
       </div>
     </Panel>
   )
+}
+
+/** In the selection bar's place while a group's tiles are edited (its frame's pencil): what to
+ *  click, how much is marked, and Cancel / Done (Done = the frame's ✓). */
+function EditGroupBar({
+  label,
+  adding,
+  removing
+}: {
+  label: string
+  adding: number
+  removing: number
+}) {
+  const marked = [adding && `${adding} to add`, removing && `${removing} to take out`].filter(
+    Boolean
+  )
+  return (
+    <Panel position="bottom-center">
+      <div style={styles.actBar}>
+        <span style={styles.actCount}>
+          Editing {label}: click a tile or group outside to add it, inside to take it out
+          {marked.length ? ` · ${marked.join(', ')}` : ''}
+        </span>
+        <button
+          title="Leave the group as it was (Esc)"
+          onClick={() => useFrameEdit.getState().cancel()}
+          style={{ ...styles.actBtn, cursor: 'pointer' }}
+        >
+          Cancel
+        </button>
+        <button
+          title="Apply the changes to the group"
+          onClick={() => useFrameEdit.getState().finish()}
+          style={{ ...styles.actBtn, cursor: 'pointer' }}
+        >
+          Done
+        </button>
+      </div>
+    </Panel>
+  )
+}
+
+/** Each workflow's last canvas view (pan + zoom), for the session: the canvas unmounts while
+ *  Results is shown, and coming back lands where it was left rather than re-fitted. */
+const lastViewports = new Map<string, Viewport>()
+const viewportKey = (): string => {
+  const s = useGraph.getState()
+  return `${s.activeFolderId ?? ''}:${s.activeWorkflowId ?? ''}`
 }
 
 function Canvas() {
@@ -414,7 +505,15 @@ function Canvas() {
   const [touchedFrames, setTouchedFrames] = useState<string[] | null>(null)
   // Canvas frames (Group): each drawn as a node behind its tiles, sized to their box. Derived from
   // the LOCAL tile positions, so a frame follows its tiles live during a drag.
-  const frames = useGraph((s) => s.frames)
+  const storeFrames = useGraph((s) => s.frames)
+  // A group being edited (its frame's pencil) is drawn with its marked tiles already added / taken
+  // out, so its box shows what ✓ will make of it — unless that would leave it empty (and its ✓ gone).
+  const frameEdit = useFrameEdit((s) => s.edit)
+  const frames = useMemo(() => {
+    if (!frameEdit) return storeFrames
+    const next = editMembers(storeFrames, frameEdit.id, frameEdit.add, frameEdit.remove)
+    return next.some((f) => f.id === frameEdit.id) ? next : storeFrames
+  }, [storeFrames, frameEdit])
   const unframeNodes = useGraph((s) => s.unframeNodes)
   const selectTiles = useGraph((s) => s.selectTiles)
   const frameNodes = useMemo((): Node<FrameData>[] => {
@@ -472,9 +571,18 @@ function Canvas() {
           id: f.id,
           type: 'frame',
           position: { x: b.x0, y: b.y0 },
-          data: { label: f.label, width, height },
+          data: {
+            label: f.label,
+            width,
+            height,
+            edit: !frameEdit ? 'idle' : frameEdit.id === f.id ? 'editing' : 'other'
+          },
           width,
           height,
+          // Its size as measured, too: a node rebuilt without `measured` loses its handle bounds
+          // until React Flow measures it again — and until then counts as inside every
+          // drag-select, so each frame (rebuilt as the selection changes) was "touched" by all.
+          measured: { width, height },
           // behind every tile; an inner frame above the one holding it
           zIndex: -100 + (depth.get(f.id) ?? 0),
           selected: shownSel.has(f.id),
@@ -482,7 +590,20 @@ function Canvas() {
         }
       ]
     })
-  }, [frames, nodes, touchedFrames])
+  }, [frames, nodes, touchedFrames, frameEdit])
+  // Editing stops when its group goes (undo, another workflow), and on Esc, dropping the marks.
+  useEffect(() => {
+    if (frameEdit && !storeFrames.some((f) => f.id === frameEdit.id))
+      useFrameEdit.getState().cancel()
+  }, [frameEdit, storeFrames])
+  useEffect(() => {
+    if (!frameEdit) return
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key === 'Escape') useFrameEdit.getState().cancel()
+    }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [frameEdit])
   const shown = useMemo(
     () => [...(frameNodes as unknown as GraphNode[]), ...nodes],
     [frameNodes, nodes]
@@ -653,6 +774,120 @@ function Canvas() {
   const canExpand = selGroups.some(isFolded)
   const clearSelection = useCallback(() => setSelectedIds([]), [])
 
+  // Copy / paste tiles (⌘C / ⌘V, Edit › Copy / Paste): through the system clipboard as text, so a
+  // copy pastes into any workflow, window or project. Left to the page while text is being typed
+  // or selected. A paste back into the workflow it came from lands beside the originals, stepping
+  // on with each paste of the same copy; elsewhere it lands in the middle of the view.
+  const pasteCount = useRef<{ text: string; n: number }>({ text: '', n: 0 })
+  // The selection-bar action just done: its button ticks for a moment (⌘C ticks Copy too).
+  const [done, setDone] = useState<{ label: string; key: number } | null>(null)
+  const tick = useCallback((label: string) => {
+    setDone((d) => ({ label, key: (d?.key ?? 0) + 1 }))
+  }, [])
+  useEffect(() => {
+    if (!done) return
+    const t = window.setTimeout(() => setDone(null), 1200)
+    return () => window.clearTimeout(t)
+  }, [done])
+  const copySelection = useCallback((): string | null => {
+    const clip = useGraph.getState().copyTiles(selectedIds)
+    if (!clip) return null
+    tick('Copy')
+    return JSON.stringify(clip)
+  }, [selectedIds, tick])
+  const pasteClip = useCallback(
+    (text: string, clip: TileClip, point?: { x: number; y: number }) => {
+      const g = useGraph.getState()
+      let at: { x: number; y: number }
+      if (point) at = point
+      else if (g.copiedHere(clip)) {
+        const k = pasteCount.current.text === text ? pasteCount.current.n + 1 : 1
+        pasteCount.current = { text, n: k }
+        const c = clipCorner(clip)
+        at = { x: c.x + 40 * k, y: c.y + 40 * k }
+      } else {
+        const box = canvasRef.current?.getBoundingClientRect()
+        const mid = box
+          ? screenToFlowPosition({ x: box.left + box.width / 2, y: box.top + box.height / 2 })
+          : { x: 0, y: 0 }
+        const c = clipCorner(clip)
+        const w = Math.max(...clip.nodes.map((n) => n.position.x)) - c.x
+        const h = Math.max(...clip.nodes.map((n) => n.position.y)) - c.y
+        at = { x: mid.x - w / 2 - 80, y: mid.y - h / 2 - 40 }
+      }
+      // The pasted tiles show up selected; a Load tile's input that couldn't be copied over
+      // shows when it runs (its file not found).
+      void g.pasteTiles(clip, at).then(({ errors }) => {
+        if (errors.length) console.warn('Pasted Load tile inputs not copied:', errors)
+      })
+    },
+    [screenToFlowPosition]
+  )
+  // The canvas's right-click menu: Paste (at the pointer), once the clipboard is read — greyed when
+  // it holds no copy of tiles.
+  const [paneMenu, setPaneMenu] = useState<{
+    x: number
+    y: number
+    at: { x: number; y: number }
+    clip?: { text: string; clip: TileClip } | null
+  } | null>(null)
+  const openPaneMenu = useCallback(
+    (e: ReactMouseEvent | MouseEvent) => {
+      e.preventDefault()
+      const at = screenToFlowPosition({ x: e.clientX, y: e.clientY })
+      setPaneMenu({ x: e.clientX, y: e.clientY, at })
+      const read =
+        typeof window.api.readText === 'function'
+          ? window.api.readText()
+          : navigator.clipboard.readText()
+      void read.then(
+        (text) => {
+          const clip = parseClip(text)
+          setPaneMenu((m) => (m ? { ...m, clip: clip ? { text, clip } : null } : m))
+        },
+        () => setPaneMenu((m) => (m ? { ...m, clip: null } : m))
+      )
+    },
+    [screenToFlowPosition]
+  )
+  useEffect(() => {
+    if (!paneMenu) return
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key === 'Escape') setPaneMenu(null)
+    }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [paneMenu])
+  useEffect(() => {
+    const typing = (): boolean => {
+      const el = document.activeElement as HTMLElement | null
+      return (
+        !!el && (el.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(el.tagName ?? ''))
+      )
+    }
+    const onCopy = (e: ClipboardEvent): void => {
+      if (typing() || !!window.getSelection()?.toString()) return
+      const text = copySelection()
+      if (!text || !e.clipboardData) return
+      e.clipboardData.setData('text/plain', text)
+      e.preventDefault()
+    }
+    const onPaste = (e: ClipboardEvent): void => {
+      if (typing()) return
+      const text = e.clipboardData?.getData('text/plain') ?? ''
+      const clip = parseClip(text)
+      if (!clip) return
+      e.preventDefault()
+      pasteClip(text, clip)
+    }
+    document.addEventListener('copy', onCopy)
+    document.addEventListener('paste', onPaste)
+    return () => {
+      document.removeEventListener('copy', onCopy)
+      document.removeEventListener('paste', onPaste)
+    }
+  }, [copySelection, pasteClip])
+
   // Any pending placeholder is dismissed when the user does anything but pick a type.
   const dismissPlaceholders = useCallback(() => {
     for (const n of useGraph.getState().nodes) if (n.type === 'placeholder') cancelPlaceholder(n.id)
@@ -717,10 +952,13 @@ function Canvas() {
     if (hideTimer.current) window.clearTimeout(hideTimer.current)
     setShowMini(true)
   }, [])
-  const onMoveEnd = useCallback(() => {
+  const onMoveEnd = useCallback((_e: unknown, viewport: Viewport) => {
     if (hideTimer.current) window.clearTimeout(hideTimer.current)
     hideTimer.current = window.setTimeout(() => setShowMini(false), 900)
+    lastViewports.set(viewportKey(), viewport)
   }, [])
+  // (Not read as the canvas unmounts: React Flow resets its store first, so that read gave the
+  // origin at 1×, and every return landed there.)
 
   // Drag from a node's output handle and release over empty canvas → create + connect a
   // new tile right there (edge persists). A single valid next step is created directly; if
@@ -777,6 +1015,9 @@ function Canvas() {
         onNodeClick={(e, node) => {
           if (placing) return placeAt(e)
           if (node.type === 'placeholder') return // clicks inside are the type picker
+          // A group being edited: the tiles take their own clicks (marking them), and nothing else
+          // selects or opens.
+          if (frameEdit) return
           dismissPlaceholders()
           // A frame selects its tiles on pointer-down (FrameNode); it has no settings to open.
           if ((node.type as string) === 'frame') return selectNode(null)
@@ -789,6 +1030,7 @@ function Canvas() {
             return selectNode(null)
           selectNode(node.id)
         }}
+        onPaneContextMenu={openPaneMenu}
         onPaneClick={(e) => {
           if (placing) return placeAt(e)
           dismissPlaceholders()
@@ -801,8 +1043,14 @@ function Canvas() {
         onNodeDragStop={() => {
           draggingRef.current = false
           // One write of the final layout to the store (marks the project dirty). Moving a node
-          // has no downstream side effects, so setting nodes directly is safe.
-          useGraph.setState({ nodes: nodesRef.current, dirty: true })
+          // has no downstream side effects, so setting nodes directly is safe. React Flow's last
+          // change (dragging: false) is still queued when this runs, and the store write replaces
+          // it — so the flag is cleared here: a tile left `dragging` is taken into every
+          // drag-select, wherever it is.
+          useGraph.setState({
+            nodes: nodesRef.current.map((n) => (n.dragging ? { ...n, dragging: false } : n)),
+            dirty: true
+          })
         }}
         onSelectionChange={onSelectionChange}
         // Don't lift a selected node above the rest: a selected frame would then cover its own tiles
@@ -818,17 +1066,28 @@ function Canvas() {
         // This makes a pan/select mode toggle unnecessary.
         panOnScroll
         panOnDrag={false}
-        selectionOnDrag
+        // (not while a group is edited: tiles are marked by clicking them)
+        selectionOnDrag={!frameEdit}
         selectionMode={SelectionMode.Partial}
         selectionKeyCode={null}
         zoomOnScroll={false}
         zoomOnPinch
-        // Frame existing nodes when a saved workflow is opened (Canvas mounts per project open), but
-        // do NOT auto-fit an empty canvas — the bare `fitView` prop defers and fires on the first
-        // dropped tile, recentring it instead of leaving it where it was placed. maxZoom caps a
-        // single small node from blowing up to the default 2×.
+        // Room to zoom out over a large workflow (React Flow's default stops at 0.5).
+        minZoom={0.1}
+        // Back from Results (or to a workflow already seen this session): the view it was left at.
+        // Else frame existing nodes when a saved workflow is opened (Canvas mounts per project
+        // open), but do NOT auto-fit an empty canvas — the bare `fitView` prop defers and fires on
+        // the first dropped tile, recentring it instead of leaving it where it was placed. maxZoom
+        // caps a single small node from blowing up to the default 2×.
         onInit={(instance) => {
-          if (useGraph.getState().nodes.length > 0) instance.fitView({ maxZoom: 1, padding: 0.2 })
+          const key = viewportKey()
+          const last = lastViewports.get(key)
+          if (last) void instance.setViewport(last)
+          else if (useGraph.getState().nodes.length > 0)
+            // the fitted view is the one to come back to until the user moves it
+            void instance
+              .fitView({ maxZoom: 1, padding: 0.2 })
+              .then(() => lastViewports.set(key, instance.getViewport()))
         }}
         proOptions={{ hideAttribution: true }}
       >
@@ -861,30 +1120,63 @@ function Canvas() {
         )}
         {/* Bottom-centre; hidden while the selection action bar occupies that spot, and until a data
             folder is set (so steps can't be added before there's data). */}
-        {!needsFolder && selectedIds.length === 0 && (
+        {!needsFolder && selectedIds.length === 0 && !frameEdit && (
           <NewStep placing={placing} onToggle={togglePlacing} />
         )}
-        {selectedIds.length > 0 && (
+        {frameEdit && (
+          <EditGroupBar
+            label={storeFrames.find((f) => f.id === frameEdit.id)?.label ?? 'group'}
+            adding={frameEdit.add.length}
+            removing={frameEdit.remove.length}
+          />
+        )}
+        {selectedIds.length > 0 && !frameEdit && (
           <SelectionActions
             count={selCount}
             canGroup={canGroup}
             canUngroup={canUngroup}
-            onGroup={() => frameNodesAction(selectedIds)}
-            onUngroup={() => unframeNodes(selectedIds)}
-            onTidy={() => tidyNodes(selectedIds)}
-            onCascade={() => cascadeNodes(selectedIds)}
+            onGroup={() => {
+              frameNodesAction(selectedIds)
+              tick('Group')
+            }}
+            onUngroup={() => {
+              unframeNodes(selectedIds)
+              tick('Ungroup')
+            }}
+            onTidy={() => {
+              tidyNodes(selectedIds)
+              tick('Tidy')
+            }}
+            onCascade={() => {
+              cascadeNodes(selectedIds)
+              tick('Cascade')
+            }}
             canExpand={canExpand}
             canCollapse={canCollapse}
-            onExpand={() => setGroupsCollapsed(selectedIds, false)}
-            onCollapse={() => setGroupsCollapsed(selectedIds, true)}
+            onExpand={() => {
+              setGroupsCollapsed(selectedIds, false)
+              tick('Expand')
+            }}
+            onCollapse={() => {
+              setGroupsCollapsed(selectedIds, true)
+              tick('Collapse')
+            }}
             // Copies land on top and become the selection (via node.selected), so the
             // action bar follows them — no clearSelection here.
-            onDuplicate={() => duplicateNodes(selectedIds)}
+            onDuplicate={() => {
+              duplicateNodes(selectedIds)
+              tick('Duplicate')
+            }}
+            onCopy={() => {
+              const text = copySelection()
+              if (text) void window.api.copyText(text)
+            }}
             onDelete={() => {
               // A selected group's tiles go with it (and so the group); Ungroup keeps them.
               selectedIds.forEach((id) => deleteNode(id))
               clearSelection()
             }}
+            done={done?.label ?? null}
           />
         )}
         <PanControls onPan={panBy} />
@@ -907,6 +1199,56 @@ function Canvas() {
         )}
       </ReactFlow>
       {placing && ghost && <PlacementGhost x={ghost.x} y={ghost.y} />}
+      {paneMenu && (
+        <>
+          <div
+            style={styles.scrim}
+            onClick={() => setPaneMenu(null)}
+            onContextMenu={(e) => {
+              e.preventDefault()
+              setPaneMenu(null)
+            }}
+          />
+          <div
+            role="menu"
+            style={{
+              ...styles.paneMenu,
+              left: Math.min(paneMenu.x, window.innerWidth - 200),
+              top: Math.min(paneMenu.y, window.innerHeight - 60)
+            }}
+          >
+            <button
+              role="menuitem"
+              disabled={!paneMenu.clip}
+              title={
+                paneMenu.clip === undefined
+                  ? 'Reading the clipboard…'
+                  : paneMenu.clip
+                    ? 'Paste the copied tiles here'
+                    : 'Nothing to paste: select tiles and Copy them first'
+              }
+              style={{
+                ...styles.menuAction,
+                display: 'flex',
+                justifyContent: 'space-between',
+                ...(paneMenu.clip ? null : { opacity: 0.45, cursor: 'not-allowed' })
+              }}
+              onClick={() => {
+                const c = paneMenu.clip
+                setPaneMenu(null)
+                if (c) pasteClip(c.text, c.clip, paneMenu.at)
+              }}
+            >
+              Paste
+              <span style={styles.menuKey}>
+                {paneMenu.clip
+                  ? countText(paneMenu.clip.clip.nodes.length, paneMenu.clip.clip.frames.length)
+                  : `${MOD}V`}
+              </span>
+            </button>
+          </div>
+        </>
+      )}
     </div>
   )
 }
@@ -1006,8 +1348,9 @@ function PaletteSettings(): ReactNode {
 
 /** The process steps a plot can be added after, in the editor's order — the Plot defaults page's
  *  first pick. */
+// A Merge or a Subset hands on Clean data (outputKindOf), so it shares Clean data's defaults.
 const DEFAULT_STEPS = ALL_OPS.filter(
-  (k) => categoryOf(k) !== 'plotting' && plotEntriesAfter(k).length > 0
+  (k) => categoryOf(k) !== 'plotting' && outputKindOf(k) === k && plotEntriesAfter(k).length > 0
 )
 /** The plot menu's entries for a step, in its section order (PLOT_SECTIONS). */
 function plotEntriesAfter(step: NodeKind): PlotMenuEntry[] {
@@ -1016,10 +1359,185 @@ function plotEntriesAfter(step: NodeKind): PlotMenuEntry[] {
     .flatMap((k) => plotEntriesFor(k))
 }
 
-function PlotDefaults(): ReactNode {
-  // Pick the process step first, then one of the plots it feeds — the plot tile's own menu, so
-  // Dose response and Time response are their own entries, as in the editor.
+/** Settings › Plot defaults: the step a plot tile is made from first — one switch for the whole
+ *  tab — then what a new plot tile after it comes with (its ticked plots, their order) and each
+ *  plot's starting settings. Every option is a row: its name on the left, the control on the
+ *  right (as Customisation's palettes). */
+function PlotDefaultsTab(): ReactNode {
   const [step, setStep] = useState<NodeKind>(DEFAULT_STEPS[0])
+  return (
+    <>
+      <ChoiceSwitch
+        label="Step the plot tile is made from"
+        value={step}
+        options={DEFAULT_STEPS.map((k) => ({ value: k, label: NODE_SPECS[k].label }))}
+        onChange={(v) => setStep(v as NodeKind)}
+      />
+      <div style={styles.settingsHint}>
+        For plot tiles added after a {NODE_SPECS[step].label} step
+        {step === 'standardize' ? ' (or a Merge or Subset of one)' : ''}.
+      </div>
+      <div style={styles.defaultsSection}>
+        <div style={styles.settingsSubTitle}>New plot tiles</div>
+        <DefaultPlots step={step} />
+        <PlotOrder step={step} />
+      </div>
+      <div style={styles.defaultsSection}>
+        <div style={styles.settingsSubTitle}>Plot settings</div>
+        <PlotDefaults step={step} />
+      </div>
+    </>
+  )
+}
+
+/** One Plot defaults option: its name (and (i)) on the left, its control on the right. */
+function SettingRow({
+  label,
+  tip,
+  children
+}: {
+  label: string
+  tip?: ReactNode
+  children: ReactNode
+}): ReactNode {
+  return (
+    <div style={styles.settingRow}>
+      <div style={styles.settingRowLabel}>
+        {label}
+        {tip && (
+          <span style={{ marginLeft: 4, verticalAlign: 'middle' }}>
+            <InfoTip label={`About ${label.toLowerCase()}`}>{tip}</InfoTip>
+          </span>
+        )}
+      </div>
+      <div style={styles.settingRowControl}>{children}</div>
+    </div>
+  )
+}
+
+/** The plots a new plot tile after `step` comes with ticked — None, or Custom, ticked on a
+ *  stand-in for the canvas picker (the same list, gated as for data with dose and time). A default
+ *  a tile's data can't support is simply not offered, so never added. */
+function DefaultPlots({ step }: { step: NodeKind }): ReactNode {
+  const defaultPlots = useAppSettings((s) => s.defaultPlots)
+  const update = useAppSettings((s) => s.update)
+  const own = defaultPlots[step]
+  const put = (next: { on: boolean; keys: string[] }): void =>
+    update({ defaultPlots: { ...defaultPlots, [step]: next } })
+  const plotOps = ALL_OPS.filter((k) => categoryOf(k) === 'plotting' && canConnect(step, k))
+  return (
+    <>
+      <SettingRow
+        label="Default plots"
+        tip={
+          <>
+            The plots already ticked when you add a plot tile, so you don’t pick them every time. A
+            plot the data can’t show (a Dose response with no dose levels, say) isn’t offered there,
+            so it’s simply left out.
+          </>
+        }
+      >
+        <ToggleSwitch
+          label="Default plots"
+          value={own?.on ? 'custom' : 'none'}
+          options={[
+            { value: 'none', label: 'None' },
+            { value: 'custom', label: 'Custom' }
+          ]}
+          onChange={(v) => put({ on: v === 'custom', keys: own?.keys ?? [] })}
+        />
+      </SettingRow>
+      {own?.on && (
+        <SettingRow label="Ticked plots">
+          {/* The canvas picker itself, its plots ticked as a new tile's will be (keyed by step, so
+              switching steps starts it afresh). */}
+          <TilePicker
+            key={step}
+            ops={plotOps}
+            onPick={() => undefined}
+            upstream={{ kind: step, axes: DEFAULT_AXES, curve: step === 'curveFit' }}
+            ticked={own.keys}
+            onTickedChange={(keys) => put({ on: true, keys })}
+            preview
+          />
+        </SettingRow>
+      )}
+    </>
+  )
+}
+
+/** The order the plots a new plot tile after `step` is made with are added in — so laid out in on
+ *  the results page — whichever are picked (defaults or not): every plot the step offers, dragged
+ *  into place. Unset, the plot menu's order. */
+function PlotOrder({ step }: { step: NodeKind }): ReactNode {
+  const plotOrder = useAppSettings((s) => s.plotOrder)
+  const update = useAppSettings((s) => s.update)
+  const entries = plotEntriesAfter(step)
+  const labelOf = new Map(entries.map((e) => [entryKey(e), e.label]))
+  const order = orderedKeys(entries.map(entryKey), plotOrder[step])
+  const own = !!plotOrder[step]
+  const [dragged, setDragged] = useState<number | null>(null)
+  const move = (from: number, to: number): void => {
+    const next = [...order]
+    const [k] = next.splice(from, 1)
+    next.splice(to, 0, k)
+    update({ plotOrder: { ...plotOrder, [step]: next } })
+  }
+  const reset = (): void => {
+    const next = { ...plotOrder }
+    delete next[step]
+    update({ plotOrder: next })
+  }
+  return (
+    <SettingRow
+      label="Results page order"
+      tip={
+        <>
+          The order a new plot tile’s plots are added in — so the order they’re laid out in on the
+          results page — whichever you pick. Drag a plot to move it.
+        </>
+      }
+    >
+      <div style={styles.defaultOrder}>
+        {order.map((k, i) => (
+          <div
+            key={k}
+            draggable
+            onDragStart={(e) => {
+              setDragged(i)
+              e.dataTransfer.effectAllowed = 'move'
+            }}
+            onDragOver={(e) => {
+              if (dragged == null) return
+              e.preventDefault()
+              if (dragged !== i) {
+                move(dragged, i)
+                setDragged(i)
+              }
+            }}
+            onDragEnd={() => setDragged(null)}
+            style={{ ...styles.defaultOrderRow, opacity: dragged === i ? 0.5 : 1 }}
+            title="Drag to reorder"
+          >
+            <span style={styles.defaultOrderGrip}>⠿</span>
+            <span style={styles.defaultOrderNum}>{i + 1}</span>
+            {labelOf.get(k)}
+          </div>
+        ))}
+      </div>
+      {own && (
+        <button style={styles.defaultsReset} onClick={reset} title="Back to the plot menu’s order">
+          Reset to the menu’s order
+        </button>
+      )}
+    </SettingRow>
+  )
+}
+
+/** Each plot's settings a new tile of it starts with — one of the plots `step` feeds, picked from
+ *  the plot tile's own menu, so Dose response and Time response are their own entries, as in the
+ *  editor. */
+function PlotDefaults({ step }: { step: NodeKind }): ReactNode {
   const entries = plotEntriesAfter(step)
   const [pickedKey, setPickedKey] = useState('')
   const entry = entries.find((e) => entryKey(e) === pickedKey) ?? entries[0]
@@ -1040,20 +1558,10 @@ function PlotDefaults(): ReactNode {
   const shared = kind === 'dr' || kind === 'tdr'
   return (
     <>
-      {/* One row: the process step, then the plot it feeds (and Reset, once there's a default). */}
-      <div style={styles.defaultsHead}>
-        <span style={styles.defaultsLabel}>Process:</span>
-        <span style={styles.defaultsPick}>
-          <Select
-            value={step}
-            options={DEFAULT_STEPS.map((k) => ({ value: k, label: NODE_SPECS[k].label }))}
-            onChange={(v) => setStep(v as NodeKind)}
-          />
-        </span>
-        <span style={{ ...styles.defaultsLabel, marginLeft: 8 }}>Plot:</span>
+      <SettingRow label="Plot">
         {/* The workflow tile's plot menu, single-choice: same sections, same rows. Its themed
             dropdown reads the canvas zoom, so it needs a provider of its own out here. */}
-        <span style={styles.defaultsPick}>
+        <div style={styles.defaultsPick}>
           <ReactFlowProvider>
             <PlotEntryMenu
               value={entryKey(entry)}
@@ -1061,24 +1569,24 @@ function PlotDefaults(): ReactNode {
               onChange={(e) => setPickedKey(entryKey(e))}
             />
           </ReactFlowProvider>
-        </span>
+        </div>
+        <div style={{ ...styles.settingsHint, marginTop: 0 }}>
+          {own
+            ? `New ${entry.label} tiles start with the settings below.`
+            : `New ${entry.label} tiles start with the built-in settings — change anything below to save a default.`}
+          {shared &&
+            ` Every ${entry.kind === 'tdr' ? 'two-condition' : 'one-condition'} Response plot shares one set of defaults.`}
+        </div>
         {own && (
           <button
             style={styles.defaultsReset}
             onClick={() => clearPlotDefault(kind)}
             title={`Forget the saved defaults for ${entry.label}`}
           >
-            Reset
+            Reset to the built-in settings
           </button>
         )}
-      </div>
-      <div style={styles.settingsHint}>
-        {own
-          ? `New ${entry.label} tiles start with these settings.`
-          : `New ${entry.label} tiles start with the built-in settings — change anything below to save a default.`}
-        {shared &&
-          ` Every ${entry.kind === 'tdr' ? 'two-condition' : 'one-condition'} Response plot shares one set of defaults.`}
-      </div>
+      </SettingRow>
       {/* The panel's Selects read React Flow's zoom for their dropdown metrics; a provider of its
           own pins that to 1 here, outside the canvas. `edgeNodeId` matches no node, so the panels
           that look upstream simply offer everything. */}
@@ -1123,6 +1631,7 @@ function SettingsPopover({
   const exportBackground = useAppSettings((s) => s.exportBackground)
   const plotFont = useAppSettings((s) => s.plotFont)
   const uiStyle = useAppSettings((s) => s.uiStyle)
+  const plotsPerRow = useAppSettings((s) => s.plotsPerRow)
   const updateSettings = useAppSettings((s) => s.update)
   const DPI_OPTS = DPI_CHOICES.map((d) => ({ v: String(d), label: `${d} dpi` }))
   const [active, setActive] = useState<
@@ -1268,6 +1777,25 @@ function SettingsPopover({
                     )
                   })}
                 </div>
+                <div style={{ ...styles.settingsSubTitle, marginTop: 24 }}>
+                  Results dashboard: default plots per row
+                  <span style={{ marginLeft: 4, verticalAlign: 'middle' }}>
+                    <InfoTip label="About default plots per row">
+                      How many plots sit side by side on a results tab you haven’t arranged
+                      yourself, and how plots added later join one you have. A tab you’ve moved or
+                      resized plots on keeps its arrangement.
+                    </InfoTip>
+                  </span>
+                </div>
+                {seg(
+                  String(plotsPerRow),
+                  [
+                    { v: '2', label: '2' },
+                    { v: '3', label: '3' },
+                    { v: '4', label: '4' }
+                  ] as const,
+                  (v) => updateSettings({ plotsPerRow: Number(v) as 2 | 3 | 4 })
+                )}
               </>
             ) : active === 'plots' ? (
               <>
@@ -1296,7 +1824,7 @@ function SettingsPopover({
             ) : active === 'plotDefaults' ? (
               <>
                 <h2 style={styles.settingsContentTitle}>Plot defaults</h2>
-                <PlotDefaults />
+                <PlotDefaultsTab />
               </>
             ) : active === 'export' ? (
               <>
@@ -1392,26 +1920,13 @@ function SettingsPopover({
                   >
                     Check now
                   </button>
-                  {update.checking ? (
-                    <span style={styles.aboutMuted}>Checking…</span>
-                  ) : update.updateAvailable ? (
-                    <span style={styles.aboutUpdate}>
-                      <span style={styles.aboutDot} /> v{update.latest} is available —{' '}
-                      <a
-                        href={update.releaseUrl}
-                        target="_blank"
-                        rel="noreferrer"
-                        style={styles.aboutLink}
-                      >
-                        download
-                      </a>
-                    </span>
-                  ) : update.failed ? (
-                    <span style={styles.aboutMuted}>Couldn’t check — try again later.</span>
-                  ) : (
-                    <span style={styles.aboutMuted}>You’re on the latest version.</span>
-                  )}
+                  <UpdateStatus update={update} />
                 </div>
+                {update.updateAvailable && update.install.unsupported && (
+                  <div style={{ ...styles.aboutMuted, marginTop: 8 }}>
+                    {update.install.unsupported}
+                  </div>
+                )}
                 <label style={{ ...styles.silenceRow, marginTop: 14 }}>
                   <span>Silence update dot</span>
                   <input type="checkbox" checked={silenced} onChange={onToggleSilence} />
@@ -1422,6 +1937,103 @@ function SettingsPopover({
         </div>
       </div>
     </>
+  )
+}
+
+/** Settings › About › Updates: what the check found and the in-app update's progress — with its
+ *  next step (Update now, Restart to update), or the release page when this copy can't update
+ *  itself. */
+function UpdateStatus({ update }: { update: UpdateInfo }) {
+  const { install } = update
+  const link = (label: string) => (
+    <a href={update.releaseUrl} target="_blank" rel="noreferrer" style={styles.aboutLink}>
+      {label}
+    </a>
+  )
+  if (install.phase === 'downloading')
+    return (
+      <span style={styles.aboutUpdate}>
+        Downloading v{install.version ?? update.latest}…
+        <span style={styles.updateBar}>
+          <span style={{ ...styles.updateBarFill, width: `${install.percent ?? 0}%` }} />
+        </span>
+        <span style={styles.aboutMuted}>{install.percent ?? 0}%</span>
+      </span>
+    )
+  if (install.phase === 'ready')
+    return (
+      <span style={styles.aboutUpdate}>
+        <span style={styles.aboutDot} /> v{install.version} is ready
+        <button style={styles.updatePrimary} onClick={update.restart}>
+          Restart to update
+        </button>
+      </span>
+    )
+  if (update.checking) return <span style={styles.aboutMuted}>Checking…</span>
+  if (install.phase === 'error')
+    return (
+      <span style={styles.aboutMuted}>
+        Update failed: {install.message} {link('Download it instead')}
+      </span>
+    )
+  if (update.updateAvailable)
+    return (
+      <span style={styles.aboutUpdate}>
+        <span style={styles.aboutDot} /> v{update.latest} is available
+        {install.unsupported ? (
+          <>— {link('download')}</>
+        ) : (
+          <button style={styles.updatePrimary} onClick={update.download}>
+            Update now
+          </button>
+        )}
+      </span>
+    )
+  if (update.failed) return <span style={styles.aboutMuted}>Couldn’t check — try again later.</span>
+  return <span style={styles.aboutMuted}>You’re on the latest version.</span>
+}
+
+/** The home namecard's update tag: starts the in-app update (or opens the release page when this
+ *  copy can't update itself), then shows its progress and the restart. */
+function UpdateTag({ update }: { update: UpdateInfo }) {
+  const { install } = update
+  if (install.unsupported)
+    return (
+      <a
+        href={update.releaseUrl}
+        target="_blank"
+        rel="noreferrer"
+        style={styles.homeUpdateTag}
+        title={`Download v${update.latest}`}
+      >
+        Update available · v{update.latest}
+      </a>
+    )
+  const [label, title, onClick] =
+    install.phase === 'downloading'
+      ? [
+          `Downloading v${install.version ?? update.latest} · ${install.percent ?? 0}%`,
+          '',
+          undefined
+        ]
+      : install.phase === 'ready'
+        ? [`Restart to update · v${install.version}`, 'Quit, install it and reopen', update.restart]
+        : install.phase === 'error'
+          ? ['Update failed · try again', install.message ?? '', update.download]
+          : [
+              `Update available · v${update.latest}`,
+              `Download and install v${update.latest}`,
+              update.download
+            ]
+  return (
+    <button
+      style={{ ...styles.homeUpdateTag, ...styles.homeUpdateButton }}
+      title={title}
+      onClick={onClick}
+      disabled={!onClick}
+    >
+      {label}
+    </button>
   )
 }
 
@@ -2338,17 +2950,7 @@ function AppCard({
           <div style={styles.homeTitle}>{__APP_NAME__}</div>
           <div style={styles.homeVersion}>
             v{__APP_VERSION__}
-            {showUpdate && (
-              <a
-                href={update.releaseUrl}
-                target="_blank"
-                rel="noreferrer"
-                style={styles.homeUpdateTag}
-                title={`Download v${update.latest}`}
-              >
-                Update available · v{update.latest}
-              </a>
-            )}
+            {showUpdate && <UpdateTag update={update} />}
           </div>
           <AppLinks />
         </div>
@@ -2831,6 +3433,12 @@ export default function App() {
       })
       .catch(() => undefined)
   }, [])
+  // Back to the window: the Load tiles' files may have changed meanwhile (replaced, moved, synced).
+  useEffect(() => {
+    const onFocus = (): void => void useGraph.getState().checkLoads()
+    window.addEventListener('focus', onFocus)
+    return () => window.removeEventListener('focus', onFocus)
+  }, [])
   const mode = useUiTheme((s) => s.mode)
   // Read here so a change re-renders the app (portals pick it up through cssVars on their next render).
   const accent = useUiTheme((s) => s.accent)
@@ -3205,6 +3813,8 @@ const styles: Record<string, CSSProperties> = {
     fontWeight: 500,
     textDecoration: 'none'
   },
+  /** the tag as a button (it starts the in-app update) */
+  homeUpdateButton: { border: 'none', cursor: 'pointer', fontFamily: 'inherit' },
   homeUpdateTag: {
     fontSize: 12,
     fontWeight: 600,
@@ -3537,6 +4147,17 @@ const styles: Record<string, CSSProperties> = {
     color: '#fff',
     borderColor: '#e15759'
   },
+  paneMenu: {
+    position: 'fixed',
+    zIndex: 60,
+    minWidth: 180,
+    background: UI.panel,
+    border: `1px solid ${UI.border}`,
+    borderRadius: 8,
+    boxShadow: '0 8px 30px rgba(0,0,0,0.4)',
+    padding: 4
+  },
+  menuKey: { marginLeft: 16, color: UI.textMuted, fontSize: 12 },
   actBar: {
     display: 'flex',
     alignItems: 'center',
@@ -3565,6 +4186,12 @@ const styles: Record<string, CSSProperties> = {
     padding: '5px 10px',
     fontSize: 11,
     fontWeight: 700
+  },
+  // Just done: the accent, with its tick.
+  actBtnDone: {
+    color: UI.accent,
+    borderColor: `color-mix(in srgb, ${UI.accent} 60%, transparent)`,
+    background: `color-mix(in srgb, ${UI.accent} 14%, ${UI.panelAlt})`
   },
   // The theme's error red, so Delete reads in light mode too (a fixed pale pink vanished there).
   actBtnDanger: { color: UI.err, borderColor: `color-mix(in srgb, ${UI.err} 55%, transparent)` },
@@ -3729,9 +4356,26 @@ const styles: Record<string, CSSProperties> = {
   layoutTileTitle: { fontSize: 13, fontWeight: 700 },
   layoutTileText: { fontSize: 11, color: UI.textMuted, lineHeight: 1.4 },
   /** the plot-defaults block: its type picker, and the tile config panel under it */
-  defaultsHead: { display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 },
-  defaultsLabel: { flex: '0 0 auto', fontSize: 12, color: UI.textMuted },
-  defaultsPick: { flex: 1, minWidth: 0, display: 'flex' },
+  // Plot defaults: a section (a rule above it), and its options as rows — the name in a fixed
+  // column on the left, the control on the right.
+  defaultsSection: { borderTop: `1px solid ${UI.border}`, marginTop: 18, paddingTop: 16 },
+  settingRow: { display: 'flex', alignItems: 'flex-start', gap: 12, marginBottom: 14 },
+  settingRowLabel: {
+    flex: '0 0 150px',
+    fontSize: 12,
+    color: UI.textMuted,
+    // level with the control's text line
+    paddingTop: 5
+  },
+  settingRowControl: {
+    flex: 1,
+    minWidth: 0,
+    display: 'flex',
+    flexDirection: 'column',
+    alignItems: 'flex-start',
+    gap: 6
+  },
+  defaultsPick: { width: '100%', maxWidth: 320, display: 'flex' },
   defaultsSelect: {
     background: UI.panelAlt,
     color: UI.text,
@@ -3744,10 +4388,27 @@ const styles: Record<string, CSSProperties> = {
     background: 'transparent',
     color: UI.textMuted,
     border: 'none',
+    padding: 0,
     fontSize: 11,
     textDecoration: 'underline',
     cursor: 'pointer'
   },
+  // The plot order: a column of draggable rows.
+  defaultOrder: { width: '100%', maxWidth: 320, display: 'flex', flexDirection: 'column', gap: 4 },
+  defaultOrderRow: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 8,
+    padding: '5px 8px',
+    border: `1px solid ${UI.border}`,
+    borderRadius: 6,
+    background: UI.panelAlt,
+    fontSize: 12,
+    cursor: 'grab',
+    userSelect: 'none'
+  },
+  defaultOrderGrip: { color: UI.textMuted, fontSize: 12 },
+  defaultOrderNum: { color: UI.textMuted, fontSize: 11, minWidth: 12, textAlign: 'right' },
   defaultsPanel: {
     border: `1px solid ${UI.border}`,
     borderRadius: 8,
@@ -3773,6 +4434,28 @@ const styles: Record<string, CSSProperties> = {
     cursor: 'pointer'
   },
   aboutMuted: { fontSize: 12, color: UI.textMuted },
+  /** Update now / Restart to update */
+  updatePrimary: {
+    background: UI.accent,
+    border: 'none',
+    borderRadius: 4,
+    padding: '4px 12px',
+    fontSize: 12,
+    fontWeight: 600,
+    color: '#fff',
+    cursor: 'pointer',
+    marginLeft: 6
+  },
+  /** the download's progress */
+  updateBar: {
+    display: 'inline-block',
+    width: 120,
+    height: 6,
+    borderRadius: 3,
+    background: UI.border,
+    overflow: 'hidden'
+  },
+  updateBarFill: { display: 'block', height: '100%', background: UI.accent },
   aboutUpdate: {
     display: 'flex',
     alignItems: 'center',

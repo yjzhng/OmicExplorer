@@ -17,11 +17,10 @@ import {
   enrichSourcesPresent,
   facetGroupsOf,
   holderWhere,
-  plotScaleOf,
+  presentScaleOf,
   resolveEnrichSource,
   type ConditionKey,
-  type EnrichSource,
-  type LogTransform
+  type EnrichSource
 } from '../engine'
 import { engine } from '../engine/client'
 import { holderTable } from '../engine/lazyRows'
@@ -60,8 +59,6 @@ export async function runPlot(
   config: NodeConfig,
   upstream: NodeResult | undefined,
   cancelled: () => boolean,
-  /** the Clean data step's log transform — what the scale plots show its data on follows it */
-  cleanTransform?: LogTransform,
   /** the numeric conditions the upstream carries as the graph sees them (axisAvailFor) — a
    *  Contrast of Curve fits has its inputs' curve axes, which its own rows don't show */
   axes?: ConditionKey[]
@@ -91,7 +88,7 @@ export async function runPlot(
       center: cfg.center,
       topVar: cfg.topVar,
       transform: cfg.transform,
-      autoScale: plotScaleOf(upstream.std, cleanTransform),
+      autoScale: presentScaleOf(upstream.std),
       replicates: cfg.replicates
     })
     return { kind: 'cluster', cluster, ran }

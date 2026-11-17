@@ -1,7 +1,7 @@
 /** Project-folder viewer: a modal file tree of the active data folder (input/ and the
  *  project data folder with its workflows). Folders expand lazily, one level per click; a file can be opened
  *  in its default app or shown in the OS file manager (Finder / File Explorer). Nothing here writes
- *  to disk, except Clean up — and that only after its confirmation lists what it deletes. */
+ *  to disk, except Clean up — and that only after its confirmation lists what it moves to the Bin. */
 import {
   useCallback,
   useEffect,
@@ -187,7 +187,7 @@ export function ProjectFolderViewer({
     setFlush((n) => n + 1)
   }
 
-  // Clean up: work out what the project no longer uses, then ask before deleting it.
+  // Clean up: work out what the project no longer uses, then ask before moving it to the Bin.
   const startCleanup = async (): Promise<void> => {
     if (!ownFolder) return
     setCleanNote(null)
@@ -205,10 +205,10 @@ export function ProjectFolderViewer({
     setPlan(null)
     setCleanNote(
       errors.length
-        ? { ok: false, text: `Couldn’t remove ${errors.length}: ${errors[0]}` }
+        ? { ok: false, text: `Couldn’t move ${errors.length} to the Bin: ${errors[0]}` }
         : {
             ok: true,
-            text: `Removed ${plan.remove.length} item${plan.remove.length === 1 ? '' : 's'}.`
+            text: `Moved ${plan.remove.length} item${plan.remove.length === 1 ? '' : 's'} to the Bin.`
           }
     )
     await refresh()
@@ -362,9 +362,8 @@ export function ProjectFolderViewer({
             <div style={styles.confirmText}>
               These {plan.remove.length} item{plan.remove.length === 1 ? '' : 's'} in the project’s
               data folder aren’t used by the project as it is now (unsaved changes included):
-              folders of removed workflows and steps, and input files no Load tile reads. They will
-              be <b>permanently deleted</b> — not moved to the Trash. If you want to keep any, copy
-              them somewhere else first.
+              folders of removed workflows and steps, and input files no Load tile reads. They’ll be
+              moved to the <b>Bin</b>, so you can still put any back from there.
             </div>
             <div className="oe-scroll" style={styles.confirmList}>
               {plan.remove.map((p) => (
@@ -391,8 +390,8 @@ export function ProjectFolderViewer({
                 disabled={cleaning}
               >
                 {cleaning
-                  ? 'Deleting…'
-                  : `Delete ${plan.remove.length} item${plan.remove.length === 1 ? '' : 's'}`}
+                  ? 'Moving to the Bin…'
+                  : `Move ${plan.remove.length} item${plan.remove.length === 1 ? '' : 's'} to the Bin`}
               </button>
             </div>
           </div>

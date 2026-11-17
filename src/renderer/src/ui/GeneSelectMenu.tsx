@@ -20,7 +20,8 @@ import { CLEAR, ColorPicker } from './ColorPicker'
 import { Select } from './Select'
 import { POPOVER_ATTR } from './usePopover'
 import { ToggleSwitch } from './ToggleSwitch'
-import { selectedGeneSets, useSelection } from './useSelection'
+import { commonGenes, selectedGeneSets, useSelection, type GroupCombine } from './useSelection'
+import type { GeneSet } from '../graph/types'
 import { useUiTheme } from './useUiTheme'
 
 // A geneset row's edit/delete actions are hover-revealed, which needs a :hover rule (inline styles
@@ -35,6 +36,37 @@ function ensureMenuCss(): void {
     '.oe-gs-row:hover .oe-gs-actions{display:inline-flex;align-items:center;gap:1px}'
   // The action-name tooltip is portal-rendered (see ActionTip) so the scroll container can't crop it.
   document.head.appendChild(el)
+}
+
+/** Two overlapping circles, shaded where the combination keeps genes: both whole (union), or just
+ *  their overlap (intersection). */
+function CombineIcon({ mode }: { mode: GroupCombine }): ReactNode {
+  return (
+    <svg width={18} height={12} viewBox="0 0 18 12" aria-hidden>
+      <defs>
+        <clipPath id="oe-combine-a">
+          <circle cx={6} cy={6} r={5} />
+        </clipPath>
+      </defs>
+      {mode === 'union' ? (
+        <>
+          <circle cx={6} cy={6} r={5} fill="currentColor" fillOpacity={0.35} />
+          <circle cx={12} cy={6} r={5} fill="currentColor" fillOpacity={0.35} />
+        </>
+      ) : (
+        <circle
+          cx={12}
+          cy={6}
+          r={5}
+          fill="currentColor"
+          fillOpacity={0.6}
+          clipPath="url(#oe-combine-a)"
+        />
+      )}
+      <circle cx={6} cy={6} r={5} fill="none" stroke="currentColor" strokeWidth={1.2} />
+      <circle cx={12} cy={6} r={5} fill="none" stroke="currentColor" strokeWidth={1.2} />
+    </svg>
+  )
 }
 
 /** Eye glyph for the geneset visibility toggle; a diagonal slash when `off` (hidden = masked). */
@@ -185,6 +217,10 @@ export function GeneSelectMenu({ tabs }: { tabs: GeneGroupTab[] }): ReactNode {
   const togglePins = useSelection((s) => s.togglePins)
   const clearPins = useSelection((s) => s.clearPins)
   const setPins = useSelection((s) => s.setPins)
+  const combine = useSelection((s) => s.groupCombine)
+  const setCombine = useSelection((s) => s.setGroupCombine)
+  const picked = useSelection((s) => s.pickedGroups)
+  const setPicked = useSelection((s) => s.setPickedGroups)
   const geneSets = useGraph((s) => s.geneSets)
   const createGeneSet = useGraph((s) => s.createGeneSet)
   const renameGeneSet = useGraph((s) => s.renameGeneSet)
@@ -352,18 +388,54 @@ export function GeneSelectMenu({ tabs }: { tabs: GeneGroupTab[] }): ReactNode {
     updateGeneSetGenes(editSet.id, genes)
     setPins(genes.map((g) => g.id))
   }
-  // A geneset is selected while all its genes are; several can be at once.
-  const activeSets = new Set(
-    geneSets
-      .filter((gs) => gs.genes.length > 0 && gs.genes.every((g) => pinnedIds.has(g.id)))
-      .map((gs) => gs.id)
-  )
+  // A geneset is selected while all its genes are; several can be at once. Intersecting, the
+  // picked ones are — while the selection is still the genes they share (a pick made elsewhere
+  // since, in a plot or the list, leaves them unpicked).
+  const setsOf = (ids: string[]): GeneSet[] =>
+    ids.map((id) => geneSets.find((g) => g.id === id)).filter((g): g is GeneSet => !!g)
+  const pickedLive =
+    combine === 'intersect' &&
+    picked.length > 0 &&
+    (() => {
+      const common = commonGenes(setsOf(picked))
+      return common.length === pinnedIds.size && common.every((id) => pinnedIds.has(id))
+    })()
+  const activeSets = pickedLive
+    ? new Set(picked)
+    : new Set(
+        geneSets
+          .filter((gs) => gs.genes.length > 0 && gs.genes.every((g) => pinnedIds.has(g.id)))
+          .map((gs) => gs.id)
+      )
+  /** Switch how picked groups combine, keeping the groups picked: union → their shared genes,
+   *  intersect → all their genes. */
+  const switchCombine = (mode: GroupCombine): void => {
+    if (mode === combine) return
+    const sets = [...activeSets]
+    setCombine(mode)
+    if (mode === 'intersect') {
+      setPicked(sets)
+      if (sets.length) setPins(commonGenes(setsOf(sets)))
+    } else {
+      setPicked([])
+      if (pickedLive) setPins(setsOf(sets).flatMap((gs) => gs.genes.map((g) => g.id)))
+    }
+  }
   // Select a set → add its genes. Deselect → take them out, except genes another selected set
   // still holds (so overlapping sets stay whole). A set that contains this one doesn't count: it
   // would hold every gene, and the click would do nothing.
   const toggleGeneSet = (id: string): void => {
     const gs = geneSets.find((g) => g.id === id)
     if (!gs) return
+    // Intersecting (not while editing a set, whose picks add genes to it): the selection is the
+    // genes every picked group shares.
+    if (combine === 'intersect' && !editSet) {
+      const base = [...activeSets]
+      const next = base.includes(id) ? base.filter((x) => x !== id) : [...base, id]
+      setPicked(next)
+      setPins(commonGenes(setsOf(next)))
+      return
+    }
     // While editing, this adds (or removes) the group's genes in the one being edited — the
     // selection change flows into it like any other pick.
     const ids = new Set(gs.genes.map((g) => g.id))
@@ -546,6 +618,7 @@ export function GeneSelectMenu({ tabs }: { tabs: GeneGroupTab[] }): ReactNode {
     }
     for (const gs of geneSets) if (same(gs.genes.map((g) => g.id))) return gs.name
     // Several genesets selected together (and nothing else): how many.
+    if (pickedLive && picked.length > 1) return `${picked.length} gene groups, shared`
     const sets = selectedGeneSets(pinnedIds, geneSets)
     if (sets.length > 1) return `${sets.length} gene groups`
     for (const t of tabs)
@@ -561,7 +634,7 @@ export function GeneSelectMenu({ tabs }: { tabs: GeneGroupTab[] }): ReactNode {
         if (c.pathways && same(c.pathways.flatMap((pw) => pw.genes.map((g) => g.id)))) return c.name
       }
     return null
-  }, [pinnedIds, geneSets, tabs])
+  }, [pinnedIds, geneSets, tabs, pickedLive, picked.length])
   const box = (sel: number, total: number, onClick: () => void, title: string): ReactNode => {
     const allOn = sel === total && total > 0
     return (
@@ -816,16 +889,35 @@ export function GeneSelectMenu({ tabs }: { tabs: GeneGroupTab[] }): ReactNode {
             <div style={{ ...styles.gsSection, borderColor: p.border }}>
               <div style={styles.gsHead}>
                 <span style={{ ...styles.gsTitle, color: p.textMuted }}>Custom gene groups</span>
-                {/* Not offered while editing: clearing the selection would end editing too (see
-                    editSet), and Confirm at the bottom is the way out. */}
-                {!editSet && n > 0 && (
+                <span style={styles.gsHeadEnd}>
+                  {/* Not offered while editing: clearing the selection would end editing too (see
+                      editSet), and Confirm at the bottom is the way out. */}
+                  {!editSet && n > 0 && (
+                    <button
+                      style={{ ...styles.clear, color: p.textMuted }}
+                      onClick={() => clearPins()}
+                    >
+                      Clear selection ({n})
+                    </button>
+                  )}
+                  {/* How several picked groups combine: all their genes, or only those they share. */}
                   <button
-                    style={{ ...styles.clear, color: p.textMuted }}
-                    onClick={() => clearPins()}
+                    onClick={() => switchCombine(combine === 'union' ? 'intersect' : 'union')}
+                    title={
+                      combine === 'union'
+                        ? 'Union: the groups picked select all their genes — click to select only the genes they share'
+                        : 'Intersection: the groups picked select only the genes they share — click to select all their genes'
+                    }
+                    style={{
+                      ...styles.combineBtn,
+                      color: combine === 'intersect' ? p.accent : p.textMuted,
+                      borderColor: combine === 'intersect' ? p.accent : p.border
+                    }}
                   >
-                    Clear selection ({n})
+                    <CombineIcon mode={combine} />
+                    {combine === 'union' ? 'union' : 'intersect'}
                   </button>
-                )}
+                </span>
               </div>
               {/* Cap the visible list to ~10 rows; scroll beyond. Expanded member lists scroll too. */}
               <div ref={gsListRef} style={styles.gsList}>
@@ -1504,6 +1596,20 @@ const styles: Record<string, CSSProperties> = {
     justifyContent: 'space-between',
     minHeight: 26,
     padding: '2px 4px'
+  },
+  // The heading's right end: Clear selection, then the union / intersection switch.
+  gsHeadEnd: { display: 'inline-flex', alignItems: 'center', gap: 8 },
+  combineBtn: {
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: 5,
+    background: 'transparent',
+    border: '1px solid',
+    borderRadius: 5,
+    padding: '1px 6px 1px 4px',
+    fontSize: 10,
+    fontWeight: 600,
+    cursor: 'pointer'
   },
   // A heading sitting right on the switch below it: no row height, and the menu's 6px gap pulled in.
   browseHead: { display: 'flex', alignItems: 'center', padding: '4px 4px 0', marginBottom: -4 },

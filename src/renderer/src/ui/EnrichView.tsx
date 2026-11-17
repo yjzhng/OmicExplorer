@@ -889,6 +889,8 @@ export function EnrichView({
         labelColor={labelColor}
         labelsAbove
         boldTicks={boldTicks}
+        // its own note when nothing is enriched ("No enriched terms")
+        emptyNote={false}
         onAnnotationClick={onAnnotationClick}
         // a click on a term's dot or bar selects its genes, in every plot
         pinIdsOf={pinIdsOf}

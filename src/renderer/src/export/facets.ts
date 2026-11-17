@@ -30,9 +30,11 @@ export interface FacetView {
   sel: Record<string, string>
   /** filename component identifying the facet (e.g. "cell-WT_dose-2.5"); '' when single */
   suffix: string
+  /** the facet's condition values, in hierarchy order — what its file name reads (fileNames) */
+  values: Array<{ dim: string; value: string | number }>
 }
 
-const SINGLE: FacetView[] = [{ sel: {}, suffix: '' }]
+const SINGLE: FacetView[] = [{ sel: {}, suffix: '', values: [] }]
 
 /** The facet tuples a plot spec expands into. Non-faceted plots (or ones with no context
  *  dims / a single tuple) return a single unlabelled view. */
@@ -71,7 +73,7 @@ export function facetViews(
       sel[dim] = String(value)
       parts.push(`${dim}-${safe(String(value))}`)
     }
-    return { sel, suffix: parts.join('_') }
+    return { sel, suffix: parts.join('_'), values: g.values.map((v) => ({ ...v })) }
   })
 }
 
@@ -81,6 +83,8 @@ export interface PlotJob {
   selectedOnly: boolean
   facetSel: Record<string, string>
   suffix: string
+  /** the facet's condition values (FacetView.values) */
+  values: FacetView['values']
 }
 
 /**
@@ -100,9 +104,9 @@ export function planPlotJobs(
     const kind = spec.child ? spec.child.kind : spec.node.data.kind
     const config = spec.child ? spec.child.config : spec.node.data.config
     for (const view of facetViews(kind, config, upstream)) {
-      jobs.push({ spec, selectedOnly: false, facetSel: view.sel, suffix: view.suffix })
-      if (spec.hasSelection)
-        jobs.push({ spec, selectedOnly: true, facetSel: view.sel, suffix: view.suffix })
+      const base = { spec, facetSel: view.sel, suffix: view.suffix, values: view.values }
+      jobs.push({ ...base, selectedOnly: false })
+      if (spec.hasSelection) jobs.push({ ...base, selectedOnly: true })
     }
   }
   return jobs

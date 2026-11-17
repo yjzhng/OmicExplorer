@@ -48,6 +48,16 @@ export interface DirEntry {
   mtime: number
 }
 
+/** The in-app update (main/updater.ts): idle, downloading (percent), ready to install on a
+ *  restart, or failed — and, when this copy can't update itself, why. */
+export interface UpdateState {
+  phase: 'idle' | 'downloading' | 'ready' | 'error'
+  version?: string
+  percent?: number
+  message?: string
+  unsupported?: string
+}
+
 export interface WorkflowEntry {
   name: string
   path: string
@@ -127,7 +137,8 @@ export interface TableItem {
 
 const api = {
   platform: process.platform,
-  /** Open a native file picker and read the chosen file's text (null if cancelled). */
+  /** Open a native file picker and read the chosen file's text (null if cancelled) — an .xlsx
+   *  workbook's first sheet as CSV. */
   openFile: (opts?: OpenFileOptions): Promise<OpenFileResult | null> =>
     ipcRenderer.invoke('file:open', opts),
   /** Default workflow directory (created if missing). */
@@ -226,8 +237,8 @@ const api = {
     ipcRenderer.invoke('layout:applyDirOps', ops),
   /** One level of a folder for the project-folder viewer: folders first, dotfiles hidden. */
   listDir: (dir: string): Promise<DirEntry[]> => ipcRenderer.invoke('fs:listDir', dir),
-  /** Delete these files / folders (recursively), each only if inside `root` (a project folder
-   *  clean-up); returns what couldn't be removed. */
+  /** Move these files / folders to the Bin, each only if inside `root` (a project folder
+   *  clean-up); returns what couldn't be moved. */
   removeInside: (root: string, paths: string[]): Promise<string[]> =>
     ipcRenderer.invoke('layout:removeInside', root, paths),
   /** Select a file or folder in the OS file manager. */
@@ -252,8 +263,26 @@ const api = {
     files: Array<{ name: string; legacy?: string }>
   ): Promise<{ copied: string[]; errors: string[] }> =>
     ipcRenderer.invoke('data:copyInputs', from, to, files),
+  /** Copy pasted Load tiles' converted input files from the workflow they were copied from into
+   *  this one's input/ — each under its name, or a free one where this workflow reads a different
+   *  file by it; returns each name as it's now read (never overwrites). */
+  copyWorkflowInputs: (
+    from: { dir: string; scope: WorkflowScope },
+    to: { dir: string; scope: WorkflowScope },
+    names: string[]
+  ): Promise<{ names: Record<string, string>; errors: string[] }> =>
+    ipcRenderer.invoke('data:copyWorkflowInputs', from, to, names),
   readDataFile: (dir: string, name: string, scope?: WorkflowScope): Promise<string | null> =>
     ipcRenderer.invoke('data:read', dir, name, scope),
+  /** Each named data file's size and modified time (and with `hash`, a SHA-1 of it), found as
+   *  readDataFile finds it; null for one not found. */
+  statDataFiles: (
+    dir: string,
+    names: string[],
+    scope?: WorkflowScope,
+    hash?: boolean
+  ): Promise<Array<{ size: number; mtime: number; hash?: string } | null>> =>
+    ipcRenderer.invoke('data:stat', dir, names, scope, hash),
   /** Pick a data matrix from anywhere on disk via the native picker; returns its absolute path
    *  (readable via readDataFile), or null if cancelled. */
   pickDataFile: (): Promise<string | null> => ipcRenderer.invoke('data:pickFile'),
@@ -270,6 +299,8 @@ const api = {
   }): Promise<ExportResult> => ipcRenderer.invoke('tables:export', payload),
   /** Put plain text on the clipboard. */
   copyText: (text: string): Promise<void> => ipcRenderer.invoke('clip:text', text),
+  /** The clipboard's text. */
+  readText: (): Promise<string> => ipcRenderer.invoke('clip:readText'),
   /** Put one rendered plot on the clipboard: PNG as an image; SVG as a vector picture (macOS) or markup text. */
   copyPlot: (payload: CopyPayload): Promise<void> => ipcRenderer.invoke('plots:copy', payload),
   /** Reveal a folder in the OS file manager. */
@@ -377,6 +408,23 @@ const api = {
     ): void => cb(p)
     ipcRenderer.on('string:progress', listener)
     return () => ipcRenderer.removeListener('string:progress', listener)
+  },
+
+  /** The newest release (its tag, version and page), or why it couldn't be found. */
+  latestRelease: (): Promise<{ tag: string; version: string; url: string } | { error: string }> =>
+    ipcRenderer.invoke('update:latest'),
+  /** The in-app update's state now (Settings › About › Updates). */
+  updateState: (): Promise<UpdateState> => ipcRenderer.invoke('update:state'),
+  /** Download the latest release's installer for this computer (its progress and outcome come
+   *  through onUpdateState). */
+  downloadUpdate: (): Promise<void> => ipcRenderer.invoke('update:download'),
+  /** Quit and install the downloaded update, then start the new version. */
+  installUpdate: (): Promise<void> => ipcRenderer.invoke('update:install'),
+  /** Subscribe to the in-app update's state; returns an unsubscribe fn. */
+  onUpdateState: (cb: (s: UpdateState) => void): (() => void) => {
+    const listener = (_e: unknown, s: UpdateState): void => cb(s)
+    ipcRenderer.on('update:state', listener)
+    return () => ipcRenderer.removeListener('update:state', listener)
   }
 }
 

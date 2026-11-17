@@ -15,7 +15,7 @@ export function CorrTile({
 }: {
   std: StandardizeResult
   cluster: boolean
-  /** the scale abundance is shown on (plotScaleOf) — log or not changes the correlation */
+  /** the scale abundance is shown on (presentScaleOf) — log or not changes the correlation */
   scale?: ValueScale
   /** the correlation palette (the plot's own, else Greens) */
   palette?: PaletteRef

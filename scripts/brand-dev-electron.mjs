@@ -13,7 +13,7 @@
 //
 // macOS-only; a no-op elsewhere. Never fails the build — on any error it warns and
 // lets dev continue with stock Electron.
-import { existsSync, readFileSync, writeFileSync, copyFileSync } from 'node:fs'
+import { existsSync, readFileSync, writeFileSync, copyFileSync, statSync } from 'node:fs'
 import { resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { execFileSync } from 'node:child_process'
@@ -33,7 +33,7 @@ try {
   if (!existsSync(stockApp)) process.exit(0) // deps not installed yet
 
   const pkg = JSON.parse(readFileSync(resolve(repo, 'package.json'), 'utf8'))
-  // "<productName> Dev", with the red-dot icon: told apart from an installed copy by name and
+  // "<productName> Dev", with the badged dev icon: told apart from an installed copy by name and
   // logo (the main process takes the same name, so its userData is its own too)
   const name = `${pkg.productName || pkg.name || 'App'} Dev`
   const ns = pkg.appConfig?.appIdNamespace || 'tech.yjzhng'
@@ -53,7 +53,10 @@ try {
   const pathTxt = resolve(repo, 'node_modules/electron/path.txt')
   const marker = resolve(distDir, '.branded') // in dist/ → wiped on reinstall, re-clones
   const REV = '3' // bump to force a re-clone
-  const want = `${name}:${brandId}:${electronVer}:${REV}`
+  // the dev icon's time too, so a changed icon (scripts/make-badge-icons.py) re-clones with it
+  const devIcns = ensureIcns(repo, 'dev')
+  const iconTime = devIcns ? Math.round(statSync(devIcns).mtimeMs) : 0
+  const want = `${name}:${brandId}:${electronVer}:${REV}:${iconTime}`
 
   const upToDate =
     existsSync(marker) &&

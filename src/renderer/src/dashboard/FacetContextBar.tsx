@@ -10,21 +10,19 @@
  *
  * Renders nothing for a non-faceted group (e.g. a Clean data tile's heatmap or cluster).
  */
-import { useMemo, type CSSProperties, type ReactNode } from 'react'
+import { type CSSProperties, type ReactNode } from 'react'
 
-import { contextOf, facetDims, type ContextRow } from '../engine'
 import type { AnalysisGroup } from '../graph/groups'
-import { numericOfResult, type NodeResult } from '../graph/types'
+import type { NodeResult } from '../graph/types'
 import { UI } from '../ui/theme'
 import { ChoiceSwitch, PILL_CAP } from '../ui/ChoiceSwitch'
 import {
-  EMPTY_SEL,
   facetBarLabel,
   facetChoice,
   isNumericFacet,
   pickFacet,
-  resolveFacets,
-  useFacet
+  useFacet,
+  useGroupFacets
 } from './facet'
 
 export function FacetContextBar({
@@ -34,23 +32,8 @@ export function FacetContextBar({
   group: AnalysisGroup
   results: Record<string, NodeResult>
 }): ReactNode {
-  const r = results[group.rootId]
-  // The result's context tuples, not its rows: what the switchers resolve over (contextIndex.ts) —
-  // reading `rows` here built every row of a large result just to list its levels, and held them.
-  const rows: ContextRow[] | null =
-    r?.kind === 'compare'
-      ? contextOf(r.cmp).rows
-      : r?.kind === 'contrast'
-        ? contextOf(r.ctr).rows
-        : null
-  const numeric = useMemo(() => numericOfResult(r), [r])
-  const sel = useFacet((s) => s.sel[group.id]) ?? EMPTY_SEL
+  const { rows, dims, bars, numeric, sel } = useGroupFacets(group, results)
   const setSel = useFacet((s) => s.setSel)
-  const dims = useMemo(() => (rows ? facetDims(rows) : []), [rows])
-  const bars = useMemo(
-    () => (rows && dims.length ? resolveFacets(rows, dims, sel, numeric).bars : []),
-    [rows, dims, sel, numeric]
-  )
   if (!bars.length) return null
   return (
     <div style={styles.facetBar}>
@@ -67,11 +50,10 @@ export function FacetContextBar({
               counter
               label={facetBarLabel(bar)}
               value={String(value)}
-              // One-sided contrast level (outer-join rows with nothing to pair): greyed, not
-              // selectable — the tooltip says which side has the data.
+              // A one-sided contrast level (outer-join rows with nothing to pair), or one not
+              // measured alongside the picks to its left: greyed, not selectable — the tooltip
+              // says why.
               options={options.map((o) => facetChoice(dim, o, bars))}
-              // A level not alongside the picks to its left moves those (pickFacet): a compound
-              // brings its comparison.
               onChange={(v) =>
                 rows && setSel(group.id, pickFacet(rows, dims, sel, dim, v, numeric))
               }

@@ -2,24 +2,33 @@
  *  shared by the views (which draw with the resolved values) and the config panel (which shows
  *  the defaults as the starting values). The config only ever stores what the user changed. */
 import type { EffectColors, GroupStyle, HighlightStyle, PointStyle } from '../graph/types'
-import { AUTO } from './ColorPicker'
+import { AUTO, CLEAR } from './ColorPicker'
 import { CATEGORICAL, EFFECT_COLOR } from './theme'
 
 /** A group's fully-resolved look, plus its key and display name for the panel. Its `highlight`
  *  is the plot-wide one with this group's own overrides on top. */
 export interface ResolvedGroup
   extends
-    Required<Omit<GroupStyle, 'highlight' | 'outlineColor'>>,
+    Required<Omit<GroupStyle, 'highlight' | 'outlineColor' | 'labelColor'>>,
     Pick<GroupStyle, 'outlineColor'> {
   key: string
   name: string
   highlight: ResolvedHighlight
+  /** its labels' colour — set by resolveGroup: the chosen one, else the marker colour */
+  labelColor?: string
 }
+
+/** A group's label colour as drawn: its own, else its marker colour (a hollow marker's — no
+ *  colour — falls back to the theme text, `ink`). */
+export const labelColorOf = (g: ResolvedGroup, ink: string): string =>
+  g.labelColor ?? (g.color && g.color !== CLEAR ? g.color : ink)
 
 /** The highlight look with every field resolved. `ringColor` stays optional (unset = the theme's
  *  text colour) and so does `size` (unset = the point's own size + `bump`). */
-export type ResolvedHighlight = Required<Omit<HighlightStyle, 'ringColor' | 'size'>> &
-  Pick<HighlightStyle, 'ringColor' | 'size'>
+export type ResolvedHighlight = Required<
+  Omit<HighlightStyle, 'ringColor' | 'size' | 'labelColor'>
+> &
+  Pick<HighlightStyle, 'ringColor' | 'size' | 'labelColor'>
 
 /** Shared highlight defaults — historically PlotlyChart's EMPH_BUMP / EMPH_RING / DIM_OPACITY and
  *  the overlay's 10px bold name. `dim` is softened so a gene's existing highlight stays visible
@@ -31,6 +40,10 @@ export const DEFAULT_HIGHLIGHT: ResolvedHighlight = {
   label: true,
   labelSize: 10
 }
+
+/** The point plots' highlight defaults: the shared ones, the emphasised gene's name in its point's
+ *  colour (labelColor AUTO). Any other chart's overlay names it in the theme text (no labelColor). */
+const POINT_HIGHLIGHT: ResolvedHighlight = { ...DEFAULT_HIGHLIGHT, labelColor: AUTO }
 
 /** A point's default outline width, px — every group of every point plot except 'none'. */
 export const DEFAULT_OUTLINE = 0.5
@@ -196,16 +209,19 @@ export function resolveGroup(style: PointStyle | undefined, def: ResolvedGroup):
   const o = style?.groups?.[def.key]
   const highlight = resolveHighlight(style, o?.highlight)
   if (!o) return { ...def, highlight }
+  const color = o.color && o.color !== AUTO ? o.color : def.color
   return {
     ...def,
     name: o.name?.trim() || def.name,
     size: o.size ?? def.size,
     opacity: o.opacity ?? def.opacity,
     // Automatic (unset, or AUTO) follows the default — for an effect group, the upstream's colour.
-    color: o.color && o.color !== AUTO ? o.color : def.color,
+    color,
     outline: o.outline ?? def.outline,
     outlineColor: o.outlineColor ?? def.outlineColor,
     label: o.label ?? def.label,
+    // Automatic (unset, or AUTO) follows the marker colour (labelColorOf).
+    labelColor: o.labelColor && o.labelColor !== AUTO ? o.labelColor : undefined,
     legend: o.legend ?? def.legend,
     highlight
   }
@@ -228,7 +244,7 @@ export function resolveHighlight(
   group?: HighlightStyle
 ): ResolvedHighlight {
   const h = style?.highlight
-  if (!h && !group) return DEFAULT_HIGHLIGHT
+  if (!h && !group) return POINT_HIGHLIGHT
   const pick = <K extends keyof ResolvedHighlight>(k: K): ResolvedHighlight[K] =>
     (group?.[k] as ResolvedHighlight[K]) ?? (h?.[k] as ResolvedHighlight[K]) ?? DEFAULT_HIGHLIGHT[k]
   return {
@@ -238,7 +254,8 @@ export function resolveHighlight(
     ringColor: group?.ringColor ?? h?.ringColor,
     dim: pick('dim'),
     label: pick('label'),
-    labelSize: pick('labelSize')
+    labelSize: pick('labelSize'),
+    labelColor: group?.labelColor ?? h?.labelColor ?? AUTO
   }
 }
 

@@ -158,3 +158,27 @@ describe('inter-dataset', () => {
     ).toEqual(c)
   })
 })
+
+describe('a condition only one dataset carries', () => {
+  it('pins it on that dataset and takes the other whole', () => {
+    // B: one compound, no dose or time at all
+    const RB = rows
+      .filter((r) => r.cmpd === 'B' && r.cell === 'M' && r.dose === 1 && r.time === 8)
+      .map((r) => ({ ...r, dose: null, time: null }))
+    const bConds = ['cell', 'cmpd', 'dose', 'time']
+    const state: ContrastState = {
+      cmode: { cmpd: 'slice', dose: 'slice', time: 'slice' },
+      sl: { cmpd: { a: 'A', b: 'B' }, dose: { a: '10' }, time: { a: '24' } },
+      drop: {}
+    }
+    const m = contrastModel(state, sampleRows(rows, conds), sampleRows(RB, bConds), conds, numeric)
+    expect(m.gb.size).toBeGreaterThan(0)
+    expect(m.keys.length).toBeGreaterThan(0)
+    const c = compileInter(m)
+    expect(c.pairFix.a).toMatchObject({ cmpd: 'A', dose: '10', time: '24' })
+    expect(c.pairFix.b).toEqual({ cmpd: 'B' })
+    // and the engine pairs it
+    const p = previewContrastPair(side(rows), side(RB), c.match, undefined, c.pairFix)
+    expect(p.warnings).toEqual([])
+  })
+})

@@ -115,6 +115,57 @@ function sampleColumns(fields: string[], rows: Row[]): string[] {
   return candidates.filter((f) => isNumericColumn(rows, f))
 }
 
+/** A sample column's run name: the header without a run file's folder or extension, any case —
+ *  so a DIA-NN header `D:\runs\A1.raw` reads as `a1`. */
+const runName = (h: string): string =>
+  (h.split(/[\\/]/).pop() ?? h)
+    .replace(/\.(d|raw|mzml|mzxml|wiff|dia|htrms|tdf)$/i, '')
+    .trim()
+    .toLowerCase()
+
+/** Whether `key` stands whole inside `name` — not run into a letter or digit either side. */
+function wholeIn(key: string, name: string): boolean {
+  const word = /[a-z0-9]/
+  for (let at = name.indexOf(key); at >= 0; at = name.indexOf(key, at + 1))
+    if ((at === 0 || !word.test(name[at - 1])) && !word.test(name[at + key.length] ?? ''))
+      return true
+  return false
+}
+
+/** Match samplesheet rows to the matrix's sample columns (column → row index), each row by its
+ *  sample name: the exact header; else the header's run name (runName); else the name found whole
+ *  inside the run name (`A1` in `20240101_proj_A1.raw`) — each only where it picks out one column
+ *  not yet taken. `pinned` (column → row, matched by hand) goes first. */
+export function matchSheetRows(
+  names: string[],
+  headers: string[],
+  pinned: Record<string, number> = {}
+): Map<string, number> {
+  const out = new Map<string, number>()
+  const taken = new Set<number>()
+  const known = new Set(headers)
+  for (const [h, i] of Object.entries(pinned))
+    if (known.has(h) && i >= 0 && i < names.length && !taken.has(i)) {
+      out.set(h, i)
+      taken.add(i)
+    }
+  const passes: Array<(name: string, header: string) => boolean> = [
+    (n, h) => n === h,
+    (n, h) => runName(n) === runName(h),
+    (n, h) => wholeIn(runName(n), runName(h))
+  ]
+  for (const same of passes)
+    names.forEach((raw, i) => {
+      const n = raw.trim()
+      if (taken.has(i) || !n) return
+      const hits = headers.filter((h) => !out.has(h) && same(n, h))
+      if (hits.length !== 1) return
+      out.set(hits[0], i)
+      taken.add(i)
+    })
+  return out
+}
+
 /** A token boundary anchored to the closer end of the name (so it stays put when the token
  *  count changes). `n` delimiters in from that end. */
 export interface Anchor {
@@ -210,8 +261,8 @@ export type InteractiveRole = 'id' | 'sample' | 'label' | 'meta' | 'filter' | 'i
  *  constrain to a range. Empty/absent = keep every row (a no-op). `drop` (rather than a keep-list)
  *  means values the facet didn't surface stay kept by default. */
 export interface FilterSpec {
-  /** the column's filter is applied only when this is true (the wizard's per-tile checkbox);
-   *  absent/false = the column is present but inactive (greyed, ignored). */
+  /** the wizard's per-tile checkbox: false = the column is present but its filter is off (greyed,
+   *  ignored); absent = on, as a filter column starts (see filterOn) */
   active?: boolean
   /** categorical: exact values to exclude */
   drop?: string[]
@@ -220,6 +271,10 @@ export interface FilterSpec {
   /** numeric: inclusive upper bound (null/absent = unbounded) */
   max?: number | null
 }
+
+/** Whether a filter column's filter is on: unless switched off — each starts on. (A column with no
+ *  spec yet constrains nothing either way.) */
+export const filterOn = (spec: FilterSpec | undefined): boolean => spec?.active !== false
 
 /** Distinct-value summary of one column, for building the Filtering step's controls. */
 export interface ColumnFacet {
@@ -232,6 +287,24 @@ export interface ColumnFacet {
   /** numeric range over finite values (0/0 when none) */
   min: number
   max: number
+  /** numeric, and every value a whole number (a count) */
+  whole: boolean
+}
+
+/** The step a numeric filter's bound moves by: 1 for a column of whole numbers (`whole`, a count
+ *  — 1, 2, 3 …), else the power of ten nearest under a hundredth of the column's range — 0.01 for a
+ *  q-value's 0–1 — so each step lands on a round value. */
+export function filterStep(min: number, max: number, whole = false): number {
+  if (whole) return 1
+  const raw = (max - min) / 100
+  if (!(raw > 0) || !Number.isFinite(raw)) return 1
+  return 10 ** Math.floor(Math.log10(raw))
+}
+
+/** `value` moved `dir` steps of `step`, rounded to the step's own decimals (no 0.30000000000000004). */
+export function stepBy(value: number, step: number, dir: number): number {
+  const decimals = Math.max(0, -Math.floor(Math.log10(step)))
+  return Number((value + dir * step).toFixed(Math.min(decimals, 20)))
 }
 
 /** Summarize a column's values so the Filtering step can render the right control. */
@@ -241,6 +314,7 @@ export function columnFacet(rows: Row[], col: string, cap = 200): ColumnFacet {
   let truncated = false
   let min = Infinity
   let max = -Infinity
+  let whole = numeric
   for (const r of rows) {
     const v = (r[col] ?? '').trim()
     if (v === '') continue
@@ -249,6 +323,7 @@ export function columnFacet(rows: Row[], col: string, cap = 200): ColumnFacet {
       if (Number.isFinite(n)) {
         if (n < min) min = n
         if (n > max) max = n
+        if (!Number.isInteger(n)) whole = false
       }
     }
     if (seen.size < cap) seen.add(v)
@@ -262,7 +337,8 @@ export function columnFacet(rows: Row[], col: string, cap = 200): ColumnFacet {
     values,
     truncated,
     min: Number.isFinite(min) ? min : 0,
-    max: Number.isFinite(max) ? max : 0
+    max: Number.isFinite(max) ? max : 0,
+    whole
   }
 }
 
@@ -289,6 +365,24 @@ export interface MatrixInfo {
   rows: Row[]
   /** first data row per column — shown in step 1 to help identify columns */
   sample: Record<string, string>
+}
+
+/** A matrix's column headers, from its first line only (cheap on a large file). */
+export function matrixColumns(matrixText: string): string[] {
+  const nl = matrixText.search(/\r?\n/)
+  return parse(nl < 0 ? matrixText : matrixText.slice(0, nl)).fields
+}
+
+/** The import's columns a matrix doesn't have — the ones its saved settings use (any but Ignore).
+ *  Empty when the settings can read it as they read the file they were made on. */
+export function missingImportColumns(
+  columns: string[],
+  roles: Record<string, InteractiveRole>
+): string[] {
+  const have = new Set(columns)
+  return Object.entries(roles)
+    .filter(([c, r]) => r !== 'ignore' && !have.has(c))
+    .map(([c]) => c)
 }
 
 /** Parse a matrix into columns + rows (no assumptions about which columns are what). */
@@ -454,7 +548,7 @@ export function buildStandardInputs(
   // value/range constraint). Columns whose role isn't `filter` are ignored even if a stale spec
   // lingers in config.
   const activeFilters = colsWithRole(columns, roles, 'filter')
-    .filter((c) => spec.filters?.[c]?.active)
+    .filter((c) => spec.filters?.[c] && filterOn(spec.filters[c]))
     .map((c) => ({ col: c, spec: spec.filters![c], drop: new Set(spec.filters![c].drop ?? []) }))
   const rows =
     activeFilters.length > 0 ? allRows.filter((r) => rowPasses(r, activeFilters)) : allRows

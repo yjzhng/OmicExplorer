@@ -4,10 +4,12 @@ import { describe, expect, it } from 'vitest'
 
 import { previewScale, standardize } from './ingest'
 import { abundanceOnScale, type ContrastResultRow } from './contrast'
+import { compactRows, holderTable, rowCount } from './lazyRows'
 import type { StandardizeResult } from './types'
 import {
   abundanceLabel,
-  plotScaleOf,
+  presentScaleOf,
+  withLogTransform,
   defaultTransform,
   detectScale,
   fromLinear,
@@ -208,19 +210,33 @@ describe('the scale abundance plots show', () => {
       inputScale
     }) as unknown as StandardizeResult
 
-  it("follows Clean data's log choice", () => {
+  it("follows Clean data's log choice, stamped on the result — its rows untouched", () => {
     const s = std([1, 10, 100], 'linear')
-    expect(plotScaleOf(s, 'log2')).toBe('log2')
-    expect(plotScaleOf(s, 'log10')).toBe('log10')
+    expect(presentScaleOf(withLogTransform(s, 'log2'))).toBe('log2')
+    expect(presentScaleOf(withLogTransform(s, 'log10'))).toBe('log10')
+    expect(withLogTransform(s, 'log10').rows).toBe(s.rows)
   })
 
   it('with none: an already-logged input stays on its log', () => {
-    expect(plotScaleOf(std([1, 2, 3], 'log2'), 'none')).toBe('log2')
+    expect(presentScaleOf(withLogTransform(std([1, 2, 3], 'log2'), 'none'))).toBe('log2')
   })
 
   it('with none: raw intensities stay linear — no fallback, so an unlogged plot looks off', () => {
     const skewed = [...Array.from({ length: 200 }, (_, i) => 1 + (i % 5)), 5000, 20000, 90000]
-    expect(plotScaleOf(std(skewed, 'linear'), 'none')).toBe('linear')
+    expect(presentScaleOf(withLogTransform(std(skewed, 'linear'), 'none'))).toBe('linear')
+  })
+
+  it('keeps a lazy result lazy, and the scale of one from before the input scale was kept', () => {
+    const big = std(
+      Array.from({ length: 3000 }, (_, i) => i + 1),
+      'linear'
+    )
+    compactRows(big as unknown as Record<string, unknown>)
+    const out = withLogTransform(big, 'log2')
+    expect(holderTable(out)).toBe(holderTable(big))
+    expect(rowCount(out)).toBe(3000)
+    const old = { ...std([1], 'linear'), inputScale: undefined, scale: 'log10' as const }
+    expect(withLogTransform(old as StandardizeResult, 'none')).toBe(old)
   })
 
   it('labels log₁₀ as plain "log" and log₂ with its base', () => {

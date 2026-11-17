@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 
+import { DEFAULT_PER_ROW, type PlotsPerRow } from '../dashboard/panels'
 import type { NodeKind } from '../graph/types'
 import {
   CUSTOM_CATEGORICAL_MAX,
@@ -63,6 +64,8 @@ export interface AppSettings {
   plotNavWidth: number
   /** width of the form workflow's settings column, when a step's details window sits beside it */
   configWidth: number
+  /** plots per row on a results dashboard not yet arranged by hand */
+  plotsPerRow: PlotsPerRow
   /** what a plot tile's Copy button copies */
   copyFormat: CopyFormat
   /** raster DPI for Copy */
@@ -81,6 +84,13 @@ export interface AppSettings {
    *  highlight, axes), caps, and whatever else that kind's config panel offers. Merged over the
    *  kind's built-in defaults at creation; existing tiles keep what they have. */
   plotDefaults: Partial<Record<NodeKind, Record<string, unknown>>>
+  /** per step a plot tile is made from (by its kind), the plots a new plot tile's picker comes
+   *  with ticked: `on` = Custom (else None), `keys` the plot-menu entries (entryKey) — kept while
+   *  switched to None, so switching back restores them */
+  defaultPlots: Partial<Record<NodeKind, { on: boolean; keys: string[] }>>
+  /** per step a plot tile is made from (by its kind), the order its plots are added in — so laid
+   *  out in on the results page — as plot-menu entry keys; absent = the menu's order */
+  plotOrder: Partial<Record<NodeKind, string[]>>
   /** each palette role's default (see palettes.ts PaletteRole): a plot's Automatic palette */
   palettes: Record<PaletteRole, PaletteRef>
   /** the categorical palette groups and conditions are coloured from */
@@ -97,6 +107,7 @@ const DEFAULTS: AppSettings = {
   detailsWidth: DETAILS_WIDTH.default,
   plotNavWidth: PLOT_NAV_WIDTH.default,
   configWidth: CONFIG_WIDTH.default,
+  plotsPerRow: DEFAULT_PER_ROW,
   copyFormat: 'png',
   copyDpi: 300,
   downloadFormat: 'png',
@@ -105,6 +116,8 @@ const DEFAULTS: AppSettings = {
   exportBackground: 'white',
   plotFont: DEFAULT_PLOT_FONT,
   plotDefaults: {},
+  defaultPlots: {},
+  plotOrder: {},
   palettes: ROLE_DEFAULTS,
   categorical: DEFAULT_CATEGORICAL
 }
@@ -135,6 +148,18 @@ const readCategorical = (v: unknown): string[] | undefined => {
   return c.length ? c.slice(0, CUSTOM_CATEGORICAL_MAX) : undefined
 }
 
+/** Stored default plots, each well-formed (a flag and a list of entry keys). */
+function readDefaultPlots(v: unknown): AppSettings['defaultPlots'] {
+  if (!v || typeof v !== 'object') return {}
+  const out: AppSettings['defaultPlots'] = {}
+  for (const [kind, d] of Object.entries(v as Record<string, unknown>)) {
+    const e = d as { on?: unknown; keys?: unknown } | null
+    if (!e || !Array.isArray(e.keys)) continue
+    out[kind as NodeKind] = { on: e.on === true, keys: e.keys.map(String) }
+  }
+  return out
+}
+
 function load(): AppSettings {
   try {
     const raw = localStorage.getItem(KEY)
@@ -151,6 +176,7 @@ function load(): AppSettings {
       detailsWidth: clampWidth(v.detailsWidth, DETAILS_WIDTH),
       plotNavWidth: clampWidth(v.plotNavWidth, PLOT_NAV_WIDTH),
       configWidth: clampWidth(v.configWidth, CONFIG_WIDTH),
+      plotsPerRow: v.plotsPerRow === 2 || v.plotsPerRow === 4 ? v.plotsPerRow : DEFAULT_PER_ROW,
       copyFormat: v.copyFormat === 'svg' ? 'svg' : 'png',
       copyDpi: dpiOr(v.copyDpi, DEFAULTS.copyDpi),
       downloadFormat:
@@ -163,6 +189,12 @@ function load(): AppSettings {
       // defaults at creation: a stale or unknown key simply never matches a config field.
       plotDefaults:
         v.plotDefaults && typeof v.plotDefaults === 'object' ? { ...v.plotDefaults } : {},
+      defaultPlots: readDefaultPlots(v.defaultPlots),
+      plotOrder: Object.fromEntries(
+        Object.entries((v.plotOrder ?? {}) as Record<string, unknown>)
+          .filter(([, keys]) => Array.isArray(keys))
+          .map(([kind, keys]) => [kind, (keys as unknown[]).map(String)])
+      ),
       palettes: Object.fromEntries(
         (Object.keys(ROLE_DEFAULTS) as PaletteRole[]).map((r) => [
           r,
@@ -210,6 +242,7 @@ export const useAppSettings = create<AppSettingsState>((set, get) => ({
       detailsWidth,
       plotNavWidth,
       configWidth,
+      plotsPerRow,
       copyFormat,
       copyDpi,
       downloadFormat,
@@ -218,6 +251,8 @@ export const useAppSettings = create<AppSettingsState>((set, get) => ({
       exportBackground,
       plotFont,
       plotDefaults,
+      defaultPlots,
+      plotOrder,
       palettes,
       categorical,
       customSpectrum,
@@ -229,6 +264,7 @@ export const useAppSettings = create<AppSettingsState>((set, get) => ({
       detailsWidth,
       plotNavWidth,
       configWidth,
+      plotsPerRow,
       copyFormat,
       copyDpi,
       downloadFormat,
@@ -237,6 +273,8 @@ export const useAppSettings = create<AppSettingsState>((set, get) => ({
       exportBackground,
       plotFont,
       plotDefaults,
+      defaultPlots,
+      plotOrder,
       palettes,
       categorical,
       customSpectrum,

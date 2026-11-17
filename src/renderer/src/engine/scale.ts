@@ -8,7 +8,7 @@
  * (the Clean data table) and written (the standardized CSV); see presentStd.
  */
 import type { StandardizeResult, StandardRow } from './types'
-import { lazyCopy, tableWithNumbers } from './lazyRows'
+import { holderTable, lazyCopy, tableWithNumbers } from './lazyRows'
 
 export type ValueScale = 'linear' | 'log2' | 'log10'
 /** Clean data's log-transform choice: the scale its values are presented on. */
@@ -161,19 +161,32 @@ export function sampleValues(values: number[], cap = 50000): number[] {
   return out
 }
 
-/** The scale a Clean data result is presented on, from its step's log-transform choice — computed
- *  where it's shown rather than stored in the result, so flipping the choice leaves the result (and
- *  every plot built from it) untouched. A result from before `inputScale` existed keeps its own. */
-export function presentScaleOf(std: StandardizeResult, logTransform?: LogTransform): ValueScale {
-  return std.inputScale ? outputScale(logTransform, std.inputScale) : (std.scale ?? 'linear')
+/** The scale a Clean data result is presented on — its table, the written data, and every
+ *  abundance plot (heatmap, bars, MA, abundance scatter, abundance contrasts, QC, sample
+ *  correlation, PCA/clustering) — and the one a Compare tests on: the scale the result carries.
+ *  Clean data stamps it from its log-transform (withLogTransform); Merge, Subset and every other
+ *  step that makes a Clean-data result pass it on, so a reader takes the scale of what it's fed and
+ *  never looks for the step that chose it. No fallback of the plots' own: raw intensities left
+ *  unlogged LOOK wrong on every plot, which is the cue to set the log-transform in Clean data. */
+export function presentScaleOf(std: StandardizeResult): ValueScale {
+  return std.scale ?? 'linear'
 }
 
-/** The scale every abundance PLOT shows a Clean data result on (heatmap, bars, MA, abundance
- *  scatter, abundance contrasts, QC, sample correlation, PCA/clustering): exactly its log-transform
- *  choice — with none, the data as it arrived. No fallback of the plots' own: raw intensities left
- *  unlogged LOOK wrong on every plot, which is the cue to set the log-transform in Clean data. */
-export function plotScaleOf(std: StandardizeResult, logTransform?: LogTransform): ValueScale {
-  return presentScaleOf(std, logTransform)
+/** `std` presented on `choice` — its rows as they are (linear), only the scale it carries changed:
+ *  a log-transform flipped in Clean data needs no re-run. The same object when nothing changes; a
+ *  result without `inputScale` (from before it was kept) keeps the scale it has. */
+export function withLogTransform(
+  std: StandardizeResult,
+  choice: LogTransform | undefined
+): StandardizeResult {
+  return std.inputScale ? withScale(std, outputScale(choice, std.inputScale)) : std
+}
+
+/** `std` carrying `scale` — a lazy result's rows left lazy (a spread would build every row). */
+export function withScale(std: StandardizeResult, scale: ValueScale): StandardizeResult {
+  if (std.scale === scale) return std
+  const table = holderTable(std)
+  return (table && lazyCopy(std, { scale }, table)) ?? { ...std, scale }
 }
 
 /** An abundance axis title on `scale`: "log abundance" (log₁₀ — the app's plain "log"),

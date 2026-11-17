@@ -10,7 +10,7 @@ import {
 import { useGraph } from '../graph/store'
 import { tooltip } from './condTooltip'
 import { PlotlyChart, type GuideDrag } from './PlotlyChart'
-import { legendOn, resolveGroups, resolveHighlight } from './pointStyle'
+import { labelColorOf, legendOn, resolveGroups, resolveHighlight } from './pointStyle'
 import { axisBase, EFFECT_COLOR, GUIDE_WIDTH, guideLine, PALETTES, plotBase } from './theme'
 import { useSelectedGeneSets } from './useSelection'
 import { useUiTheme } from './useUiTheme'
@@ -244,7 +244,14 @@ export function MAView({
     // selection overlay names it).
     const labels = ma.points
       .filter((pt) => look(pt.effect).label)
-      .map((pt) => ({ x: pt.x, y: pt.y, text: pt.label, priority: Math.abs(pt.y), id: pt.uniqID }))
+      .map((pt) => ({
+        x: pt.x,
+        y: pt.y,
+        text: pt.label,
+        priority: Math.abs(pt.y),
+        id: pt.uniqID,
+        color: labelColorOf(look(pt.effect), p.text)
+      }))
     return { data: traces, layout: lay, labels, guides }
   }, [ma, title, mode, selSets, samThreshold, asymmetric, editable, groups, showLegend, gw])
 

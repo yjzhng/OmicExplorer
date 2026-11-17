@@ -64,3 +64,19 @@ describe('running a tile whose input is still running', () => {
     expect(node('cmp').status).toBe('running')
   })
 })
+
+describe('plots dragged out of a tile', () => {
+  const pick = (status: StepStatus): ReturnType<typeof vi.fn> => {
+    const runNode = vi.fn(async () => {})
+    useGraph.setState({ nodes: [step('cmp', 'compare', status)], edges: [], results: {}, runNode })
+    const ph = useGraph.getState().addPlaceholder('cmp', ['volcano'], { x: 0, y: 0 })
+    useGraph.getState().resolvePlaceholder(ph, [{ kind: 'volcano' }])
+    return runNode
+  }
+  it('run at once when the tile is done', () => {
+    expect(pick('done')).toHaveBeenCalledTimes(1)
+  })
+  it('wait for a Run when it is not', () => {
+    expect(pick('idle')).not.toHaveBeenCalled()
+  })
+})

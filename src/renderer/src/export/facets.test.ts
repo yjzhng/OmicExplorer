@@ -77,11 +77,11 @@ describe('facetViews', () => {
   })
 
   it('returns a single unlabelled view for non-faceted kinds', () => {
-    expect(facetViews('heatmap', {}, cmpResult())).toEqual([{ sel: {}, suffix: '' }])
+    expect(facetViews('heatmap', {}, cmpResult())).toEqual([{ sel: {}, suffix: '', values: [] }])
   })
 
   it('returns a single view when there is no upstream result', () => {
-    expect(facetViews('volcano', {}, undefined)).toEqual([{ sel: {}, suffix: '' }])
+    expect(facetViews('volcano', {}, undefined)).toEqual([{ sel: {}, suffix: '', values: [] }])
   })
 })
 

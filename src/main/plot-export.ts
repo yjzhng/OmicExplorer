@@ -331,6 +331,8 @@ export function registerPlotExport(): void {
 
   /** Plain text on the clipboard (e.g. the home page's citation). */
   ipcMain.handle('clip:text', (_evt, text: string): void => clipboard.writeText(text))
+  /** The clipboard's text (the canvas's Paste reads a copy of tiles from it). */
+  ipcMain.handle('clip:readText', (): string => clipboard.readText())
 
   ipcMain.handle('plots:reveal', async (_evt, dir: string): Promise<void> => {
     await shell.openPath(dir)

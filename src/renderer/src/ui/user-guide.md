@@ -118,6 +118,9 @@ Pick the step | e.g. Clean data, Compare, Volcano.
 - **Editing:** a step's panel has **Duplicate** and **Delete**. In Flowchart, drag on empty canvas to
   select several steps, then Group, Duplicate or Delete them. **↺ / ↻** in the top bar undo and
   redo.
+- **Editing a group:** the pencil at a group's top right. Click a step — or another group, to move
+  it whole — outside the group to add it, or one inside to take it out (click again to undo the
+  mark), then the ✓ (or **Done**); **Esc** cancels.
 
 ### Compare and Contrast
 
@@ -128,7 +131,10 @@ Pick the step | e.g. Clean data, Compare, Volcano.
   interaction). In an ANOVA a numeric condition (dose, time …) is a **slope** by default — a trend
   over its levels, on a log or linear scale — or switch it to a **factor** (a level each). A preview lists every comparison before you **Apply**.
 - **Contrast** sets two comparisons side by side — within one dataset, or across two wired inputs
-  (dataset A on the y-axis, B on the x-axis) matched on shared conditions.
+  (dataset A on the y-axis, B on the x-axis) matched on shared conditions. **Correlated** calls the
+  genes outside a prediction band around the fitted line; **independent** cuts each axis at a value,
+  as a volcano does — fold change top and bottom, significance as a p (or q) — starting from each
+  side's Compare. Leave a box empty for no cutoff on that side; drag a line on the scatter to move it.
 
 ## Import data
 
@@ -151,6 +157,14 @@ Metadata | Fetch annotations; preview the DB.
     replicate, or your own with **custom**. Dose and time ask for their unit.
   - **Map conditions** — pick a condition, then click or drag the parts of a sample name that hold
     it; the **Separator** above the names sets how they're split.
+  - **Sample names | Samplesheet** (above the names) — where the conditions come from. With
+    **Samplesheet**, **Load samplesheet…** takes a sheet in any layout — CSV, TSV or Excel `.xlsx`
+    (its first sheet): each sample name is shown beside its row, matched by name (exactly; else
+    ignoring case, the run file's folder and extension; else the sheet's name found whole in the
+    file name), and the rows that match no sample follow in red — drag one onto the sample it
+    belongs to (**×** undoes it). Pick a condition, then click the column holding it (again to
+    unmap); **Sample name** marks the column naming the samples, if the guess is wrong. A sample
+    with no row is left out.
   - **Refine & edit** — the resulting samplesheet: rename a value everywhere at once, or type into
     any cell. Tick **Everything is correct** to go on.
 

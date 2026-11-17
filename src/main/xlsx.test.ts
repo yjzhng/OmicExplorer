@@ -1,7 +1,7 @@
 import { inflateRawSync } from 'node:zlib'
 import { describe, expect, it } from 'vitest'
 
-import { buildCsv, buildXlsx } from './xlsx'
+import { buildCsv, buildXlsx, readXlsx, readXlsxParts } from './xlsx'
 
 const columns = ['gene', 'value', 'note']
 const rows: Array<Array<string | number | null>> = [
@@ -79,5 +79,47 @@ describe('buildXlsx', () => {
     const wb = parts.get('xl/workbook.xml') ?? ''
     const m = wb.match(/name="(x+)"/)
     expect(m?.[1].length).toBe(31)
+  })
+})
+
+describe('readXlsx', () => {
+  it('reads back a workbook it wrote', () => {
+    expect(readXlsx(buildXlsx('t', columns, rows))).toEqual([
+      ['gene', 'value', 'note'],
+      ['argF', '1.5', 'ok'],
+      ['comma,gene', '2', 'has "quote"'],
+      ['blank', '', 'line\nbreak']
+    ])
+  })
+
+  it("reads Excel's own layout: shared strings, rich text, gaps, booleans, the sheet named", () => {
+    const parts = new Map([
+      [
+        'xl/workbook.xml',
+        '<workbook><sheets><sheet name="Samples" sheetId="1" r:id="rId3"/></sheets></workbook>'
+      ],
+      [
+        'xl/_rels/workbook.xml.rels',
+        '<Relationships><Relationship Id="rId3" Target="worksheets/sheet2.xml"/></Relationships>'
+      ],
+      [
+        'xl/sharedStrings.xml',
+        '<sst><si><t>sample</t></si><si><r><t>D</t></r><r><t>MSO</t></r><rPh><t>x</t></rPh></si>' +
+          '<si><t>A&amp;1</t></si></sst>'
+      ],
+      [
+        'xl/worksheets/sheet2.xml',
+        '<worksheet><sheetData>' +
+          '<row r="1"><c r="A1" t="s"><v>0</v></c><c r="C1" t="inlineStr"><is><t>dose</t></is></c></row>' +
+          '<row r="3"><c r="A3" t="s"><v>2</v></c><c r="B3" t="s"><v>1</v></c><c r="C3"><v>10</v></c>' +
+          '<c r="D3" t="b"><v>1</v></c><c r="E3" s="2"/></row>' +
+          '</sheetData></worksheet>'
+      ]
+    ])
+    expect(readXlsxParts(parts)).toEqual([
+      ['sample', '', 'dose'],
+      [],
+      ['A&1', 'DMSO', '10', 'TRUE', '']
+    ])
   })
 })

@@ -87,9 +87,11 @@ export function contrastModel(
     const drop = new Set(state.drop[c] ?? [])
     return { c, m, va, vb, sl, drop, kept: va.filter((v) => vb.includes(v) && !drop.has(v)) }
   })
+  // A contrasted condition one group doesn't carry at all (a dataset without time) narrows only the
+  // other: that group has no value of it to pin, so it's taken whole.
   const keep = (x: SliceInfo, r: StandardRow, side: 'a' | 'b'): boolean =>
     x.m === 'slice'
-      ? cv(r, x.c) === x.sl[side]
+      ? !(side === 'a' ? x.va : x.vb).length || cv(r, x.c) === x.sl[side]
       : x.m === 'match'
         ? x.kept.includes(cv(r, x.c) ?? '')
         : true
@@ -122,8 +124,9 @@ export function compileIntra(m: ContrastModel): {
   const den: CondSelector = {}
   for (const x of m.rows) {
     if (x.m === 'slice') {
-      num[x.c] = [x.sl.a]
-      den[x.c] = [x.sl.b]
+      // (a side without the condition isn't pinned on it)
+      if (x.va.length) num[x.c] = [x.sl.a]
+      if (x.vb.length) den[x.c] = [x.sl.b]
     } else if (x.m === 'match' && x.drop.size) num[x.c] = den[x.c] = x.kept
   }
   return { num, den, match: m.rows.filter((x) => x.m === 'match').map((x) => x.c) }
@@ -135,8 +138,8 @@ export function compileInter(m: ContrastModel): { match: ConditionKey[]; pairFix
   const pairFix: PairFix = { a: {}, b: {} }
   for (const x of m.rows) {
     if (x.m === 'slice') {
-      pairFix.a[x.c] = x.sl.a
-      pairFix.b[x.c] = x.sl.b
+      if (x.va.length) pairFix.a[x.c] = x.sl.a
+      if (x.vb.length) pairFix.b[x.c] = x.sl.b
     } else if (x.m === 'match' && x.drop.size) pairFix.a[x.c] = pairFix.b[x.c] = x.kept
   }
   return { match: m.rows.filter((x) => x.m === 'match').map((x) => x.c), pairFix }

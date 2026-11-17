@@ -21,7 +21,10 @@ import {
   contextOf,
   presentStd,
   presentScaleOf,
+  abundanceLabel,
+  buildStdMatrix,
   rowView,
+  sampleQc,
   type RowView
 } from '../engine'
 import { deriveGroups } from '../graph/groups'
@@ -32,7 +35,6 @@ import {
   type CompareConfig,
   type GraphNode,
   type NodeResult,
-  type StandardizeConfig,
   type StepNode
 } from '../graph/types'
 
@@ -100,16 +102,13 @@ function cellRows(
 }
 
 /** Standardized table → columns + rows (cell shown only when the data carries it). */
-function standardizeTable(
-  result: Extract<NodeResult, { kind: 'standardize' }>,
-  logTransform?: StandardizeConfig['logTransform']
-): {
+function standardizeTable(result: Extract<NodeResult, { kind: 'standardize' }>): {
   columns: string[]
   rows: Cell[][]
 } {
   const dm = result.std.displayMap
   // On Clean data's presented scale (its chosen log-transform), as its table shows them.
-  const std = presentStd(result.std, presentScaleOf(result.std, logTransform))
+  const std = presentStd(result.std, presentScaleOf(result.std))
   // which columns: off the context tuples (every condition value the rows carry); the cells off
   // the columns — no row built
   const ctx = contextOf(std).rows
@@ -133,6 +132,63 @@ function standardizeTable(
   return { columns: cols.map((c) => condLabel(c as ConditionKey)), rows }
 }
 
+/** A Clean data result as its table's Matrix view shows it → columns + rows: one row per gene
+ *  (uniqID, gene), one column per sample — named by its conditions and replicate, as the view's
+ *  header — its values on Clean data's presented scale. */
+export function stdMatrixExport(result: Extract<NodeResult, { kind: 'standardize' }>): {
+  columns: string[]
+  rows: Cell[][]
+} {
+  const { samples, rows } = buildStdMatrix(presentStd(result.std, presentScaleOf(result.std)))
+  const keys = ['uniqID', 'gene', ...samples.map((c) => c.key)]
+  return {
+    columns: ['uniqID', 'gene', ...samples.map((c) => c.label)],
+    rows: rows.map((r) => keys.map((k) => (r[k] as Cell | undefined) ?? null))
+  }
+}
+
+/** A Clean data result's per-sample QC (its table's QC view) → columns + rows: the sample's
+ *  conditions and replicate, then its measured / imputed / missing counts, its measured
+ *  abundances' median and quartiles on the plots' scale, and its condition group's median CV. */
+export function sampleQcExport(result: Extract<NodeResult, { kind: 'standardize' }>): {
+  columns: string[]
+  rows: Cell[][]
+} {
+  const scale = presentScaleOf(result.std)
+  const qc = sampleQc(result.std, scale)
+  const metas = qc.map((q) => q.meta)
+  const conds = [
+    ...(['cell', 'cmpd', 'dose', 'time'] as const).filter((c) => present(metas, c)),
+    ...customCols(metas)
+  ]
+  const unit = abundanceLabel(scale)
+  const columns = [
+    ...conds.map((c) => condLabel(c as ConditionKey)),
+    'rep',
+    'measured',
+    'imputed',
+    'missing',
+    'missing %',
+    `median (${unit})`,
+    `Q1 (${unit})`,
+    `Q3 (${unit})`,
+    'group CV %'
+  ]
+  const rows = qc.map((q): Cell[] => [
+    ...conds.map((c) => cellOf(q.meta, c)),
+    q.meta.rep,
+    q.measured,
+    q.imputed,
+    q.missing,
+    q.missingPct,
+    q.median,
+    q.q1,
+    q.q3,
+    q.groupCv
+  ])
+  return { columns, rows }
+}
+
 /** Comparison table → columns + rows (two-way's log2FC is an interaction term). */
 function compareTable(
   result: Extract<NodeResult, { kind: 'compare' }>,
@@ -141,7 +197,6 @@ function compareTable(
 ): { columns: string[]; rows: Cell[][] } {
   const dm = result.displayMap
   const src = result.cmp.rows
-  const multiCmp = new Set(src.map((r) => r.comparison)).size > 1
   const t = result.cmp.threshold
   // A curve fit's metrics: CurveCurator's (curveMetrics), or the response surface method's
   // (responseMetrics) — whichever the rows carry.
@@ -161,7 +216,8 @@ function compareTable(
   const cols = [
     'uniqID',
     'gene',
-    ...(multiCmp ? ['comparison'] : []),
+    // always, as the table on screen (PanelBody's compareColumns)
+    'comparison',
     ...(present(src, 'cell') ? ['cell'] : []),
     ...(present(src, 'cmpd') ? ['cmpd'] : []),
     ...(present(src, 'dose') ? ['dose'] : []),
@@ -277,8 +333,7 @@ export function collectTableExports(
     const result = results[g.rootId]
     if (!node || !isStep(node) || !result) continue
     let built: { columns: string[]; rows: Cell[][] } | null = null
-    if (result.kind === 'standardize')
-      built = standardizeTable(result, (node.data.config as StandardizeConfig).logTransform)
+    if (result.kind === 'standardize') built = standardizeTable(result)
     else if (result.kind === 'compare')
       built = compareTable(
         result,
