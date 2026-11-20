@@ -221,11 +221,7 @@ export function compactRows(holder: Obj, keep = false): boolean {
 
 /** A copy of `holder` with `fields` set — its own fields copied as they are, a lazy `rows` left
  *  lazy over `table` (a spread would build every row) — or null when `holder` has no lazy rows. */
-export function lazyCopy<T extends object>(
-  holder: T,
-  fields: Partial<T>,
-  table: Table
-): T | null {
+export function lazyCopy<T extends object>(holder: T, fields: Partial<T>, table: Table): T | null {
   if (!slotOf.get(holder)) return null
   const out: Obj = {}
   for (const k of Object.keys(holder)) if (k !== 'rows') out[k] = (holder as Obj)[k]

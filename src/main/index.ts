@@ -13,6 +13,7 @@ import { registerAnnotate } from './annotate'
 import { registerStringNet } from './string-net'
 import { registerPark } from './park'
 import { registerRefCache } from './ref-cache'
+import { registerLogging } from './logging'
 import pkg from '../../package.json'
 
 // Derive the app name from package.json's productName. Without this, dev (which runs
@@ -112,6 +113,7 @@ if (shoot) {
 
   app.whenReady().then(() => {
     assertRenamedFromTemplate()
+    registerLogging() // the error log (Help › Copy Diagnostics / Show Log File)
     registerFileIo() // renderer ↔ main file picking/reading for the Load node
     registerCloseGuard() // unsaved-changes prompt on close / open / new
     registerPlotExport() // renderer ↔ main plot-image writing (Export plots)

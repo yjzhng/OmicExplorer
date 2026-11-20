@@ -9,6 +9,7 @@ import {
 } from 'react'
 import { createPortal } from 'react-dom'
 
+import { NumberInput } from './NumberInput'
 import { IconSearch } from './GeneSelectMenu'
 import { truncateLabel } from './plotAxes'
 import { GENE_LIST_STYLES } from './geneListStyles'
@@ -722,12 +723,6 @@ function ColumnMenu({
   }
 
   const range = filter?.type === 'numeric' ? filter : { min: null, max: null }
-  /** A filter bound from the box: blank (or a partial entry like "-") = no bound, never NaN. */
-  const numOrNull = (raw: string): number | null => {
-    if (raw.trim() === '') return null
-    const v = Number(raw)
-    return Number.isFinite(v) ? v : null
-  }
   const setRange = (min: number | null, max: number | null): void =>
     onFilter(min == null && max == null ? null : { type: 'numeric', min, max })
 
@@ -770,20 +765,20 @@ function ColumnMenu({
         <div style={styles.menuBody}>
           <div style={styles.menuLabel}>Range</div>
           <div style={styles.rangeRow}>
-            <input
+            <NumberInput
+              optional
               style={styles.numInput}
-              type="number"
               placeholder="min"
-              value={range.min ?? ''}
-              onChange={(e) => setRange(numOrNull(e.target.value), range.max)}
+              value={range.min}
+              onChange={(v) => setRange(v ?? null, range.max)}
             />
             <span style={styles.rangeDash}>–</span>
-            <input
+            <NumberInput
+              optional
               style={styles.numInput}
-              type="number"
               placeholder="max"
-              value={range.max ?? ''}
-              onChange={(e) => setRange(range.min, numOrNull(e.target.value))}
+              value={range.max}
+              onChange={(v) => setRange(range.min, v ?? null)}
             />
           </div>
           {filter && (

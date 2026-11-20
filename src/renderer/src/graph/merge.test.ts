@@ -9,7 +9,7 @@ import { combineStandardize, customCond, presentScaleOf, withLogTransform } from
 import type { StandardizeResult, StandardRow } from '../engine'
 import {
   ALL_OPS,
-  NODE_SPECS,
+  acceptsFromOf,
   axisAvailFor,
   canConnect,
   maxInputsFor,
@@ -30,14 +30,14 @@ const node = (id: string, kind: NodeKind): GraphNode =>
 
 describe('merge wiring', () => {
   it('a Merge is accepted wherever Clean data is', () => {
-    const takesStd = ALL_OPS.filter((k) => NODE_SPECS[k].acceptsFrom.includes('standardize'))
+    const takesStd = ALL_OPS.filter((k) => acceptsFromOf(k).includes('standardize'))
     expect(takesStd.length).toBeGreaterThan(5)
     for (const k of takesStd) expect(canConnect('merge', k)).toBe(true)
   })
 
   it('and is rejected wherever Clean data is', () => {
     for (const k of ALL_OPS)
-      if (!NODE_SPECS[k].acceptsFrom.includes('standardize'))
+      if (!acceptsFromOf(k).includes('standardize'))
         expect(canConnect('merge', k)).toBe(canConnect('standardize', k))
   })
 

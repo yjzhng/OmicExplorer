@@ -3035,7 +3035,12 @@ export function buildSampleCorr(
   /** `scale`: the scale abundance is shown on (see plotScaleOf); unset → the old guess (log₁₀
    *  when the values look like raw intensity). A log base doesn't change Pearson r; log vs linear
    *  does. */
-  opts: { cluster?: boolean; scale?: ValueScale } = {}
+  opts: {
+    cluster?: boolean
+    scale?: ValueScale
+    /** the samples' order when they aren't clustered (unset: as they come in the data) */
+    order?: SampleOrdering
+  } = {}
 ): CorrData {
   const conds = std.activeConditions
   const sampleLabel = (r: StandardRow): string => {
@@ -3052,6 +3057,8 @@ export function buildSampleCorr(
   let G = 0
   let labels: string[] = []
   let metas: SampleMeta[] = []
+  // each sample's own conditions, unmasked — what `opts.order` sorts on (as the heatmap's do)
+  const ownMetas: SampleMeta[] = []
   let min = Infinity
   let max = -Infinity
   for (let row = 0; row < ix.n; row++) {
@@ -3074,6 +3081,14 @@ export function buildSampleCorr(
         time: act.has('time') ? r.time : null,
         rep: r.rep,
         ...(Object.keys(extra).length ? { extra } : null)
+      })
+      ownMetas.push({
+        cell: r.cell,
+        cmpd: r.cmpd,
+        dose: r.dose,
+        time: r.time,
+        rep: r.rep,
+        ...(r.extra ? { extra: r.extra } : null)
       })
     }
     if (geneIdx[ix.gene[row]] < 0) geneIdx[ix.gene[row]] = G++
@@ -3128,8 +3143,19 @@ export function buildSampleCorr(
 
   // Cluster samples by their correlation profile so replicate groups sit together; reorder
   // both axes symmetrically.
-  if ((opts.cluster ?? true) && S > 2) {
-    const order = clusterRowOrder(z)
+  // Unclustered, the samples follow `opts.order` (natural: by condition; original: the data's).
+  const clustered = (opts.cluster ?? true) && S > 2
+  const order = clustered
+    ? clusterRowOrder(z)
+    : opts.order
+      ? sortSamples(
+          Array.from({ length: S }, (_, i) => i),
+          opts.order,
+          (i) => ownMetas[i],
+          true
+        )
+      : null
+  if (order) {
     labels = order.map((i) => labels[i])
     metas = order.map((i) => metas[i])
     z = order.map((i) => order.map((j) => z[i][j]))

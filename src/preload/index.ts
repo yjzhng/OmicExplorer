@@ -410,6 +410,11 @@ const api = {
     return () => ipcRenderer.removeListener('string:progress', listener)
   },
 
+  /** Append a caught error to the app's log (renderer/src/shared/diagnostics.ts → main/logging.ts). */
+  logError: (entry: object): void => ipcRenderer.send('log:write', entry),
+  /** The error log's last `lines` entries. */
+  logTail: (lines?: number): Promise<string> => ipcRenderer.invoke('log:tail', lines),
+
   /** The newest release (its tag, version and page), or why it couldn't be found. */
   latestRelease: (): Promise<{ tag: string; version: string; url: string } | { error: string }> =>
     ipcRenderer.invoke('update:latest'),

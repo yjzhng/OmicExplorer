@@ -5,12 +5,13 @@
  *  Apply: the edits are held as a draft the window shows, and Close drops them.
  *  Portalled to <body> because a dashboard tile sits inside react-grid-layout's transformed
  *  item, where a position:fixed panel would otherwise be offset instead of viewport-centred. */
+import { ReactFlowProvider } from '@xyflow/react'
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
-import { ReactFlowProvider } from '@xyflow/react'
 
+import { Field, Section } from '../nodes/kit/settings/controls'
 import { ApplyStageContext, type ApplyStage } from '../graph/applyStage'
-import { Field, PlotConfig, Section } from '../graph/NodeConfigPanel'
+import { PlotConfig } from '../graph/NodeConfigPanel'
 import { plotLabel } from '../graph/registry'
 import { useGraph } from '../graph/store'
 import {
@@ -21,7 +22,7 @@ import {
   type PlotOrient
 } from '../graph/types'
 import type { AxisDefaults } from '../ui/plotAxes'
-import { cssVars, PALETTES } from '../ui/theme'
+import { cssVars, NOTICE_MS, PALETTES } from '../ui/theme'
 import { ToggleSwitch } from '../ui/ToggleSwitch'
 import { useUiTheme } from '../ui/useUiTheme'
 import { TileDialog, type Anchor } from './TileDialog'
@@ -75,7 +76,7 @@ function ApplyAllButton({
             onApply()
             setState('done')
             window.clearTimeout(timer.current)
-            timer.current = window.setTimeout(() => setState('idle'), 1400)
+            timer.current = window.setTimeout(() => setState('idle'), NOTICE_MS.done)
           }}
         />
       )}

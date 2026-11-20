@@ -3,6 +3,7 @@
  * and await results; compute runs off the UI thread.
  */
 import type { ClusterOrderOptions, DendroLink } from './cluster'
+import { EngineError } from './engineError'
 import type { ContrastInput, ContrastPairInput, ContrastResult } from './contrast'
 import type { CompareTableResult, DirectInput } from './direct'
 import type { FactorAnovaInput } from './twoWay'
@@ -37,6 +38,8 @@ const pending = new Map<
   {
     resolve: (v: unknown) => void
     reject: (e: Error) => void
+    /** the op asked for, for an error's context */
+    op: string
     /** told a long run's progress as the worker reports it */
     onProgress?: (p: Progress) => void
   }
@@ -102,7 +105,7 @@ function getWorker(): Worker {
       pending.delete(msg.id)
       // Results stay columnar where large: their rows are built when read (lazyRows.ts).
       if (msg.ok) p.resolve(decodeValue(msg.result, true))
-      else p.reject(new Error(msg.error))
+      else p.reject(new EngineError(msg.op ?? p.op, msg.error, msg.stack))
     }
     worker.onerror = (e) => {
       for (const [, p] of pending) p.reject(new Error(e.message || 'engine worker error'))
@@ -160,7 +163,7 @@ function call<T>(
 ): Promise<T> {
   const id = ++seq
   return new Promise<T>((resolve, reject) => {
-    pending.set(id, { resolve: resolve as (v: unknown) => void, reject, onProgress })
+    pending.set(id, { resolve: resolve as (v: unknown) => void, reject, op, onProgress })
     const message = withDataset(payload) // may post the table first (messages arrive in order)
     getWorker().postMessage({ id, op, payload: message } as EngineRequest)
   })
@@ -226,7 +229,10 @@ function lane(
 ): <T>(op: EngineRequest['op'], payload: unknown, transfer?: Transferable[]) => Promise<T> {
   let w: Worker | null = null
   let n = 0
-  const waiting = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void }>()
+  const waiting = new Map<
+    number,
+    { resolve: (v: unknown) => void; reject: (e: Error) => void; op: string }
+  >()
   // With `idleMs`, the worker is let go once idle that long (its heap freed at once); the next
   // call starts a fresh one.
   let idle: ReturnType<typeof setTimeout> | undefined
@@ -250,7 +256,7 @@ function lane(
         if (!p || 'progress' in msg) return // (this side worker's ops report no progress)
         waiting.delete(msg.id)
         if (msg.ok) p.resolve(decodeValue(msg.result))
-        else p.reject(new Error(msg.error))
+        else p.reject(new EngineError(msg.op ?? p.op, msg.error, msg.stack))
         settle()
       }
       nw.onerror = (e) => {
@@ -262,7 +268,7 @@ function lane(
     }
     const id = ++n
     return new Promise<T>((resolve, reject) => {
-      waiting.set(id, { resolve: resolve as (v: unknown) => void, reject })
+      waiting.set(id, { resolve: resolve as (v: unknown) => void, reject, op })
       w!.postMessage({ id, op, payload } as EngineRequest, transfer)
     })
   }

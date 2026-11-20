@@ -16,7 +16,7 @@ import {
   customSpectrumAt,
   type CustomSpectrum
 } from './palettes'
-import { UI } from './theme'
+import { motion, UI } from './theme'
 
 /** Steps the spectrum's preview strip is drawn in, and its height (px) — a stop's square too. */
 const STRIP = 120
@@ -239,7 +239,7 @@ export function SpectrumBuilder({
                     // the dragged stop follows the pointer; the others slide to their slot
                     left: `${(dragged ? stopDrag.t : slot / (n - 1)) * 100}%`,
                     transform: dragged ? 'translateX(-50%)' : shift(slot),
-                    transition: dragged ? 'none' : 'left 140ms ease, transform 140ms ease',
+                    transition: dragged ? 'none' : motion('left, transform', 'base'),
                     cursor: dragged ? 'grabbing' : 'grab',
                     zIndex: dragged ? 3 : 2
                   }}
@@ -385,7 +385,7 @@ export function CategoryBuilder({
                   // an equal share of the strip each: fewer colours, wider blocks
                   left: `${((slotOf.get(i) ?? i) / n) * 100}%`,
                   width: `${100 / n}%`,
-                  transition: 'left 140ms ease, width 140ms ease',
+                  transition: motion('left, width', 'base'),
                   cursor: editing ? 'grab' : 'default',
                   opacity: dragFrom === i ? 0.35 : 1,
                   zIndex: hover === i ? 1 : 0

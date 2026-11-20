@@ -1,12 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import { contextIndices, contextOf, contrastYRangeOf, rowsOfContexts } from './contextIndex'
-import {
-  abundanceOnScale,
-  contrastYRange,
-  rowsOfFeature,
-  type ContrastResultRow
-} from './contrast'
+import { abundanceOnScale, contrastYRange, rowsOfFeature, type ContrastResultRow } from './contrast'
 import { attachLazyRows, rowsAt } from './lazyRows'
 import { facetDims, type ContextRow } from './plotData'
 import { numericConds } from './types'
@@ -117,7 +112,8 @@ describe('contextOf', () => {
     expect(contextIndices(ix, ix.rows).length).toBe(full.length)
   }
 
-  it('resolves facets as the rows do (columnar result)', () => check(lazyHolder(contrastRows(4000))))
+  it('resolves facets as the rows do (columnar result)', () =>
+    check(lazyHolder(contrastRows(4000))))
   it('resolves facets as the rows do (plain rows)', () => check({ rows: contrastRows(300) }))
 
   it('keeps compare rows without contrast sides unpaired-free', () => {
@@ -156,7 +152,10 @@ describe('contrastYRangeOf', () => {
           [false, false]
         ] as const) {
           const want = contrastYRange(
-            rowsOfFeature(scale ? abundanceOnScale(plain, scale) : plain, like as ContrastResultRow),
+            rowsOfFeature(
+              scale ? abundanceOnScale(plain, scale) : plain,
+              like as ContrastResultRow
+            ),
             errors,
             points
           )

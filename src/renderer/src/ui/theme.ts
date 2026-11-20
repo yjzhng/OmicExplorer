@@ -234,14 +234,80 @@ export const plotFontCss = (): string => PLOT_FONTS[plotFont].css
 /** The plot font's single family name (exported SVG). */
 export const plotFontName = (): string => PLOT_FONTS[plotFont].name
 
+/**
+ * The app's motion: one duration per job (ms) and one curve per direction, so the same kind of
+ * change moves the same way everywhere. app.css reads the same values as `--motion-*` /
+ * `--ease-*` (kept equal by theme.test.ts); a reduced-motion setting cuts every one of them to an
+ * instant (app.css), so no component has to check it for its transitions.
+ *
+ * - `press` — a button pressed in;
+ * - `hover` — a colour / tint / border answering the pointer or a selection;
+ * - `base` — a small move: a switch's highlight, a chevron turning, a fold opening, a list
+ *   item sliding to its place, a bar filling;
+ * - `open` / `close` — a menu, popover or float appearing / going (going is quicker);
+ * - `page` — a whole view or step sliding in.
+ */
+export const MOTION_MS = {
+  press: 90,
+  hover: 120,
+  base: 160,
+  open: 180,
+  close: 120,
+  page: 320
+} as const
+export type MotionJob = keyof typeof MOTION_MS
+/** `move`: something changing in place; `enter`: arriving (quick start, gentle settle);
+ *  `exit`: leaving (gathers speed); `linear`: a steady fill (progress). */
+export const EASE = {
+  move: 'ease',
+  enter: 'cubic-bezier(0.22, 1, 0.36, 1)',
+  exit: 'ease-in',
+  linear: 'linear'
+} as const
+export type EaseKind = keyof typeof EASE
+/** One transition entry, e.g. motion('transform', 'base') → 'transform 160ms ease'. Several
+ *  properties on the same job: motion('left, width', 'base'). */
+export const motion = (props: string, job: MotionJob, ease: EaseKind = 'move'): string =>
+  props
+    .split(',')
+    .map((p) => `${p.trim()} ${MOTION_MS[job]}ms ${EASE[ease]}`)
+    .join(', ')
+/** The looping cues (ms per cycle): a spinner's turn, a status dot's pulse, an indeterminate
+ *  progress sweep, a hint's drift, and a refused connection's alarm flash (quick on purpose). */
+export const LOOP_MS = { spin: 900, pulse: 1100, sweep: 1400, drift: 1800, alarm: 550 } as const
+/** How long a brief confirmation stays up ("Copied", "Saved", "Refreshed"), and a warning or an
+ *  armed confirm-click (long enough to read, or to click again). */
+export const NOTICE_MS = { done: 1200, warn: 3000 } as const
+
+/**
+ * The plots' one text scale (px): every plot draws its text at these sizes, so a figure reads the
+ * same whichever plot it is.
+ *
+ * - `heading` — the plot's own title;
+ * - `axisTitle` — axis and colour-bar titles (Plotly draws an axis title at 1.2 × the layout font,
+ *   so the layout font below gives 13 by itself);
+ * - `tick` / `legend` — tick labels and legend entries (the layout font);
+ * - `label` — annotations and gene labels;
+ * - `dense` — only where space is tight (a dense heatmap's or matrix's row / column labels).
+ */
+export const PLOT_TEXT = {
+  heading: 13,
+  axisTitle: 13,
+  tick: 11,
+  legend: 11,
+  label: 10,
+  dense: 9
+} as const
+
 /** Base Plotly layout for the active palette (Plotly needs concrete colors). */
 export function plotBase(p: Palette): Record<string, unknown> {
   return {
     paper_bgcolor: 'rgba(0,0,0,0)',
     plot_bgcolor: 'rgba(0,0,0,0)',
     // Muted font so axis titles/labels/legend read as faint chrome behind the data
-    // (which carries its own colors). size stays 12.
-    font: { color: p.textMuted, family: plotFontCss(), size: 12 },
+    // (which carries its own colors). The tick / legend size of the text scale (PLOT_TEXT); axis
+    // titles come out at 1.2 × it.
+    font: { color: p.textMuted, family: plotFontCss(), size: PLOT_TEXT.tick },
     // Vertical legend just outside the plot on the right. x > 1 places it outside the
     // axes; Plotly reserves margin for it so it never overlays the data.
     legend: { orientation: 'v', x: 1.02, xanchor: 'left', y: 1, yanchor: 'top' },

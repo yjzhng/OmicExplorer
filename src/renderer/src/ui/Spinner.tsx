@@ -1,6 +1,6 @@
 import { type CSSProperties } from 'react'
 
-import { UI } from './theme'
+import { LOOP_MS, UI } from './theme'
 
 // One-time spinner keyframes (self-contained so it works regardless of stylesheet load order).
 if (typeof document !== 'undefined' && !document.getElementById('oe-spin-kf')) {
@@ -22,7 +22,7 @@ export function Spinner({ size = 26 }: { size?: number }) {
           borderRadius: '50%',
           border: `3px solid ${UI.border}`,
           borderTopColor: UI.accent,
-          animation: 'oe-spin 0.8s linear infinite'
+          animation: `oe-spin ${LOOP_MS.spin}ms linear infinite`
         }}
       />
     </div>

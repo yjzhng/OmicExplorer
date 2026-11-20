@@ -12,7 +12,7 @@
  */
 import { useRef, useState, type CSSProperties, type ReactNode } from 'react'
 
-import { UI } from '../ui/theme'
+import { motion, UI } from '../ui/theme'
 
 /** Hit area; the visible line is 1px of it, centred. */
 const GRAB = 7
@@ -79,5 +79,5 @@ const styles: Record<string, CSSProperties> = {
     userSelect: 'none',
     touchAction: 'none'
   },
-  line: { alignSelf: 'stretch', transition: 'width 90ms ease, background 90ms ease' }
+  line: { alignSelf: 'stretch', transition: motion('width, background', 'hover') }
 }

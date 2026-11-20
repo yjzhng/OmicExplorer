@@ -12,11 +12,12 @@ import {
   type ReactNode
 } from 'react'
 
+import { type CleanupPlan } from '../graph/state/shared'
 import { dataRootOf, workflowDirOf } from '../graph/diskNames'
-import { pendingRenames, useGraph, type CleanupPlan } from '../graph/store'
+import { pendingRenames, useGraph } from '../graph/store'
 import { Chevron } from './Chevron'
 import { formatSize, REVEAL } from './fileLabels'
-import { UI } from './theme'
+import { motion, UI } from './theme'
 
 type DirEntry = Awaited<ReturnType<Window['api']['listDir']>>[number]
 /** A folder's loaded children, or the error that listing it hit. */
@@ -423,7 +424,7 @@ function FolderChevron({ open }: { open: boolean }): ReactNode {
       style={{
         display: 'inline-flex',
         transform: open ? 'rotate(90deg)' : 'none',
-        transition: 'transform 150ms ease-out'
+        transition: motion('transform', 'base')
       }}
     >
       <Chevron deg={0} size={12} />
@@ -574,7 +575,7 @@ const styles: Record<string, CSSProperties> = {
     minHeight: 0,
     overflowY: 'auto',
     padding: '4px 0',
-    transition: 'opacity 150ms ease-out'
+    transition: motion('opacity', 'base')
   },
   bodyRefreshing: { opacity: 0.35 },
   row: {
@@ -595,7 +596,7 @@ const styles: Record<string, CSSProperties> = {
     display: 'grid',
     gridTemplateRows: '0fr',
     opacity: 0,
-    transition: 'grid-template-rows 200ms ease-out, opacity 200ms ease-out'
+    transition: motion('grid-template-rows, opacity', 'base')
   },
   foldOpen: { gridTemplateRows: '1fr', opacity: 1 },
   foldInner: { overflow: 'hidden', minHeight: 0 },

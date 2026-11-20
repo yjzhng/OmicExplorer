@@ -11,6 +11,7 @@ import { Fragment, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 
 import { groupHeading, markedTint } from './groupHeading'
+import { Chevron } from './Chevron'
 import { PALETTES, UI } from './theme'
 import { POPOVER_PROPS, usePopover } from './usePopover'
 import { useUiTheme } from './useUiTheme'
@@ -89,7 +90,7 @@ export function Select({
         >
           {current?.render ?? current?.label ?? placeholder}
         </span>
-        <Chevron size={11} deg={open ? -90 : 90} />
+        <Chevron color="currentColor" size={11} deg={open ? -90 : 90} />
       </button>
       {open &&
         rect &&
@@ -203,26 +204,5 @@ export function SelectItem({
       <span style={{ flex: `0 0 ${12 * z}px`, color: colors.accent }}>{selected ? '✓' : ''}</span>
       <span aria-label={render ? label : undefined}>{render ?? label}</span>
     </button>
-  )
-}
-
-/** The trigger's open-chevron (SVG): 90 = points down (closed), -90 = up (open). */
-function Chevron({ size, deg }: { size: number; deg: number }): ReactNode {
-  return (
-    <svg
-      width={size}
-      height={size}
-      viewBox="0 0 10 10"
-      style={{ flex: '0 0 auto', transform: `rotate(${deg}deg)`, transition: 'transform 0.12s' }}
-    >
-      <polyline
-        points="3.5,1.5 7,5 3.5,8.5"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.5"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
   )
 }

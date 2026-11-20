@@ -9,6 +9,7 @@ import {
   TEMPLATE_SECTIONS,
   type TemplateSections
 } from '../graph/template'
+import { Checkbox } from './Checkbox'
 import { UI } from './theme'
 
 export function SaveAsMenu({ onClose }: { onClose: () => void }): ReactNode {
@@ -45,9 +46,10 @@ export function SaveAsMenu({ onClose }: { onClose: () => void }): ReactNode {
 
       {template && (
         <div style={styles.template}>
-          <Row label="Workflows" checked disabled />
+          <Checkbox label="Workflows" checked disabled style={styles.row} />
           {TEMPLATE_SECTIONS.map((s) => (
-            <Row
+            <Checkbox
+              style={styles.row}
               key={s.key}
               label={s.label}
               checked={sections[s.key]}
@@ -69,38 +71,6 @@ export function SaveAsMenu({ onClose }: { onClose: () => void }): ReactNode {
         </div>
       )}
     </>
-  )
-}
-
-/** One section's tickbox. */
-function Row({
-  label,
-  checked,
-  disabled,
-  onChange
-}: {
-  label: string
-  checked: boolean
-  disabled?: boolean
-  onChange?: (v: boolean) => void
-}): ReactNode {
-  return (
-    <label
-      style={{
-        ...styles.row,
-        cursor: disabled ? 'default' : 'pointer',
-        opacity: disabled ? 0.6 : 1
-      }}
-    >
-      <input
-        type="checkbox"
-        checked={checked}
-        disabled={disabled}
-        onChange={(e) => onChange?.(e.target.checked)}
-        style={{ margin: 0 }}
-      />
-      {label}
-    </label>
   )
 }
 
@@ -134,7 +104,7 @@ const styles: Record<string, CSSProperties> = {
     marginTop: 4,
     borderTop: `1px solid ${UI.border}`
   },
-  row: { display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: UI.text },
+  row: { marginBottom: 0 },
   foot: { display: 'flex', justifyContent: 'flex-end', gap: 6, marginTop: 4 },
   btnGhost: {
     background: 'transparent',

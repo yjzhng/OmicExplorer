@@ -39,6 +39,7 @@ import { exportPath } from './paths'
 import { comparisonText, contextText, fileTitle, uniqueNames } from './fileNames'
 import { collectSpecs, type ExportSpec } from './specs'
 import { collectTableExports } from './tables'
+import { reportError } from '../shared/diagnostics'
 
 export { collectSpecs } from './specs'
 export { collectTableExports } from './tables'
@@ -295,7 +296,7 @@ async function lightCapture(gd: Element, dpi: number): Promise<Capture> {
         plans = got
       }
     } catch (e) {
-      console.warn('3-D vector overlay unavailable:', e)
+      reportError(e, { where: 'export-3d-vector' })
     }
   }
   return { el: main, sceneEl, scenes: plans, done }

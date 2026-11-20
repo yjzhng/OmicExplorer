@@ -235,11 +235,7 @@ interface Design {
 
 function buildDesign(factors: AnovaFactor[], terms: AnovaTerm[], shared?: SharedBaseline): Design {
   const centres = factors.map((f, i) =>
-    !f.x
-      ? 0
-      : shared?.slope === i
-        ? Math.min(...f.x)
-        : f.x.reduce((a, v) => a + v, 0) / f.x.length
+    !f.x ? 0 : shared?.slope === i ? Math.min(...f.x) : f.x.reduce((a, v) => a + v, 0) / f.x.length
   )
   // under a shared baseline the factor is coded over its treated levels; its control is all 0
   const coded = factors.map((f, i) =>
@@ -831,7 +827,9 @@ export function contrastRows(
       measured: (seen) => w.every(({ cell }) => seen.has(cell))
     }
   }
-  const cat = all.filter((sd): sd is { factor: number; num: string; den: string } => !isSlopeSide(sd))
+  const cat = all.filter(
+    (sd): sd is { factor: number; num: string; den: string } => !isSlopeSide(sd)
+  )
   const lv = cat.map((sd) => ({
     f: sd.factor,
     num: factors[sd.factor].levels.indexOf(sd.num),
@@ -899,7 +897,9 @@ export function contrastRows(
         const baseCells = shared
           ? cells
               .map((c, i) => ({ c, i }))
-              .filter(({ c }) => c[shared.factor] === ctrl && others.every((o, j) => c[o] === ks[j]))
+              .filter(
+                ({ c }) => c[shared.factor] === ctrl && others.every((o, j) => c[o] === ks[j])
+              )
               .map(({ i }) => i)
           : []
         for (const f of slopes) needs.push({ cells: [...here, ...baseCells], slope: f })

@@ -16,8 +16,8 @@ import {
   type StandardRow
 } from '../engine'
 import { Chevron } from '../ui/Chevron'
-import { InfoTip } from '../ui/InfoTip'
-import { cssVars, PALETTES, UI } from '../ui/theme'
+import { Section as UiSection } from '../ui/Section'
+import { cssVars, EASE, motion, MOTION_MS, PALETTES, UI } from '../ui/theme'
 import { useUiTheme } from '../ui/useUiTheme'
 import { valuesOf } from './compareModel'
 import { DOCKED_CARD, DOCKED_WRAP, useDialogDock } from './dialogDock'
@@ -105,12 +105,17 @@ export function Section({
   aside?: ReactNode
   children: ReactNode
 }): ReactNode {
+  // The app's Section (ui/Section) in its dialog frame: always open, the hint and the modes'
+  // legend behind its (i).
   return (
-    <div style={{ ...styles.sec, ...(shade ? styles.secShade : null), ...style }}>
-      <div style={styles.shead}>
-        <span style={styles.sname}>{title}</span>
-        {(hint || legend) && (
-          <InfoTip label={`About ${title}`}>
+    <UiSection
+      title={title}
+      variant="dialog"
+      fold={false}
+      style={{ ...(shade ? styles.secShade : null), ...style }}
+      info={
+        hint || legend ? (
+          <>
             {hint}
             {legend && (
               <div style={{ marginTop: hint ? 6 : 0 }}>
@@ -121,12 +126,13 @@ export function Section({
                 ))}
               </div>
             )}
-          </InfoTip>
-        )}
-        {aside}
-      </div>
+          </>
+        ) : undefined
+      }
+      subtitle={aside}
+    >
       <div style={grid ? styles.secGrid : styles.secFree}>{children}</div>
-    </div>
+    </UiSection>
   )
 }
 
@@ -456,10 +462,7 @@ const styles: Record<string, CSSProperties> = {
   },
   applyDisabled: { opacity: 0.4, cursor: 'not-allowed' },
 
-  sec: { padding: '12px 16px 14px', borderTop: `1px solid ${UI.border}` },
   secShade: { background: UI.bg },
-  shead: { display: 'flex', alignItems: 'center', gap: 6 },
-  sname: { fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5 },
   // the rows, indented under the title (past the chevron)
   secGrid: {
     display: 'grid',
@@ -490,13 +493,13 @@ const styles: Record<string, CSSProperties> = {
     alignSelf: 'center'
   },
   toggle: { marginLeft: 'auto', paddingLeft: 4, display: 'inline-flex' },
-  swap: { display: 'inline-flex', animation: 'oe-fade-in 350ms ease-out' },
+  swap: { display: 'inline-flex', animation: `oe-fade-in ${MOTION_MS.open}ms ${EASE.enter}` },
   foldBody: {
     gridColumn: 2,
     gridRow: 2,
     minWidth: 0,
     display: 'grid',
-    transition: 'grid-template-rows 200ms ease'
+    transition: motion('grid-template-rows', 'base')
   },
   foldClip: { overflow: 'hidden', minHeight: 0 },
   fold: {

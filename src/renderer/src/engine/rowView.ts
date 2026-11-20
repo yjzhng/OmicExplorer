@@ -59,7 +59,10 @@ export const arrayView = <T>(rows: readonly T[]): RowView<T> => rowView({ rows }
  * turn (absent fields read as undefined) — so the scan builds nothing — and a plain one yields its
  * rows. The reader must copy what it keeps; the yielded object is overwritten by the next row.
  */
-export function* scanRows<T>(holder: { rows: readonly T[] }, keys: readonly string[]): Generator<T> {
+export function* scanRows<T>(
+  holder: { rows: readonly T[] },
+  keys: readonly string[]
+): Generator<T> {
   const t = holderTable(holder)
   if (!t) {
     yield* holder.rows
@@ -122,7 +125,10 @@ export function nestedCol<T>(
 
 /** Whether each row's nested record field is there (`!!r[key]`), read off its column when the
  *  result is columnar — no record or row built. */
-export function nestedPresent<T>(holder: { rows: readonly T[] }, key: string): (r: number) => boolean {
+export function nestedPresent<T>(
+  holder: { rows: readonly T[] },
+  key: string
+): (r: number) => boolean {
   const t = holderTable(holder)
   if (!t) {
     const rows = holder.rows

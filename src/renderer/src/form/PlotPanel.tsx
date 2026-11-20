@@ -10,14 +10,16 @@
  */
 import { useMemo, type CSSProperties, type ReactNode } from 'react'
 
+import { Section } from '../nodes/kit/settings/controls'
+import { useGroupFacets } from '../dashboard/facet'
+import { FacetContextBar } from '../dashboard/FacetContextBar'
+import { PanelTile } from '../dashboard/PanelTile'
 import { TileBody } from '../graph/GraphNode'
-import { Section } from '../graph/NodeConfigPanel'
 import { deriveTabs, parsePanelId } from '../graph/groups'
-import { usePlotGroupTitle } from '../graph/usePlotGroupTitle'
 import {
   accentOf,
-  categoryOf,
   CATEGORIES,
+  categoryOf,
   maxInputsFor,
   NODE_SPECS,
   plotLabel,
@@ -25,9 +27,7 @@ import {
 } from '../graph/registry'
 import { useGraph } from '../graph/store'
 import type { PlotGroupConfig, StepNode } from '../graph/types'
-import { useGroupFacets } from '../dashboard/facet'
-import { FacetContextBar } from '../dashboard/FacetContextBar'
-import { PanelTile } from '../dashboard/PanelTile'
+import { usePlotGroupTitle } from '../graph/usePlotGroupTitle'
 import { IconCopy, IconTrash } from '../ui/icons'
 import { UI } from '../ui/theme'
 import { clampWidth, PLOT_NAV_WIDTH, useAppSettings } from '../ui/useAppSettings'

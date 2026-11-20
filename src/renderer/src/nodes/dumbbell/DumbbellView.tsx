@@ -1,0 +1,166 @@
+import { useMemo } from 'react'
+
+import { buildDumbbell, type ContrastResultRow, type DumbbellOrder } from '../../engine'
+import { tooltip } from '../../ui/condTooltip'
+import { PlotlyChart } from '../../ui/PlotlyChart'
+import { axisBase, CATEGORICAL, PALETTES, PLOT_TEXT, plotBase } from '../../ui/theme'
+import { useSelection } from '../../ui/useSelection'
+import { useUiTheme } from '../../ui/useUiTheme'
+
+/** Dumbbell: per gene, FC1 and FC2 dots joined by a line; sorted by |FCdiff| (or either side). The base
+ *  set is top-N (or the selected subset); hovered/pinned genes are appended so a linked
+ *  selection shows up alongside rather than replacing the list. */
+export function DumbbellView({
+  rows,
+  topGenes,
+  displayMap,
+  focus,
+  title,
+  orient = 'portrait',
+  order,
+  valueKind = 'fc',
+  valueLabel
+}: {
+  rows: ContrastResultRow[]
+  topGenes: number
+  displayMap?: Record<string, string>
+  focus?: string[]
+  title?: string
+  /** what the two sides hold (ContrastResult.valueKind, or 'other' for another Contrast feature):
+   *  the value axis title follows it — `valueLabel` titles an abundance or a feature */
+  valueKind?: 'abundance' | 'fc' | 'other'
+  /** the abundance axis title, with its log base (see abundanceLabel); default "log abundance" */
+  valueLabel?: string
+  /** portrait = genes down the y axis (tall list); landscape = genes across x. */
+  orient?: 'landscape' | 'portrait'
+  /** gene order (see buildDumbbell); default |FCdiff| */
+  order?: DumbbellOrder
+}) {
+  const mode = useUiTheme((s) => s.mode)
+  const hoverId = useSelection((s) => s.hoverId)
+  const pinnedIds = useSelection((s) => s.pinnedIds)
+
+  const { data, layout, boldTicks } = useMemo(() => {
+    const p = PALETTES[mode]
+    // `#rrggbb` → `rgba` so the connector can be a softened (lighter) grey.
+    const rgba = (hex: string, a: number): string => {
+      const h = hex.replace('#', '')
+      return `rgba(${parseInt(h.slice(0, 2), 16)},${parseInt(h.slice(2, 4), 16)},${parseInt(h.slice(4, 6), 16)},${a})`
+    }
+    const extra = new Set(pinnedIds)
+    if (hoverId) extra.add(hoverId)
+    const dumbbell = buildDumbbell(rows, { topGenes, displayMap, focus, extra: [...extra], order })
+    const genes = dumbbell.rows.map((r) => r.label)
+    // uniqIDs parallel to `genes` — what the selection store keys on, so the bold restyle can
+    // match a hovered/pinned gene to its tick.
+    const geneUniq = dumbbell.rows.map((r) => r.uniqID)
+    // Numerator (FC1) dot is orange; the denominator (FC2) dot is grey — the reference side.
+    const [c1, c2] = [CATEGORICAL[1], p.textMuted]
+    const landscape = orient === 'landscape'
+
+    // Grey connector per gene, drawn as an ARROW pointing from the denominator (FC2) dot to the
+    // numerator (FC1) dot — horizontal (FC on x) in portrait, vertical in landscape. The
+    // stand-offs keep the arrow clear of the two markers.
+    const arrows = dumbbell.rows.map((r) => ({
+      // head = numerator (FC1), tail (ax/ay) = denominator (FC2)
+      x: landscape ? r.label : r.fc1,
+      y: landscape ? r.fc1 : r.label,
+      ax: landscape ? r.label : r.fc2,
+      ay: landscape ? r.fc2 : r.label,
+      xref: 'x',
+      yref: 'y',
+      axref: 'x',
+      ayref: 'y',
+      showarrow: true,
+      arrowhead: 2, // solid triangle
+      arrowsize: 1,
+      arrowwidth: 1.5,
+      arrowcolor: rgba(p.textMuted, 0.7), // softened mid grey
+      standoff: 5, // clearance from the numerator dot
+      startstandoff: 5 // clearance from the denominator dot
+    }))
+
+    const dots = (key: 'fc1' | 'fc2', name: string, color: string) => ({
+      type: 'scatter',
+      mode: 'markers',
+      name,
+      x: landscape ? genes : dumbbell.rows.map((r) => r[key]),
+      y: landscape ? dumbbell.rows.map((r) => r[key]) : genes,
+      customdata: dumbbell.rows.map((r) => r.uniqID),
+      hovertemplate: tooltip(
+        {
+          title: landscape ? '%{x}' : '%{y}',
+          values: [[name, landscape ? '%{y:.3f}' : '%{x:.3f}']]
+        },
+        p.textMuted,
+        { template: true }
+      ),
+      marker: { color, size: 9 }
+    })
+
+    const heading = title ?? ''
+    const fcAxis = {
+      ...axisBase(p),
+      title:
+        valueKind === 'fc'
+          ? 'log₂FC'
+          : (valueLabel ?? (valueKind === 'abundance' ? 'log abundance' : '')),
+      zeroline: false
+    }
+    const geneAxis = {
+      ...axisBase(p),
+      type: 'category',
+      categoryorder: 'array',
+      // y runs bottom-up, so reverse in portrait to keep the top gene at the top.
+      categoryarray: landscape ? genes : [...genes].reverse(),
+      // Tick infrastructure (array mode with explicit vals/text) so a hovered/pinned gene's label
+      // can be bolded by a ticktext restyle — see boldTicks below, matching the bubble plot.
+      tickmode: 'array',
+      tickvals: genes,
+      ticktext: genes,
+      showgrid: true, // grid helps track each gene
+      tickangle: landscape ? -45 : 0,
+      automargin: true
+    }
+    const lay: Record<string, unknown> = {
+      ...plotBase(p),
+      title: heading ? { text: heading, font: { size: PLOT_TEXT.heading } } : undefined,
+      xaxis: landscape ? geneAxis : fcAxis,
+      yaxis: landscape ? fcAxis : geneAxis,
+      // Landscape (genes across x) keeps the legend on the right; portrait (tall gene list down
+      // y) puts it horizontally on top, where it doesn't fight the long list for width.
+      showlegend: true,
+      legend: landscape
+        ? { orientation: 'v', yanchor: 'top', y: 1, xanchor: 'left', x: 1.02 }
+        : { orientation: 'h', yanchor: 'bottom', y: 1.02, xanchor: 'center', x: 0.5 },
+      annotations: arrows
+    }
+    // Bold the gene-axis tick label of a hovered/pinned gene (x in landscape, y in portrait),
+    // applied imperatively by PlotlyChart via a ticktext restyle — same mechanism as the bubble plot.
+    const boldTicks = {
+      genesByTick: geneUniq.map((u) => [u]),
+      tickLabel: (i: number, active: boolean): string => (active ? `<b>${genes[i]}</b>` : genes[i]),
+      axis: (landscape ? 'x' : 'y') as 'x' | 'y'
+    }
+    return {
+      data: [dots('fc1', dumbbell.xLabel1, c1), dots('fc2', dumbbell.xLabel2, c2)],
+      layout: lay,
+      boldTicks
+    }
+  }, [
+    rows,
+    topGenes,
+    displayMap,
+    focus,
+    orient,
+    order,
+    valueKind,
+    valueLabel,
+    hoverId,
+    pinnedIds,
+    title,
+    mode
+  ])
+
+  return <PlotlyChart data={data} layout={layout} boldTicks={boldTicks} />
+}

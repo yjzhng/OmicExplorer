@@ -4,11 +4,9 @@ import {
   useReactFlow,
   useStore,
   useStoreApi,
-  type NodeProps,
-  type Node
+  type Node,
+  type NodeProps
 } from '@xyflow/react'
-import { createPortal } from 'react-dom'
-import { rowCount } from '../engine/lazyRows'
 import {
   Fragment,
   useEffect,
@@ -19,36 +17,36 @@ import {
   type CSSProperties,
   type ReactNode
 } from 'react'
+import { createPortal } from 'react-dom'
 
-import { PILL_CAP } from '../ui/ChoiceSwitch'
-import { StatusNote } from '../ui/StatusNote'
-import { FrameNode } from './FrameNode'
-import { nameChip, nameInput, tileNameText } from './tileNameStyles'
-import { inFullFrame } from './frames'
-import { UI } from '../ui/theme'
-import { AddPlotMenu, NodeConfigPanel, PANEL_WIDTH, TILE_STRIP } from './NodeConfigPanel'
-import {
-  accentOf,
-  categoryOf,
-  nothingToRerun,
-  plotComputes,
-  CATEGORIES,
-  hasSourceHandle,
-  NODE_SPECS,
-  plotLabel,
-  safeTileName,
-  loadAbove,
-  runsIn
-} from './registry'
-import { unmetRequirement } from './requirements'
-import { usePlotGroupTitle } from './usePlotGroupTitle'
-import { useUpstreamFacts } from './useUpstreamFacts'
-import { useGraph } from './store'
-import { loadCheckInfo } from './loadCheck'
-import { deriveTabs } from './groups'
+import { PANEL_WIDTH } from '../nodes/kit/settings/layout'
+import { rowView } from '../engine'
+import { muted } from '../nodes/kit/tile'
+import { TILES } from '../nodes/tiles'
+import { Chevron } from '../ui/Chevron'
 import { IconJump } from '../ui/icons'
+import { StatusNote } from '../ui/StatusNote'
+import { UI } from '../ui/theme'
 import { useAppView } from '../ui/useAppView'
 import { useFrameEdit, useFrameEditMark } from './frameEdit'
+import { FrameNode } from './FrameNode'
+import { inFullFrame } from './frames'
+import { deriveTabs } from './groups'
+import { AddPlotMenu, NodeConfigPanel, TILE_STRIP } from './NodeConfigPanel'
+import {
+  accentOf,
+  CATEGORIES,
+  categoryOf,
+  hasSourceHandle,
+  loadAbove,
+  NODE_SPECS,
+  nothingToRerun,
+  plotComputes,
+  plotLabel,
+  runsIn,
+  safeTileName
+} from './registry'
+import { unmetRequirement } from './requirements'
 import {
   LoadRunControl,
   plotStatusInfo,
@@ -58,26 +56,20 @@ import {
   useStepStatus,
   useUpstreamRunning
 } from './StatusDot'
+import { useGraph } from './store'
+import { nameChip, nameInput, tileNameText } from './tileNameStyles'
 import { TilePicker } from './TilePicker'
-import {
-  isCompareConfigured,
-  isStep,
-  normalizeCompareConfig,
-  resolveLoadMode,
-  tdrPair
-} from './types'
-import { condLabel, rowView, VALID_CONDITIONS, type ConditionKey } from '../engine'
 import type {
   CompareConfig,
   LoadConfig,
   NodeData,
   NodeKind,
   PlaceholderData,
-  PlotGroupConfig,
-  ResponseConfig,
-  SubsetConfig,
-  TdrConfig
+  PlotGroupConfig
 } from './types'
+import { isCompareConfigured, isStep, resolveLoadMode } from './types'
+import { usePlotGroupTitle } from './usePlotGroupTitle'
+import { useUpstreamFacts } from './useUpstreamFacts'
 
 /** Tile names may only hold letters, digits, space, `.`, `_` and `-`: they lead the file name of
  *  every plot/table downloaded from the tile, so anything else is dropped as it's typed. */
@@ -161,24 +153,7 @@ function GroupBody({
             aria-expanded={!config.collapsed}
             style={foldBtn}
           >
-            <svg
-              width={10}
-              height={10}
-              viewBox="0 0 10 10"
-              style={{
-                transform: `rotate(${config.collapsed ? 0 : 90}deg)`,
-                transition: 'transform 0.12s'
-              }}
-            >
-              <polyline
-                points="3.5,1.5 7,5 3.5,8.5"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth={1.5}
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              />
-            </svg>
+            <Chevron color="currentColor" size={10} deg={config.collapsed ? 0 : 90} />
           </button>
           {config.children.length} plot{config.children.length === 1 ? '' : 's'}
         </div>
@@ -583,7 +558,7 @@ export function GraphNode({ id, data, selected: rfSelected }: NodeProps<Node<Nod
         running={data.status === 'running'}
         complete={!incomplete}
       />
-      {spec.acceptsFrom.length > 0 && (
+      {spec.input.accepts.length > 0 && (
         <Handle type="target" position={Position.Left} style={handleStyle} />
       )}
       <div style={header}>
@@ -914,170 +889,12 @@ function NodeSummary({
   const { signfCount, valueRows } = useMemo(() => summaryCounts(result), [result])
   // a Load tile's files against what was converted / read (the store's checkLoad)
   const check = useGraph((s) => (kind === 'load' ? s.loadChecks[id] : undefined))
-  if (kind === 'load') {
-    const cfg = config as LoadConfig
-    const loaded = !!cfg.data && !!cfg.samplesheet
-    const mode = resolveLoadMode(cfg)
-    const info = loaded && check && check.state !== 'ok' ? loadCheckInfo(check, mode) : null
-    return (
-      <>
-        <div style={muted}>
-          {loaded
-            ? `Data loaded ${mode === 'interactive' ? 'interactively' : 'manually'}`
-            : 'Data not yet loaded'}
-        </div>
-        {info && (
-          <div style={{ ...muted, color: info.tone === 'bad' ? '#e5484d' : '#e2b93b' }}>
-            {info.label}
-          </div>
-        )}
-      </>
-    )
-  }
-  if (kind === 'standardize') {
-    const std = result?.kind === 'standardize' ? result.std : null
-    return std ? (
-      <div style={stat}>
-        {rowCount(std).toLocaleString()} rows · {std.activeConditions.join(', ')}
-      </div>
-    ) : (
-      <div style={muted}>Tidy uniqID × sample table.</div>
-    )
-  }
-  if (kind === 'merge') {
-    const std = result?.kind === 'standardize' ? result.std : null
-    // Once pooled the inputs are indistinguishable, so report what came out — the row count and
-    // the union of conditions is what tells you the merge did what you expected.
-    return std ? (
-      <div style={stat}>
-        {rowCount(std).toLocaleString()} rows · {std.activeConditions.join(', ')}
-      </div>
-    ) : (
-      <div style={muted}>Pool two or more Clean data tiles into one dataset.</div>
-    )
-  }
-  if (kind === 'subset') {
-    const std = result?.kind === 'standardize' ? result.std : null
-    // What is kept, per filtered condition — past PILL_CAP values just their count ("12 cmpd").
-    const kept = Object.entries((config as SubsetConfig).keep ?? {})
-      .filter(([, vs]) => (vs?.length ?? 0) > 0)
-      .map(([c, vs]) => {
-        const label = condLabel(c as ConditionKey)
-        return vs!.length > PILL_CAP
-          ? `${vs!.length} ${label}`
-          : `${label}: ${vs!.map((v) => v || '—').join(', ')}`
-      })
-    // …the replicates kept, and the samples left out by name
-    const sc = config as SubsetConfig
-    if (sc.reps?.length) kept.push(`rep: ${sc.reps.join(', ')}`)
-    if (sc.drop?.length)
-      kept.push(`${sc.drop.length} sample${sc.drop.length === 1 ? '' : 's'} left out`)
-    return (
-      <>
-        <div style={kept.length ? stat : muted}>
-          {kept.length ? kept.join(' · ') : 'Keeps every sample — pick values to subset.'}
-        </div>
-        {std && (
-          <div style={muted}>
-            {rowCount(std).toLocaleString()} rows
-            {std.samples ? ` · ${std.samples.length} samples` : ''}
-          </div>
-        )}
-      </>
-    )
-  }
-  if (kind === 'compare' || kind === 'curveFit') {
-    const cfg = normalizeCompareConfig(config as CompareConfig)
-    const cmp = result?.kind === 'compare' ? result.cmp : null
-    // A side's values per condition — past PILL_CAP of them, just their count ("24 cmpd").
-    const sideShort = (sel: CompareConfig['num']): string =>
-      VALID_CONDITIONS.filter((k) => (sel[k]?.length ?? 0) > 0)
-        .map((k) => {
-          const vs = sel[k] as string[]
-          return vs.length > PILL_CAP ? `${vs.length} ${condLabel(k)}` : vs.join('/')
-        })
-        .join(',') || '—'
-    // Once run, show just the comparison COUNT (the detailed strings can be long when a
-    // comparison spans many values); before running, a concise config preview.
-    const n = cmp?.comparisons.length ?? 0
-    const curve = kind === 'curveFit'
-    const label = cmp
-      ? `${n} ${curve ? 'curve set' : 'comparison'}${n === 1 ? '' : 's'}`
-      : cfg.analysis === 'anova'
-        ? `ANOVA · ${(cfg.compared ?? []).map((c) => condLabel(c)).join(' × ')}`
-        : curve
-          ? `${sideShort(cfg.num)} · control ${sideShort(cfg.den)}`
-          : `${sideShort(cfg.num)} vs ${sideShort(cfg.den)}`
-    return (
-      <div style={muted}>
-        {label}
-        {cmp && (
-          <div style={stat}>
-            {rowCount(cmp).toLocaleString()} rows · {signfCount} signif
-          </div>
-        )}
-      </div>
-    )
-  }
-  if (kind === 'contrast') {
-    const ctr = result?.kind === 'contrast' ? result.ctr : null
-    return (
-      <div style={muted}>
-        {ctr
-          ? ctr.comparisons.length > PILL_CAP
-            ? `${ctr.comparisons.length} contrasts`
-            : ctr.comparisons.join(', ') || 'contrast'
-          : 'Connect a Compare tile, then pick two levels.'}
-        {ctr && (
-          <div style={stat}>
-            {valueRows.toLocaleString()} rows · {signfCount} signif
-          </div>
-        )}
-      </div>
-    )
-  }
-  if (kind === 'volcano') return <div style={muted}>log₂FC vs significance. Select to view.</div>
-  if (kind === 'scatter') return <div style={muted}>Group A vs group B. Select to view.</div>
-  if (kind === 'ma') return <div style={muted}>Abundance vs log₂FC. Select to view.</div>
-  if (kind === 'dr') return <div style={muted}>Response curves. Select to view.</div>
-  if (kind === 'curveMad')
-    return <div style={muted}>Curve-fit QC: residuals and fit metrics. Select to view.</div>
-  if (kind === 'variance')
-    return <div style={muted}>Each gene’s variation split among the factors. Select to view.</div>
-  if (kind === 'interaction')
-    return <div style={muted}>A gene’s cell means across the two factors. Select to view.</div>
-  if (kind === 'potency')
-    return <div style={muted}>Curve potency (pEC50) vs fold change. Select to view.</div>
-  if (kind === 'metrics')
-    return <div style={muted}>Curve parameters per gene, as bar charts. Select to view.</div>
-  if (kind === 'response') {
-    const [a, b] = (config as ResponseConfig | undefined)?.pair ?? ['dose', 'time']
-    return (
-      <div style={muted}>
-        {condLabel(a)} × {condLabel(b)} response surface per gene. Select to view.
-      </div>
-    )
-  }
-  if (kind === 'bubble') return <div style={muted}>Gene × dose bubble grid. Select to view.</div>
-  if (kind === 'dumbbell')
-    return <div style={muted}>Group A ↔ group B per gene. Select to view.</div>
-  if (kind === 'tdr') {
-    const [a, b] = tdrPair(config as TdrConfig)
-    return (
-      <div style={muted}>
-        {condLabel(a)} × {condLabel(b)} response per gene. Select to view.
-      </div>
-    )
-  }
-  if (kind === 'geneBar')
-    return <div style={muted}>Selected gene value across conditions. Select to view.</div>
-  if (kind === 'pca')
-    return <div style={muted}>Cluster samples or responsome (PCA/UMAP/t-SNE). Select to view.</div>
-  if (kind === 'qc')
-    return <div style={muted}>Per-sample QC (intensity / CV / #proteins). Select to view.</div>
-  if (kind === 'corr')
-    return <div style={muted}>Sample × sample correlation matrix. Select to view.</div>
-  return <div style={muted}>Genes × samples. Select to view.</div>
+  // The kind's own summary (nodes/<kind>/Tile.tsx), else its spec's one-line hint.
+  const tile = TILES[kind]
+  if (tile) return tile({ kind, id, result, config, check, signfCount, valueRows })
+  const hint = NODE_SPECS[kind].plot?.tileHint
+  const text = typeof hint === 'function' ? hint(config) : hint
+  return <div style={muted}>{text ?? 'Genes × samples. Select to view.'}</div>
 }
 
 /** Transient tile shown between drop and op selection — the type picker *is* the tile,
@@ -1305,16 +1122,6 @@ const catTag: CSSProperties = {
 // Type subtitle, shown under a user-given name (the intrinsic kind label, e.g. "Compare").
 const typeSub: CSSProperties = { fontSize: 10, color: UI.textMuted, fontWeight: 500 }
 const body: CSSProperties = { padding: 10, display: 'flex', flexDirection: 'column', gap: 8 }
-const muted: CSSProperties = {
-  color: UI.textMuted,
-  fontSize: 11,
-  lineHeight: 1.45,
-  // Break long unbroken filenames (underscores/paths) so they wrap inside the fixed-width tile
-  // instead of overflowing it.
-  overflowWrap: 'anywhere',
-  wordBreak: 'break-word',
-  minWidth: 0
-}
 // The plot group's fold toggle, beside its add-plots menu on the canvas.
 const foldBtn: CSSProperties = {
   display: 'inline-flex',
@@ -1361,12 +1168,6 @@ const dropLine: CSSProperties = {
   borderRadius: 1,
   background: UI.accent,
   pointerEvents: 'none'
-}
-const stat: CSSProperties = {
-  color: UI.text,
-  fontSize: 11,
-  fontVariantNumeric: 'tabular-nums',
-  marginTop: 2
 }
 /** How far above the canvas's middle the detail panel centres as it opens (screen px): a touch
  *  high reads as centred, the eye's middle sitting above the geometric one. */

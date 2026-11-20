@@ -2,7 +2,8 @@
  *  read from new configs and from old ones that had a single combined `display`. */
 import { describe, expect, it } from 'vitest'
 
-import { clusterLook, quickOn } from './types'
+import { quickOn } from './registry'
+import { clusterLook } from './types'
 
 describe('clusterLook', () => {
   it('reads the two settings as written', () => {

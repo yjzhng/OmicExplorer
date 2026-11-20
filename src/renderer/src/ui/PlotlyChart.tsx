@@ -38,11 +38,12 @@ import { hasGlTraces, sceneCount, toGlOverlay, toGlTraces } from './glTraces'
 import { Spinner } from './Spinner'
 import { hasPlotValues, NO_DATA_NOTE } from './plotEmpty'
 import { GENE_TITLE_BAND, GeneTitleContext, geneTitleLayout } from './geneTitle'
-import { PALETTES, UI } from './theme'
+import { PALETTES, PLOT_TEXT, UI } from './theme'
 import { TileDrawContext } from './tileDraw'
 import { applyFocus, hoverFocus, legendClear, legendSelect } from './traceFocus'
 import { useSelection } from './useSelection'
 import { useUiTheme } from './useUiTheme'
+import { reportError } from '../shared/diagnostics'
 
 /** A point the chart may label. The collision layer places the highest-priority ones that
  *  fit without overlapping, in the CURRENT view — so zooming in reveals more of them. */
@@ -1177,7 +1178,7 @@ function placeLabelAnnotations(
   const [y0, y1] = ya.range
   const dx = x1 - x0 || 1
   const dy = y1 - y0 || 1
-  const FS = 9 // default label font size (px); per-label overridable via lab.fontSize
+  const FS = PLOT_TEXT.label // default label font size (px); per-label overridable via lab.fontSize
   const MAX = 80 // hard cap so a huge cloud can't spawn thousands of annotations
   const inX = (x: number): boolean => (x0 < x1 ? x >= x0 && x <= x1 : x >= x1 && x <= x0)
   const inY = (y: number): boolean => (y0 < y1 ? y >= y0 && y <= y1 : y >= y1 && y <= y0)
@@ -2920,7 +2921,7 @@ export function PlotlyChart({
       .catch((err: unknown) => {
         reactPendingRef.current = false
         if (cancelled) return
-        console.error('PlotlyChart: render failed', err)
+        reportError(err, { where: 'plotly-render' })
         setReady(true)
       })
       .finally(() => endDraw?.())

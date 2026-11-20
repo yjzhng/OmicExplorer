@@ -626,7 +626,7 @@ function StepStatusDot({ node }: { node: StepNode }): ReactNode {
 /** The Inputs row as the settings card's first section, headed like the card's other sections.
  *  None for a source step (a Load): it takes no input, so there is nothing to wire. */
 function inputsSection(node: StepNode): { title: string; body: ReactNode } | undefined {
-  if (NODE_SPECS[node.data.kind].acceptsFrom.length === 0) return undefined
+  if (NODE_SPECS[node.data.kind].input.accepts.length === 0) return undefined
   return {
     title: maxInputsFor(node.data.kind) > 1 ? 'Inputs' : 'Input',
     body: <Inputs node={node} />
@@ -670,7 +670,7 @@ function AddStepRow(): ReactNode {
   const offer = ALL_OPS.filter((k) => k !== 'plotGroup').filter((k) =>
     categoryOf(k) === 'plotting'
       ? !!plotFrom && canConnect(wired(plotFrom), k)
-      : NODE_SPECS[k].acceptsFrom.length === 0 || steps.some((n) => canConnect(wired(n), k))
+      : NODE_SPECS[k].input.accepts.length === 0 || steps.some((n) => canConnect(wired(n), k))
   )
 
   const open = (): void => {

@@ -1,9 +1,10 @@
-import { app, dialog, Menu, type MenuItemConstructorOptions } from 'electron'
+import { app, clipboard, dialog, Menu, shell, type MenuItemConstructorOptions } from 'electron'
 import { spawn } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { createWindowFromPreset } from './window-manager'
 import { WINDOW_PRESETS } from './window-presets'
+import { logFile, logTail } from './logging'
 import pkg from '../../package.json'
 
 // Platform targets — derived from package.json (appConfig.platforms), the single
@@ -56,6 +57,21 @@ function runMobile(label: string): void {
   child.unref()
 }
 
+/** Help › Copy Diagnostics: the app, the platform and the error log's latest entries, on the
+ *  clipboard for a bug report. */
+function copyDiagnostics(): void {
+  const tail = logTail(100)
+  clipboard.writeText(
+    [
+      `${app.getName()} ${app.getVersion()}`,
+      `platform: ${process.platform} ${process.arch} · electron ${process.versions.electron}`,
+      `log: ${logFile()}`,
+      '',
+      tail || '(no errors logged)'
+    ].join('\n')
+  )
+}
+
 /**
  * Install the application menu.
  *
@@ -105,7 +121,15 @@ export function installAppMenu({ newWindow }: { newWindow: () => void }): void {
     { role: 'editMenu' },
     { role: 'viewMenu' },
     ...(app.isPackaged ? [] : [platformMenu]),
-    { role: 'windowMenu' }
+    { role: 'windowMenu' },
+    // Error tracing (main/logging.ts): the log of every error the app caught, for a bug report.
+    {
+      role: 'help',
+      submenu: [
+        { label: 'Copy Diagnostics', click: copyDiagnostics },
+        { label: 'Show Log File', click: () => shell.showItemInFolder(logFile()) }
+      ]
+    }
   ]
 
   Menu.setApplicationMenu(Menu.buildFromTemplate(template))

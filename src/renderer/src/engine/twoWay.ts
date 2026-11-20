@@ -562,9 +562,7 @@ export function previewFactorAnova(input: FactorAnovaInput): FactorAnovaPreview 
   // each term's df: the most any context gives it, against its df in a fully crossed design
   const dfs = lay.slices.map((s) => termDf(af, terms, s.cells, shared))
   const best = terms.map((_, ti) => Math.max(0, ...dfs.map((d) => d[ti])))
-  const full = terms.map((t) =>
-    t.factors.reduce((w, f) => w * factorWidth(af, f, shared), 1)
-  )
+  const full = terms.map((t) => t.factors.reduce((w, f) => w * factorWidth(af, f, shared), 1))
   const warnings: string[] = []
   const cautions: string[] = []
   const notes: string[] = []

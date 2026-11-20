@@ -4,12 +4,12 @@
  */
 import type { CSSProperties, ReactNode } from 'react'
 
-import { Select } from '../graph/NodeConfigPanel'
 import { canConnect, maxInputsFor, plotLabel, wiredKindOf } from '../graph/registry'
 import { eligibleInputs } from '../graph/sequence'
 import { useGraph } from '../graph/store'
 import { isStep, type StepNode } from '../graph/types'
 import { UI } from '../ui/theme'
+import { Select } from '../nodes/kit/settings/controls'
 
 export /** A step's upstream wiring, stated rather than implied — the reason a form can represent a DAG.
  *  Each slot is a dropdown of the steps that may legally feed this one; the extra empty slot (up to

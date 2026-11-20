@@ -493,7 +493,10 @@ describe('sampleIndex', () => {
     for (const s of [plain, lazy as unknown as StandardizeResult]) {
       const got = buildStdMatrix(s)
       expect(got).toEqual(refMatrix(plain))
-      expect(got.samples.map((x) => x.label)).toEqual(['WT · X · 1 · 24 · r1', 'WT · X · 12 · 4 · r1'])
+      expect(got.samples.map((x) => x.label)).toEqual([
+        'WT · X · 1 · 24 · r1',
+        'WT · X · 12 · 4 · r1'
+      ])
       expect(got.rows).toEqual([{ uniqID: 'P1', gene: '', s0: 34, s1: 124 }])
     }
   })

@@ -5,6 +5,7 @@
  * to by key.
  */
 import { fitBatch, type FitBatch } from './direct'
+import { failure } from './engineError'
 import { enrichJob, type EnrichJob } from './plotData'
 import { fitJointBatch, type JointBatch } from './surfaceJoint'
 
@@ -15,7 +16,8 @@ export type PoolRequest =
   | { op: 'joint'; id: number; batch: JointBatch }
   | { op: 'enrich'; id: number; job: EnrichJob; rowsKey: string; annKey: string }
 export type PoolResponse =
-  { id: number; ok: true; result: unknown } | { id: number; ok: false; error: string }
+  | { id: number; ok: true; result: unknown }
+  | { id: number; ok: false; error: string; stack?: string }
 
 interface Ctx {
   postMessage(msg: PoolResponse): void
@@ -44,10 +46,6 @@ ctx.addEventListener('message', (e) => {
     }
     ctx.postMessage({ id: m.id, ok: true, result })
   } catch (err) {
-    ctx.postMessage({
-      id: m.id,
-      ok: false,
-      error: err instanceof Error ? err.message : String(err)
-    })
+    ctx.postMessage({ id: m.id, ok: false, ...failure(err) })
   }
 })

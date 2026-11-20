@@ -4,7 +4,7 @@
  */
 import type { CSSProperties, ReactNode } from 'react'
 
-import { UI } from '../ui/theme'
+import { LOOP_MS, UI } from '../ui/theme'
 import { loadCheckInfo, type LoadTone } from './loadCheck'
 import { loadAbove, NODE_SPECS, plotLabel, runsIn } from './registry'
 import { unmetRequirement } from './requirements'
@@ -180,7 +180,7 @@ export function StatusDot({ color, label, pulse }: StatusInfo): ReactNode {
         borderRadius: '50%',
         background: color,
         flexShrink: 0,
-        ...(pulse ? { animation: 'oe-status-pulse 1.1s ease-in-out infinite' } : {})
+        ...(pulse ? { animation: `oe-status-pulse ${LOOP_MS.pulse}ms ease-in-out infinite` } : {})
       }}
     />
   )

@@ -19,12 +19,12 @@ import {
 import { createPortal } from 'react-dom'
 
 import { StatusIcon } from './StatusNote'
-import { cssVars, PALETTES, UI } from './theme'
+import { cssVars, EASE, MOTION_MS, PALETTES, UI } from './theme'
 import { useUiTheme } from './useUiTheme'
 
-/** The switches' shared motion: how long a highlight or knob takes to move, and its easing. */
-const MOTION_MS = 160
-const MOTION = `${MOTION_MS}ms ease`
+/** The switches' motion: the app's small-move timing (MOTION_MS.base). */
+const SLIDE_MS = MOTION_MS.base
+const MOTION = `${SLIDE_MS}ms ${EASE.move}`
 /** A disabled option's tooltip: its widest. */
 const TIP_MAX_W = 260
 
@@ -57,7 +57,7 @@ function useMoveThenCommit<T>(value: T, commit: (v: T) => void): [T, (v: T) => v
     timer.current = window.setTimeout(() => {
       waiting.current?.()
       setPending(null)
-    }, MOTION_MS)
+    }, SLIDE_MS)
   }
   return [pending ? pending.v : value, pick]
 }

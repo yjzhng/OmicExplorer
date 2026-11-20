@@ -2,7 +2,7 @@
  *  tree, form-mode group headers). Points right at 0°; rotate with `deg`. */
 import type { ReactNode } from 'react'
 
-import { UI } from './theme'
+import { motion, UI } from './theme'
 
 export function Chevron({
   deg,
@@ -18,7 +18,12 @@ export function Chevron({
       width={size}
       height={size}
       viewBox="0 0 10 10"
-      style={{ flex: '0 0 auto', color, transform: `rotate(${deg}deg)`, transition: 'transform 160ms ease' }}
+      style={{
+        flex: '0 0 auto',
+        color,
+        transform: `rotate(${deg}deg)`,
+        transition: motion('transform', 'base')
+      }}
     >
       <polyline
         points="3.5,1.5 7,5 3.5,8.5"

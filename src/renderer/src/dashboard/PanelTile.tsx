@@ -26,7 +26,7 @@ import { accentOf, categoryOf, PLOT_CONFIG_KINDS, plotLabel } from '../graph/reg
 import { IconGear } from '../ui/icons'
 import { PlotAxesContext, swapAxes, type AxisDefaults } from '../ui/plotAxes'
 import { useGraph } from '../graph/store'
-import { UI } from '../ui/theme'
+import { NOTICE_MS, UI } from '../ui/theme'
 import { useAppSettings } from '../ui/useAppSettings'
 import { createDrawTracker, TileDrawContext, type DrawTracker } from '../ui/tileDraw'
 import {
@@ -52,6 +52,7 @@ import { enqueueReveal, type Reveal } from './renderQueue'
 import { PanelSettingsDialog, type TilePlotConfig } from './PanelSettingsDialog'
 import type { Anchor } from './TileDialog'
 import { useNearView } from './useInView'
+import { reportError } from '../shared/diagnostics'
 
 /** Header-button glyphs (16px stroke icons on currentColor). */
 const glyph = {
@@ -314,13 +315,13 @@ export const PanelTile = memo(function PanelTile({
       }
     } catch (e) {
       outcome = { ok: false, why: e instanceof Error ? e.message : String(e) }
-      console.error('copy plot failed:', e)
+      reportError(e, { where: 'copy-plot', nodeId: node.id })
     } finally {
       setBusy(false)
       setCopying(false)
       setCopied(outcome)
       window.clearTimeout(copiedTimer.current)
-      copiedTimer.current = window.setTimeout(() => setCopied(null), 1000)
+      copiedTimer.current = window.setTimeout(() => setCopied(null), NOTICE_MS.done)
     }
   }
 
@@ -394,10 +395,10 @@ export const PanelTile = memo(function PanelTile({
   async function runDownload(): Promise<void> {
     if (busy) return
     const fail = (why: string): void => {
-      console.error('download failed:', why)
+      reportError(why, { where: 'download-plot', nodeId: node.id })
       setSaved({ ok: false, why })
       window.clearTimeout(savedTimer.current)
-      savedTimer.current = window.setTimeout(() => setSaved(null), 3000)
+      savedTimer.current = window.setTimeout(() => setSaved(null), NOTICE_MS.warn)
     }
     // File names read as the results page does (export/fileNames.ts): the tab, the plot, then
     // what's on show — `AU28 r3 - Volcano - AU-28 vs DMSO - 0.16 µM, 72 h`; a table, the tab and
@@ -507,7 +508,7 @@ export const PanelTile = memo(function PanelTile({
       if (written > 0) {
         setSaved({ ok: true })
         window.clearTimeout(savedTimer.current)
-        savedTimer.current = window.setTimeout(() => setSaved(null), 1000)
+        savedTimer.current = window.setTimeout(() => setSaved(null), NOTICE_MS.done)
       } else fail(errors[0] ?? 'nothing was written')
     } catch (e) {
       fail(e instanceof Error ? e.message : String(e))
@@ -529,7 +530,7 @@ export const PanelTile = memo(function PanelTile({
       exportedTimer.current = window.setTimeout(() => setExported(null), ms)
     }
     const fail = (why: string): void => {
-      console.error('data export failed:', why)
+      reportError(why, { where: 'export-data', nodeId: node.id })
       flash({ ok: false, why }, 3000)
     }
     const found = plotDataTarget(node.id, child?.id)
@@ -693,6 +694,8 @@ export const PanelTile = memo(function PanelTile({
                   in place, and the other tiles still draw. */}
               <PanelErrorBoundary
                 label={`${label} · ${child ? `${node.id}/${child.id}` : node.id}`}
+                nodeId={child ? `${node.id}/${child.id}` : node.id}
+                kind={child ? child.kind : node.data.kind}
               >
                 <PlotBody
                   key={`${categorical}|${customKey}|${plotFont}`}

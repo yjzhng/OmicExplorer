@@ -6,6 +6,7 @@ import { useCallback, useEffect, useState, type CSSProperties, type ReactNode } 
 
 import { StatusDot, type StatusInfo } from '../graph/StatusDot'
 import { Chevron } from './Chevron'
+import { Section as UiSection } from './Section'
 import { formatSize, REVEAL } from './fileLabels'
 import { Select } from './Select'
 import { TableSearch } from './TableSearch'
@@ -97,7 +98,8 @@ function Btn({
   )
 }
 
-/** A fold-away block: a header (title, a one-line summary, its actions) over its table. */
+/** A fold-away block: a header (title, a one-line summary, its actions) over its table — the app's
+ *  Section (ui/Section) as a card, or nested in one (`sub`); open state remembered by the caller. */
 function Section({
   title,
   summary,
@@ -117,17 +119,16 @@ function Section({
   children: ReactNode
 }): ReactNode {
   return (
-    <div style={sub ? styles.subSection : styles.section}>
-      <div style={styles.sectionHead}>
-        <button style={styles.sectionToggle} onClick={onToggle} aria-expanded={open}>
-          <Chevron deg={open ? 90 : 0} size={sub ? 10 : 12} />
-          <span style={sub ? styles.tableTitle : styles.subTitle}>{title}</span>
-          {summary && <span style={styles.sectionSummary}>{summary}</span>}
-        </button>
-        {actions}
-      </div>
-      {open && <div style={sub ? undefined : styles.sectionBody}>{children}</div>}
-    </div>
+    <UiSection
+      title={title}
+      subtitle={summary}
+      action={actions}
+      open={open}
+      onOpenChange={onToggle}
+      variant={sub ? 'sub' : 'card'}
+    >
+      {children}
+    </UiSection>
   )
 }
 
@@ -1004,26 +1005,6 @@ const styles: Record<string, CSSProperties> = {
   },
   disabled: { opacity: 0.45, cursor: 'default' },
   danger: { color: '#fff', background: UI.err, borderColor: UI.err },
-  section: { border: `1px solid ${UI.border}`, borderRadius: 8, marginBottom: 14 },
-  subSection: { marginTop: 14 },
-  sectionHead: { display: 'flex', alignItems: 'center', gap: 8, padding: '6px 10px 6px 6px' },
-  sectionToggle: {
-    flex: 1,
-    minWidth: 0,
-    display: 'flex',
-    alignItems: 'center',
-    gap: 7,
-    padding: '2px 4px',
-    background: 'transparent',
-    border: 'none',
-    color: UI.text,
-    cursor: 'pointer',
-    textAlign: 'left'
-  },
-  sectionSummary: { fontSize: 11, color: UI.textMuted, marginLeft: 4 },
-  sectionBody: { padding: '0 12px 12px' },
-  subTitle: { fontSize: 12, fontWeight: 700, color: UI.text },
-  tableTitle: { fontSize: 11, fontWeight: 600, color: UI.textMuted },
   table: { width: '100%', borderCollapse: 'collapse', fontSize: 12, color: UI.text },
   colHead: {
     textAlign: 'left',

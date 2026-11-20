@@ -19,6 +19,7 @@ import {
   buildCluster
 } from './index'
 import type { ContrastInput, ContrastPairInput } from './contrast'
+import { failure } from './engineError'
 import type { RecleanInput } from './ingest'
 import type { DirectInput } from './direct'
 import type { FactorAnovaInput } from './twoWay'
@@ -79,7 +80,7 @@ export type EngineRequest =
 
 export type EngineResponse =
   | { id: number; ok: true; result: unknown }
-  | { id: number; ok: false; error: string }
+  | { id: number; ok: false; error: string; stack?: string; op?: string }
   /** a long run's progress so far (the request still running) */
   | { id: number; progress: Progress }
 
@@ -97,6 +98,62 @@ const datasets = new Map<number, unknown[]>()
 /** A tracker posting a request's progress back to the page (throttled — see progressTracker). */
 const trackerFor = (id: number): ProgressTracker =>
   progressTracker((progress) => ctx.postMessage({ id, progress }))
+
+/** A compute request: every op but the control messages handled before it. */
+type ComputeRequest = Exclude<
+  EngineRequest,
+  { op: 'putDataset' | 'dropDataset' | 'configurePool' | 'uiBusy' }
+>
+type PayloadOf<O extends ComputeRequest['op']> = Extract<ComputeRequest, { op: O }>['payload']
+
+/** The engine ops, by name: each takes its payload (and the request id, for its progress) and
+ *  returns its result. A new op is one entry here plus its request type above. */
+const OPS: { [O in ComputeRequest['op']]: (payload: PayloadOf<O>, id: number) => unknown } = {
+  standardize: (p) => standardize(p),
+  reclean: (p) => recleanStandardized(p),
+  clusterRowGroups: ({ flat, m, k }) => {
+    // rows arrive as one flat (transferred) buffer; each row a view onto it
+    const rows: Float64Array[] = []
+    for (let i = 0; i + m <= flat.length && m > 0; i += m) rows.push(flat.subarray(i, i + m))
+    return clusterRowGroups(rows as unknown as number[][], k)
+  },
+  clusterRowTree: ({ flat, m, opts }) => {
+    // likewise
+    const rows: Float64Array[] = []
+    for (let i = 0; i + m <= flat.length && m > 0; i += m) rows.push(flat.subarray(i, i + m))
+    return clusterRowTree(rows as unknown as number[][], opts)
+  },
+  previewScale: (p) => previewScale(p.dataText, p.dataFilename),
+  vehNorm: (p) => runVehNorm(p),
+  direct: (p) => runDirect(p),
+  compare: (p) => runCompare(p),
+  factorAnova: (p) => runFactorAnova(p),
+  curveFit: (p, id) => {
+    // The fits shared out over the pool when there is one (same results, more cores), each
+    // chunk counted as it comes back (progress).
+    const pl = pool()
+    const pr = trackerFor(id)
+    return pl ? driveAsync(curveFitSteps(p, pr), (b) => pl.fit(b, pr.add)) : runCurveFit(p, pr)
+  },
+  responseSurface: (p, id) => {
+    // The 4PL surface detector's fits shared out over the pool when there is one.
+    const pl = pool()
+    const pr = trackerFor(id)
+    return pl
+      ? driveAsync(responseSurfaceSteps(p, pr), (b) => pl.joint(b, pr.add))
+      : runResponseSurface(p, pr)
+  },
+  contrast: (p) => runContrast(p),
+  contrastPair: (p) => runContrastPair(p),
+  enrichmentAll: (p) => {
+    const pl = pool()
+    return pl
+      ? driveAsync(enrichmentAllSteps(p.rows, p.opts), pl.enrich)
+      : enrichmentAll(p.rows, p.opts)
+  },
+  buildCluster: (p) => buildCluster(p.rows, p.opts),
+  enrichmentTable: (p) => enrichmentTable(p.rows, p.opts, p.facet)
+}
 
 ctx.addEventListener('message', async (e) => {
   const msg = e.data
@@ -127,61 +184,14 @@ ctx.addEventListener('message', async (e) => {
     ;(msg as { payload: unknown }).payload = { ...(msg.payload as object), rows }
   }
   try {
-    let result: unknown
-    if (msg.op === 'standardize') result = standardize(msg.payload)
-    else if (msg.op === 'reclean') result = recleanStandardized(msg.payload)
-    else if (msg.op === 'clusterRowGroups') {
-      // rows arrive as one flat (transferred) buffer; each row a view onto it
-      const { flat, m, k } = msg.payload
-      const rows: Float64Array[] = []
-      for (let i = 0; i + m <= flat.length && m > 0; i += m) rows.push(flat.subarray(i, i + m))
-      result = clusterRowGroups(rows as unknown as number[][], k)
-    } else if (msg.op === 'clusterRowTree') {
-      // likewise
-      const { flat, m, opts } = msg.payload
-      const rows: Float64Array[] = []
-      for (let i = 0; i + m <= flat.length && m > 0; i += m) rows.push(flat.subarray(i, i + m))
-      result = clusterRowTree(rows as unknown as number[][], opts)
-    } else if (msg.op === 'previewScale')
-      result = previewScale(msg.payload.dataText, msg.payload.dataFilename)
-    else if (msg.op === 'vehNorm') result = runVehNorm(msg.payload)
-    else if (msg.op === 'direct') result = runDirect(msg.payload)
-    else if (msg.op === 'compare') result = runCompare(msg.payload)
-    else if (msg.op === 'factorAnova') result = runFactorAnova(msg.payload)
-    else if (msg.op === 'curveFit') {
-      // The fits shared out over the pool when there is one (same results, more cores), each
-      // chunk counted as it comes back (progress).
-      const p = pool()
-      const pr = trackerFor(msg.id)
-      result = p
-        ? await driveAsync(curveFitSteps(msg.payload, pr), (b) => p.fit(b, pr.add))
-        : runCurveFit(msg.payload, pr)
-    } else if (msg.op === 'responseSurface') {
-      // The 4PL surface detector's fits shared out over the pool when there is one.
-      const p = pool()
-      const pr = trackerFor(msg.id)
-      result = p
-        ? await driveAsync(responseSurfaceSteps(msg.payload, pr), (b) => p.joint(b, pr.add))
-        : runResponseSurface(msg.payload, pr)
-    } else if (msg.op === 'contrast') result = runContrast(msg.payload)
-    else if (msg.op === 'contrastPair') result = runContrastPair(msg.payload)
-    else if (msg.op === 'enrichmentAll') {
-      const p = pool()
-      result = p
-        ? await driveAsync(enrichmentAllSteps(msg.payload.rows, msg.payload.opts), p.enrich)
-        : enrichmentAll(msg.payload.rows, msg.payload.opts)
-    } else if (msg.op === 'buildCluster') result = buildCluster(msg.payload.rows, msg.payload.opts)
-    else if (msg.op === 'enrichmentTable')
-      result = enrichmentTable(msg.payload.rows, msg.payload.opts, msg.payload.facet)
-    else throw new Error(`Unknown engine op: ${(msg as { op: string }).op}`)
+    const op = OPS[msg.op as ComputeRequest['op']] as
+      ((payload: unknown, id: number) => unknown) | undefined
+    if (!op) throw new Error(`Unknown engine op: ${(msg as { op: string }).op}`)
+    const result: unknown = await op(msg.payload, msg.id)
     // Row tables go back columnar, their buffers moved rather than copied (see wire.ts).
     const transfer: Transferable[] = []
     ctx.postMessage({ id: msg.id, ok: true, result: encodeValue(result, transfer) }, transfer)
   } catch (err) {
-    ctx.postMessage({
-      id: msg.id,
-      ok: false,
-      error: err instanceof Error ? err.message : String(err)
-    })
+    ctx.postMessage({ id: msg.id, ok: false, op: msg.op, ...failure(err) })
   }
 })

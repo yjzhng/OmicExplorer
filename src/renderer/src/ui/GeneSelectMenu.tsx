@@ -13,7 +13,7 @@ import { slashBackground } from './slash'
 import { createPortal } from 'react-dom'
 
 import { useGraph } from '../graph/store'
-import { cssVars, PALETTES, UI } from './theme'
+import { cssVars, NOTICE_MS, PALETTES, UI } from './theme'
 import { Chevron } from './Chevron'
 import { GENE_LIST_STYLES } from './geneListStyles'
 import { CLEAR, ColorPicker } from './ColorPicker'
@@ -257,7 +257,7 @@ export function GeneSelectMenu({ tabs }: { tabs: GeneGroupTab[] }): ReactNode {
   const armConfirm = (id: string, act: 'delete'): void => {
     if (confirmTimer.current) window.clearTimeout(confirmTimer.current)
     setConfirm({ id, act })
-    confirmTimer.current = window.setTimeout(() => setConfirm(null), 3000)
+    confirmTimer.current = window.setTimeout(() => setConfirm(null), NOTICE_MS.warn)
   }
   const isArmed = (id: string, act: 'delete'): boolean => confirm?.id === id && confirm.act === act
   // Portal-rendered action tooltip (so the scrollable list can't crop it). Anchored to the hovered

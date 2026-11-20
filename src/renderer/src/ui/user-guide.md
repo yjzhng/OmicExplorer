@@ -357,9 +357,9 @@ Dumbbell | | | ✓
 Data table | ✓ | ✓ | ✓
 ```
 
-- **Response plots:** the plot list offers one per numeric condition in the data (*Dose response*,
-  *Time response*, *Temperature response*…) and one per pair of them (*Dose & Time response*,
-  *Dose & Temperature response*…), each its own tile, so several can be on view at once. A pair's
+- **Response plots:** the plot list offers one per numeric condition in the data (_Dose response_,
+  _Time response_, _Temperature response_…) and one per pair of them (_Dose & Time response_,
+  _Dose & Temperature response_…), each its own tile, so several can be on view at once. A pair's
   first condition runs along x, with one line per level of the second. Each axis is log or linear by
   its levels' spacing (linear when it can't tell).
 

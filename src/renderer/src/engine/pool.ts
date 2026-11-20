@@ -10,6 +10,7 @@
  */
 import type { CurveFit } from './curveFit'
 import { fitBatch, type FitBatch } from './direct'
+import { EngineError } from './engineError'
 import type { EnrichData, EnrichJob } from './plotData'
 import type { PoolRequest, PoolResponse } from './poolWorker'
 import { fitJointBatch, type JointBatch, type JointFit } from './surfaceJoint'
@@ -24,6 +25,8 @@ interface Task {
   /** keys this task's worker must hold first, with their values */
   needs: Array<[string, unknown]>
   msg: (id: number) => PoolRequest
+  /** the pool op, for an error's context (fit / joint / enrich) */
+  op?: string
   resolve: (v: unknown) => void
   reject: (e: Error) => void
 }
@@ -71,7 +74,8 @@ function create(): Slot[] | null {
         running.delete(e.data.id)
         r.slot.busy = false
         if (e.data.ok) r.task.resolve(e.data.result)
-        else r.task.reject(new Error(e.data.error))
+        else
+          r.task.reject(new EngineError(`pool:${r.task.op ?? 'job'}`, e.data.error, e.data.stack))
         pump()
       }
       w.onerror = (e) => {
@@ -127,7 +131,7 @@ function pump(): void {
 
 function submit<T>(needs: Task['needs'], msg: Task['msg']): Promise<T> {
   return new Promise<T>((resolve, reject) => {
-    queue.push({ needs, msg, resolve: resolve as (v: unknown) => void, reject })
+    queue.push({ needs, msg, op: msg(0).op, resolve: resolve as (v: unknown) => void, reject })
     pump()
   })
 }

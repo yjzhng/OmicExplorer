@@ -4,6 +4,7 @@
  *  and lays the live gene picker over it. On screen the title text is hidden under the picker;
  *  the export capture (plotExport's lightCapture) reveals it. */
 import { createContext, type ReactNode } from 'react'
+import { PLOT_TEXT } from './theme'
 
 export interface GeneTitleCtx {
   /** the gene's display name — the exported title */
@@ -36,7 +37,7 @@ export function geneTitleLayout(
       yref: 'container',
       yanchor: 'top',
       pad: { t: 9 },
-      font: { size: 13, color: 'rgba(0,0,0,0)', weight: 600 }
+      font: { size: PLOT_TEXT.heading, color: 'rgba(0,0,0,0)', weight: 600 }
     },
     margin: { ...margin, t: Math.max(margin.t ?? 0, GENE_TITLE_BAND) },
     meta: { ...((layout.meta as Record<string, unknown> | undefined) ?? {}), oeGeneTitle: true }

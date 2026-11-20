@@ -106,7 +106,10 @@ function fromTable(t: Table): ContextIndex {
     if (!cols.has(f)) {
       // a nested record's one field (`curve.axis`), read off its own column (nestedColumn)
       const dot = f.indexOf('.')
-      cols.set(f, dot < 0 ? tableColumn(t, f) : nestedColumn(t, f.slice(0, dot), f.slice(dot + 1))?.at)
+      cols.set(
+        f,
+        dot < 0 ? tableColumn(t, f) : nestedColumn(t, f.slice(0, dot), f.slice(dot + 1))?.at
+      )
     }
     return cols.get(f)
   }
@@ -128,7 +131,9 @@ function fromRows(rows: readonly ContextRow[]): ContextIndex {
       const row = rows[r] as unknown as Record<string, unknown>
       const dot = f.indexOf('.')
       if (dot < 0) return row[f]
-      return (row[f.slice(0, dot)] as Record<string, unknown> | null | undefined)?.[f.slice(dot + 1)]
+      return (row[f.slice(0, dot)] as Record<string, unknown> | null | undefined)?.[
+        f.slice(dot + 1)
+      ]
     },
     (f, r) => f in rows[r]
   )

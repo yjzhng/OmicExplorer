@@ -1,0 +1,119 @@
+import { type ReactNode, useMemo } from 'react'
+import {
+  ENRICH_GROUPS,
+  ENRICH_SOURCE_LABEL,
+  enrichSourcesPresent,
+  resolveEnrichSource
+} from '../../engine'
+import { useGraph } from '../../graph/store'
+import type { EnrichConfig } from '../../graph/types'
+import { Field, NumberInput, QuickToggle, Section, Select } from '../kit/settings/controls'
+import { ColourSection, type PlotPanelProps, PlotSections } from '../kit/settings/plotSections'
+import { styles } from '../kit/settings/styles'
+import { type PlotSettingsProps } from '../settings'
+
+/** Enrichment: test method, term source, plot style and the term cap. The same fields as the
+ *  tile's quick switch bars, so either place edits the one config. */
+export function EnrichPanel({ config, update, edgeNodeId }: PlotPanelProps<EnrichConfig>) {
+  // Select the (stable) upstream result, then derive the source list in a memo — a freshly-built
+  // array straight from the selector would fail Zustand's reference equality and loop forever.
+  const upstream = useGraph((s) => {
+    const upId = s.edges.find((e) => e.target === edgeNodeId)?.source
+    return upId ? s.results[upId] : undefined
+  })
+  // The term sets these genes carry; null until the upstream Compare has run, when nothing is
+  // known yet and every set stays pickable.
+  const present = useMemo(
+    () =>
+      upstream?.kind === 'compare'
+        ? enrichSourcesPresent(upstream.annotationMap ?? {}, upstream.keggCategories)
+        : null,
+    [upstream]
+  )
+  // The source the plot is actually testing: the saved one, or its fallback when the genes don't
+  // carry it — so the dropdown shows what the chart shows.
+  const saved = config.source ?? 'go'
+  const source = (present && resolveEnrichSource(saved, present)) ?? saved
+  // Every offered set under its heading (Function / Pathway, as the import and the gene selector
+  // group them): those the data has are pickable, the rest greyed and marked, so the list says both
+  // what can be tested and what a fetch would add. A heading is an inert row.
+  const sourceOptions = ENRICH_GROUPS.flatMap((g) => [
+    {
+      value: `__group:${g.label}`,
+      label: g.label,
+      disabled: true,
+      render: <span style={styles.optionHeading}>{g.label}</span>
+    },
+    ...g.sources.map((v) => {
+      const missing = present !== null && !present.includes(v)
+      return {
+        value: v,
+        label: missing ? `${ENRICH_SOURCE_LABEL[v]} — not fetched` : ENRICH_SOURCE_LABEL[v],
+        disabled: missing
+      }
+    })
+  ])
+  const method = config.method ?? 'ora'
+  // 'ridge' is GSEA-only; a persisted ridge style under ORA reads (and re-saves) as dot.
+  const style = config.style === 'ridge' && method !== 'gsea' ? 'dot' : (config.style ?? 'dot')
+  const styleOpts = method === 'gsea' ? ['dot', 'bar', 'ridge'] : ['dot', 'bar']
+  return (
+    <Section title="Enrichment">
+      <Field label="method" aside={<QuickToggle config={config} field="method" update={update} />}>
+        <Select
+          value={method}
+          onChange={(v) => {
+            const m = v as EnrichConfig['method']
+            update({ method: m, ...(m !== 'gsea' && style === 'ridge' ? { style: 'dot' } : null) })
+          }}
+          options={[
+            { value: 'ora', label: 'ORA (over-representation)' },
+            { value: 'gsea', label: 'GSEA (ranked)' }
+          ]}
+        />
+      </Field>
+      <Field label="terms" aside={<QuickToggle config={config} field="source" update={update} />}>
+        <Select
+          value={source}
+          onChange={(v) => update({ source: v as EnrichConfig['source'] })}
+          options={sourceOptions}
+        />
+      </Field>
+      <Field label="style" aside={<QuickToggle config={config} field="style" update={update} />}>
+        <Select
+          value={style}
+          onChange={(v) => update({ style: v as EnrichConfig['style'] })}
+          options={styleOpts.map((o) => ({ value: o, label: o }))}
+        />
+      </Field>
+      <Field label="Top terms">
+        <div style={{ width: 90 }}>
+          <NumberInput
+            value={config.topTerms ?? 15}
+            step={5}
+            min={1}
+            onChange={(v) => update({ topTerms: Math.max(1, Math.round(v)) })}
+          />
+        </div>
+      </Field>
+      <div style={styles.hint}>Show the {config.topTerms ?? 15} most enriched terms.</div>
+    </Section>
+  )
+}
+
+/** Its settings panel (nodes/settings.ts): this plot's own sections. */
+export function Settings({ config, ...props }: PlotSettingsProps): ReactNode {
+  return (
+    <PlotSections
+      show={<EnrichPanel config={config as EnrichConfig} {...props} />}
+      colours={
+        <ColourSection
+          config={config as EnrichConfig}
+          {...props}
+          groups
+          hint="The up / down colours draw the bars, stems and dots — a dot faint to full by significance, on a scale reaching at least FDR 0.05."
+        />
+      }
+    />
+  )
+}

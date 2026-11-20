@@ -125,7 +125,7 @@
   width: auto;
   height: auto;
   opacity: 0;
-  transition: opacity 90ms ease;
+  transition: opacity var(--motion-hover) var(--ease-move);
 }
 .oe-grid .react-grid-item > .react-resizable-handle:hover::after {
   opacity: 1;

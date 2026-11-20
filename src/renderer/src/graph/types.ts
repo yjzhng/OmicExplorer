@@ -960,8 +960,9 @@ export interface PlotAxes {
   y?: AxisStyle
 }
 
-/** A plot's legend switch, plot-wide (the point plots keep theirs in `style.legend`): false hides
- *  the legend and the colour scale bars; unset = shown. */
+/** A plot's legend switch, plot-wide (the Legend section): false hides the legend and the colour
+ *  scale bars; unset = shown. (A point plot saved before the Legend section may still carry its
+ *  old switch in `style.legend` — see legendShown.) */
 export interface LegendConfig {
   legend?: boolean
 }
@@ -1216,13 +1217,18 @@ export interface ScatterConfig extends FcPaletteConfig {
   /** x / y axis overrides (title, fonts, range, ticks, grid, line); unset = the view's layout */
   axes?: PlotAxes
 }
-export const labelCapOn = (c: VolcanoConfig | ScatterConfig | PotencyConfig): boolean =>
+export const labelCapOn = (c: VolcanoConfig | ScatterConfig | PotencyConfig | MAConfig): boolean =>
   capOn(c.capEnabled, c.labelTop)
 
 /** MA plot (compare): mean abundance vs log2FC, with fold-change guide lines. */
 export interface MAConfig extends FcPaletteConfig {
   fcLow: number
   fcHigh: number
+  /** cap labels: explicit switch (undefined → inferred from labelTop > 0) */
+  capEnabled?: boolean
+  /** cap labels: label only the top-N genes by |log₂FC| (applied only while `capEnabled`);
+   *  otherwise the placement layer labels as many significant genes as fit */
+  labelTop?: number
   /** marker/legend/highlight look; unset fields fall back to the plot's defaults */
   style?: PointStyle
   /** x / y axis overrides (title, fonts, range, ticks, grid, line); unset = the view's layout */
@@ -1233,31 +1239,6 @@ export interface MAConfig extends FcPaletteConfig {
 /** Per-field switch for a plot's quick-access switch bars in its tile: `quick[field] === false`
  *  hides that field's bar (the gear still has it). Unset fields are surfaced. */
 export type QuickAccess = Record<string, boolean>
-/** Quick access a kind's settings start with, where it isn't simply on: a setting not listed is on.
- *  The user's own choice (`quick`) always wins. Cluster: only the plot type, the colouring and the
- *  territory sit on the tile by default — the rest are tuned once, in the settings window. Heatmap:
- *  of the clustering, only the linkage, leaf order and the gene and condition modules. */
-export const QUICK_DEFAULTS: Partial<Record<NodeKind, Record<string, boolean>>> = {
-  pca: { clusterOn: false, clusterCount: false, display: false },
-  // log₂FC heatmap: of its clustering, the linkage, leaf order and both sides' modules sit on the
-  // tile by default (a gene module and a condition module pick a block together); the trees are
-  // tuned in the settings window
-  heatmap: {
-    geneTree: false,
-    condTree: false
-  },
-  // the 3-D projection is set once, in the settings window
-  response: { projection: false },
-  tdr: { projection: false }
-}
-/** Whether a setting is surfaced in the tile as a quick-access switch bar: the user's choice, else
- *  the kind's default (QUICK_DEFAULTS), else on. */
-export const quickOn = (
-  cfg: { quick?: QuickAccess } | undefined,
-  field: string,
-  kind?: NodeKind
-): boolean => cfg?.quick?.[field] ?? (kind ? QUICK_DEFAULTS[kind]?.[field] : undefined) ?? true
-
 /** Variance plot (from an ANOVA): how each gene's variation splits among the model's factors
  *  (main effects and interaction) and the residual — its shares of the gene's sum of squares. */
 export interface VarianceConfig {
@@ -1977,6 +1958,11 @@ export const qcColorConds = (
 export interface CorrConfig {
   /** cluster samples by correlation profile so replicate groups block on the diagonal */
   cluster: boolean
+  /** the samples' order while they aren't clustered (unset = natural) — see SampleOrder; read
+   *  through sampleOrderOf */
+  sampleOrder?: SampleOrder
+  /** which settings show as switch bars on the tile (sampleOrder starts off) */
+  quick?: QuickAccess
   /** the correlation palette (unset = Greens) */
   palette?: PaletteRef
   /** x / y axis overrides (title, fonts, range, ticks, grid, line); unset = the view's layout */
@@ -2253,35 +2239,40 @@ export function clusterStyle(c: Partial<ClusterConfig>): ClusterStyle {
   return st
 }
 
-export type NodeConfig =
-  | LoadConfig
-  | StandardizeConfig
-  | MergeConfig
-  | SubsetConfig
-  | CompareConfig
-  | ContrastConfig
-  | VolcanoConfig
-  | HeatmapConfig
-  | ScatterConfig
-  | MAConfig
-  | DRConfig
-  | PotencyConfig
-  | MetricsConfig
-  | VarianceConfig
-  | InteractionConfig
-  | CurveMadConfig
-  | ResponseConfig
-  | BubbleConfig
-  | DumbbellConfig
-  | ClusterConfig
-  | TdrConfig
-  | BarConfig
-  | EnrichConfig
-  | StringConfig
-  | QcConfig
-  | CorrConfig
-  | TableConfig
-  | PlotGroupConfig
+/** Each kind's config type — the one place a kind is tied to its config (nodes/<kind>/spec.ts
+ *  returns it from defaultConfig). A kind missing here fails the type check. */
+export interface NodeConfigMap {
+  load: LoadConfig
+  standardize: StandardizeConfig
+  merge: MergeConfig
+  subset: SubsetConfig
+  compare: CompareConfig
+  curveFit: CompareConfig
+  contrast: ContrastConfig
+  volcano: VolcanoConfig
+  heatmap: HeatmapConfig
+  scatter: ScatterConfig
+  ma: MAConfig
+  dr: DRConfig
+  potency: PotencyConfig
+  metrics: MetricsConfig
+  variance: VarianceConfig
+  interaction: InteractionConfig
+  curveMad: CurveMadConfig
+  response: ResponseConfig
+  bubble: BubbleConfig
+  dumbbell: DumbbellConfig
+  pca: ClusterConfig
+  tdr: TdrConfig
+  geneBar: BarConfig
+  enrich: EnrichConfig
+  string: StringConfig
+  qc: QcConfig
+  corr: CorrConfig
+  table: TableConfig
+  plotGroup: PlotGroupConfig
+}
+export type NodeConfig = NodeConfigMap[NodeKind]
 
 /** A Curve fit tile's config: a CompareConfig locked to curve fitting. */
 export type CurveFitConfig = CompareConfig & { analysis: 'curve_fit' }

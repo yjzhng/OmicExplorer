@@ -4,7 +4,10 @@
 import { useMemo, useState, type CSSProperties, type ReactNode } from 'react'
 
 import { useGraph } from '../graph/store'
-import { UI } from '../ui/theme'
+import { Checkbox } from '../ui/Checkbox'
+import { Field } from '../ui/Field'
+import { motion, UI } from '../ui/theme'
+import { ToggleSwitch } from '../ui/ToggleSwitch'
 import { useSelection } from '../ui/useSelection'
 import {
   collectSpecs,
@@ -159,25 +162,27 @@ export function ExportModal({ onClose }: { onClose: () => void }): ReactNode {
           </div>
         ) : (
           <div style={styles.body}>
-            <Field label="Include">
-              <div style={styles.segmented}>
-                <ToggleBtn
+            <Field label="Include" layout="stack">
+              <div style={styles.includeRow}>
+                <Checkbox
                   label={`Plots (${plotN})`}
-                  on={includePlots}
+                  checked={includePlots && plotAll > 0}
                   disabled={plotAll === 0}
-                  onClick={() => setIncludePlots((v) => !v)}
+                  onChange={setIncludePlots}
+                  style={{ marginBottom: 0 }}
                 />
-                <ToggleBtn
+                <Checkbox
                   label={`Tables (${tableN})`}
-                  on={includeTables}
+                  checked={includeTables && tableAll > 0}
                   disabled={tableAll === 0}
-                  onClick={() => setIncludeTables((v) => !v)}
+                  onChange={setIncludeTables}
+                  style={{ marginBottom: 0 }}
                 />
               </div>
             </Field>
 
-            <Field label="Scope">
-              <Segmented
+            <Field label="Scope" layout="stack">
+              <Choice
                 value={effectiveScope}
                 onChange={(v) => setScope(v as Scope)}
                 options={[
@@ -187,8 +192,8 @@ export function ExportModal({ onClose }: { onClose: () => void }): ReactNode {
               />
             </Field>
 
-            <Field label="Folder structure">
-              <Segmented
+            <Field label="Folder structure" layout="stack">
+              <Choice
                 value={structure}
                 onChange={(v) => setStructure(v as Structure)}
                 options={[
@@ -200,8 +205,8 @@ export function ExportModal({ onClose }: { onClose: () => void }): ReactNode {
 
             {includePlots && (
               <>
-                <Field label="Plot format">
-                  <Segmented
+                <Field label="Plot format" layout="stack">
+                  <Choice
                     value={plotFormat}
                     onChange={(v) => setPlotFormat(v as 'png' | 'pdf')}
                     options={[
@@ -210,8 +215,8 @@ export function ExportModal({ onClose }: { onClose: () => void }): ReactNode {
                     ]}
                   />
                 </Field>
-                <Field label="Plot quality">
-                  <Segmented
+                <Field label="Plot quality" layout="stack">
+                  <Choice
                     value={String(dpi)}
                     onChange={(v) => setDpi(Number(v))}
                     options={DPI_CHOICES.map((d) => ({ v: String(d), label: `${d} dpi` }))}
@@ -221,8 +226,8 @@ export function ExportModal({ onClose }: { onClose: () => void }): ReactNode {
             )}
 
             {includeTables && (
-              <Field label="Table format">
-                <Segmented
+              <Field label="Table format" layout="stack">
+                <Choice
                   value={tableFormat}
                   onChange={(v) => setTableFormat(v as 'csv' | 'xlsx')}
                   options={[
@@ -233,7 +238,7 @@ export function ExportModal({ onClose }: { onClose: () => void }): ReactNode {
               </Field>
             )}
 
-            <Field label="Destination">
+            <Field label="Destination" layout="stack">
               <div style={styles.dest}>
                 <span style={styles.destPath} title={baseDir ?? ''}>
                   {baseDir ?? 'No project folder — choose one'}
@@ -264,34 +269,6 @@ export function ExportModal({ onClose }: { onClose: () => void }): ReactNode {
         )}
       </div>
     </>
-  )
-}
-
-function ToggleBtn({
-  label,
-  on,
-  disabled,
-  onClick
-}: {
-  label: string
-  on: boolean
-  disabled?: boolean
-  onClick: () => void
-}): ReactNode {
-  return (
-    <button
-      disabled={disabled}
-      onClick={onClick}
-      style={{
-        ...styles.segment,
-        background: on && !disabled ? UI.accent : 'transparent',
-        color: disabled ? UI.textMuted : on ? UI.accentText : UI.text,
-        opacity: disabled ? 0.5 : 1,
-        cursor: disabled ? 'default' : 'pointer'
-      }}
-    >
-      {label}
-    </button>
   )
 }
 
@@ -331,16 +308,8 @@ function DoneView({
   )
 }
 
-function Field({ label, children }: { label: string; children: ReactNode }): ReactNode {
-  return (
-    <div style={styles.field}>
-      <div style={styles.fieldLabel}>{label}</div>
-      {children}
-    </div>
-  )
-}
-
-function Segmented({
+/** One choice of several: the app's ToggleSwitch over this dialog's `{ v, label }` options. */
+function Choice({
   value,
   onChange,
   options
@@ -350,31 +319,17 @@ function Segmented({
   options: Array<{ v: string; label: string; disabled?: boolean }>
 }): ReactNode {
   return (
-    <div style={styles.segmented}>
-      {options.map((o) => {
-        const on = value === o.v
-        return (
-          <button
-            key={o.v}
-            disabled={o.disabled}
-            onClick={() => onChange(o.v)}
-            style={{
-              ...styles.segment,
-              background: on ? UI.accent : 'transparent',
-              color: o.disabled ? UI.textMuted : on ? UI.accentText : UI.text,
-              opacity: o.disabled ? 0.5 : 1,
-              cursor: o.disabled ? 'default' : 'pointer'
-            }}
-          >
-            {o.label}
-          </button>
-        )
-      })}
-    </div>
+    <ToggleSwitch
+      label="Choice"
+      value={value}
+      onChange={onChange}
+      options={options.map((o) => ({ value: o.v, label: o.label, disabled: o.disabled }))}
+    />
   )
 }
 
 const styles: Record<string, CSSProperties> = {
+  includeRow: { display: 'flex', alignItems: 'center', gap: 18 },
   scrim: { position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', zIndex: 60 },
   modal: {
     position: 'fixed',
@@ -399,29 +354,6 @@ const styles: Record<string, CSSProperties> = {
     background: UI.panelAlt
   },
   body: { padding: 16, display: 'flex', flexDirection: 'column', gap: 14 },
-  field: { display: 'flex', flexDirection: 'column', gap: 6 },
-  fieldLabel: {
-    fontSize: 11,
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
-    color: UI.textMuted
-  },
-  segmented: {
-    display: 'inline-flex',
-    border: `1px solid ${UI.border}`,
-    borderRadius: 6,
-    overflow: 'hidden',
-    alignSelf: 'flex-start',
-    maxWidth: '100%',
-    flexWrap: 'wrap'
-  },
-  segment: {
-    border: 'none',
-    padding: '6px 12px',
-    fontSize: 12,
-    fontWeight: 600,
-    whiteSpace: 'nowrap'
-  },
   dest: {
     display: 'flex',
     alignItems: 'center',
@@ -482,7 +414,11 @@ const styles: Record<string, CSSProperties> = {
     border: `1px solid ${UI.border}`,
     overflow: 'hidden'
   },
-  progressFill: { height: '100%', background: UI.accent, transition: 'width 120ms linear' },
+  progressFill: {
+    height: '100%',
+    background: UI.accent,
+    transition: motion('width', 'base', 'linear')
+  },
   doneMsg: { fontSize: 13, color: UI.text },
   errBox: {
     fontSize: 11,

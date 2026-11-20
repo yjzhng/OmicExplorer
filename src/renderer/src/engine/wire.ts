@@ -476,9 +476,7 @@ export function nestedColumn(
   return {
     has: (r) => (plain(r) ? true : !!whole(r)),
     at: (r) =>
-      plain(r)
-        ? field?.(col.i[r])
-        : (whole(r) as Record<string, unknown> | null | undefined)?.[sub]
+      plain(r) ? field?.(col.i[r]) : (whole(r) as Record<string, unknown> | null | undefined)?.[sub]
   }
 }
 

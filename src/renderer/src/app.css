@@ -1,5 +1,39 @@
 /* App-level overrides on top of @xyflow/react's base stylesheet. */
 
+/* The app's motion (ui/theme.ts MOTION_MS / EASE / LOOP_MS — theme.test.ts keeps them equal):
+   one duration per job, one curve per direction. Every animation and transition here uses them. */
+:root {
+  --motion-press: 90ms;
+  --motion-hover: 120ms;
+  --motion-base: 160ms;
+  --motion-open: 180ms;
+  --motion-close: 120ms;
+  --motion-page: 320ms;
+  --ease-move: ease;
+  --ease-enter: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-exit: ease-in;
+  --loop-spin: 900ms;
+  --loop-pulse: 1100ms;
+  --loop-sweep: 1400ms;
+  --loop-drift: 1800ms;
+  --loop-alarm: 550ms;
+}
+
+/* Reduced motion, for everything at once: every transition and animation — here or inline in a
+   component — runs near-instantly and once, so nothing moves, while the end states (and the
+   animationend / transitionend a float's unmount waits on) still happen. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration: 1ms !important;
+    transition-delay: 0ms !important;
+    animation-duration: 1ms !important;
+    animation-delay: 0ms !important;
+    animation-iteration-count: 1 !important;
+  }
+}
+
 /* Connection-drag validity feedback. `isValidConnection` (see store) already REJECTS an illegal
    wiring — this makes that rejection visible: while dragging a new edge, the handle the cursor is
    over flashes RED when the connection is disallowed (e.g. a plot that can't consume this node's
@@ -17,7 +51,7 @@
 .react-flow__handle.connectingto:not(.valid) {
   background: #e5484d !important;
   border-color: #e5484d !important;
-  animation: oe-conn-invalid 0.55s ease-in-out infinite;
+  animation: oe-conn-invalid var(--loop-alarm) ease-in-out infinite;
 }
 .react-flow__handle.connectingto.valid {
   background: #3fae5a !important;
@@ -195,7 +229,7 @@
   }
 }
 .oe-spin {
-  animation: oe-spin 0.9s linear infinite;
+  animation: oe-spin var(--loop-spin) linear infinite;
   transform-origin: 50% 50%;
   /* its own layer, so the turn runs on the compositor and keeps going while the main thread is
      busy (see FreezeNotice) */
@@ -231,10 +265,12 @@
 }
 .oe-deck-next {
   opacity: 0.45;
-  transition: opacity 200ms;
+  transition: opacity var(--motion-hover) var(--ease-move);
+  /* fades in once the deck has settled (a page's length), then drifts */
   animation:
-    oe-deck-next-in 400ms ease-out 300ms backwards,
-    oe-deck-next-drift 1.8s ease-in-out 700ms infinite;
+    oe-deck-next-in var(--motion-open) var(--ease-enter) var(--motion-page) backwards,
+    oe-deck-next-drift var(--loop-drift) ease-in-out calc(var(--motion-page) + var(--motion-open))
+      infinite;
 }
 /* The back chevron (over the parked first card) drifts the other way. */
 @keyframes oe-deck-back-drift {
@@ -253,11 +289,6 @@
 .oe-deck-next:focus-visible {
   opacity: 0.9;
 }
-@media (prefers-reduced-motion: reduce) {
-  .oe-deck-next {
-    animation: none;
-  }
-}
 
 /* The import's steps (InteractiveImportDialog): each step swipes in as it's turned to — from the
    right going forward, from the left going back. */
@@ -274,15 +305,10 @@
   }
 }
 .oe-step-in {
-  animation: oe-step-in-next 320ms cubic-bezier(0.22, 1, 0.36, 1);
+  animation: oe-step-in-next var(--motion-page) var(--ease-enter);
 }
 .oe-step-in-back {
   animation-name: oe-step-in-back;
-}
-@media (prefers-reduced-motion: reduce) {
-  .oe-step-in {
-    animation: none;
-  }
 }
 
 /* The canvas's "Results →" and the dashboard's "← Workflow": a tint over their solid panel on
@@ -297,9 +323,9 @@
    settings, the guide, the folder viewer) holds a stronger tint. */
 .oe-nav button {
   transition:
-    transform 90ms ease-out,
-    box-shadow 120ms,
-    border-color 120ms;
+    transform var(--motion-press) var(--ease-move),
+    box-shadow var(--motion-hover) var(--ease-move),
+    border-color var(--motion-hover) var(--ease-move);
 }
 .oe-nav button:not(:disabled):hover {
   box-shadow: inset 0 0 0 100vmax color-mix(in srgb, var(--text) 8%, transparent);
@@ -324,9 +350,9 @@
 /* The same press-in elsewhere (the canvas / dashboard view switches, the home page's buttons). */
 .oe-press {
   transition:
-    transform 90ms ease-out,
-    background-color 120ms,
-    border-color 120ms;
+    transform var(--motion-press) var(--ease-move),
+    background-color var(--motion-hover) var(--ease-move),
+    border-color var(--motion-hover) var(--ease-move);
 }
 .oe-press:not(:disabled):active {
   transform: scale(0.94);
@@ -352,17 +378,11 @@
   }
 }
 .oe-row-in {
-  animation: oe-row-in 220ms ease-out backwards;
-}
-@media (prefers-reduced-motion: reduce) {
-  .oe-row-in {
-    animation: none;
-  }
+  animation: oe-row-in var(--motion-open) var(--ease-enter) backwards;
 }
 
 /* A canvas tile's config float (GraphNode): fades in sliding from the tile's side, and out back
-   toward it. `--oe-config-from` is the offset on the tile's side (set inline per side). Under
-   reduced motion it still runs, near-instantly, so the float's unmount (on animationend) happens. */
+   toward it. `--oe-config-from` is the offset on the tile's side (set inline per side). */
 @keyframes oe-config-in {
   from {
     opacity: 0;
@@ -376,21 +396,14 @@
   }
 }
 .oe-config-in {
-  animation: oe-config-in 180ms cubic-bezier(0.22, 1, 0.36, 1);
+  animation: oe-config-in var(--motion-open) var(--ease-enter);
 }
 .oe-config-out {
-  animation: oe-config-out 130ms ease-in forwards;
-}
-@media (prefers-reduced-motion: reduce) {
-  .oe-config-in,
-  .oe-config-out {
-    animation-duration: 1ms;
-  }
+  animation: oe-config-out var(--motion-close) var(--ease-exit) forwards;
 }
 
 /* A drop-down menu (the gene selector's): drops open from just under its button — fading in,
-   sliding down a touch — and lifts away on close. Under reduced motion it still runs, near-
-   instantly, so the menu's unmount (on animationend) happens. */
+   sliding down a touch — and lifts away on close. */
 @keyframes oe-menu-in {
   from {
     opacity: 0;
@@ -405,17 +418,11 @@
 }
 .oe-menu-in {
   transform-origin: top center;
-  animation: oe-menu-in 170ms cubic-bezier(0.22, 1, 0.36, 1);
+  animation: oe-menu-in var(--motion-open) var(--ease-enter);
 }
 .oe-menu-out {
   transform-origin: top center;
-  animation: oe-menu-out 120ms ease-in forwards;
-}
-@media (prefers-reduced-motion: reduce) {
-  .oe-menu-in,
-  .oe-menu-out {
-    animation-duration: 1ms;
-  }
+  animation: oe-menu-out var(--motion-close) var(--ease-exit) forwards;
 }
 
 /* Settings › Custom palettes: no focus ring left behind after a click on the builders' buttons
@@ -441,10 +448,10 @@ button.oe-palette-builder:focus-visible {
   }
 }
 .oe-strip-sweep {
-  animation: oe-strip-sweep 1.4s ease-in-out infinite;
+  animation: oe-strip-sweep var(--loop-sweep) ease-in-out infinite;
 }
 .oe-strip-fill {
-  transition: width 0.25s ease-out;
+  transition: width var(--motion-base) linear;
 }
 @media (prefers-reduced-motion: reduce) {
   .oe-strip-sweep {
@@ -452,9 +459,6 @@ button.oe-palette-builder:focus-visible {
     transform: none;
     width: 100% !important;
     opacity: 0.55;
-  }
-  .oe-strip-fill {
-    transition: none;
   }
 }
 
