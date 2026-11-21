@@ -2,7 +2,7 @@ import type { ReactNode } from 'react'
 import { FacetedPlot } from '../../dashboard/FacetedPlot'
 import { SwitchBar } from '../../dashboard/SwitchBar'
 import {
-  abundanceLabel,
+  quantityLabel,
   contextOf,
   contrastFeatureLabel,
   DUMBBELL_ORDERS,
@@ -18,7 +18,17 @@ import { DumbbellView } from './DumbbellView'
 /** The dumbbell result body (nodes/views.ts). Plain render function: it runs inside
  *  PanelBody, so it must not call hooks — derive what needs a hook in usePlotContext. */
 export function dumbbellView(v: ViewContext): ReactNode {
-  const { upstream, cfgSource, patchConfig, numeric, contrastSource, facetSel, focus, abScale } = v
+  const {
+    upstream,
+    cfgSource,
+    patchConfig,
+    numeric,
+    contrastSource,
+    facetSel,
+    focus,
+    quantityScale,
+    quantityUnit
+  } = v
   if (upstream?.kind !== 'contrast') return <Empty text="Connect a Contrast tile and run it." />
   const cfg = cfgSource as DumbbellConfig
   const dm = upstream.displayMap
@@ -49,7 +59,9 @@ export function dumbbellView(v: ViewContext): ReactNode {
                 order={cfg.order}
                 // the feature on the switcher, when it's not the sides' own value
                 valueKind={contrastFeatureLabel(rows) ? 'other' : upstream.ctr.valueKind}
-                valueLabel={contrastFeatureLabel(rows) ?? abundanceLabel(abScale)}
+                valueLabel={
+                  contrastFeatureLabel(rows) ?? quantityLabel(quantityScale, quantityUnit)
+                }
               />
             )}
           </FacetedPlot>

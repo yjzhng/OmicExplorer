@@ -43,8 +43,12 @@ import {
   type MatrixPreset
 } from '../../engine'
 import { NumberInput } from '../../ui/NumberInput'
+import { ValueMultiSelect } from '../../ui/ValueMultiSelect'
 import { cssVars, motion, PALETTES, UI } from '../../ui/theme'
 import { useUiTheme } from '../../ui/useUiTheme'
+import { TABLE_SCROLL, useStickyGutter } from '../../ui/useStickyGutter'
+import { longestText } from '../../ui/useVirtualRows'
+import { ProbeRow, VirtualTbody } from '../../ui/VirtualRows'
 import { HoverTip, InfoTip } from '../../ui/InfoTip'
 import { StatusNote, type StatusKind } from '../../ui/StatusNote'
 import { rowMatches } from '../../ui/rowMatches'
@@ -130,10 +134,6 @@ type ColorOf = (f: Field) => string
 
 /** Default token separator for sample names (configurable per import — see `separator`). */
 const DEFAULT_DELIM = '_'
-
-/** How many feature rows the step-4 DB review renders (a preview — the full DB is written on
- *  convert). Rendering every row of a large matrix is slow and needless. */
-const PREVIEW_ROWS = 200
 
 /** Review-grid columns (the active condition fields are chosen per-render in Stage2). */
 type Col = 'include' | 'sample' | Field
@@ -688,16 +688,11 @@ function scrollParentX(el: HTMLElement | null | undefined): HTMLElement | null {
 
 function ScrollFade({
   children,
-  fill = true,
   title,
   colNav = false,
-  headCenter,
-  maxHeight
+  headCenter
 }: {
   children: ReactNode
-  fill?: boolean
-  /** cap the scroll box's height (with fill=false: a fixed-size preview inside a scrolling page) */
-  maxHeight?: number
   /** a heading above the table (needed for colNav, whose arrows share its row) */
   title?: string
   /** arrow buttons, right of the title, that step the view one column left / right — for tables
@@ -708,6 +703,7 @@ function ScrollFade({
 }): ReactNode {
   const scrollRef = useRef<HTMLDivElement>(null)
   const contentRef = useRef<HTMLDivElement>(null)
+  useStickyGutter(scrollRef)
   const [edges, setEdges] = useState({ top: false, bottom: false, left: false, right: false })
   // Height of a sticky header (if any) so the top/side fades start below it, not over it.
   const [headerH, setHeaderH] = useState(0)
@@ -773,17 +769,10 @@ function ScrollFade({
       </div>
     ) : null
   const body = (
-    // fill=false: take natural height (no flex cap) so the surrounding page scrolls as one, instead
-    // of this box shrinking to a nested scroll region.
-    <div style={{ ...styles.fadeWrap, ...(fill ? null : { flex: '0 0 auto' }) }}>
-      {/* The vertical scrollbar starts below the sticky header row (app.css .oe-headscroll), so it
-          scrolls the body it moves, not the header that stays put. */}
-      <div
-        ref={scrollRef}
-        onScroll={update}
-        className="oe-scroll oe-headscroll"
-        style={{ ...styles.fadeScroll, maxHeight, ['--head-h' as string]: `${headerH}px` }}
-      >
+    // It fills its pane (flex), scrolling within it.
+    <div style={styles.fadeWrap}>
+      {/* The scrollbars span only what scrolls — below the sticky header (ui/useStickyGutter). */}
+      <div ref={scrollRef} onScroll={update} className={TABLE_SCROLL} style={styles.fadeScroll}>
         <div ref={contentRef}>{children}</div>
       </div>
       {/* Inset by the 1px border and the scrollbars, so each fade sits on the table's visible
@@ -1129,16 +1118,21 @@ function useFloatingMenu(
       setOpen(false)
     }
     const close = (): void => setOpen(false)
+    // Any scroll of what's under it dismisses (capture: an ancestor's too) — but not the menu's
+    // own list scrolling.
+    const onScroll = (e: Event): void => {
+      if (!menuRef.current?.contains(e.target as Node)) setOpen(false)
+    }
     const onKey = (e: KeyboardEvent): void => {
       if (e.key === 'Escape') setOpen(false)
     }
     document.addEventListener('mousedown', onDown)
-    window.addEventListener('scroll', close, true) // capture: any ancestor scroll dismisses
+    window.addEventListener('scroll', onScroll, true)
     window.addEventListener('resize', close)
     document.addEventListener('keydown', onKey)
     return () => {
       document.removeEventListener('mousedown', onDown)
-      window.removeEventListener('scroll', close, true)
+      window.removeEventListener('scroll', onScroll, true)
       window.removeEventListener('resize', close)
       document.removeEventListener('keydown', onKey)
     }
@@ -1449,12 +1443,8 @@ export function InteractiveImportDialog({
   // Conditions switched on with no values yet — shared by the Conditions and Samplesheet steps (a
   // condition holding values is on by its values). See Stage1 / Stage2.
   const [activated, setActivated] = useState<Set<Field>>(() => new Set())
-  const [preview, setPreview] = useState<{
-    rows: Record<string, string>[]
-    total: number
-  } | null>(null)
-  // The FULL parsed matrix rows (not just the capped preview), so the Filtering step can compute
-  // distinct-value facets and kept-row counts over every row. Set once per matrix load.
+  // The parsed matrix rows, every one: the Columns step scrolls them all (windowed), the Filtering
+  // step computes distinct-value facets and kept-row counts over them. Set once per matrix load.
   const [allRows, setAllRows] = useState<Record<string, string>[]>([])
   const [detecting, setDetecting] = useState(false)
   const [converting, setConverting] = useState(false)
@@ -1501,25 +1491,16 @@ export function InteractiveImportDialog({
     let cancelled = false
     void (async () => {
       if (!matrix || !dataDir) {
-        if (!cancelled) {
-          setPreview(null)
-          setAllRows([])
-        }
+        if (!cancelled) setAllRows([])
         return
       }
       const text = await window.api.readDataFile(dataDir, matrix)
       if (cancelled) return
       try {
-        // Cap the rendered preview rows (step 1 shows a handful, step 4 a review sample) — rendering
-        // every feature row is slow and needless; the full DB is written from the matrix on convert.
         const info = text ? parseMatrix(text) : null
         setAllRows(info?.rows ?? [])
-        setPreview(
-          info ? { rows: info.rows.slice(0, PREVIEW_ROWS), total: info.rows.length } : null
-        )
       } catch {
         setAllRows([])
-        setPreview(null)
       }
     })()
     return () => {
@@ -1932,7 +1913,7 @@ export function InteractiveImportDialog({
   // few, so its search finds any protein (the step renders only the first matches). Computed only
   // on the Metadata step (a single pass over the full matrix).
   const metaPreview = ((): { rows: Record<string, string>[]; total: number } | null => {
-    if (stage !== 5) return preview
+    if (stage !== 5) return null
     const active = filterCols
       .filter((c) => filters[c] && filterOn(filters[c]))
       .map((c) => ({ col: c, drop: new Set(filters[c].drop ?? []), spec: filters[c] }))
@@ -2169,7 +2150,7 @@ export function InteractiveImportDialog({
                 onDetect={runDetect}
                 columns={columns}
                 roles={roles}
-                rows={preview?.rows ?? []}
+                rows={allRows}
                 onAssign={assignRoles}
               />
             )}
@@ -2391,9 +2372,13 @@ function Step1Columns({
   }
   // Column-header drag range (indices into `columns`): `a` = anchor, `f` = current end.
   const [drag, setDrag] = useState<{ a: number; f: number } | null>(null)
-  // Enough rows to fill the (full-height) dialog and scroll a little; not all 200 previewed, as a
-  // wide matrix makes every row hundreds of cells.
-  const shown = rows.slice(0, 50)
+  // Every row of the matrix scrolls; only those in view are drawn (ui/VirtualRows). Each column's
+  // widest value (from a sample) sits in a hidden probe row, so the first fit-to-content sizing
+  // fits the data, not just the rows drawn.
+  const widest = useMemo(
+    () => columns.map((c) => longestText(rows.length, (i) => rows[i][c] ?? '')),
+    [columns, rows]
+  )
   const lo = drag ? Math.min(drag.a, drag.f) : -1
   const hi = drag ? Math.max(drag.a, drag.f) : -1
   // The last header clicked without Shift: a Shift-click labels everything from it to the one
@@ -2687,30 +2672,38 @@ function Step1Columns({
                   })}
                 </tr>
               </thead>
-              <tbody>
-                {shown.map((r, i) => (
-                  <tr key={i}>
-                    {columns.map((c) => {
-                      const color = ROLE_COLORS[roles[c] ?? 'ignore']
-                      return (
-                        <td
-                          key={c}
-                          style={{
-                            ...styles.td,
-                            ...styles.sampleCell,
-                            ...(fixed ? styles.clip : null),
-                            color: UI.textMuted,
-                            background: color ? `${color}0d` : undefined
-                          }}
-                          title={r[c]}
-                        >
-                          {r[c] ?? ''}
-                        </td>
-                      )
-                    })}
-                  </tr>
-                ))}
-              </tbody>
+              <VirtualTbody
+                count={rows.length}
+                span={columns.length}
+                tail={
+                  <ProbeRow texts={widest} cellStyle={{ ...styles.td, ...styles.sampleCell }} />
+                }
+                row={(i) => {
+                  const r = rows[i]
+                  return (
+                    <tr key={i}>
+                      {columns.map((c) => {
+                        const color = ROLE_COLORS[roles[c] ?? 'ignore']
+                        return (
+                          <td
+                            key={c}
+                            style={{
+                              ...styles.td,
+                              ...styles.sampleCell,
+                              ...(fixed ? styles.clip : null),
+                              color: UI.textMuted,
+                              background: color ? `${color}0d` : undefined
+                            }}
+                            title={r[c]}
+                          >
+                            {r[c] ?? ''}
+                          </td>
+                        )
+                      })}
+                    </tr>
+                  )
+                }}
+              />
             </table>
           </ScrollFade>
         </>
@@ -2822,15 +2815,13 @@ function Step4Metadata({
   }
 
   if (!idCol) return <div style={styles.hint}>Pick an ID column in step 1.</div>
-  // Rendering every row is slow and needless — the first matches; the search narrows the rest.
-  const shown = matches.slice(0, PREVIEW_ROWS)
-  // Content-fit width from the longest value (header or any shown cell), capped.
+  // Every match scrolls; only those in view are drawn (ui/VirtualRows).
+  // Content-fit width from the longest value (the header, or any match — a sample of many), capped.
   const fitWidth = (i: number): number => {
-    let maxLen = cols[i].length
-    for (const r of shown) {
-      const l = accessors[i](r).length
-      if (l > maxLen) maxLen = l
-    }
+    const maxLen = Math.max(
+      cols[i].length,
+      longestText(matches.length, (k) => accessors[i](matches[k])).length
+    )
     return Math.max(DB_MIN_COL, Math.min(maxLen * DB_CHAR_PX + COL_PAD, DB_MAX_COL))
   }
   const colWidth = (i: number): number =>
@@ -2990,11 +2981,13 @@ function Step4Metadata({
               ))}
             </tr>
           </thead>
-          <tbody>
-            {shown.map((r, i) => (
+          <VirtualTbody
+            count={matches.length}
+            span={cols.length}
+            row={(i) => (
               <tr key={i}>
                 {accessors.map((get, ci) => {
-                  const v = get(r)
+                  const v = get(matches[i])
                   return (
                     <td
                       key={cols[ci]}
@@ -3006,8 +2999,8 @@ function Step4Metadata({
                   )
                 })}
               </tr>
-            ))}
-          </tbody>
+            )}
+          />
         </table>
       </ScrollFade>
     </>
@@ -3655,8 +3648,34 @@ function SheetMapper({
                 })}
               </tr>
             </thead>
-            <tbody>
-              {sampleCols.map((h) => {
+            {/* Windowed (ui/VirtualRows): the samples, then the sheet rows matching none. */}
+            <VirtualTbody
+              count={sampleCols.length + unmatched.length}
+              span={sheet.columns.length + 1}
+              row={(k) => {
+                if (k >= sampleCols.length) {
+                  const i = unmatched[k - sampleCols.length]
+                  return (
+                    <tr
+                      key={`row-${i}`}
+                      draggable
+                      onDragStart={(e) => {
+                        dragRow.current = i
+                        e.dataTransfer.effectAllowed = 'move'
+                        e.dataTransfer.setData('text/plain', String(i))
+                      }}
+                      onDragEnd={() => setDropOn(null)}
+                      style={{ ...styles.removedRow, cursor: 'grab' }}
+                      title="Matches no sample — drag it onto the sample it belongs to"
+                    >
+                      <td style={{ ...styles.td, ...styles.sampleCell, ...styles.sheetMissing }}>
+                        no sample
+                      </td>
+                      {cells(i)}
+                    </tr>
+                  )
+                }
+                const h = sampleCols[k]
                 const i = rowOf.get(h)
                 const pinned = sheet.pinned[h] === i && i != null
                 return (
@@ -3700,27 +3719,8 @@ function SheetMapper({
                     {cells(i)}
                   </tr>
                 )
-              })}
-              {unmatched.map((i) => (
-                <tr
-                  key={`row-${i}`}
-                  draggable
-                  onDragStart={(e) => {
-                    dragRow.current = i
-                    e.dataTransfer.effectAllowed = 'move'
-                    e.dataTransfer.setData('text/plain', String(i))
-                  }}
-                  onDragEnd={() => setDropOn(null)}
-                  style={{ ...styles.removedRow, cursor: 'grab' }}
-                  title="Matches no sample — drag it onto the sample it belongs to"
-                >
-                  <td style={{ ...styles.td, ...styles.sampleCell, ...styles.sheetMissing }}>
-                    no sample
-                  </td>
-                  {cells(i)}
-                </tr>
-              ))}
-            </tbody>
+              }}
+            />
           </table>
         </ScrollFade>
       </ConditionPainter>
@@ -3771,7 +3771,7 @@ function ConditionPainter({
     const box = mapRef.current
     if (!box) return
     const at = box.getBoundingClientRect()
-    const view = box.querySelector('.oe-headscroll')?.getBoundingClientRect()
+    const view = box.querySelector('.oe-tablescroll')?.getBoundingClientRect()
     const next: Array<{ field: Field; d: string; head: string }> = []
     for (const [field, chip] of chipRefs.current) {
       const bar = box.querySelector(`[data-ruler-field="${CSS.escape(field)}"]`)
@@ -4101,8 +4101,19 @@ function Stage1({
                 </td>
               </tr>
             </thead>
-            <tbody>
-              {samples.map((s, index) => {
+            {/* Windowed (ui/VirtualRows): every sample scrolls, only those in view are drawn;
+                the probe row keeps the name column as wide as the longest name. */}
+            <VirtualTbody
+              count={samples.length}
+              span={2}
+              tail={
+                <ProbeRow
+                  texts={['', longestText(samples.length, (i) => samples[i].sample)]}
+                  cellStyle={styles.nameCell}
+                />
+              }
+              row={(index) => {
+                const s = samples[index]
                 const active = !inactive.has(s.sample)
                 const hovered = hoverRow === s.sample
                 return (
@@ -4161,8 +4172,8 @@ function Stage1({
                     )}
                   </tr>
                 )
-              })}
-            </tbody>
+              }}
+            />
           </table>
         </ScrollFade>
       </ConditionPainter>
@@ -4728,8 +4739,13 @@ function Stage2({
               </th>
             </tr>
           </thead>
-          <tbody>
-            {samples.map((s, i) => {
+          {/* Windowed (ui/VirtualRows): every sample scrolls, only those in view are drawn. Edits
+              are kept as typed (setCell), so a row scrolled away loses nothing. */}
+          <VirtualTbody
+            count={samples.length}
+            span={activeFields.length + 3}
+            row={(i) => {
+              const s = samples[i]
               const on = s.include !== false
               return (
                 <tr key={s.sample} style={{ opacity: on ? 1 : 0.45 }}>
@@ -4810,8 +4826,8 @@ function Stage2({
                   <td style={{ ...styles.td, ...styles.addColCell }} />
                 </tr>
               )
-            })}
-          </tbody>
+            }}
+          />
         </table>
       </ScrollFade>
     </>
@@ -4884,97 +4900,6 @@ function MatchInput({
   )
 }
 
-/** A select-style button whose multiselect list floats (portalled) just below it — so it isn't
- *  clipped by the modal's scroll area. Checked = kept; unchecked values are dropped. */
-function ValueDropdown({
-  values,
-  dropped,
-  disabled,
-  color,
-  truncated,
-  onToggle,
-  onSelectAll,
-  onClearAll
-}: {
-  values: string[]
-  dropped: Set<string>
-  disabled: boolean
-  color: string
-  truncated: boolean
-  onToggle: (v: string) => void
-  onSelectAll: () => void
-  onClearAll: () => void
-}): ReactNode {
-  const mode = useUiTheme((s) => s.mode)
-  const [open, setOpen] = useState(false)
-  const kept = values.filter((v) => !dropped.has(v)).length
-  const summary =
-    kept === values.length
-      ? 'All values'
-      : kept === 0
-        ? 'None kept'
-        : `${kept}/${values.length} kept`
-  // Deactivating the tile closes the menu without a state sync (derive rather than setState-in-effect).
-  const isOpen = open && !disabled
-  const { btnRef, menuRef, rect } = useFloatingMenu(isOpen, setOpen)
-
-  return (
-    <>
-      <button
-        ref={btnRef as React.RefObject<HTMLButtonElement | null>}
-        disabled={disabled}
-        style={{ ...styles.dropdownBtn, borderColor: isOpen ? color : UI.border }}
-        onClick={() => setOpen((o) => !o)}
-      >
-        {summary}
-        <span style={styles.dropdownCaret}>{isOpen ? '▲' : '▼'}</span>
-      </button>
-      {isOpen &&
-        rect &&
-        createPortal(
-          <div
-            ref={menuRef}
-            style={{
-              ...cssVars(PALETTES[mode]),
-              ...styles.dropdownMenu,
-              right: rect.right,
-              top: rect.top,
-              minWidth: Math.max(rect.width, 180)
-            }}
-          >
-            <div style={styles.dropdownTools}>
-              <button style={styles.filterLink} onClick={onSelectAll}>
-                Select all
-              </button>
-              <button style={styles.filterLink} onClick={onClearAll}>
-                Clear all
-              </button>
-            </div>
-            <div style={styles.dropdownList}>
-              {values.map((v) => {
-                const isKept = !dropped.has(v)
-                return (
-                  <label key={v} style={styles.dropdownItem}>
-                    <input type="checkbox" checked={isKept} onChange={() => onToggle(v)} />
-                    <span style={isKept ? undefined : styles.dropdownItemOff}>
-                      {v === '' ? '(empty)' : v}
-                    </span>
-                  </label>
-                )
-              })}
-            </div>
-            {truncated && (
-              <div style={styles.hint}>
-                Showing the first {values.length} distinct values; rarer values are kept.
-              </div>
-            )}
-          </div>,
-          document.body
-        )}
-    </>
-  )
-}
-
 /** Stage 2 (Filtering): one card per `filter`-role column. A categorical column picks its kept
  *  values from a floating multiselect dropdown; a numeric column offers a min/max range.
  *  Rows failing any active filter are dropped on convert. Only shown when ≥1 filter column. */
@@ -5006,15 +4931,15 @@ function FilterStage({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [colKey, allRows])
   const total = allRows.length
-  // One pass over every row: count survivors and collect a capped sample of the DROPPED rows for
-  // the preview below (so the user can see exactly what a filter is removing).
+  // One pass over every row: the DROPPED rows, then the kept ones, for the table below (so the user
+  // can see exactly what a filter is removing) — all of them, windowed (ui/VirtualRows).
   const { kept, removedTotal, displayRows } = useMemo(() => {
     const active = filterCols
       .filter((c) => filters[c] && filterOn(filters[c]))
       .map((c) => ({ col: c, drop: new Set(filters[c].drop ?? []), spec: filters[c] }))
     let keptN = 0
     let removedN = 0
-    // Capped samples for the table below — removed rows first (shown on top, red), then kept.
+    // Removed rows first (shown on top, red), then kept.
     const removedRows: Record<string, string>[] = []
     const keptRows: Record<string, string>[] = []
     for (const r of allRows) {
@@ -5039,10 +4964,10 @@ function FilterStage({
       }
       if (ok) {
         keptN++
-        if (keptRows.length < KEPT_PREVIEW_CAP) keptRows.push(r)
+        keptRows.push(r)
       } else {
         removedN++
-        if (removedRows.length < REMOVED_PREVIEW_CAP) removedRows.push(r)
+        removedRows.push(r)
       }
     }
     const displayRows = [
@@ -5058,6 +4983,13 @@ function FilterStage({
   // rest of the matrix columns in their original order.
   const filterSet = new Set(filterCols)
   const orderedCols = [...filterCols, ...columns.filter((c) => !filterSet.has(c))]
+  // Each column's widest value (from a sample), so the columns fit every row, not just those drawn.
+  const orderKey = orderedCols.join('\u0000')
+  const widest = useMemo(
+    () => orderedCols.map((c) => longestText(allRows.length, (i) => allRows[i][c] ?? '')),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [orderKey, allRows]
+  )
   const numColor = ROLE_COLORS.filter!
   return (
     <>
@@ -5069,121 +5001,135 @@ function FilterStage({
           numeric range — rows matching <b>all</b> filters are written; the rest are dropped.
         </InfoTip>
       </div>
-      {filterCols.map((col) => {
-        const facet = facets[col]
-        const spec = filters[col]
-        if (!facet) return null
-        const isActive = filterOn(spec)
-        const dropSet = new Set(spec?.drop ?? [])
-        return (
-          <div
-            key={col}
-            style={isActive ? styles.filterCard : { ...styles.filterCard, ...styles.filterCardOff }}
-          >
-            {/* Checkbox at the far left turns the filter active; label next; controls at the right. */}
-            <div style={styles.filterHead}>
-              <input
-                type="checkbox"
-                checked={isActive}
-                title={
-                  isActive ? 'Active — uncheck to ignore this filter' : 'Inactive — check to enable'
-                }
-                onChange={(e) => setActive(col, e.target.checked)}
-              />
-              <span style={{ ...styles.chipDot, background: numColor }} />
-              <span style={{ ...styles.filterName, ...(isActive ? null : styles.offText) }}>
-                {col}
-              </span>
-              <span style={styles.filterMeta}>
-                {facet.numeric
-                  ? `numeric · ${facet.min}–${facet.max}`
-                  : `${facet.values.length}${facet.truncated ? '+' : ''} value${facet.values.length === 1 ? '' : 's'}`}
-              </span>
-              <div
-                style={{ ...styles.filterControls, ...(isActive ? null : styles.controlsOff) }}
-                aria-disabled={!isActive}
-              >
-                {facet.numeric ? (
-                  <>
-                    <BoundInput
-                      label="min"
-                      value={spec?.min ?? null}
-                      from={facet.min}
-                      step={filterStep(facet.min, facet.max, facet.whole)}
+      {/* The filters (and the row count) take what they need, up to what leaves the preview its
+          room — scrolling themselves past that; the preview table fills the rest, as every other
+          step's table fills its pane. */}
+      <div style={styles.filterList}>
+        {filterCols.map((col) => {
+          const facet = facets[col]
+          const spec = filters[col]
+          if (!facet) return null
+          const isActive = filterOn(spec)
+          const dropSet = new Set(spec?.drop ?? [])
+          return (
+            <div
+              key={col}
+              style={
+                isActive ? styles.filterCard : { ...styles.filterCard, ...styles.filterCardOff }
+              }
+            >
+              {/* Checkbox at the far left turns the filter active; label next; controls at the right. */}
+              <div style={styles.filterHead}>
+                <input
+                  type="checkbox"
+                  checked={isActive}
+                  title={
+                    isActive
+                      ? 'Active — uncheck to ignore this filter'
+                      : 'Inactive — check to enable'
+                  }
+                  onChange={(e) => setActive(col, e.target.checked)}
+                />
+                <span style={{ ...styles.chipDot, background: numColor }} />
+                <span style={{ ...styles.filterName, ...(isActive ? null : styles.offText) }}>
+                  {col}
+                </span>
+                <span style={styles.filterMeta}>
+                  {facet.numeric
+                    ? `numeric · ${facet.min}–${facet.max}`
+                    : `${facet.values.length}${facet.truncated ? '+' : ''} value${facet.values.length === 1 ? '' : 's'}`}
+                </span>
+                <div
+                  style={{ ...styles.filterControls, ...(isActive ? null : styles.controlsOff) }}
+                  aria-disabled={!isActive}
+                >
+                  {facet.numeric ? (
+                    <>
+                      <BoundInput
+                        label="min"
+                        value={spec?.min ?? null}
+                        from={facet.min}
+                        step={filterStep(facet.min, facet.max, facet.whole)}
+                        disabled={!isActive}
+                        onChange={(v) => setFilter(col, { ...spec, active: true, min: v })}
+                      />
+                      <BoundInput
+                        label="max"
+                        value={spec?.max ?? null}
+                        from={facet.max}
+                        step={filterStep(facet.min, facet.max, facet.whole)}
+                        disabled={!isActive}
+                        onChange={(v) => setFilter(col, { ...spec, active: true, max: v })}
+                      />
+                    </>
+                  ) : (
+                    // Categorical values are chosen from a floating multiselect dropdown.
+                    // The app's searchable multi-select (ui/ValueMultiSelect): the values kept.
+                    <ValueMultiSelect
+                      members
+                      values={facet.values}
+                      selected={facet.values.filter((v) => !dropSet.has(v))}
                       disabled={!isActive}
-                      onChange={(v) => setFilter(col, { ...spec, active: true, min: v })}
+                      noun="value"
+                      onChange={(next) => {
+                        const keep = new Set(next)
+                        const drop = facet.values.filter((v) => !keep.has(v))
+                        setFilter(
+                          col,
+                          drop.length ? { ...spec, active: true, drop } : { active: true }
+                        )
+                      }}
                     />
-                    <BoundInput
-                      label="max"
-                      value={spec?.max ?? null}
-                      from={facet.max}
-                      step={filterStep(facet.min, facet.max, facet.whole)}
-                      disabled={!isActive}
-                      onChange={(v) => setFilter(col, { ...spec, active: true, max: v })}
-                    />
-                  </>
-                ) : (
-                  // Categorical values are chosen from a floating multiselect dropdown.
-                  <ValueDropdown
-                    values={facet.values}
-                    dropped={dropSet}
-                    disabled={!isActive}
-                    color={numColor}
-                    truncated={facet.truncated}
-                    onToggle={(v) => {
-                      const nd = new Set(spec?.drop ?? [])
-                      if (nd.has(v)) nd.delete(v)
-                      else nd.add(v)
-                      setFilter(
-                        col,
-                        nd.size > 0 ? { ...spec, active: true, drop: [...nd] } : { active: true }
-                      )
-                    }}
-                    onSelectAll={() => setFilter(col, { active: true })}
-                    onClearAll={() => setFilter(col, { active: true, drop: [...facet.values] })}
-                  />
-                )}
+                  )}
+                </div>
               </div>
             </div>
-          </div>
-        )
-      })}
+          )
+        })}
 
-      {/* Row stats, below the filter sections. */}
-      <div style={styles.filterStats}>
-        Removing <b style={styles.removingNum}>{removedTotal.toLocaleString()}</b> rows. Keeping{' '}
-        <b>{kept.toLocaleString()}</b> of {total.toLocaleString()} rows ({pct}%).
+        {/* Row stats, below the filter sections. */}
+        <div style={styles.filterStats}>
+          Removing <b style={styles.removingNum}>{removedTotal.toLocaleString()}</b> rows. Keeping{' '}
+          <b>{kept.toLocaleString()}</b> of {total.toLocaleString()} rows ({pct}%).
+        </div>
       </div>
 
-      {/* Full data below: removed rows on top (red), then the kept rows. Both are capped samples —
-          every filtered row is applied on convert regardless of what's shown here. */}
-      <ScrollFade fill={false} maxHeight={300}>
-        <table style={{ ...styles.grid, tableLayout: 'auto' }}>
-          <thead>
-            <tr>
-              {orderedCols.map((c) => (
-                <th
-                  key={c}
-                  style={filterSet.has(c) ? { ...styles.th, color: numColor } : styles.th}
-                >
-                  {c}
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {displayRows.map(({ r, removed }, i) => (
-              <tr key={i} style={removed ? styles.removedRow : undefined}>
+      {/* Full data below: removed rows on top (red), then the kept rows — every one, windowed. */}
+      <div style={styles.filterPreview}>
+        <ScrollFade>
+          <table style={{ ...styles.grid, tableLayout: 'auto' }}>
+            <thead>
+              <tr>
                 {orderedCols.map((c) => (
-                  <td key={c} style={{ ...styles.td, ...styles.sampleCell }} title={r[c]}>
-                    {r[c] ?? ''}
-                  </td>
+                  <th
+                    key={c}
+                    style={filterSet.has(c) ? { ...styles.th, color: numColor } : styles.th}
+                  >
+                    {c}
+                  </th>
                 ))}
               </tr>
-            ))}
-          </tbody>
-        </table>
-      </ScrollFade>
+            </thead>
+            <VirtualTbody
+              count={displayRows.length}
+              span={orderedCols.length}
+              tail={<ProbeRow texts={widest} cellStyle={{ ...styles.td, ...styles.sampleCell }} />}
+              row={(i) => {
+                const { r, removed } = displayRows[i]
+                return (
+                  <tr key={i} style={removed ? styles.removedRow : undefined}>
+                    {orderedCols.map((c) => (
+                      <td key={c} style={{ ...styles.td, ...styles.sampleCell }} title={r[c]}>
+                        {r[c] ?? ''}
+                      </td>
+                    ))}
+                  </tr>
+                )
+              }}
+            />
+          </table>
+        </ScrollFade>
+      </div>
     </>
   )
 }
@@ -5249,11 +5195,6 @@ function BoundInput({
     </label>
   )
 }
-
-/** How many removed / kept rows the Filtering-step data table renders (a sample — every filtered
- *  row is applied on convert regardless; the cap just keeps the DOM light). */
-const REMOVED_PREVIEW_CAP = 200
-const KEPT_PREVIEW_CAP = 200
 
 const styles: Record<string, CSSProperties> = {
   overlay: {
@@ -5659,6 +5600,17 @@ const styles: Record<string, CSSProperties> = {
   },
   addCondErr: { fontSize: 11, color: UI.err },
   // ── Filtering stage ──
+  // the Filtering step: its filter cards and row count, scrolling once they'd squeeze the preview
+  filterList: {
+    flex: '0 1 auto',
+    minHeight: 0,
+    overflowY: 'auto',
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 12
+  },
+  // …and the preview table below, filling the rest of the pane (never under 180 px)
+  filterPreview: { flex: 1, minHeight: 180, display: 'flex', flexDirection: 'column' },
   filterStats: {
     fontSize: 13,
     color: UI.text,

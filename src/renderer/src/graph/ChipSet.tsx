@@ -14,6 +14,7 @@ import { GENE_LIST_STYLES } from '../ui/geneListStyles'
 import { cssVars, PALETTES, UI } from '../ui/theme'
 import { placeMenu } from '../ui/placeMenu'
 import { useUiTheme } from '../ui/useUiTheme'
+import { VirtualList } from '../ui/VirtualRows'
 import { selectorStyles as S } from './selectorParts'
 
 /** The most value chips a condition shows in a selector dialog; beyond it, the searchable picker.
@@ -218,37 +219,48 @@ function ChipPicker({
               {filtered.length === 0 ? (
                 <div style={{ ...L.more, paddingLeft: 6, color: p.textMuted }}>No match.</div>
               ) : (
-                filtered.map((it) => (
-                  <div
-                    key={it.value}
-                    role={onToggle ? 'menuitemcheckbox' : undefined}
-                    aria-checked={onToggle ? it.on : undefined}
-                    aria-disabled={it.disabled || undefined}
-                    title={it.title}
-                    onClick={() => pick(it)}
-                    style={{
-                      ...styles.row,
-                      cursor: onToggle && !it.disabled ? 'pointer' : 'default'
-                    }}
-                  >
-                    {onToggle && (
-                      <span
+                <VirtualList
+                  count={filtered.length}
+                  style={{ display: 'flex', flexDirection: 'column' }}
+                  row={(i) => {
+                    const it = filtered[i]
+                    return (
+                      <div
+                        key={it.value}
+                        role={onToggle ? 'menuitemcheckbox' : undefined}
+                        aria-checked={onToggle ? it.on : undefined}
+                        aria-disabled={it.disabled || undefined}
+                        title={it.title}
+                        onClick={() => pick(it)}
                         style={{
-                          ...styles.check,
-                          borderRadius: single ? 999 : 3,
-                          ...(it.on
-                            ? { background: p.accent, borderColor: p.accent, color: p.accentText }
-                            : null),
-                          ...(it.disabled ? { opacity: 0.35 } : null)
+                          ...styles.row,
+                          cursor: onToggle && !it.disabled ? 'pointer' : 'default'
                         }}
                       >
-                        {it.on ? '✓' : ''}
-                      </span>
-                    )}
-                    {/* The value as its chip would look. */}
-                    <span style={{ ...lookOf(it), ...styles.rowChip }}>{it.value}</span>
-                  </div>
-                ))
+                        {onToggle && (
+                          <span
+                            style={{
+                              ...styles.check,
+                              borderRadius: single ? 999 : 3,
+                              ...(it.on
+                                ? {
+                                    background: p.accent,
+                                    borderColor: p.accent,
+                                    color: p.accentText
+                                  }
+                                : null),
+                              ...(it.disabled ? { opacity: 0.35 } : null)
+                            }}
+                          >
+                            {it.on ? '✓' : ''}
+                          </span>
+                        )}
+                        {/* The value as its chip would look. */}
+                        <span style={{ ...lookOf(it), ...styles.rowChip }}>{it.value}</span>
+                      </div>
+                    )
+                  }}
+                />
               )}
             </div>
           </div>,

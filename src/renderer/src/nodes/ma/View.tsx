@@ -17,7 +17,18 @@ import { MAView } from './MAView'
 /** The ma result body (nodes/views.ts). Plain render function: it runs inside
  *  PanelBody, so it must not call hooks — derive what needs a hook in usePlotContext. */
 export function maView(v: ViewContext): ReactNode {
-  const { upstream, cfgSource, upStep, numeric, subSource, facetSel, abScale, effectsOf, upId } = v
+  const {
+    upstream,
+    cfgSource,
+    upStep,
+    numeric,
+    subSource,
+    facetSel,
+    quantityScale,
+    quantityUnit,
+    effectsOf,
+    upId
+  } = v
   if (upstream?.kind !== 'compare') return <Empty text="Connect a Compare tile and run it." />
   const cfg = cfgSource as MAConfig
   const dm = upstream.displayMap
@@ -39,10 +50,11 @@ export function maView(v: ViewContext): ReactNode {
                 fcLow: threshold.fcLow,
                 fcHigh: threshold.fcHigh,
                 displayMap: dm,
-                scale: abScale
+                scale: quantityScale,
+                unit: quantityUnit
               })
             }
-            deps={[rows, threshold.fcLow, threshold.fcHigh, dm, abScale]}
+            deps={[rows, threshold.fcLow, threshold.fcHigh, dm, quantityScale, quantityUnit]}
           >
             {(ma) => (
               <MAView

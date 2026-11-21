@@ -9,7 +9,8 @@ import { CATEGORICAL_SCHEMES, toCategoricalId, type PaletteRef } from '../../ui/
 import { useAppSettings, useRolePalette } from '../../ui/useAppSettings'
 
 import {
-  abundanceLabel,
+  quantityLabel,
+  valueUnitOf,
   buildGeneBar,
   distinctOf,
   isNumericCond,
@@ -77,7 +78,7 @@ function GeneBarBody({
       orient={orient}
       title={std.displayMap[gene] ?? gene}
       range={range}
-      valueLabel={abundanceLabel(scale)}
+      valueLabel={quantityLabel(scale, valueUnitOf(std))}
       replicates={replicates}
       colorCat={colorCat}
       colorNum={colorNum}

@@ -139,6 +139,42 @@ describe('architecture', () => {
     expect(bad).toEqual([])
   })
 
+  it('long content renders through ui/VirtualRows: no capped lists, no "+N more", no paging', () => {
+    // A list drawn from the first N of something (`xs.slice(0, CAP).map(… key= …)`) hides the rest
+    // behind a cap; ui/VirtualRows windows any length instead (see ui/useVirtualRows).
+    const CAPPED = /\.slice\(0,\s*([A-Za-z_][\w.]*|[2-9]\d|\d{3,})\)\s*\.map\(/g
+    const bad = sources(ROOT).flatMap((p) => {
+      const file = relative(ROOT, p)
+      if (!file.endsWith('.tsx')) return []
+      const text = readFileSync(p, 'utf8')
+      const out: string[] = []
+      for (const m of text.matchAll(CAPPED)) {
+        const after = text.slice(m.index + m[0].length, m.index + 400)
+        // drawn rows (keyed elements), not data mapped to objects
+        if (/^[^=]*=>\s*\(\{/.test(after) || !/\bkey=/.test(after)) continue
+        out.push(`${file}: renders the first ${m[1]} of a list (use ui/VirtualRows)`)
+      }
+      if (/refine search/i.test(text)) out.push(`${file}: a "+N more — refine search" cap`)
+      return out
+    })
+    expect(bad).toEqual([])
+  })
+
+  it("a table's scrollbars span only what scrolls: every sticky-header table uses the gutter", () => {
+    // A table with pinned header rows (a sticky <th>) scrolls in a TableScroll, or a scroller of
+    // its own with useStickyGutter (ui/useStickyGutter) — so its gutter runs beside the rows only.
+    const bad = sources(ROOT).flatMap((p) => {
+      const file = relative(ROOT, p)
+      if (!file.endsWith('.tsx')) return []
+      const text = readFileSync(p, 'utf8')
+      const sticky = text.includes('<thead') && text.includes("position: 'sticky'")
+      return sticky && !/useStickyGutter\(|<TableScroll\b/.test(text)
+        ? [`${file}: a sticky-header table without ui/useStickyGutter`]
+        : []
+    })
+    expect(bad).toEqual([])
+  })
+
   it("each spec's kind is its key", () => {
     for (const k of ALL_OPS) expect(NODE_SPECS[k].kind).toBe(k)
   })

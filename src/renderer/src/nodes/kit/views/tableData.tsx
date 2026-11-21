@@ -1,6 +1,7 @@
 import type { CSSProperties } from 'react'
 import {
-  abundanceLabel,
+  quantityLabel,
+  valueUnitOf,
   buildStdMatrix,
   condLabel,
   condPresent,
@@ -171,7 +172,7 @@ export function sampleQcTable(
     format: fixed(digits),
     cellStyle: heatStyle(valueRange(rows.map((r) => r[key] as number | null)), palette)
   })
-  const unit = abundanceLabel(scale)
+  const unit = quantityLabel(scale, valueUnitOf(std))
   return {
     columns: [
       ...condColumns(contextOf(std).rows, numericOf(std), undefined, units),

@@ -12,6 +12,8 @@ import {
   rowsWhere,
   showKindOf,
   type ValueScale,
+  type ValueUnit,
+  valueUnitOf,
   withBatchCond
 } from '../../../engine'
 import { useGraph } from '../../../graph/store'
@@ -189,16 +191,20 @@ export function usePlotContext({
         ? withBatchCond(cleanResult.std)
         : cleanResult.std
       : undefined
-  const abScale: ValueScale =
+  const quantityScale: ValueScale =
     cleanResult?.kind === 'standardize' ? presentScaleOf(cleanResult.std) : 'log10'
+  // …and what its values are: abundances, or fractions of a reference protein (valueUnitOf) —
+  // the word every abundance axis and legend uses ("log fraction").
+  const quantityUnit: ValueUnit =
+    cleanResult?.kind === 'standardize' ? valueUnitOf(cleanResult.std) : 'abundance'
   /** A contrast as a faceted plot's source: its rows built a facet at a time (FacetSource), an
-   *  abundance contrast's sides (stored as log₁₀) moved onto abScale (abundanceOnScale) and
+   *  abundance contrast's sides (stored as log₁₀) moved onto quantityScale (quantityOnScale) and
    *  fold-change contrasts as they are. */
   const contrastSource = (
     u: Extract<NodeResult, { kind: 'contrast' }>
   ): FacetSource<ContrastResultRow> => ({
     of: u.ctr,
-    scale: u.ctr.valueKind === 'abundance' ? abScale : undefined
+    scale: u.ctr.valueKind === 'quantity' ? quantityScale : undefined
   })
   // The genes a plot emphasises / subsets to / draws per-gene: the linked gene selection (pins
   // from clicking in plots or the gene menu). Only the tiles that DRAW BY SELECTION subscribe —
@@ -258,7 +264,8 @@ export function usePlotContext({
     cleanId,
     cleanResult,
     repStd,
-    abScale,
+    quantityScale,
+    quantityUnit,
     contrastSource,
     drawsSelection,
     pinnedIds,

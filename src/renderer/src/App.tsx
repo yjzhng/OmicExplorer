@@ -75,6 +75,11 @@ export default function App() {
   const showUpdateDot = update.updateAvailable && !silenced
 
   const projectOpen = useGraph((s) => s.projectOpen)
+  // A project still loading: named in the notice, by its file name.
+  const opening = useGraph((s) => s.opening)
+  const openingLabel = opening
+    ? `Opening ${(opening.split(/[/\\]/).pop() ?? opening).replace(/\.omicexplorer$/i, '')}…`
+    : null
   const goHome = useGraph((s) => s.goHome)
   const initProject = useGraph((s) => s.initProject)
   const pruneMissingRecents = useGraph((s) => s.pruneMissingRecents)
@@ -93,8 +98,9 @@ export default function App() {
     <div
       style={{ ...styles.root, ...cssVars(PALETTES[mode], { id: accent, custom: customAccent }) }}
     >
-      {/* "Working…" while the main thread is stuck on heavy work, so a pause doesn't read as a hang. */}
-      <FreezeNotice />
+      {/* "Working…" while the main thread is stuck on heavy work, so a pause doesn't read as a hang;
+          "Opening …" at once while a project loads. */}
+      <FreezeNotice busy={openingLabel} />
       <header className="oe-nav" style={styles.header}>
         <button
           style={styles.navBtn}

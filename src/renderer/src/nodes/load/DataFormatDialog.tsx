@@ -16,6 +16,7 @@ import templateMetadata from '../../../../../templates/template_metadata.csv?raw
 import { Chevron } from '../../ui/Chevron'
 import { InfoTip } from '../../ui/InfoTip'
 import { StatusNote } from '../../ui/StatusNote'
+import { TableScroll } from '../../ui/TableScroll'
 import { cssVars, PALETTES, UI } from '../../ui/theme'
 import { useUiTheme } from '../../ui/useUiTheme'
 
@@ -292,7 +293,7 @@ function FileSection({
           {/* The format requirements: what each column is and what the app does with it, always
             shown, under a label like the filename's. */}
           <div style={styles.fileConventionLabel}>Format requirements:</div>
-          <div style={{ ...styles.tableWrap, maxHeight: 'none' }}>
+          <TableScroll style={{ ...styles.tableWrap, maxHeight: 'none' }}>
             <table style={styles.table}>
               <thead>
                 <tr>
@@ -315,7 +316,7 @@ function FileSection({
                 ))}
               </tbody>
             </table>
-          </div>
+          </TableScroll>
           {/* The table is an EXAMPLE, not the user's data: its badge says so. Only the table
               folds; the file's name row and downloads stay in view. */}
           <div style={styles.exampleFrame}>
@@ -325,7 +326,7 @@ function FileSection({
               <span style={styles.exampleName}>example_{id}.csv</span>
             </button>
             {open && (
-              <div style={styles.tableWrap}>
+              <TableScroll style={styles.tableWrap}>
                 <table style={styles.table}>
                   {/* Three sticky header rows: required/optional, the column's name, and — where
                   the example's names are real ones — the template's name. The last carries the
@@ -373,7 +374,7 @@ function FileSection({
                     ))}
                   </tbody>
                 </table>
-              </div>
+              </TableScroll>
             )}
           </div>
         </div>

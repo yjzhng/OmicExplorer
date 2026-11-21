@@ -145,6 +145,13 @@ export function DataScaleSection({
         />
       }
     >
+      {/* Fractions of a reference protein are shown as they are (presentScaleOf). */}
+      {config.normalizeEnabled && config.normalizeReference === 'protein' && (
+        <div style={styles.hint}>
+          Divided by a reference protein, values are shown as fractions of it, unlogged. The
+          log-transform still sets the scale a Compare tests on.
+        </div>
+      )}
       {preview === 'loading' && !histIn ? (
         <div style={styles.hint}>Reading the data…</div>
       ) : histIn && histIn.counts.length > 0 ? (
@@ -434,8 +441,9 @@ export function StandardizePanel({ id, config }: { id: string; config: Standardi
             <br />
             <b>All genes</b>: every value each sample measured.
             <br />
-            <b>Reference protein</b>: one protein (e.g. a housekeeping protein) brought to the same
-            level in every sample; a sample that didn't measure it is left as it is.
+            <b>Reference protein</b>: every value divided by one protein (e.g. a housekeeping
+            protein or a spike-in) in its own sample, so that protein reads 1 everywhere and each
+            value is its fraction, shown unlogged. It must be measured in every sample.
             <br />
             <b>Median</b>: shift each sample to the same median.
             <br />
@@ -492,7 +500,6 @@ export function StandardizePanel({ id, config }: { id: string; config: Standardi
             const nz = std.normalization
             if (nz.used === 'protein') {
               const name = nz.protein ? (std.displayMap[nz.protein] ?? nz.protein) : ''
-              const missing = nz.missingSamples ?? 0
               return !nz.protein ? (
                 <StatusNote kind="warn">Pick the reference protein.</StatusNote>
               ) : nz.samples === 0 ? (
@@ -501,14 +508,8 @@ export function StandardizePanel({ id, config }: { id: string; config: Standardi
                   normalised.
                 </StatusNote>
               ) : (
-                <StatusNote
-                  kind={missing ? 'warn' : 'ok'}
-                  style={missing ? undefined : styles.doneNote}
-                >
-                  {`Normalised ${nz.samples.toLocaleString()} sample${nz.samples === 1 ? '' : 's'} on ${name}`}
-                  {missing
-                    ? ` · ${missing.toLocaleString()} sample${missing === 1 ? '' : 's'} without it left as they are`
-                    : ''}
+                <StatusNote kind="ok" style={styles.doneNote}>
+                  {`Divided ${nz.samples.toLocaleString()} sample${nz.samples === 1 ? '' : 's'} by ${name}: values are fractions of it`}
                 </StatusNote>
               )
             }

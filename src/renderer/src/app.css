@@ -169,10 +169,31 @@
   background-clip: padding-box;
 }
 
-/* A table viewport with a sticky header row: the vertical track starts below the header (its
-   height in --head-h), so the scrollbar spans only the rows it scrolls. */
-.oe-headscroll::-webkit-scrollbar-track:vertical {
+/* A table's scroller (ui/useStickyGutter): its scrollbars span only the part that scrolls. The
+   vertical track starts below the sticky header (--head-h) and the gutter beside the header is
+   painted as the header — its background, then its bottom rule — so the header runs to the edge;
+   the horizontal track starts right of the pinned columns (--stick-w), its gutter there painted as
+   them. */
+.oe-tablescroll::-webkit-scrollbar-track:vertical {
   margin-top: var(--head-h, 0px);
+}
+.oe-tablescroll::-webkit-scrollbar-track:horizontal {
+  margin-left: var(--stick-w, 0px);
+}
+.oe-tablescroll::-webkit-scrollbar:vertical {
+  background: linear-gradient(
+    to bottom,
+    var(--head-bg, transparent) calc(var(--head-h, 0px) - var(--head-lw, 0px)),
+    var(--head-line, transparent) 0 var(--head-h, 0px),
+    transparent 0
+  );
+}
+.oe-tablescroll::-webkit-scrollbar:horizontal {
+  background: linear-gradient(
+    to right,
+    var(--stick-bg, transparent) var(--stick-w, 0px),
+    transparent 0
+  );
 }
 
 /* The form workflow's details column before its window can open: the reason, centred. */
@@ -423,6 +444,17 @@
 .oe-menu-out {
   transform-origin: top center;
   animation: oe-menu-out var(--motion-close) var(--ease-exit) forwards;
+}
+
+/* The "Opening…" notice (ui/FreezeNotice's `busy`): fades in after a beat, so a quick open
+   doesn't flash it; the veil takes clicks from the start. */
+@keyframes oe-busy-in {
+  from {
+    opacity: 0;
+  }
+}
+.oe-busy-in {
+  animation: oe-busy-in var(--motion-open) var(--ease-enter) var(--motion-hover) both;
 }
 
 /* Settings › Custom palettes: no focus ring left behind after a click on the builders' buttons

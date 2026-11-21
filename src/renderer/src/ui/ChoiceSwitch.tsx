@@ -14,6 +14,7 @@ import { placeMenu } from './placeMenu'
 import { PALETTES } from './theme'
 import { ToggleSwitch, type ToggleOption } from './ToggleSwitch'
 import { useUiTheme } from './useUiTheme'
+import { VirtualList } from './VirtualRows'
 
 /** The most options shown as pills; beyond it, the dropdown. */
 export const PILL_CAP = 10
@@ -187,32 +188,37 @@ function ChoicePicker<V extends string>({
               {filtered.length === 0 ? (
                 <div style={{ ...L.more, paddingLeft: 6, color: p.textMuted }}>No match.</div>
               ) : (
-                filtered.map((o) => {
-                  const on = o.value === value
-                  return (
-                    <div
-                      key={o.value}
-                      role="button"
-                      aria-disabled={o.disabled || undefined}
-                      title={o.title}
-                      onClick={() => {
-                        if (o.disabled) return
-                        onChange(o.value)
-                        setOpen(false)
-                      }}
-                      style={{
-                        ...L.geneRow,
-                        paddingLeft: 6,
-                        color: p.text,
-                        fontWeight: on ? 700 : undefined,
-                        ...(on ? { background: `${p.accent}22` } : null),
-                        ...(o.disabled ? { opacity: 0.4, cursor: 'default' } : null)
-                      }}
-                    >
-                      <span style={styles.optText}>{o.label}</span>
-                    </div>
-                  )
-                })
+                <VirtualList
+                  count={filtered.length}
+                  style={{ display: 'flex', flexDirection: 'column' }}
+                  row={(i) => {
+                    const o = filtered[i]
+                    const on = o.value === value
+                    return (
+                      <div
+                        key={o.value}
+                        role="button"
+                        aria-disabled={o.disabled || undefined}
+                        title={o.title}
+                        onClick={() => {
+                          if (o.disabled) return
+                          onChange(o.value)
+                          setOpen(false)
+                        }}
+                        style={{
+                          ...L.geneRow,
+                          paddingLeft: 6,
+                          color: p.text,
+                          fontWeight: on ? 700 : undefined,
+                          ...(on ? { background: `${p.accent}22` } : null),
+                          ...(o.disabled ? { opacity: 0.4, cursor: 'default' } : null)
+                        }}
+                      >
+                        <span style={styles.optText}>{o.label}</span>
+                      </div>
+                    )
+                  }}
+                />
               )}
             </div>
           </div>,

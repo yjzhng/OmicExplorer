@@ -18,6 +18,7 @@ import { pendingRenames, useGraph } from '../graph/store'
 import { Chevron } from './Chevron'
 import { formatSize, REVEAL } from './fileLabels'
 import { motion, UI } from './theme'
+import { VirtualList } from './VirtualRows'
 
 type DirEntry = Awaited<ReturnType<Window['api']['listDir']>>[number]
 /** A folder's loaded children, or the error that listing it hit. */
@@ -367,11 +368,18 @@ export function ProjectFolderViewer({
               moved to the <b>Bin</b>, so you can still put any back from there.
             </div>
             <div className="oe-scroll" style={styles.confirmList}>
-              {plan.remove.map((p) => (
-                <div key={p} style={styles.confirmItem} title={p}>
-                  {p.slice(plan.root.length).replace(/^[/\\]/, '')}
-                </div>
-              ))}
+              <VirtualList
+                count={plan.remove.length}
+                style={{ display: 'flex', flexDirection: 'column' }}
+                row={(i) => {
+                  const p = plan.remove[i]
+                  return (
+                    <div key={p} style={styles.confirmItem} title={p}>
+                      {p.slice(plan.root.length).replace(/^[/\\]/, '')}
+                    </div>
+                  )
+                }}
+              />
             </div>
             <div style={styles.confirmFoot}>
               <button

@@ -9,7 +9,8 @@ import { useEffect, useState } from 'react'
 import type { PaletteRef } from '../../ui/palettes'
 
 import {
-  abundanceLabel,
+  quantityLabel,
+  valueUnitOf,
   buildHeatmapSteps,
   clusterRowGroups,
   numericOf,
@@ -82,7 +83,7 @@ export function HeatmapTile({
       heatmap={heatmap}
       title={`${heatmap.samples.length} samples · ${scope}, clustered`}
       orient={orient}
-      valueLabel={abundanceLabel(scale)}
+      valueLabel={quantityLabel(scale, valueUnitOf(std))}
       condBar={condBar}
       palette={palette}
       numeric={numericOf(std)}

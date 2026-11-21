@@ -184,8 +184,11 @@ export interface ContrastResult {
     cutoffDefaults?: Partial<Record<ContrastFeatureId, Partial<ValueCutoffs>>>
   }
   /** What the FC1/FC2 side values represent: 'fc' = log2 fold-change (Compare-fed contrasts),
-   *  'abundance' = log10 abundance (Standardize-fed pair). Drives axis labelling; defaults to 'fc'. */
-  valueKind?: 'abundance' | 'fc'
+   *  'quantity' = log10 quantity — abundance, or a fraction of a reference protein (valueUnit) —
+   *  from a Clean-data-fed pair. Drives axis labelling; defaults to 'fc'. */
+  valueKind?: 'quantity' | 'fc'
+  /** an abundance contrast's sides as fractions of a reference protein (valueUnitOf) */
+  valueUnit?: 'fraction'
 }
 
 const onScale = new WeakMap<ContrastResultRow[], Map<ValueScale, ContrastResultRow[]>>()
@@ -194,10 +197,7 @@ const onScale = new WeakMap<ContrastResultRow[], Map<ValueScale, ContrastResultR
  *  presentScaleOf). A log base is a plain rescale; linear takes the values back out of the log
  *  (geometric means), the errors by the delta method and the difference as linear A − B. The
  *  statistics are untouched. Cached per row array and scale. */
-export function abundanceOnScale(
-  rows: ContrastResultRow[],
-  scale: ValueScale
-): ContrastResultRow[] {
+export function quantityOnScale(rows: ContrastResultRow[], scale: ValueScale): ContrastResultRow[] {
   if (scale === 'log10') return rows
   let byScale = onScale.get(rows)
   if (!byScale) onScale.set(rows, (byScale = new Map()))
@@ -208,13 +208,13 @@ export function abundanceOnScale(
   return out
 }
 
-/** The fields of a contrast row abundanceOnScale moves. */
+/** The fields of a contrast row quantityOnScale moves. */
 type SideValues = Pick<
   ContrastResultRow,
   'featureId' | 'FC1' | 'FC2' | 'FC1err' | 'FC2err' | 'FC1reps' | 'FC2reps'
 > & { FCdiff?: number | null }
 
-/** One abundance contrast row on `scale` (see abundanceOnScale) — the row itself where it isn't
+/** One abundance contrast row on `scale` (see quantityOnScale) — the row itself where it isn't
  *  the abundance (a spread keeps its own units) or the scale is log10 (how it's stored). */
 export function rowOnScale<R extends SideValues>(r: R, scale: ValueScale): R {
   // only the abundance itself is rescaled — a spread (SD, CV) keeps its own units

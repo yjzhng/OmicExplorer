@@ -3,11 +3,11 @@
 import { describe, expect, it } from 'vitest'
 
 import { previewScale, standardize } from './ingest'
-import { abundanceOnScale, type ContrastResultRow } from './contrast'
+import { quantityOnScale, type ContrastResultRow } from './contrast'
 import { compactRows, holderTable, rowCount } from './lazyRows'
 import type { StandardizeResult } from './types'
 import {
-  abundanceLabel,
+  quantityLabel,
   presentScaleOf,
   withLogTransform,
   defaultTransform,
@@ -240,20 +240,20 @@ describe('the scale abundance plots show', () => {
   })
 
   it('labels log₁₀ as plain "log" and log₂ with its base', () => {
-    expect(abundanceLabel('log10')).toBe('log abundance')
-    expect(abundanceLabel('log2')).toBe('log₂ abundance')
-    expect(abundanceLabel('linear')).toBe('abundance')
+    expect(quantityLabel('log10', 'abundance')).toBe('log abundance')
+    expect(quantityLabel('log2', 'abundance')).toBe('log₂ abundance')
+    expect(quantityLabel('linear', 'abundance')).toBe('abundance')
   })
 
   it('moves an abundance contrast from log₁₀ onto another scale', () => {
     const row = { FC1: 2, FC2: 1, FC1err: 0.1, FC2err: null, FCdiff: 1 } as ContrastResultRow
-    const [l2] = abundanceOnScale([row], 'log2')
+    const [l2] = quantityOnScale([row], 'log2')
     expect(l2.FC1).toBeCloseTo(2 / Math.log10(2))
     expect(l2.FCdiff).toBeCloseTo(1 / Math.log10(2))
-    const [lin] = abundanceOnScale([row], 'linear')
+    const [lin] = quantityOnScale([row], 'linear')
     expect(lin.FC1).toBeCloseTo(100)
     expect(lin.FCdiff).toBeCloseTo(90)
     expect(lin.FC1err).toBeCloseTo(Math.LN10 * 100 * 0.1)
-    expect(abundanceOnScale([row], 'log10')[0]).toBe(row)
+    expect(quantityOnScale([row], 'log10')[0]).toBe(row)
   })
 })

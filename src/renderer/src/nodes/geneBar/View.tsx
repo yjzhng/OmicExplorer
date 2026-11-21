@@ -11,11 +11,11 @@ import { GeneBarTile } from './GeneBarTile'
 /** The geneBar result body (nodes/views.ts). Plain render function: it runs inside
  *  PanelBody, so it must not call hooks — derive what needs a hook in usePlotContext. */
 export function geneBarView(v: ViewContext): ReactNode {
-  const { upstream, abScale, cfgSource, condTitle, genes, patchConfig } = v
+  const { upstream, quantityScale, cfgSource, condTitle, genes, patchConfig } = v
   if (upstream?.kind !== 'standardize')
     return <Empty text="Connect a Clean data tile and run it." />
-  // On the scale every abundance plot shows Clean data on (see abScale).
-  const scale = abScale
+  // On the scale every abundance plot shows Clean data on (see quantityScale).
+  const scale = quantityScale
   const barCfg = cfgSource as BarConfig
   return (
     <div style={styles.chart}>

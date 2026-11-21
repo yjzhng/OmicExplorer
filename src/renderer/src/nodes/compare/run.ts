@@ -11,7 +11,7 @@ import { hiddenGeneIds, maskSignf } from '../../graph/geneMask'
 import { engine } from '../../engine/client'
 import {
   combineStandardize,
-  presentScaleOf,
+  analysisScaleOf,
   type CompareTableResult,
   batchesOf,
   withBatchCond,
@@ -36,7 +36,8 @@ export async function run(ctx: StepRunContext): Promise<void> {
   }
   const std = combineStandardize(stds)
   // on the scale the pooled data carries (the first input's, as combineStandardize presents it)
-  const testsLogged = presentScaleOf(std) !== 'linear'
+  // (the analysis scale: fractions of a reference protein are shown unlogged but tested logged)
+  const testsLogged = analysisScaleOf(std) !== 'linear'
   // Migrate any legacy veh_norm/direct config to the explicit num/den/match model, and
   // persist it so the stored workflow is updated on first run.
   const cfg = normalizeCompareConfig(node.data.config as CompareConfig)

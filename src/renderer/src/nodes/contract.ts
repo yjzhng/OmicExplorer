@@ -21,7 +21,8 @@
  * | contract     | what it is                                                | produced by                |
  * |--------------|-----------------------------------------------------------|----------------------------|
  * | `import`     | a configured import, not yet cleaned (no result of its own) | Load data (and a Subset off it) |
- * | `abundance`  | samples × features, with the samples' conditions           | Clean data, Merge, Subset  |
+ * | `quantity`   | samples × features, with the samples' conditions: each    | Clean data, Merge, Subset  |
+ * |              | value an abundance, or a fraction of a reference protein   |                            |
  * | `comparison` | per feature × comparison × context: effect, p, q, call     | Compare                    |
  * | `curves`     | a comparison table whose rows are fitted curves            | Curve fit                  |
  * | `contrast`   | per feature × context: FC1, FC2, the divergence call       | Contrast                   |
@@ -41,13 +42,13 @@ import type {
 } from '../graph/types'
 
 /** The kinds of data that flow along an edge (see the table above). */
-export type DataContract = 'import' | 'abundance' | 'comparison' | 'curves' | 'contrast'
+export type DataContract = 'import' | 'quantity' | 'comparison' | 'curves' | 'contrast'
 
 /** The result a node of each contract hands downstream (`import` has none: Clean data reads the
  *  Load step's configured files). */
 export interface ContractData {
   import: never
-  abundance: Extract<NodeResult, { kind: 'standardize' }>
+  quantity: Extract<NodeResult, { kind: 'standardize' }>
   comparison: Extract<NodeResult, { kind: 'compare' }>
   curves: Extract<NodeResult, { kind: 'compare' }>
   contrast: Extract<NodeResult, { kind: 'contrast' }>
@@ -58,7 +59,7 @@ export interface ContractData {
  *  data). */
 export const CONTRACT_PRODUCER: Record<DataContract, NodeKind> = {
   import: 'load',
-  abundance: 'standardize',
+  quantity: 'standardize',
   comparison: 'compare',
   curves: 'curveFit',
   contrast: 'contrast'

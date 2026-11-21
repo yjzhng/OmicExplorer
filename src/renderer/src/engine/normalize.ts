@@ -8,9 +8,13 @@
  * measured in every sample, as MaxQuant, DIA-NN and Spectronaut normalise on features shared
  * across runs: a sample that detected more low-abundance genes otherwise reads as lower loaded
  * when it isn't. 'all' uses whatever each sample measured. Too few shared genes falls back to all.
- * 'protein' takes one reference protein (a housekeeping protein): each sample is shifted so that
- * protein reads the same in every sample — the median of its values across samples. A sample that
- * didn't measure it is left as it is.
+ * 'protein' takes one reference protein (a housekeeping protein, a spike-in): every value is
+ * divided by that protein's value in its own sample, so the protein reads 1 in every sample and
+ * each abundance becomes a fraction of it. Division on the linear values is subtraction on log
+ * ones — Perseus's "Subtract row cluster" on log data, DIA-NN's multiplicative normalisation
+ * factors — so Clean data's log transform then shows the reference at 0 and every value as its
+ * log-ratio to it. A sample that didn't measure the protein can't be divided: the summary counts
+ * (and names) those samples, and Clean data refuses to run with them (ingest.ts).
  *
  * Optionally the spread too, as Perseus's width adjustment (cox-labs.github.io/coxdocs/
  * widthadjustment.html): from each sample's quartiles, values above its median are scaled by
@@ -19,6 +23,7 @@
  * median target — so the values stay abundances, on the scale every later step reads.
  */
 import { sampleKey } from './impute'
+import { sampleLabel } from './sampleLabel'
 import type { StandardRow } from './types'
 
 export type NormalizeReference = 'shared' | 'all' | 'protein'
@@ -56,9 +61,11 @@ export interface NormalizeSummary {
   maxFold: number
   /** with the spread equalised: the range of half-width scale factors applied (1 = unchanged) */
   spread?: { min: number; max: number }
-  /** reference 'protein': the protein, and how many samples didn't measure it (left as they are) */
+  /** reference 'protein': the protein, how many samples didn't measure it (nothing is divided
+   *  then), and the first few of them by name */
   protein?: string
   missingSamples?: number
+  missingLabels?: string[]
 }
 
 /** The p-quantile of sorted values, interpolated between order statistics. */
@@ -89,11 +96,11 @@ export function normalizeSamples(
     r.value != null && Number.isFinite(r.value) && r.value > 0
 
   // Samples, and the samples each gene was measured in.
-  const samples = new Set<string>()
+  const samples = new Map<string, StandardRow>()
   const seenIn = new Map<string, Set<string>>()
   for (const r of rows) {
     const sk = sampleKey(r)
-    samples.add(sk)
+    if (!samples.has(sk)) samples.set(sk, r)
     if (!measured(r)) continue
     let s = seenIn.get(r.uniqID)
     if (!s) seenIn.set(r.uniqID, (s = new Set()))
@@ -124,16 +131,38 @@ export function normalizeSamples(
     const q2 = quantile(l, 0.5)
     quart.set(sk, { q2, up: quantile(l, 0.75) - q2, lo: q2 - quantile(l, 0.25) })
   }
+  const missing = used === 'protein' ? [...samples.keys()].filter((sk) => !quart.has(sk)) : []
   const base = {
     reference,
     used,
     sharedGenes: shared.size,
     samples: quart.size,
     ...(used === 'protein'
-      ? { protein: protein ?? '', missingSamples: samples.size - quart.size }
+      ? {
+          protein: protein ?? '',
+          missingSamples: missing.length,
+          ...(missing.length
+            ? { missingLabels: missing.slice(0, 5).map((sk) => sampleLabel(samples.get(sk)!)) }
+            : null)
+        }
       : null)
   }
-  if (quart.size === 0) return { rows, summary: { ...base, maxFold: 1 } }
+  if (quart.size === 0) return { rows, summary: { ...base, samples: 0, maxFold: 1 } }
+
+  // A reference protein: each value over the protein's value in its sample (its log, the median
+  // should a sample hold it twice). Every sample must have it — one that doesn't can't be put on
+  // the same footing, so nothing is divided and the caller says which are missing.
+  if (used === 'protein') {
+    if (missing.length) return { rows, summary: { ...base, maxFold: 1 } }
+    let maxLog = 0
+    for (const q of quart.values()) maxLog = Math.max(maxLog, Math.abs(q.q2))
+    const out = rows.map((r) => {
+      if (!measured(r)) return r
+      const q = quart.get(sampleKey(r))!
+      return { ...r, value: Math.pow(2, Math.log2(r.value!) - q.q2) }
+    })
+    return { rows: out, summary: { ...base, maxFold: Math.pow(2, maxLog) } }
+  }
 
   // Every sample to the median of the sample medians, so the data keeps its overall level; with
   // `spread`, each half-width to the median of that half-width across samples. A sample whose

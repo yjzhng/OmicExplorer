@@ -22,7 +22,7 @@ import { COLUMN_ALIASES, groupMembers, matchKey, pairsOf, unionRecords } from '.
 import { condPresent, condValue } from './compare'
 import { filterActive, keptBy, narrowedConds, samplePasses } from './subset'
 import { imputeMissing, sampleKey } from './impute'
-import { normalizeSamples } from './normalize'
+import { normalizeSamples, type NormalizeSummary } from './normalize'
 import { correctBatches, resolveBatches, type BatchSpec } from './batch'
 import { sampleIndex } from './sampleIndex'
 import {
@@ -485,6 +485,21 @@ function dropLowCoverage(
   return { rows: rows.filter((r) => !dropped.has(r.uniqID)), droppedGenes: dropped.size }
 }
 
+/** A reference protein a sample didn't measure leaves nothing to divide that sample by: Clean data
+ *  stops and says which (rather than mix divided and undivided samples). Not picked yet, or
+ *  nowhere at all, it's the panel's warning instead and nothing is normalised. */
+function refuseMissingReference(summary: NormalizeSummary): void {
+  const n = summary.missingSamples ?? 0
+  if (summary.used !== 'protein' || !summary.protein || n === 0 || summary.samples === 0) return
+  const names = (summary.missingLabels ?? []).join(', ')
+  throw new Error(
+    `The reference protein ${summary.protein} wasn't measured in ${n} sample${n === 1 ? '' : 's'}` +
+      `${names ? ` (${names}${n > (summary.missingLabels?.length ?? 0) ? ', …' : ''})` : ''}, so ` +
+      `${n === 1 ? 'it' : 'they'} can't be divided by it. Pick a protein measured in every sample, ` +
+      'or leave those samples out with a Subset.'
+  )
+}
+
 export function standardize(input: StandardizeInput): StandardizeResult {
   const parsed = parseCsv(input.dataText)
   const fmt = detectFormat(input.dataFilename, parsed.fields)
@@ -732,6 +747,7 @@ export function standardize(input: StandardizeInput): StandardizeResult {
   let normalization: StandardizeResult['normalization']
   if (input.normalize) {
     const res = normalizeSamples(rows, input.normalize)
+    refuseMissingReference(res.summary)
     rows = res.rows
     normalization = res.summary
   }
@@ -850,6 +866,7 @@ export function recleanStandardized(input: RecleanInput): StandardizeResult {
   let normalization: StandardizeResult['normalization']
   if (input.normalize) {
     const res = normalizeSamples(rows, input.normalize)
+    refuseMissingReference(res.summary)
     rows = res.rows
     normalization = res.summary
   }

@@ -626,9 +626,10 @@ export function CompareDialog({
           : slices.length > 0 && (
               <NodeTable
                 columns={['test', '', 'control']}
-                rows={slices
-                  .slice(0, 50)
-                  .map((s) => [
+                count={slices.length}
+                row={(i) => {
+                  const s = slices[i]
+                  return [
                     <SideCell
                       key="t"
                       rows={s.grp}
@@ -644,8 +645,8 @@ export function CompareDialog({
                       units={units}
                       numeric={numeric}
                     />
-                  ])}
-                more={slices.length - 50}
+                  ]
+                }}
               />
             )}
         {(anova ? (anovaView?.notes ?? []) : (preview?.notes ?? [])).map((n) => (

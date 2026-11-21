@@ -6,7 +6,7 @@ export const geneBarSpec = defineSpec<'geneBar'>({
   kind: 'geneBar',
   label: 'Bar',
   category: 'plotting',
-  input: { accepts: ['abundance'] },
+  input: { accepts: ['quantity'] },
   output: null,
   hasRun: true,
   // Colour left unset: by condition with few samples, by value with many (barColorConds).

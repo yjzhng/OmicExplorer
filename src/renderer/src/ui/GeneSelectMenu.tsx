@@ -1,4 +1,5 @@
 import {
+  useCallback,
   useDeferredValue,
   useEffect,
   useLayoutEffect,
@@ -23,6 +24,7 @@ import { ToggleSwitch } from './ToggleSwitch'
 import { commonGenes, selectedGeneSets, useSelection, type GroupCombine } from './useSelection'
 import type { GeneSet } from '../graph/types'
 import { useUiTheme } from './useUiTheme'
+import { VirtualList } from './VirtualRows'
 
 // A geneset row's edit/delete actions are hover-revealed, which needs a :hover rule (inline styles
 // can't). Injected once. Using display (not opacity) so hidden actions consume NO width — the
@@ -152,6 +154,13 @@ function IconCheck(): ReactNode {
   )
 }
 
+/** A row of the gene tree as shown (see treeRows). */
+type TreeRow =
+  | { t: 'cat'; key: string; c: GeneCategory }
+  | { t: 'group'; key: string; c: GeneCategory; name: string }
+  | { t: 'path'; key: string; c: GeneCategory; pw: GenePathway; indent: number }
+  | { t: 'gene'; key: string; g: Gene; indent: number }
+
 interface Gene {
   id: string
   label: string
@@ -198,10 +207,6 @@ export interface GeneGroupTab {
   }
 }
 
-const CAP = 200
-/** Pathways an open category / group (and gene search results) show at a time; "Show more" adds
- *  another page. */
-const PATH_PAGE = 100
 /** Shortest search text acted on — one character matches nearly everything. */
 const MIN_SEARCH = 2
 /** Destructive-action colour (matches the app's red used elsewhere). */
@@ -235,9 +240,6 @@ export function GeneSelectMenu({ tabs }: { tabs: GeneGroupTab[] }): ReactNode {
   const [tabKey, setTabKey] = useState(tabs[0]?.key)
   const [openCat, setOpenCat] = useState<Set<string>>(() => new Set())
   const [openPath, setOpenPath] = useState<Set<string>>(() => new Set())
-  // How many pathways an open category / group shows (it pages by PATH_PAGE), keyed like openPath.
-  const [pages, setPages] = useState<Record<string, number>>({})
-  const pageOf = (key: string): number => pages[key] ?? PATH_PAGE
   // Geneset editing state: `creating` shows the new-name input, for a set saved from the selection
   // or an empty one; `renameId` marks the row being renamed.
   const [creating, setCreating] = useState<'selection' | 'empty' | null>(null)
@@ -248,6 +250,9 @@ export function GeneSelectMenu({ tabs }: { tabs: GeneGroupTab[] }): ReactNode {
   // The geneset being edited from the gene list: while set, the list's checkboxes show and change
   // THAT set's members instead of the shared selection — how a set is built without selecting first.
   const [editId, setEditId] = useState<string | null>(null)
+  // The edited set's members as they were when editing started — what Cancel puts back (every
+  // tick is written to the set at once, and gene groups aren't in the undo history).
+  const editOrig = useRef<GeneSet['genes']>([])
   // Which genesets are expanded (showing their member genes for un-checking / removal).
   const [openGs, setOpenGs] = useState<Set<string>>(() => new Set())
   // Two-step confirm for Delete: first click arms {id, act}; a second click
@@ -367,8 +372,19 @@ export function GeneSelectMenu({ tabs }: { tabs: GeneGroupTab[] }): ReactNode {
   // it's built, and the selector's label names it with its live count. (Left alone, the selection
   // would sit still while the set changed, and the label with it.)
   function startEdit(id: string, ids: string[]): void {
+    // Read from the store, not this render: a set just created isn't in `geneSets` yet.
+    editOrig.current = useGraph.getState().geneSets.find((g) => g.id === id)?.genes ?? []
     setEditId(id)
     setPins(ids)
+  }
+  // Cancel: end editing and put the set back as it was when editing started.
+  function cancelEdit(): void {
+    if (!editId) return
+    syncTo.current = null
+    const genes = editOrig.current
+    updateGeneSetGenes(editId, genes)
+    setEditId(null)
+    setPins(genes.map((g) => g.id))
   }
   // Same all-or-nothing rule as togglePins: every id already in → take them all out, else add the rest.
   const toggleIds = (ids: string[]): void => {
@@ -686,94 +702,154 @@ export function GeneSelectMenu({ tabs }: { tabs: GeneGroupTab[] }): ReactNode {
     else keys.add(key)
     setSearchShut({ needle, keys })
   }
-  // The paging row under an open category / group with more pathways than it shows.
-  const showMore = (key: string, total: number, indent: number): ReactNode => {
-    const left = total - pageOf(key)
-    if (left <= 0) return null
-    return (
-      <button
-        key={`${key}::more`}
-        onClick={() => setPages((m) => ({ ...m, [key]: pageOf(key) + PATH_PAGE }))}
-        style={{ ...styles.showMore, paddingLeft: indent, color: p.accent }}
-      >
-        Show {Math.min(PATH_PAGE, left).toLocaleString()} more ({left.toLocaleString()} left)
-      </button>
-    )
-  }
-  // One pathway: its header (box, toggle, count) and, open, its genes — at a given indent (deeper
-  // when it sits under a middle-level group).
-  const pathwayRows = (
-    catName: string,
-    pw: GenePathway,
-    headIndent: number,
-    geneIndent: number
-  ): ReactNode => {
-    const key = `${catName}::${pw.name}`
+  // The tree as the rows it shows, in order — categories, groups, pathways and the genes of the
+  // open ones — so it renders as one windowed list (ui/VirtualRows): however many pathways a
+  // category holds (GO puts thousands straight under each aspect) or genes a pathway, every row
+  // is reachable by scrolling and only those in view are drawn.
+  const treeRows = useMemo((): TreeRow[] => {
+    const rows: TreeRow[] = []
+    const genes = (parent: string, gs: Gene[], indent: number): void => {
+      for (const g of gs) rows.push({ t: 'gene', key: `${parent}//${g.id}`, g, indent })
+    }
+    const pathway = (c: GeneCategory, pw: GenePathway, head: number, geneIndent: number): void => {
+      const key = `${c.name}::${pw.name}`
+      rows.push({ t: 'path', key, c, pw, indent: head })
+      if (openPath.has(key)) genes(key, pw.genes, geneIndent)
+    }
+    for (const c of treeCats) {
+      rows.push({ t: 'cat', key: c.name, c })
+      if (!levelOpen(c.name, openCat)) continue
+      if (c.genes) {
+        genes(c.name, c.genes, 26)
+        continue
+      }
+      // Pathways in order, a run sharing a middle-level group gathered under its own header (one
+      // more indent level); ungrouped ones sit directly in the category.
+      for (const run of runsByGroup(c.pathways ?? [])) {
+        if (!run.group) {
+          for (const pw of run.pathways) pathway(c, pw, 18, 40)
+          continue
+        }
+        const gKey = `${c.name}::grp::${run.group}`
+        rows.push({ t: 'group', key: gKey, c, name: run.group })
+        if (levelOpen(gKey, openPath)) for (const pw of run.pathways) pathway(c, pw, 32, 54)
+      }
+    }
+    return rows
+    // levelOpen reads found / shut, listed here
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [treeCats, openCat, openPath, found, shut])
+  const treeKey = useCallback((i: number) => treeRows[i].key, [treeRows])
+  // One pathway's header row (box, toggle, count), at a given indent (deeper when it sits under a
+  // middle-level group); its genes, open, are rows of their own.
+  const pathwayRow = (key: string, pw: GenePathway, headIndent: number): ReactNode => {
     const ids = pw.genes.map((g) => g.id)
     const sel = ids.filter((id) => checkedIds.has(id)).length
     const pwOpen = openPath.has(key)
     return (
-      <div key={key}>
-        <div style={{ ...styles.pathHead, paddingLeft: headIndent }}>
-          {box(
-            sel,
-            ids.length,
-            () => toggleIds(ids),
-            editSet ? 'Add all in pathway to the gene group' : 'Select all in pathway'
-          )}
-          <button
-            onClick={() => toggleIn(openPath, setOpenPath, key)}
-            style={{ ...styles.headBtn, color: p.text, fontWeight: 600 }}
-          >
-            <Chevron deg={pwOpen ? 90 : 0} size={9} color={p.textMuted} />
-            <span style={styles.label}>{pw.name}</span>
-          </button>
-          {chip(sel, ids.length)}
-        </div>
-        {pwOpen && geneRows(pw.genes, geneIndent)}
+      <div key={key} style={{ ...styles.pathHead, paddingLeft: headIndent }}>
+        {box(
+          sel,
+          ids.length,
+          () => toggleIds(ids),
+          editSet ? 'Add all in pathway to the gene group' : 'Select all in pathway'
+        )}
+        <button
+          onClick={() => toggleIn(openPath, setOpenPath, key)}
+          style={{ ...styles.headBtn, color: p.text, fontWeight: 600 }}
+        >
+          <Chevron deg={pwOpen ? 90 : 0} size={9} color={p.textMuted} />
+          <span style={styles.label}>{pw.name}</span>
+        </button>
+        {chip(sel, ids.length)}
       </div>
     )
   }
-  // Gene checkbox rows, shared by flat categories and pathways (differing only in left indent).
-  // Checking a gene pins it into the shared selection.
-  const geneRows = (genes: Gene[], indent: number, cap = CAP): ReactNode => (
-    <>
-      {genes.slice(0, cap).map((g) => {
-        const on = checkedIds.has(g.id)
-        return (
-          <label
-            key={g.id}
-            style={{
-              ...styles.geneRow,
-              paddingLeft: indent,
-              color: p.text,
-              ...(on ? { background: `${p.accent}22` } : {})
-            }}
-            onMouseEnter={() => useSelection.getState().setHover(g.id)}
-            onMouseLeave={() => useSelection.getState().clearHover()}
+  // A gene's checkbox row, shared by flat categories, pathways and the search results (differing
+  // only in left indent). Checking a gene pins it into the shared selection.
+  const geneRow = (g: Gene, indent: number, key: string = g.id): ReactNode => {
+    const on = checkedIds.has(g.id)
+    return (
+      <label
+        key={key}
+        style={{
+          ...styles.geneRow,
+          paddingLeft: indent,
+          color: p.text,
+          ...(on ? { background: `${p.accent}22` } : {})
+        }}
+        onMouseEnter={() => useSelection.getState().setHover(g.id)}
+        onMouseLeave={() => useSelection.getState().clearHover()}
+      >
+        <input
+          type="checkbox"
+          checked={on}
+          onChange={() => toggleIds([g.id])}
+          style={{ accentColor: p.accent }}
+        />
+        <span style={styles.geneName}>{g.label}</span>
+        {g.desc && (
+          <span style={{ ...styles.geneDesc, color: p.textMuted }} title={g.desc}>
+            {g.desc}
+          </span>
+        )}
+      </label>
+    )
+  }
+  // One row of the tree (see treeRows).
+  const treeRow = (r: TreeRow): ReactNode => {
+    if (r.t === 'gene') return geneRow(r.g, r.indent, r.key)
+    if (r.t === 'path') return pathwayRow(r.key, r.pw, r.indent)
+    if (r.t === 'group') {
+      const g = treeTally.get(r.key) ?? { ids: [], sel: 0 }
+      const gOpen = levelOpen(r.key, openPath)
+      return (
+        <div key={r.key} style={styles.pathHead}>
+          {box(
+            g.sel,
+            g.ids.length,
+            () => toggleIds(g.ids),
+            editSet ? 'Add all in group to the gene group' : 'Select all in group'
+          )}
+          <button
+            onClick={() => toggleLevel(r.key, openPath, setOpenPath)}
+            style={{ ...styles.headBtn, color: p.text, fontWeight: 700 }}
           >
-            <input
-              type="checkbox"
-              checked={on}
-              onChange={() => toggleIds([g.id])}
-              style={{ accentColor: p.accent }}
-            />
-            <span style={styles.geneName}>{g.label}</span>
-            {g.desc && (
-              <span style={{ ...styles.geneDesc, color: p.textMuted }} title={g.desc}>
-                {g.desc}
-              </span>
-            )}
-          </label>
-        )
-      })}
-      {genes.length > cap && (
-        <div style={{ ...styles.more, paddingLeft: indent, color: p.textMuted }}>
-          +{(genes.length - cap).toLocaleString()} more — refine search
+            <Chevron deg={gOpen ? 90 : 0} size={9} color={p.textMuted} />
+            <span style={styles.label}>{r.name}</span>
+          </button>
+          {chip(g.sel, g.ids.length)}
         </div>
-      )}
-    </>
-  )
+      )
+    }
+    const c = r.c
+    const cat = treeTally.get(c.name) ?? { ids: [], sel: 0 }
+    const catOpen = levelOpen(c.name, openCat)
+    return (
+      <div key={r.key} style={styles.catHead}>
+        {box(
+          cat.sel,
+          cat.ids.length,
+          () => toggleIds(cat.ids),
+          editSet ? 'Add all in category to the gene group' : 'Select all in category'
+        )}
+        <button
+          onClick={() => toggleLevel(c.name, openCat, setOpenCat)}
+          style={{
+            ...styles.headBtn,
+            color: p.text,
+            fontWeight: 700,
+            textTransform: 'uppercase',
+            letterSpacing: 0.3
+          }}
+        >
+          <Chevron deg={catOpen ? 90 : 0} size={9} color={p.textMuted} />
+          <span style={styles.label}>{c.name}</span>
+        </button>
+        {chip(cat.sel, cat.ids.length)}
+      </div>
+    )
+  }
 
   return (
     <div style={{ flex: '0 0 auto' }}>
@@ -1102,6 +1178,16 @@ export function GeneSelectMenu({ tabs }: { tabs: GeneGroupTab[] }): ReactNode {
                               {/* Editing: the pencil turns into a tick — click to confirm and finish. */}
                               {editId === gs.id ? <IconCheck /> : <IconEditGenes />}
                             </button>
+                            {editId === gs.id && (
+                              <button
+                                onClick={cancelEdit}
+                                title="Cancel: put the gene group back as it was"
+                                aria-label={`Cancel editing ${gs.name}`}
+                                style={{ ...styles.gsAct, color: p.textMuted }}
+                              >
+                                <IconCross />
+                              </button>
+                            )}
                             <button
                               onMouseEnter={(e) => showTip(e, gs.id, 'delete')}
                               onMouseLeave={() => setTip(null)}
@@ -1134,51 +1220,51 @@ export function GeneSelectMenu({ tabs }: { tabs: GeneGroupTab[] }): ReactNode {
                               Empty gene group
                             </div>
                           )}
-                          {gs.genes.slice(0, CAP).map((g) => {
-                            const desc = descById.get(g.id)
-                            return (
-                              <label
-                                key={g.id}
-                                style={{ ...styles.gsMemberRow, color: p.text }}
-                                onMouseEnter={() => useSelection.getState().setHover(g.id)}
-                                onMouseLeave={() => useSelection.getState().clearHover()}
-                              >
-                                <input
-                                  type="checkbox"
-                                  checked
-                                  // Only the set being edited can lose genes here; otherwise the
-                                  // list just shows what's in it.
-                                  disabled={editId !== gs.id}
-                                  title={
-                                    editId === gs.id
-                                      ? 'Remove from the gene group'
-                                      : 'Turn on Edit genes (the pencil action) to remove genes'
-                                  }
-                                  onChange={() => {
-                                    const rest = gs.genes.filter((x) => x.id !== g.id)
-                                    updateGeneSetGenes(gs.id, rest)
-                                    // The set being edited stays the selection (see editSet).
-                                    setPins(rest.map((x) => x.id))
-                                  }}
-                                  style={{ accentColor: p.accent }}
-                                />
-                                <span style={styles.geneName}>{g.label}</span>
-                                {desc && (
-                                  <span
-                                    style={{ ...styles.geneDesc, color: p.textMuted }}
-                                    title={desc}
-                                  >
-                                    {desc}
-                                  </span>
-                                )}
-                              </label>
-                            )
-                          })}
-                          {gs.genes.length > CAP && (
-                            <div style={{ ...styles.more, paddingLeft: 34, color: p.textMuted }}>
-                              +{(gs.genes.length - CAP).toLocaleString()} more
-                            </div>
-                          )}
+                          <VirtualList
+                            count={gs.genes.length}
+                            style={styles.rows}
+                            row={(i) => {
+                              const g = gs.genes[i]
+                              const desc = descById.get(g.id)
+                              return (
+                                <label
+                                  key={g.id}
+                                  style={{ ...styles.gsMemberRow, color: p.text }}
+                                  onMouseEnter={() => useSelection.getState().setHover(g.id)}
+                                  onMouseLeave={() => useSelection.getState().clearHover()}
+                                >
+                                  <input
+                                    type="checkbox"
+                                    checked
+                                    // Only the set being edited can lose genes here; otherwise the
+                                    // list just shows what's in it.
+                                    disabled={editId !== gs.id}
+                                    title={
+                                      editId === gs.id
+                                        ? 'Remove from the gene group'
+                                        : 'Turn on Edit genes (the pencil action) to remove genes'
+                                    }
+                                    onChange={() => {
+                                      const rest = gs.genes.filter((x) => x.id !== g.id)
+                                      updateGeneSetGenes(gs.id, rest)
+                                      // The set being edited stays the selection (see editSet).
+                                      setPins(rest.map((x) => x.id))
+                                    }}
+                                    style={{ accentColor: p.accent }}
+                                  />
+                                  <span style={styles.geneName}>{g.label}</span>
+                                  {desc && (
+                                    <span
+                                      style={{ ...styles.geneDesc, color: p.textMuted }}
+                                      title={desc}
+                                    >
+                                      {desc}
+                                    </span>
+                                  )}
+                                </label>
+                              )
+                            }}
+                          />
                         </div>
                       )}
                     </div>
@@ -1337,9 +1423,11 @@ export function GeneSelectMenu({ tabs }: { tabs: GeneGroupTab[] }): ReactNode {
                 <div style={{ ...styles.resultHead, color: p.textMuted }}>
                   Genes ({found.genes.length.toLocaleString()})
                 </div>
-                {/* Paged like the tree's pathways; the page resets with the search text. */}
-                {geneRows(found.genes.slice(0, pageOf(`search::${needle}`)), 6, Infinity)}
-                {showMore(`search::${needle}`, found.genes.length, 6)}
+                <VirtualList
+                  count={found.genes.length}
+                  style={styles.rows}
+                  row={(i) => geneRow(found.genes[i], 6)}
+                />
               </div>
             )}
             {/* The grouped tree: its own heading, like Custom gene groups above. */}
@@ -1377,93 +1465,13 @@ export function GeneSelectMenu({ tabs }: { tabs: GeneGroupTab[] }): ReactNode {
               </div>
             )}
             <div ref={listRef} style={styles.list}>
-              {treeCats.map((c) => {
-                const flat = !!c.genes
-                const cat = treeTally.get(c.name) ?? { ids: [], sel: 0 }
-                const catOpen = levelOpen(c.name, openCat)
-                return (
-                  <div key={c.name}>
-                    <div style={styles.catHead}>
-                      {box(
-                        cat.sel,
-                        cat.ids.length,
-                        () => toggleIds(cat.ids),
-                        editSet ? 'Add all in category to the gene group' : 'Select all in category'
-                      )}
-                      <button
-                        onClick={() => toggleLevel(c.name, openCat, setOpenCat)}
-                        style={{
-                          ...styles.headBtn,
-                          color: p.text,
-                          fontWeight: 700,
-                          textTransform: 'uppercase',
-                          letterSpacing: 0.3
-                        }}
-                      >
-                        <Chevron deg={catOpen ? 90 : 0} size={9} color={p.textMuted} />
-                        <span style={styles.label}>{c.name}</span>
-                      </button>
-                      {chip(cat.sel, cat.ids.length)}
-                    </div>
-                    {catOpen && flat && geneRows(c.genes ?? [], 26)}
-                    {catOpen &&
-                      !flat &&
-                      // Pathways in order, a run sharing a middle-level group gathered under its own
-                      // header (one more indent level); ungrouped ones sit directly in the category.
-                      // Pathways sitting directly in the category are paged (GO puts thousands
-                      // straight under each aspect): the first page, then "Show more".
-                      (() => {
-                        const limit = pageOf(c.name)
-                        let ungrouped = 0
-                        const rows = runsByGroup(c.pathways ?? []).map((run) => {
-                          if (!run.group) {
-                            const room = Math.max(0, limit - ungrouped)
-                            ungrouped += run.pathways.length
-                            return run.pathways
-                              .slice(0, room)
-                              .map((pw) => pathwayRows(c.name, pw, 18, 40))
-                          }
-                          const gKey = `${c.name}::grp::${run.group}`
-                          const g = treeTally.get(gKey) ?? { ids: [], sel: 0 }
-                          const gOpen = levelOpen(gKey, openPath)
-                          return (
-                            <div key={gKey}>
-                              <div style={styles.pathHead}>
-                                {box(
-                                  g.sel,
-                                  g.ids.length,
-                                  () => toggleIds(g.ids),
-                                  editSet
-                                    ? 'Add all in group to the gene group'
-                                    : 'Select all in group'
-                                )}
-                                <button
-                                  onClick={() => toggleLevel(gKey, openPath, setOpenPath)}
-                                  style={{ ...styles.headBtn, color: p.text, fontWeight: 700 }}
-                                >
-                                  <Chevron deg={gOpen ? 90 : 0} size={9} color={p.textMuted} />
-                                  <span style={styles.label}>{run.group}</span>
-                                </button>
-                                {chip(g.sel, g.ids.length)}
-                              </div>
-                              {gOpen &&
-                                run.pathways
-                                  .slice(0, pageOf(gKey))
-                                  .map((pw) => pathwayRows(c.name, pw, 32, 54))}
-                              {gOpen && showMore(gKey, run.pathways.length, 32)}
-                            </div>
-                          )
-                        })
-                        return (
-                          <>
-                            {rows}
-                            {showMore(c.name, ungrouped, 18)}
-                          </>
-                        )
-                      })()}
-                  </div>
-                )
-              })}
+              {/* The list keeps its own window, so a scroll re-renders the rows, not this menu. */}
+              <VirtualList
+                keyOf={treeKey}
+                count={treeRows.length}
+                style={styles.rows}
+                row={(i) => treeRow(treeRows[i])}
+              />
               {found && treeCats.length === 0 && (
                 <div style={{ ...styles.more, color: p.textMuted, paddingLeft: 6 }}>
                   No matches in this grouping
@@ -1709,6 +1717,8 @@ const styles: Record<string, CSSProperties> = {
     padding: 0
   },
   gsMembers: { display: 'flex', flexDirection: 'column', paddingBottom: 2 },
+  /** a windowed list's rows (ui/VirtualRows), stacked */
+  rows: { display: 'flex', flexDirection: 'column' },
   gsMemberRow: {
     display: 'flex',
     alignItems: 'center',
@@ -1828,15 +1838,7 @@ const styles: Record<string, CSSProperties> = {
     borderBottom: '1px solid',
     paddingBottom: 4
   },
-  showMore: {
-    border: 'none',
-    background: 'transparent',
-    cursor: 'pointer',
-    textAlign: 'left',
-    fontSize: 11,
-    fontWeight: 600,
-    padding: '4px 6px'
-  },
+
   // A search result section's heading (Genes / Pathways & categories).
   resultHead: {
     padding: '6px 6px 2px',

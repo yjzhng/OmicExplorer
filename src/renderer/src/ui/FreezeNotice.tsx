@@ -14,7 +14,10 @@
  * flickering, half-transparent. So once a stall has shown it, it stays fully shown until the
  * thread has been free for HOLD_MS straight, then fades out.
  *
- * One mount, app-wide (App); nothing else needs to report that it's busy.
+ * One mount, app-wide (App); nothing else needs to report that it's busy — except work the app
+ * KNOWS will take a while but that waits on the disk rather than holding the thread (opening a
+ * project): `busy` names it, and the notice shows straight away and takes the window's clicks
+ * until it's done, so a slow open doesn't read as an ignored click and get clicked again.
  */
 import { useEffect, useRef, type CSSProperties, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
@@ -31,7 +34,7 @@ const TICK_MS = 100
 const HOLD_MS = 500
 const FADE_MS = 150
 
-export function FreezeNotice(): ReactNode {
+export function FreezeNotice({ busy }: { busy?: string | null }): ReactNode {
   const mode = useUiTheme((s) => s.mode)
   const ref = useRef<HTMLDivElement>(null)
   useEffect(() => {
@@ -88,13 +91,30 @@ export function FreezeNotice(): ReactNode {
   // everything — the app's menus and dialogs portal there too — with the theme's colours, which
   // live on the app root and so don't reach it otherwise.
   return createPortal(
-    // The whole window, dimmed a little, with the pill on it — one element, so one fade shows both.
-    <div ref={ref} aria-hidden style={{ ...cssVars(PALETTES[mode]), ...styles.veil }}>
-      <div style={styles.notice}>
-        <span className="oe-spin" style={styles.ring} />
-        Working…
+    <>
+      {/* The whole window, dimmed a little, with the pill on it — one element, so one fade shows
+          both. */}
+      <div ref={ref} aria-hidden style={{ ...cssVars(PALETTES[mode]), ...styles.veil }}>
+        <div style={styles.notice}>
+          <span className="oe-spin" style={styles.ring} />
+          Working…
+        </div>
       </div>
-    </div>,
+      {/* Known slow work: shown at once (a quick fade, after a beat so a fast one doesn't flash),
+          and in the way — the clicks wait for it. */}
+      {busy && (
+        <div
+          role="status"
+          className="oe-busy-in"
+          style={{ ...cssVars(PALETTES[mode]), ...styles.veil, ...styles.busyVeil }}
+        >
+          <div style={styles.notice}>
+            <span className="oe-spin" style={styles.ring} />
+            {busy}
+          </div>
+        </div>
+      )}
+    </>,
     document.body
   )
 }
@@ -112,6 +132,7 @@ const styles: Record<string, CSSProperties> = {
     // its own layer, so the fade runs on the compositor
     willChange: 'opacity'
   },
+  busyVeil: { pointerEvents: 'auto', cursor: 'progress', opacity: 1 },
   notice: {
     position: 'absolute',
     top: 58,

@@ -9,8 +9,8 @@ export const subsetSpec = defineSpec<'subset'>({
   category: 'processing',
   // Like Merge, it emits a Clean-data result (see outputKindOf), so it chains off either. Off Load
   // data it filters the raw import instead, before Clean data cleans it (see wiredKindOf).
-  input: { accepts: ['import', 'abundance'] },
-  output: 'abundance',
+  input: { accepts: ['import', 'quantity'] },
+  output: 'quantity',
   hasRun: true,
   defaultConfig: (): SubsetConfig => ({ keep: {} })
 })

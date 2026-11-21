@@ -30,13 +30,13 @@ nodes/
 A kind declares the data it takes (`input.accepts`) and gives (`output`), not which kinds it can
 follow. An edge is allowed when the source's output is among the target's accepted contracts.
 
-| contract     | what it is                                             | produced by                 |
-| ------------ | ------------------------------------------------------ | --------------------------- |
-| `import`     | a configured import, not yet cleaned                   | Load data (a Subset off it) |
-| `abundance`  | samples × features with the samples' conditions        | Clean data, Merge, Subset   |
-| `comparison` | per feature × comparison × context: effect, p, q, call | Compare                     |
-| `curves`     | a comparison table whose rows are fitted curves        | Curve fit                   |
-| `contrast`   | per feature × context: FC1, FC2, the divergence call   | Contrast                    |
+| contract     | what it is                                                                                                                     | produced by                 |
+| ------------ | ------------------------------------------------------------------------------------------------------------------------------ | --------------------------- |
+| `import`     | a configured import, not yet cleaned                                                                                           | Load data (a Subset off it) |
+| `quantity`   | samples × features with the samples' conditions; each value an abundance, or a fraction of a reference protein (`valueUnitOf`) | Clean data, Merge, Subset   |
+| `comparison` | per feature × comparison × context: effect, p, q, call                                                                         | Compare                     |
+| `curves`     | a comparison table whose rows are fitted curves                                                                                | Curve fit                   |
+| `contrast`   | per feature × context: FC1, FC2, the divergence call                                                                           | Contrast                    |
 
 What the data must ALSO carry (a numeric axis, an ANOVA's terms, annotations, a species) is the
 kind's `requirement`: it returns null when met, else the reason — shown on the canvas status dot,
@@ -79,6 +79,14 @@ window's Legend and Axes sections (`plot.legend` / `plot.axes`), export — foll
   close 120, page 320 ms. Write `motion('transform', 'base')`, never a number; one rule in app.css
   makes every animation instant under the system's reduced-motion setting. ui/motion.test.ts fails
   on a hard-coded duration.
+- **Long content.** Any list, table or tree whose length grows with the data (genes, matrix rows,
+  a column's values, pathways, group members, comparisons, files…) renders through ui/VirtualRows:
+  `VirtualList` for a flat list, `VirtualTbody` for a table body (with `ProbeRow` + `longestText`
+  to keep auto-sized columns steady), `useVirtualRows` to drive one yourself (a tree flattened to
+  its shown rows). Only the rows in view are drawn; every row is reachable by scrolling, so no
+  caps, no "+N more — refine search", no "Show more" — a source that pages in loads its next chunk
+  from `onEnd`. Lists of 100 or fewer render whole. Keep rows one line (ellipsis, not wrap); they
+  are measured as drawn. The architecture test fails on a capped list.
 
 ## Rules
 

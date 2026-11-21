@@ -23,6 +23,7 @@ import { useSelection } from '../../ui/useSelection'
 import { ROLE_DEFAULTS, paletteScale, type PaletteRef } from '../../ui/palettes'
 import { axisBase, CATEGORICAL, PALETTES, PLOT_TEXT, plotBase, UI } from '../../ui/theme'
 import { useUiTheme } from '../../ui/useUiTheme'
+import { VirtualList } from '../../ui/VirtualRows'
 import { AUTO } from '../../ui/ColorPicker'
 import { STRING_OUTLINE, type StringConfig } from '../../graph/types'
 
@@ -1045,32 +1046,37 @@ function MoreClusters({
         flexDirection: 'column'
       }}
     >
-      {items.map((c) => {
-        const on = active(c.ci)
-        return (
-          <button
-            key={c.ci}
-            onClick={() => onToggle(c.ci)}
-            onMouseEnter={() => setUnder(c.ci)}
-            onMouseLeave={() => setUnder((u) => (u === c.ci ? -1 : u))}
-            style={{
-              all: 'unset',
-              cursor: 'pointer',
-              padding: '3px 8px',
-              borderRadius: 4,
-              fontSize: LEG_FS,
-              fontFamily: 'system-ui, sans-serif',
-              fontWeight: on ? 700 : 400,
-              // as the chips: full colour when active (or nothing is), faded when another is
-              color: anyActive && !on ? hexA(c.color, 0.3) : c.color,
-              background: under === c.ci ? UI.panelRaised : 'transparent',
-              lineHeight: 1.35
-            }}
-          >
-            ■ {c.label}
-          </button>
-        )
-      })}
+      <VirtualList
+        count={items.length}
+        style={{ display: 'flex', flexDirection: 'column' }}
+        row={(i) => {
+          const c = items[i]
+          const on = active(c.ci)
+          return (
+            <button
+              key={c.ci}
+              onClick={() => onToggle(c.ci)}
+              onMouseEnter={() => setUnder(c.ci)}
+              onMouseLeave={() => setUnder((u) => (u === c.ci ? -1 : u))}
+              style={{
+                all: 'unset',
+                cursor: 'pointer',
+                padding: '3px 8px',
+                borderRadius: 4,
+                fontSize: LEG_FS,
+                fontFamily: 'system-ui, sans-serif',
+                fontWeight: on ? 700 : 400,
+                // as the chips: full colour when active (or nothing is), faded when another is
+                color: anyActive && !on ? hexA(c.color, 0.3) : c.color,
+                background: under === c.ci ? UI.panelRaised : 'transparent',
+                lineHeight: 1.35
+              }}
+            >
+              ■ {c.label}
+            </button>
+          )
+        }}
+      />
     </div>,
     document.body
   )

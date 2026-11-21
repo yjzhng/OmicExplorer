@@ -16,7 +16,7 @@ import {
   type SampleOrdering
 } from './plotData'
 import { sampleIndex } from './sampleIndex'
-import { abundanceLabel, fromLinear, type ValueScale } from './scale'
+import { quantityLabel, fromLinear, type ValueScale } from './scale'
 import {
   condLabel,
   customCond,
@@ -206,7 +206,7 @@ function refQc(
       meta: metaOf(label)
     }))
     sortGroups(groups, true)
-    return { groups, yLabel: abundanceLabel(sc), metric, summary: 'median' }
+    return { groups, yLabel: quantityLabel(sc, 'abundance'), metric, summary: 'median' }
   }
   const byGroup = new Map<string, Map<string, number[]>>()
   for (const r of std.rows)

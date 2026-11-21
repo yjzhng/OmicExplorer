@@ -6,7 +6,7 @@ export const qcSpec = defineSpec<'qc'>({
   kind: 'qc',
   label: 'QC',
   category: 'plotting',
-  input: { accepts: ['abundance'] },
+  input: { accepts: ['quantity'] },
   output: null,
   hasRun: true,
   // Colour left unset: by condition with few samples, one colour with many (qcColorBy).

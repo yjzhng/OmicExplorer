@@ -1,5 +1,6 @@
 import {
   Fragment,
+  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -10,13 +11,16 @@ import {
 import { createPortal } from 'react-dom'
 
 import { NumberInput } from './NumberInput'
+import { ValueChecklist } from './ValueMultiSelect'
 import { IconSearch } from './GeneSelectMenu'
 import { truncateLabel } from './plotAxes'
 import { GENE_LIST_STYLES } from './geneListStyles'
 import { cssVars, PALETTES, UI } from './theme'
 import { useSelection } from './useSelection'
 import { useUiTheme } from './useUiTheme'
-import { rowWindow } from './rowWindow'
+import { TABLE_SCROLL, useStickyGutter } from './useStickyGutter'
+import { longestText, useVirtualRows } from './useVirtualRows'
+import { ProbeRow, VirtualTbody } from './VirtualRows'
 
 export interface Column {
   key: string
@@ -62,7 +66,6 @@ interface DataTableProps {
   columns: Column[]
   /** the display rows, or a source of them (TableSource) */
   rows: Array<Record<string, unknown>> | TableSource
-  maxRows?: number
   caption?: string
   /** row field holding the linked-selection feature id; '' opts the table out */
   idKey?: string
@@ -93,14 +96,6 @@ const PIN_BG = 'rgba(128,128,128,0.18)'
 const HOVER_BG = 'rgba(128,128,128,0.32)'
 const PIN_BAR = `inset 3px 0 0 ${UI.accent}`
 
-// Row virtualisation: only the rows in (and around) the viewport are in the DOM, spacer rows
-// standing in for the rest — a wide table's 500 rows were ~37k cells of style + layout each time
-// its tab was shown. Rows are one line (cells don't wrap), so a row height measured off the
-// rendered rows places the rest; until measured, a guess. WINDOW_PAD = the margin (and the block
-// the window moves in, so a scroll re-renders every so many rows, not every row).
-const ROW_H_GUESS = 24
-const WINDOW_PAD = 10
-
 /** A cell's text, and that cut to its column's display cap (maxChars). */
 function cellText(
   c: Column,
@@ -127,13 +122,7 @@ function inferType(key: string, src: TableSource): ColType {
 }
 
 /** Scrollable table with global search, per-column sort + filter, and a reset. */
-export function DataTableView({
-  columns,
-  rows,
-  maxRows = 500,
-  idKey = 'uniqID',
-  maxChars
-}: DataTableProps) {
+export function DataTableView({ columns, rows, idKey = 'uniqID', maxChars }: DataTableProps) {
   const [query, setQuery] = useState('')
   const [sort, setSort] = useState<SortState | null>(null)
   const [filters, setFilters] = useState<Record<string, Filter>>({})
@@ -156,6 +145,7 @@ export function DataTableView({
   // True while the pointer is over this table — suppresses the follow-scroll so the
   // rows don't shift under the cursor we're hovering with.
   const localHover = useRef(false)
+  useStickyGutter(scrollRef)
   const src = useMemo(() => (Array.isArray(rows) ? arraySource(rows) : rows), [rows])
 
   // A column's type is read only by a sort and by its menu — so it's inferred on first ask and
@@ -249,31 +239,24 @@ export function DataTableView({
     [all, passes, menu]
   )
 
-  // The rows on screen: the only ones built from a source — each keyed by its index in the
-  // source, which is unique (a long table has many rows per gene) and stable across filtering.
-  const shownAt = useMemo(() => processed.subarray(0, maxRows), [processed, maxRows])
-  const shown = useMemo(() => Array.from(shownAt, (i) => src.row(i)), [src, shownAt])
-  // Each column's longest shown text (over ALL shown rows, rendered or not), laid out in a hidden
-  // zero-height row so the auto layout sizes the columns as it would with every row in the DOM —
+  // Every row that passes is reachable by scrolling; only those in view are built (from the
+  // source, each keyed by its index there — unique, as a long table has many rows per gene, and
+  // stable across filtering) and drawn (ui/VirtualRows).
+  const scroller = useCallback(() => scrollRef.current, [])
+  const vr = useVirtualRows<HTMLTableSectionElement>(processed.length, { scroller })
+  // Each column's longest text (over the rows that pass — a sample of a long table), laid out in a
+  // hidden probe row so the auto layout sizes the columns as it would with every row in the DOM,
   // and they don't jump as rows with longer values scroll into the window.
   const widest = useMemo(
     () =>
-      columns.map((c) => {
-        let best = ''
-        for (const r of shown) {
-          const { cut } = cellText(c, r[c.key], maxChars)
-          if (cut.length > best.length) best = cut
-        }
-        return best
-      }),
-    [columns, shown, maxChars]
+      columns.map((c) =>
+        longestText(
+          processed.length,
+          (k) => cellText(c, src.cell(c.key, processed[k]), maxChars).cut
+        )
+      ),
+    [columns, processed, src, maxChars]
   )
-  // The rendered slice of `shown` [start, end), and the row height the spacers are sized by. Set
-  // by measureEdges (on scroll and resize), only when one changes.
-  const [win, setWin] = useState({ start: 0, end: 5 * WINDOW_PAD, rowH: ROW_H_GUESS })
-  const bodyRef = useRef<HTMLTableSectionElement>(null)
-  const start = Math.min(win.start, shown.length)
-  const end = Math.min(win.end, shown.length)
   const active =
     query.trim() !== '' || sort != null || Object.keys(filters).length > 0 || selectedOnly
 
@@ -331,14 +314,9 @@ export function DataTableView({
         } else if (sc && idKey && sc.offsetParent !== null) {
           // Its row is outside the rendered window: scroll to where it sits by index — the scroll
           // renders it, and this painter (re-run after every render) then lights it.
-          const k = shownAt.findIndex((i) => strKey(src.cell(idKey, i)) === hoverId)
-          if (k >= 0) {
-            const headH = sc.querySelector('thead')?.getBoundingClientRect().height ?? 0
-            const top = headH + k * win.rowH
-            if (top < sc.scrollTop + headH) sc.scrollTop = top - headH
-            else if (top + win.rowH > sc.scrollTop + sc.clientHeight)
-              sc.scrollTop = top + win.rowH - sc.clientHeight
-          }
+          const k = processed.findIndex((i) => strKey(src.cell(idKey, i)) === hoverId)
+          if (k >= 0)
+            vr.scrollToIndex(k, sc.querySelector('thead')?.getBoundingClientRect().height ?? 0)
         }
       }
       lastHover = hoverId
@@ -373,21 +351,6 @@ export function DataTableView({
         ? e
         : { top, bottom, head, barX, barY }
     )
-    // The rendered window for this scroll position, by the rendered rows' average height. Not
-    // clamped to the row count (the render does that), so a filter growing the rows back doesn't
-    // wait on a re-measure to fill the view.
-    const rs = bodyRef.current?.querySelectorAll<HTMLElement>(':scope > tr[data-r]')
-    const first = rs?.[0]
-    const last = rs?.[rs.length - 1]
-    const avg =
-      first && last ? (last.offsetTop + last.offsetHeight - first.offsetTop) / rs.length : 0
-    const headH = sc.querySelector('thead')?.offsetHeight ?? 0
-    const { scrollTop, clientHeight } = sc
-    setWin((w) => {
-      const rowH = avg > 0 && Math.abs(avg - w.rowH) > 0.5 ? avg : w.rowH
-      const { start, end } = rowWindow(scrollTop, clientHeight, headH, rowH, Infinity, WINDOW_PAD)
-      return w.start === start && w.end === end && w.rowH === rowH ? w : { start, end, rowH }
-    })
   }
   // Re-measure when the box or its content resizes (a tile resize, a filter shrinking the rows).
   // No measure of its own on mount: the observer reports each box once as it starts watching,
@@ -467,7 +430,9 @@ export function DataTableView({
       </div>
       {/* The scroller sits in a positioned box so the edge fades can overlay it. */}
       <div style={styles.scrollBox}>
+        {/* The scrollbars span only what scrolls — below the sticky header (ui/useStickyGutter). */}
         <div
+          className={TABLE_SCROLL}
           style={styles.scroll}
           ref={scrollRef}
           onScroll={measureEdges}
@@ -525,16 +490,18 @@ export function DataTableView({
                 })}
               </tr>
             </thead>
-            <tbody ref={bodyRef}>
-              {start > 0 && <Spacer height={start * win.rowH} span={columns.length} />}
-              {shown.slice(start, end).map((r, j) => {
-                const i = start + j
+            <VirtualTbody
+              vr={vr}
+              count={processed.length}
+              span={columns.length}
+              row={(i) => {
+                const at = processed[i]
+                const r = src.row(at)
                 const id = idKey ? strKey(r[idKey]) : ''
                 const alt = i % 2 === 1
                 return (
                   <tr
-                    key={`${id}\u0000${shownAt[i]}`}
-                    data-r
+                    key={`${id}\u0000${at}`}
                     ref={(el) => {
                       // React 19 ref callbacks may return a cleanup; this one tracks the element
                       // explicitly so the map never holds a stale row.
@@ -553,7 +520,7 @@ export function DataTableView({
                   >
                     {columns.map((c) => {
                       // Cut to the column's display cap (maxChars) — the full text on hover.
-                      const { text, cut: shown } = cellText(c, r[c.key], maxChars)
+                      const { text, cut } = cellText(c, r[c.key], maxChars)
                       return (
                         <td
                           key={c.key}
@@ -562,27 +529,18 @@ export function DataTableView({
                             textAlign: c.align ?? 'left',
                             ...c.cellStyle?.(r[c.key])
                           }}
-                          title={shown !== text ? text : undefined}
+                          title={cut !== text ? text : undefined}
                         >
-                          {shown}
+                          {cut}
                         </td>
                       )
                     })}
                   </tr>
                 )
-              })}
-              {end < shown.length && (
-                <Spacer height={(shown.length - end) * win.rowH} span={columns.length} />
-              )}
-              {/* the column-width probe (see `widest`): laid out, never seen, copied or selected */}
-              <tr aria-hidden style={styles.probe}>
-                {columns.map((c, k) => (
-                  <td key={c.key} style={{ ...styles.td, ...styles.probeTd }}>
-                    {widest[k]}
-                  </td>
-                ))}
-              </tr>
-            </tbody>
+              }}
+              // the column-width probe (see `widest`)
+              tail={<ProbeRow texts={widest} cellStyle={styles.td} />}
+            />
           </table>
         </div>
         {/* Faint fades where rows run on out of view: under the sticky header once scrolled down,
@@ -601,7 +559,7 @@ export function DataTableView({
         )}
       </div>
       <div style={styles.footer}>
-        showing {shown.length.toLocaleString()} of {processed.length.toLocaleString()} rows
+        {processed.length.toLocaleString()} rows
         {processed.length !== src.n ? ` (filtered from ${src.n.toLocaleString()})` : ''}
       </div>
 
@@ -631,15 +589,6 @@ export function DataTableView({
           document.body
         )}
     </div>
-  )
-}
-
-/** A blank row standing in for the rows above or below the rendered window. */
-function Spacer({ height, span }: { height: number; span: number }) {
-  return (
-    <tr aria-hidden style={{ height }}>
-      <td colSpan={span} style={styles.spacerTd} />
-    </tr>
   )
 }
 
@@ -673,7 +622,6 @@ function ColumnMenu({
   onClose: () => void
 }) {
   const ref = useRef<HTMLDivElement>(null)
-  const [find, setFind] = useState('')
   const mode = useUiTheme((s) => s.mode)
 
   useEffect(() => {
@@ -717,10 +665,6 @@ function ColumnMenu({
   }, [src, rows, column.key, type])
 
   const selected = filter?.type === 'categorical' ? filter.selected : []
-  const toggle = (v: string): void => {
-    const next = selected.includes(v) ? selected.filter((x) => x !== v) : [...selected, v]
-    onFilter(next.length ? { type: 'categorical', selected: next } : null)
-  }
 
   const range = filter?.type === 'numeric' ? filter : { min: null, max: null }
   const setRange = (min: number | null, max: number | null): void =>
@@ -728,10 +672,6 @@ function ColumnMenu({
 
   const MENU_W = 240
   const left = Math.max(6, Math.min(rect.left, window.innerWidth - MENU_W - 6))
-  const filtered = find
-    ? distinct.filter((v) => v.toLowerCase().includes(find.toLowerCase()))
-    : distinct
-  const CAP = 300
 
   return (
     <div
@@ -788,48 +728,17 @@ function ColumnMenu({
           )}
         </div>
       ) : (
-        <div style={styles.menuBody}>
-          <input
-            style={styles.menuSearch}
-            placeholder="Filter values… (Enter applies)"
-            value={find}
-            autoFocus
-            onChange={(e) => setFind(e.target.value)}
-            // Enter confirms: keep exactly the values matching the typed text ("Only shown").
-            onKeyDown={(e) => {
-              if (e.key !== 'Enter') return
-              e.preventDefault()
-              onFilter(filtered.length ? { type: 'categorical', selected: [...filtered] } : null)
-            }}
+        // The app's searchable multi-select list (ui/ValueMultiSelect): empty = unfiltered.
+        <div style={styles.menuChecklist}>
+          <ValueChecklist
+            values={distinct}
+            selected={selected}
+            noun="value"
+            labelOf={(v) => (v === '' ? '(blank)' : v)}
+            onChange={(next) =>
+              onFilter(next.length ? { type: 'categorical', selected: next } : null)
+            }
           />
-          <div style={styles.menuActions}>
-            <button className="oe-dt-link" style={styles.linkBtn} onClick={() => onFilter(null)}>
-              All
-            </button>
-            <button
-              className="oe-dt-link"
-              style={styles.linkBtn}
-              onClick={() => onFilter({ type: 'categorical', selected: [...filtered] })}
-            >
-              Only shown
-            </button>
-          </div>
-          <div style={styles.options}>
-            {filtered.slice(0, CAP).map((v) => (
-              <label key={v} className="oe-dt-opt" style={styles.optRow}>
-                <input
-                  type="checkbox"
-                  checked={selected.length === 0 || selected.includes(v)}
-                  onChange={() => toggle(v)}
-                />
-                <span style={styles.optLabel}>{v === '' ? '(blank)' : v}</span>
-              </label>
-            ))}
-            {filtered.length > CAP && (
-              <div style={styles.more}>+{filtered.length - CAP} more — refine search</div>
-            )}
-            {filtered.length === 0 && <div style={styles.more}>no matching values</div>}
-          </div>
         </div>
       )}
     </div>
@@ -963,10 +872,7 @@ const styles: Record<string, CSSProperties> = {
     borderBottom: `1px solid ${UI.border}`,
     whiteSpace: 'nowrap'
   },
-  spacerTd: { padding: 0, border: 'none' },
   // zero height: no vertical padding, border or line box; still as wide as its text
-  probe: { visibility: 'hidden' },
-  probeTd: { paddingTop: 0, paddingBottom: 0, borderBottom: 'none', lineHeight: 0, height: 0 },
   footer: {
     padding: '6px 10px',
     color: UI.textMuted,
@@ -1003,6 +909,8 @@ const styles: Record<string, CSSProperties> = {
   sortActive: { background: UI.accent, color: UI.accentText, border: `1px solid ${UI.accent}` },
   menuDivider: { height: 1, background: UI.border, margin: '2px 0' },
   menuBody: { display: 'flex', flexDirection: 'column', gap: 6 },
+  // the value checklist: its list scrolls within the menu
+  menuChecklist: { display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 340, minHeight: 0 },
   menuLabel: {
     fontSize: 10,
     textTransform: 'uppercase',
@@ -1022,35 +930,6 @@ const styles: Record<string, CSSProperties> = {
     fontSize: 12,
     boxSizing: 'border-box'
   },
-  menuSearch: {
-    background: UI.panelAlt,
-    color: UI.text,
-    border: `1px solid ${UI.border}`,
-    borderRadius: 4,
-    padding: '3px 6px',
-    fontSize: 12
-  },
-  menuActions: { display: 'flex', gap: 10 },
-  linkBtn: {
-    background: 'transparent',
-    color: UI.accent,
-    border: 'none',
-    padding: 0,
-    fontSize: 11,
-    fontWeight: 600,
-    cursor: 'pointer'
-  },
-  options: { maxHeight: 220, overflow: 'auto', display: 'flex', flexDirection: 'column', gap: 2 },
-  optRow: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: 6,
-    fontSize: 12,
-    color: UI.text,
-    cursor: 'pointer'
-  },
-  optLabel: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
-  more: { fontSize: 11, color: UI.textMuted, padding: '2px 0' },
   clearBtn: {
     background: 'transparent',
     color: UI.accent,

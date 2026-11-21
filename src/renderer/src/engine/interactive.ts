@@ -280,7 +280,7 @@ export const filterOn = (spec: FilterSpec | undefined): boolean => spec?.active 
 export interface ColumnFacet {
   /** most values parse as finite numbers → offer a min/max range instead of value chips */
   numeric: boolean
-  /** distinct non-empty values (sorted; capped at `cap`) */
+  /** distinct non-empty values (sorted; every one, unless capped by `cap`) */
   values: string[]
   /** true when the column has more distinct values than the cap (list is partial) */
   truncated: boolean
@@ -308,7 +308,7 @@ export function stepBy(value: number, step: number, dir: number): number {
 }
 
 /** Summarize a column's values so the Filtering step can render the right control. */
-export function columnFacet(rows: Row[], col: string, cap = 200): ColumnFacet {
+export function columnFacet(rows: Row[], col: string, cap = Infinity): ColumnFacet {
   const numeric = isNumericColumn(rows, col)
   const seen = new Set<string>()
   let truncated = false

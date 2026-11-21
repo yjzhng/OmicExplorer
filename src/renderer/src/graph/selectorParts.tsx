@@ -1,9 +1,19 @@
 /** Pieces shared by the selector window's two contrast modes (and Compare): the context-group
  *  preview table, and the condition-row / switch / value-chip styles so intra- and inter-dataset
  *  read as one system (green = paired, dotted = partly, grey = nothing to pair). */
-import { useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
+import {
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type ReactNode
+} from 'react'
 
 import { UI } from '../ui/theme'
+import { TABLE_SCROLL, useStickyGutter } from '../ui/useStickyGutter'
+import { longestText } from '../ui/useVirtualRows'
+import { ProbeRow, VirtualTbody } from '../ui/VirtualRows'
 
 /** A trailing parenthetical — "1204 (1310 vs 1288)" — is supporting detail: rendered faint, like a
  *  separator, so the headline number reads first. */
@@ -22,7 +32,8 @@ function renderCell(cell: string): ReactNode {
 const isAtEnd = (el: HTMLElement): boolean => el.scrollHeight - el.scrollTop - el.clientHeight < 2
 
 /** Scrollable preview table (one column per field, one row per context group) with a bottom
- *  fade that shows while there are more rows below, and disappears once scrolled to the end. */
+ *  fade that shows while there are more rows below, and disappears once scrolled to the end.
+ *  Windowed (ui/VirtualRows): however many context groups, all scroll, only those in view draw. */
 export function PreviewTable({
   columns,
   rows
@@ -31,15 +42,22 @@ export function PreviewTable({
   rows: string[][]
 }): ReactNode {
   const ref = useRef<HTMLDivElement>(null)
+  useStickyGutter(ref)
   const [atEnd, setAtEnd] = useState(true)
   useLayoutEffect(() => {
     const el = ref.current
     if (el) setAtEnd(isAtEnd(el))
   }, [columns, rows])
+  // Each column's widest text, so the columns fit every row, not just those drawn.
+  const widest = useMemo(
+    () => columns.map((_, j) => longestText(rows.length, (i) => rows[i][j] ?? '')),
+    [columns, rows]
+  )
   return (
     <div style={selectorStyles.tableOuter}>
       <div
         ref={ref}
+        className={TABLE_SCROLL}
         style={selectorStyles.tableWrap}
         onScroll={(e) => setAtEnd(isAtEnd(e.currentTarget))}
       >
@@ -53,10 +71,13 @@ export function PreviewTable({
               ))}
             </tr>
           </thead>
-          <tbody>
-            {rows.map((r, i) => (
+          <VirtualTbody
+            count={rows.length}
+            span={columns.length}
+            tail={<ProbeRow texts={widest} cellStyle={selectorStyles.td} />}
+            row={(i) => (
               <tr key={i}>
-                {r.map((cell, j) => (
+                {rows[i].map((cell, j) => (
                   <td
                     key={j}
                     // A column with no header is a UI-only separator (e.g. "vs"): muted, centred.
@@ -69,8 +90,8 @@ export function PreviewTable({
                   </td>
                 ))}
               </tr>
-            ))}
-          </tbody>
+            )}
+          />
         </table>
       </div>
       {!atEnd && <div style={selectorStyles.fade} />}

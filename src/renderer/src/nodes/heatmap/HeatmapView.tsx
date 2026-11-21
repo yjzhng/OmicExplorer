@@ -232,7 +232,7 @@ export function HeatmapView({
   numeric: NumericConds
   title?: string
   orient?: 'landscape' | 'portrait'
-  /** the colour bar's title — the value scale, e.g. "log₂ abundance" (see abundanceLabel) */
+  /** the colour bar's title — the value scale, e.g. "log₂ abundance" (see quantityLabel) */
   valueLabel?: string
   /** draw the condition tracks along the samples (off: the heatmap takes their room) */
   condBar?: boolean

@@ -5,7 +5,7 @@
  * value chips, the preview table, and how a group of samples reads ("cmpd A · 1 · 8h", with what it
  * pools as a subtitle).
  */
-import { type CSSProperties, type ReactNode } from 'react'
+import { useRef, type CSSProperties, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 
 import {
@@ -19,6 +19,8 @@ import { Chevron } from '../ui/Chevron'
 import { Section as UiSection } from '../ui/Section'
 import { cssVars, EASE, motion, MOTION_MS, PALETTES, UI } from '../ui/theme'
 import { useUiTheme } from '../ui/useUiTheme'
+import { TABLE_SCROLL, useStickyGutter } from '../ui/useStickyGutter'
+import { VirtualTbody } from '../ui/VirtualRows'
 import { valuesOf } from './compareModel'
 import { DOCKED_CARD, DOCKED_WRAP, useDialogDock } from './dialogDock'
 import { AU, unitOf, type CondUnits } from './types'
@@ -335,19 +337,23 @@ export function SideCell({
   )
 }
 
-/** The preview table (cells may be nodes): test | vs | control, one row per comparison. */
+/** The preview table (cells may be nodes): test | vs | control, one row per comparison — `row(i)`
+ *  gives row i's cells, built only for the rows drawn (ui/VirtualRows: every comparison scrolls,
+ *  only those in view render). */
 export function NodeTable({
   columns,
-  rows,
-  more
+  count,
+  row
 }: {
   columns: string[]
-  rows: ReactNode[][]
-  more?: number
+  count: number
+  row: (i: number) => ReactNode[]
 }): ReactNode {
+  const ref = useRef<HTMLDivElement>(null)
+  useStickyGutter(ref)
   return (
     <div style={S.tableOuter}>
-      <div style={S.tableWrap}>
+      <div ref={ref} className={TABLE_SCROLL} style={S.tableWrap}>
         <table style={S.table}>
           <thead>
             <tr>
@@ -358,10 +364,12 @@ export function NodeTable({
               ))}
             </tr>
           </thead>
-          <tbody>
-            {rows.map((r, i) => (
+          <VirtualTbody
+            count={count}
+            span={columns.length}
+            row={(i) => (
               <tr key={i}>
-                {r.map((cell, j) => (
+                {row(i).map((cell, j) => (
                   <td
                     key={j}
                     style={{ ...S.td, ...styles.tdNode, ...(columns[j] === '' ? S.tdSep : null) }}
@@ -370,15 +378,8 @@ export function NodeTable({
                   </td>
                 ))}
               </tr>
-            ))}
-            {!!more && more > 0 && (
-              <tr>
-                <td colSpan={columns.length} style={{ ...S.td, ...S.tdSep, textAlign: 'left' }}>
-                  + {more} more
-                </td>
-              </tr>
             )}
-          </tbody>
+          />
         </table>
       </div>
     </div>

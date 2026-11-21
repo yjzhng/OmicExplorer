@@ -21,6 +21,7 @@ import {
   type ProjectFile
 } from './project'
 import type { NodeResult } from './types'
+import { UPGRADES, type RawProject } from './upgrades'
 import { emptyWorkflowDoc } from './workflowDoc'
 
 function sampleResults(): Record<string, NodeResult> {
@@ -386,18 +387,47 @@ describe('project format version', () => {
       savedBy,
       createdWith: null
     })
-    expect(projectStanding(h(MIGRATED_THROUGH), '0.3.8')).toBe('current')
+    expect(projectStanding(h(MIGRATED_THROUGH), MIGRATED_THROUGH)).toBe('current')
     // Saved before the last upgrade: older only when that upgrade changes it (upgradeChanges);
     // not known yet counts as unchanged, so no amber flash while it's checked.
-    expect(projectStanding(h('0.3.5'), '0.3.8', true)).toBe('older')
-    expect(projectStanding(h('0.3.5'), '0.3.8', false)).toBe('current')
-    expect(projectStanding(h('0.3.5'), '0.3.8')).toBe('current')
-    expect(projectStanding(h(null), '0.3.8', true)).toBe('older')
+    expect(projectStanding(h('0.3.5'), MIGRATED_THROUGH, true)).toBe('older')
+    expect(projectStanding(h('0.3.5'), MIGRATED_THROUGH, false)).toBe('current')
+    expect(projectStanding(h('0.3.5'), MIGRATED_THROUGH)).toBe('current')
+    expect(projectStanding(h(null), MIGRATED_THROUGH, true)).toBe('older')
     // a file saved since the last upgrade isn't flagged, whatever a check said
-    expect(projectStanding(h(MIGRATED_THROUGH), '0.3.8', true)).toBe('current')
-    expect(projectStanding(h(MIGRATED_THROUGH, PROJECT_VERSION - 1), '0.3.8')).toBe('older')
-    expect(projectStanding(h('0.9.0'), '0.3.8')).toBe('newer')
-    expect(projectStanding(h(MIGRATED_THROUGH, PROJECT_VERSION + 1), '0.3.8')).toBe('newer')
+    expect(projectStanding(h(MIGRATED_THROUGH), MIGRATED_THROUGH, true)).toBe('current')
+    expect(projectStanding(h(MIGRATED_THROUGH, PROJECT_VERSION - 1), MIGRATED_THROUGH)).toBe(
+      'older'
+    )
+    expect(projectStanding(h('0.9.0'), MIGRATED_THROUGH)).toBe('newer')
+    expect(projectStanding(h(MIGRATED_THROUGH, PROJECT_VERSION + 1), MIGRATED_THROUGH)).toBe(
+      'newer'
+    )
+  })
+
+  it("reads a Contrast of Clean data saved as 'abundance' as a quantity contrast", () => {
+    const raw = {
+      folders: [
+        {
+          workflows: [
+            {
+              results: {
+                results: {
+                  'contrast-1': { kind: 'contrast', ctr: { valueKind: 'abundance' } },
+                  'contrast-2': { kind: 'contrast', ctr: { valueKind: 'fc' } }
+                }
+              }
+            }
+          ]
+        }
+      ]
+    }
+    const up = UPGRADES.find((u) => u.since === '0.4.3')!
+    up.run(raw as RawProject, { nextFolderId: () => 'fd-x' })
+    up.run(raw as RawProject, { nextFolderId: () => 'fd-x' }) // idempotent
+    const res = raw.folders[0].workflows[0].results.results
+    expect(res['contrast-1'].ctr.valueKind).toBe('quantity')
+    expect(res['contrast-2'].ctr.valueKind).toBe('fc')
   })
 
   it('tells a file the upgrades change from one they leave as it was', () => {

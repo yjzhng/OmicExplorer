@@ -34,7 +34,7 @@ export function heatmapView(v: ViewContext): ReactNode {
     patchConfig,
     focus,
     paletteOf,
-    abScale
+    quantityScale
   } = v
   const cfg = cfgSource as HeatmapConfig
   // Compare upstream → log2FC heatmap (every comparison/context is a column, no faceting).
@@ -140,8 +140,8 @@ export function heatmapView(v: ViewContext): ReactNode {
   // Standardize upstream → intensity heatmap (genes × samples, full proteome — no gene cap).
   if (upstream?.kind !== 'standardize')
     return <Empty text="Connect a Clean data or Compare tile and run it." />
-  // On the scale every abundance plot shows Clean data on (see abScale).
-  const scale = abScale
+  // On the scale every abundance plot shows Clean data on (see quantityScale).
+  const scale = quantityScale
   const condBar = heatmapCondBar(cfg, primaryColorLevels(upstream.std))
   return (
     <div style={styles.chart}>

@@ -8,7 +8,7 @@ export const curveFitSpec = defineSpec<'curveFit'>({
   label: 'Curve fit',
   subtitle: 'dose / time curves',
   category: 'processing',
-  input: { accepts: ['abundance'], max: 2 },
+  input: { accepts: ['quantity'], max: 2 },
   output: 'curves',
   hasRun: true,
   defaultConfig: (): CurveFitConfig => ({

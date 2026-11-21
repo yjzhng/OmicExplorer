@@ -4,7 +4,7 @@
  */
 import { describe, expect, it } from 'vitest'
 
-import { abundanceOnScale, runContrastPair, type ContrastSideRow } from './contrast'
+import { quantityOnScale, runContrastPair, type ContrastSideRow } from './contrast'
 
 /** One sample's log10 abundance for gene g at `dose` (a sample row is its own replicate). */
 const sample = (dose: number, value: number): ContrastSideRow => ({
@@ -32,9 +32,9 @@ describe('contrast replicates', () => {
   })
 
   it('moves the replicates onto the plot scale with the values', () => {
-    const log2 = abundanceOnScale(res.rows, 'log2').find((r) => r.dose === 1)!
+    const log2 = quantityOnScale(res.rows, 'log2').find((r) => r.dose === 1)!
     expect(log2.FC1reps![0]).toBeCloseTo(2 / Math.log10(2))
-    const lin = abundanceOnScale(res.rows, 'linear').find((r) => r.dose === 1)!
+    const lin = quantityOnScale(res.rows, 'linear').find((r) => r.dose === 1)!
     expect(lin.FC1reps).toEqual([100, 1000])
   })
 

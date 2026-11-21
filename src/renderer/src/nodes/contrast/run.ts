@@ -44,7 +44,8 @@ import {
   condsIn,
   type CondSelector,
   ctxValue,
-  type ContrastSideRow
+  type ContrastSideRow,
+  valueUnitOf
 } from '../../engine'
 import type { StepRunContext } from '../runContext'
 
@@ -189,7 +190,13 @@ export async function run(ctx: StepRunContext): Promise<void> {
     displayMap =
       ra.kind === 'compare' ? ra.displayMap : ra.kind === 'standardize' ? ra.std.displayMap : {}
     // Standardize sides carry log10 abundance; Compare sides carry log2 fold-change.
-    ctr = { ...ctr, valueKind: ra.kind === 'standardize' ? 'abundance' : 'fc' }
+    ctr = {
+      ...ctr,
+      valueKind: ra.kind === 'standardize' ? 'quantity' : 'fc',
+      ...(ra.kind === 'standardize' && valueUnitOf(ra.std) === 'fraction'
+        ? { valueUnit: 'fraction' as const }
+        : null)
+    }
   } else {
     // Select mode: pool the single upstream's rows, then split them into the two EXPLICIT
     // selections (num → FC1, den → FC2). Works on a Compare (each row's value is its log2FC)
@@ -210,7 +217,7 @@ export async function run(ctx: StepRunContext): Promise<void> {
       setStatus('error', 'Connect a Compare or Clean data tile and run it first.')
       return
     }
-    const isAbundance = !compares.length // all-Standardize input → abundance split
+    const isQuantity = !compares.length // all-Standardize input → abundance split
     // Each pooled row's replicates (on its value's scale), for the DR's points.
     const repsOf = new WeakMap<CompareResultRow, number[]>()
     // One abundance group as a pseudo primary row: its mean log10 abundance, with the
@@ -248,7 +255,7 @@ export async function run(ctx: StepRunContext): Promise<void> {
     // Standardize → pseudo primary rows. Replicates are aggregated per (gene × conditions) to
     // mean log10 abundance, with the replicate SD carried as fcSE (the DR error band). This
     // both collapses replicates cleanly and gives an honest per-condition abundance spread.
-    const pooled: CompareResultRow[] = isAbundance
+    const pooled: CompareResultRow[] = isQuantity
       ? (() => {
           // One per gene × condition context (custom conditions included in the key) — read
           // off the tables' columns (no row built).
@@ -263,7 +270,7 @@ export async function run(ctx: StepRunContext): Promise<void> {
         })()
       : compares.flatMap((r) => termless(r.cmp.rows))
     // A Compare's rows: each replicate's log2 ratio to the control mean.
-    if (!isAbundance)
+    if (!isQuantity)
       for (const cid of fromIds) {
         const r = state.results[cid]
         const cstd = compareStd(cid)
@@ -300,7 +307,7 @@ export async function run(ctx: StepRunContext): Promise<void> {
     const selCtx = from ? featureCtx(from) : { statType: 'pQ' as const, doseScale: 1 }
     // A surface is contrasted slice by slice (surfaceSideRows), matched on the slices'
     // condition.
-    const surf = isAbundance ? undefined : surfaceSliceCond(pooled)
+    const surf = isQuantity ? undefined : surfaceSliceCond(pooled)
     const toSideRows = (row: CompareResultRow, f: ContrastFeature): ContrastSideRow[] =>
       isSurfaceRow(row) ? surfaceSideRows(row, f.id, selCtx) : [toSideRow(row, f)]
     const toSideRow = (row: CompareResultRow, f: ContrastFeature): ContrastSideRow => ({
@@ -313,7 +320,7 @@ export async function run(ctx: StepRunContext): Promise<void> {
       value:
         f.id === 'value'
           ? row.log2FC
-          : isAbundance
+          : isQuantity
             ? stdFeatureValue(repsOf.get(row) ?? [], f.id)
             : compareFeatureValue(row, f.id, selCtx),
       signf: row.signf,
@@ -340,7 +347,7 @@ export async function run(ctx: StepRunContext): Promise<void> {
     }
     setStatus('running')
     const features = contrastFeatures(
-      isAbundance ? stds[0] : compares[0],
+      isQuantity ? stds[0] : compares[0],
       from ? condUnitsFor(state, from) : undefined
     )
     ctr = await stack(features, (f) =>
@@ -358,11 +365,17 @@ export async function run(ctx: StepRunContext): Promise<void> {
         nameConds: [...new Set(fromIds.flatMap(activeOf))],
         // Abundance slices carry no per-side significance, so the band is the only
         // divergence call.
-        driverMask: !isAbundance
+        driverMask: !isQuantity
       })
     )
-    displayMap = isAbundance ? stds[0].std.displayMap : compares[0].displayMap
-    ctr = { ...ctr, valueKind: isAbundance ? 'abundance' : 'fc' }
+    displayMap = isQuantity ? stds[0].std.displayMap : compares[0].displayMap
+    ctr = {
+      ...ctr,
+      valueKind: isQuantity ? 'quantity' : 'fc',
+      ...(isQuantity && valueUnitOf(stds[0].std) === 'fraction'
+        ? { valueUnit: 'fraction' as const }
+        : null)
+    }
   }
   if (get().nodes.find((n) => n.id === id)?.data.status !== 'running') return // cancelled
   // Mask hidden-geneset genes non-significant (covers pair mode with no per-side driver signf).

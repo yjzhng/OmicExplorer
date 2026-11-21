@@ -27,7 +27,8 @@ import {
   type ContrastSideRow,
   type StandardRow,
   type ThresholdConfig,
-  type ValueCutoffs
+  type ValueCutoffs,
+  valueUnitOf
 } from '../engine'
 import { rowCount } from '../engine/lazyRows'
 import {
@@ -255,7 +256,7 @@ export function cutoffDefaults(
 export function contrastFeatures(r: NodeResult | undefined, units?: CondUnits): ContrastFeature[] {
   if (r?.kind === 'standardize')
     return [
-      { id: 'value', label: 'abundance' },
+      { id: 'value', label: valueUnitOf(r.std) },
       { id: 'sd', label: 'SD' },
       { id: 'cv', label: 'CV %' }
     ]

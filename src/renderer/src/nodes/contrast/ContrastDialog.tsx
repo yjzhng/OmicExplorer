@@ -402,9 +402,10 @@ export function ContrastDialog({
             {m.keys.length > 0 && (
               <NodeTable
                 columns={[isPair ? 'dataset A' : 'group A', '', isPair ? 'dataset B' : 'group B']}
-                rows={m.keys
-                  .slice(0, 50)
-                  .map((k) => [
+                count={m.keys.length}
+                row={(i) => {
+                  const k = m.keys[i]
+                  return [
                     <SideCell
                       key="a"
                       rows={m.ga.get(k) ?? []}
@@ -420,8 +421,8 @@ export function ContrastDialog({
                       units={units}
                       numeric={isPair ? interNumeric : intraNumeric}
                     />
-                  ])}
-                more={m.keys.length - 50}
+                  ]
+                }}
               />
             )}
             {warnings.map((w) => (

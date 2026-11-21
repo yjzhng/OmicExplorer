@@ -21,7 +21,8 @@ import {
   contextOf,
   presentStd,
   presentScaleOf,
-  abundanceLabel,
+  quantityLabel,
+  valueUnitOf,
   buildStdMatrix,
   rowView,
   sampleQc,
@@ -161,7 +162,7 @@ export function sampleQcExport(result: Extract<NodeResult, { kind: 'standardize'
     ...(['cell', 'cmpd', 'dose', 'time'] as const).filter((c) => present(metas, c)),
     ...customCols(metas)
   ]
-  const unit = abundanceLabel(scale)
+  const unit = quantityLabel(scale, valueUnitOf(result.std))
   const columns = [
     ...conds.map((c) => condLabel(c as ConditionKey)),
     'rep',

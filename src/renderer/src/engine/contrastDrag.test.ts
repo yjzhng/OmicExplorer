@@ -68,7 +68,9 @@ describe('re-calling a contrast in place', () => {
 
 describe('a dragged guide maps back to its cutoff', () => {
   it('band edge: the confidence it is drawn at', () => {
-    const g = buildScatter(run('correlated', { bandConfidence: 0.95 }).rows).guide!
+    const g = buildScatter(run('correlated', { bandConfidence: 0.95 }).rows, {
+      unit: 'abundance'
+    }).guide!
     const path = bandEdgePath(g.band!, 0.95, 1)
     const [, x, y] = /L([-\d.e]+),([-\d.e]+)/.exec(path.split('L')[30].replace(/^/, 'L'))!
     expect(bandConfAt(g.band!, Number(x), Number(y))).toBeCloseTo(0.95, 6)
@@ -94,7 +96,12 @@ describe('a dragged guide maps back to its cutoff', () => {
       stat
     })
     expect(calls(redone)).toEqual(calls(fresh))
-    expect(buildScatter(redone.rows).guide).toMatchObject({ yHi: 0.43, yLo: -1, xHi: 1, xLo: -1 })
+    expect(buildScatter(redone.rows, { unit: 'abundance' }).guide).toMatchObject({
+      yHi: 0.43,
+      yLo: -1,
+      xHi: 1,
+      xLo: -1
+    })
   })
 })
 
@@ -122,7 +129,7 @@ describe('the drag patch', () => {
 describe('the drawn boundary agrees with the calls', () => {
   // a contrast's calls, judged against the boundary the scatter draws for them
   const mismatches = (ctr: ReturnType<typeof runContrast>): number => {
-    const sc = buildScatter(ctr.rows)
+    const sc = buildScatter(ctr.rows, { unit: 'abundance' })
     const g = sc.guide!
     let bad = 0
     for (const p of sc.points) {

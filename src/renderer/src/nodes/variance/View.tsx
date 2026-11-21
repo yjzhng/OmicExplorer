@@ -5,7 +5,7 @@ import { SwitchBar, SwitchStrip } from '../../dashboard/SwitchBar'
 import {
   type CompareResultRow,
   type ConditionKey,
-  abundanceLabel,
+  quantityLabel,
   anovaSliceFor,
   condLabel,
   geneShares,
@@ -27,7 +27,18 @@ import { VarianceView } from './VarianceView'
 /** The variance / interaction result body (nodes/views.ts). Plain render function: it runs inside
  *  PanelBody, so it must not call hooks — derive what needs a hook in usePlotContext. */
 export function varianceView(v: ViewContext): ReactNode {
-  const { rawUp, kind, cfgSource, patchConfig, genes, numeric, facetSel, repStd, abScale } = v
+  const {
+    rawUp,
+    kind,
+    cfgSource,
+    patchConfig,
+    genes,
+    numeric,
+    facetSel,
+    repStd,
+    quantityScale,
+    quantityUnit
+  } = v
   if (rawUp?.kind !== 'compare')
     return <Empty text="Connect a Compare running an ANOVA, and run it." />
   const anova = rawUp.cmp.anova
@@ -155,14 +166,14 @@ export function varianceView(v: ViewContext): ReactNode {
                         slice,
                         g,
                         { x, line },
-                        abScale,
+                        quantityScale,
                         std && (std.get(gene) ?? [])
                       )}
                       xName={condLabel(anova.factors[x].condition)}
                       xLevels={anova.factors[x].levels}
                       lineName={line == null ? '' : condLabel(anova.factors[line].condition)}
                       lineLevels={line == null ? ['mean'] : anova.factors[line].levels}
-                      yLabel={abundanceLabel(abScale)}
+                      yLabel={quantityLabel(quantityScale, quantityUnit)}
                       displayMap={dm}
                       look={drLook(cfg)}
                     />

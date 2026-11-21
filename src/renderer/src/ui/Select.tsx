@@ -7,7 +7,7 @@
  * Self-contained (see usePopover). On the canvas, the caller passes its `zoom` so the menu matches
  * the tile's scale, and a `closeKey` that changes when the canvas moves.
  */
-import { Fragment, useState, type ReactNode } from 'react'
+import { useMemo, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 
 import { groupHeading, markedTint } from './groupHeading'
@@ -15,6 +15,7 @@ import { Chevron } from './Chevron'
 import { PALETTES, UI } from './theme'
 import { POPOVER_PROPS, usePopover } from './usePopover'
 import { useUiTheme } from './useUiTheme'
+import { VirtualList } from './VirtualRows'
 
 export interface SelectOption {
   value: string
@@ -53,6 +54,15 @@ export function Select({
   const p = PALETTES[useUiTheme((s) => s.mode)]
   const { open, setOpen, toggle, rect, btnRef, menuRef } = usePopover(closeKey)
   const current = options.find((o) => o.value === value)
+  // The menu's rows: each option, after a heading where its group starts.
+  const rows = useMemo(() => {
+    const out: { head?: string; i: number }[] = []
+    options.forEach((o, i) => {
+      if (o.group && o.group !== options[i - 1]?.group) out.push({ head: o.group, i })
+      out.push({ i })
+    })
+    return out
+  }, [options])
   return (
     <div style={{ flex: 1, minWidth: 0 }}>
       <button
@@ -116,28 +126,40 @@ export function Select({
               flexDirection: 'column'
             }}
           >
-            {options.map((o, i) => (
-              <Fragment key={o.value}>
-                {o.group && o.group !== options[i - 1]?.group && (
-                  <div style={groupHeading(z, p.textMuted, i > 0)}>{o.group}</div>
-                )}
-                <SelectItem
-                  label={o.label}
-                  render={o.render}
-                  selected={o.value === value}
-                  indent={!!o.group}
-                  marked={o.marked}
-                  disabled={o.disabled}
-                  z={z}
-                  colors={{ text: p.text, hover: p.panel, accent: p.accent, muted: p.textMuted }}
-                  onClick={() => {
-                    if (o.disabled) return
-                    onChange(o.value)
-                    setOpen(false)
-                  }}
-                />
-              </Fragment>
-            ))}
+            {/* Windowed (ui/VirtualRows) — a file list or a condition's values can run long. A
+                group heading is a row of its own. */}
+            <VirtualList
+              count={rows.length}
+              style={{ display: 'flex', flexDirection: 'column' }}
+              row={(k) => {
+                const r = rows[k]
+                if (r.head != null)
+                  return (
+                    <div key={`\u0000${r.head}`} style={groupHeading(z, p.textMuted, k > 0)}>
+                      {r.head}
+                    </div>
+                  )
+                const o = options[r.i]
+                return (
+                  <SelectItem
+                    key={o.value}
+                    label={o.label}
+                    render={o.render}
+                    selected={o.value === value}
+                    indent={!!o.group}
+                    marked={o.marked}
+                    disabled={o.disabled}
+                    z={z}
+                    colors={{ text: p.text, hover: p.panel, accent: p.accent, muted: p.textMuted }}
+                    onClick={() => {
+                      if (o.disabled) return
+                      onChange(o.value)
+                      setOpen(false)
+                    }}
+                  />
+                )
+              }}
+            />
           </div>,
           document.body
         )}

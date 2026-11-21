@@ -199,7 +199,8 @@ export function ValueCutoffFields({
     const seen = new Map<ContrastFeatureId, string>()
     for (const r of ctr?.rows ?? [])
       if (r.featureId && !seen.has(r.featureId)) seen.set(r.featureId, r.feature ?? r.featureId)
-    if (!seen.size) seen.set('value', ctr?.valueKind === 'abundance' ? 'abundance' : 'log₂FC')
+    if (!seen.size)
+      seen.set('value', ctr?.valueKind === 'quantity' ? (ctr.valueUnit ?? 'abundance') : 'log₂FC')
     return [...seen].map(([fid, label]) => ({ id: fid, label }))
   }, [ctr])
   // A plot's settings: the feature on show in its results tab (the switcher's pick, keyed by the
@@ -218,8 +219,8 @@ export function ValueCutoffFields({
   const sigWord = feature.label.endsWith('q') ? 'q' : 'p'
   const unit = sig
     ? null
-    : feature.id === 'value' && ctr?.valueKind === 'abundance'
-      ? 'log₁₀ abundance'
+    : feature.id === 'value' && ctr?.valueKind === 'quantity'
+      ? `log₁₀ ${ctr.valueUnit ?? 'abundance'}`
       : feature.label
   const set = (tail: AxisTail, v: number | null): void =>
     setStat({ values: { ...stat?.values, [feature.id]: { ...own, [tail]: v } } })

@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest'
 
+import { standardize } from './ingest'
 import { MIN_SHARED_GENES, normalizeSamples } from './normalize'
+import { buildMA, buildQc } from './plotData'
+import { analysisScaleOf, presentScaleOf, presentStd, quantityLabel, valueUnitOf } from './scale'
 import type { StandardRow } from './types'
 
 const row = (uniqID: string, rep: number, value: number | null): StandardRow => ({
@@ -98,16 +101,17 @@ describe('normalizeSamples', () => {
 })
 
 describe('normalizeSamples on a reference protein', () => {
-  it('brings that protein to the same level in every sample, shifting each sample by it', () => {
-    // g0 loaded as every gene is (1×, 4×, ½×): normalising on it removes the loading exactly
-    const { rows, summary } = normalizeSamples(table(10), { reference: 'protein', protein: 'g0' })
-    const g0 = rows.filter((r) => r.uniqID === 'g0').map((r) => r.value!)
-    expect(g0[1]).toBeCloseTo(g0[0], 6)
-    expect(g0[2]).toBeCloseTo(g0[0], 6)
-    // …at the median of its own values (1000 · {1, 4, ½} → 1000)
-    expect(g0[0]).toBeCloseTo(1000, 6)
-    for (const rep of [2, 3])
-      valuesOf(rows, rep).forEach((v, i) => expect(v).toBeCloseTo(valuesOf(rows, 1)[i], 6))
+  it('divides every value by that protein in its own sample, so it reads 1 everywhere', () => {
+    // g0 loaded as every gene is (1×, 4×, ½×): dividing by it removes the loading exactly
+    const input = table(10)
+    const { rows, summary } = normalizeSamples(input, { reference: 'protein', protein: 'g0' })
+    for (const v of rows.filter((r) => r.uniqID === 'g0').map((r) => r.value!))
+      expect(v).toBeCloseTo(1, 9)
+    // each value a fraction of the reference: g3 is 4× g0 in every sample (4000 / 1000 at 1×)
+    for (const rep of [1, 2, 3]) {
+      const g3 = rows.find((r) => r.uniqID === 'g3' && r.rep === rep)!.value!
+      expect(g3).toBeCloseTo(4, 9)
+    }
     expect(summary).toMatchObject({
       reference: 'protein',
       used: 'protein',
@@ -118,18 +122,16 @@ describe('normalizeSamples on a reference protein', () => {
     expect(summary.spread).toBeUndefined()
   })
 
-  it('leaves a sample without the protein as it is, and ignores the spread option', () => {
+  it('divides nothing when a sample lacks the protein, and names that sample', () => {
     const input = table(10).filter((r) => !(r.uniqID === 'g0' && r.rep === 3))
     const { rows, summary } = normalizeSamples(input, {
       reference: 'protein',
       protein: 'g0',
       spread: true
     })
-    expect(summary).toMatchObject({ samples: 2, missingSamples: 1 })
+    expect(summary).toMatchObject({ samples: 2, missingSamples: 1, missingLabels: ['A_r3'] })
     expect(summary.spread).toBeUndefined()
-    // sample 3 untouched
-    const before = input.filter((r) => r.rep === 3).map((r) => r.value)
-    expect(rows.filter((r) => r.rep === 3).map((r) => r.value)).toEqual(before)
+    expect(rows.map((r) => r.value)).toEqual(input.map((r) => r.value))
   })
 
   it('does nothing when the protein is nowhere', () => {
@@ -137,5 +139,56 @@ describe('normalizeSamples on a reference protein', () => {
     const { rows, summary } = normalizeSamples(input, { reference: 'protein', protein: 'nope' })
     expect(rows.map((r) => r.value)).toEqual(input.map((r) => r.value))
     expect(summary).toMatchObject({ samples: 0, missingSamples: 3, maxFold: 1 })
+  })
+})
+
+describe('Clean data with a reference protein', () => {
+  const DATA = ['id,a1,a2,b1,b2', 'R,1000,2000,500,1500', 'g1,100,200,200,600', 'g2,10,,5,15'].join(
+    '\n'
+  )
+  const SS = ['sample,cmpd', 'a1,A', 'a2,A', 'b1,B', 'b2,B'].join('\n')
+  const run = (data: string, logTransform?: 'log2' | 'log10') =>
+    standardize({
+      dataText: data,
+      dataFilename: 'd.csv',
+      samplesheetText: SS,
+      normalize: { reference: 'protein', protein: 'R' },
+      ...(logTransform ? { logTransform } : null)
+    })
+
+  it('shows the reference at 1 and every value as its fraction, unlogged whatever the log-transform', () => {
+    const std = run(DATA, 'log2')
+    for (const r of std.rows.filter((r) => r.uniqID === 'R')) expect(r.value).toBeCloseTo(1, 9)
+    // g1 over R: 0.1, 0.1 (A) and 0.4, 0.4 (B)
+    const g1 = std.rows.filter((r) => r.uniqID === 'g1').map((r) => r.value!)
+    expect(g1.map((v) => Number(v.toFixed(6))).sort()).toEqual([0.1, 0.1, 0.4, 0.4])
+    // shown unlogged; the log-transform still sets the scale analyses (a Compare's test) run on
+    expect(presentScaleOf(std)).toBe('linear')
+    expect(analysisScaleOf(std)).toBe('log2')
+    const shown = presentStd(std, presentScaleOf(std))
+    for (const r of shown.rows.filter((r) => r.uniqID === 'R')) expect(r.value).toBeCloseTo(1, 9)
+  })
+
+  it('names its values fractions on every quantity axis', () => {
+    const std = run(DATA, 'log10')
+    expect(valueUnitOf(std)).toBe('fraction')
+    expect(quantityLabel(presentScaleOf(std), valueUnitOf(std))).toBe('fraction')
+    expect(buildQc(std, 'intensity', presentScaleOf(std)).yLabel).toBe('fraction')
+    const ma = buildMA([], { fcLow: -1, fcHigh: 1, scale: 'linear', unit: 'fraction' })
+    expect(ma.xLabel).toBe('mean fraction')
+    // without a reference protein: abundances, on the log-transform's scale, as before
+    const plain = standardize({
+      dataText: DATA,
+      dataFilename: 'd.csv',
+      samplesheetText: SS,
+      logTransform: 'log10'
+    })
+    expect(valueUnitOf(plain)).toBe('abundance')
+    expect(quantityLabel(presentScaleOf(plain), valueUnitOf(plain))).toBe('log abundance')
+  })
+
+  it('stops, naming the samples, when one lacks the reference', () => {
+    const data = DATA.replace('R,1000,2000,500,1500', 'R,1000,,500,1500')
+    expect(() => run(data)).toThrow(/wasn't measured in 1 sample \(A_r2\)/)
   })
 })

@@ -223,7 +223,7 @@ export function rowsWhere<T>(
 const yRanges = new WeakMap<object, Map<string, [number, number] | null>>()
 
 /** A contrast's shared y range (contrast.ts contrastYRange) over the feature `like` shows (as
- *  rowsOfFeature picks it), an abundance contrast's on `scale` (as abundanceOnScale puts it) —
+ *  rowsOfFeature picks it), an abundance contrast's on `scale` (as quantityOnScale puts it) —
  *  read off its columns when it's columnar, so no row is built. Cached per table (or rows), feature,
  *  scale and look. */
 export function contrastYRangeOf(

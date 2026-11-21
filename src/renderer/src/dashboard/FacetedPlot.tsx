@@ -12,7 +12,7 @@
 import { useMemo, useState, type CSSProperties, type ReactNode } from 'react'
 
 import {
-  abundanceOnScale,
+  quantityOnScale,
   contextOf,
   facetDims,
   rowsOfContexts,
@@ -38,7 +38,7 @@ export interface FacetSource<T extends ContextRow> {
   show?: string
   /** a contrast's feature on show, by its switcher label (rowsOfFeatureNamed); null = its first */
   feature?: string | null
-  /** an abundance contrast's plot scale (abundanceOnScale) */
+  /** an abundance contrast's plot scale (quantityOnScale) */
   scale?: ValueScale
 }
 
@@ -85,7 +85,7 @@ export function FacetedPlot<T extends ContextRow>({
   const realise = (ctx: ContextRow[]): T[] => {
     if (!of || !ix) return ctx as T[]
     const built = rowsOfContexts(of, ix, ctx)
-    return (scale ? abundanceOnScale(built as unknown as ContrastResultRow[], scale) : built) as T[]
+    return (scale ? quantityOnScale(built as unknown as ContrastResultRow[], scale) : built) as T[]
   }
   const dims = useMemo(
     () => facetDims(rows, exclude).filter((d) => !(together && d === 'comparison')),

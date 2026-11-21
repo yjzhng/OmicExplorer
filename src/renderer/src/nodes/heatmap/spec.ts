@@ -8,7 +8,7 @@ export const heatmapSpec = defineSpec<'heatmap'>({
   category: 'plotting',
   // Standardize → intensity heatmap; Compare / Curve fit → log2FC heatmap (same tile, upstream
   // decides).
-  input: { accepts: ['abundance', 'comparison', 'curves'] },
+  input: { accepts: ['quantity', 'comparison', 'curves'] },
   output: null,
   hasRun: true,
   defaultConfig: (): HeatmapConfig => ({ capEnabled: false, maxGenes: 50 }),

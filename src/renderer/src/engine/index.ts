@@ -166,7 +166,7 @@ export {
   runContrast,
   runContrastPair,
   previewContrastPair,
-  abundanceOnScale,
+  quantityOnScale,
   contrastYRange,
   rowOnScale,
   CONTRAST_STAT_DEFAULTS,
@@ -390,15 +390,18 @@ export {
   toLinear,
   presentStd,
   presentScaleOf,
+  analysisScaleOf,
   withLogTransform,
   withScale,
-  abundanceLabel,
+  quantityLabel,
   fromLog10,
   type LogTransform,
   type Shape,
   type ScaleEvidence,
   type ValueHistogram,
-  type ValueScale
+  type ValueScale,
+  type ValueUnit,
+  valueUnitOf
 } from './scale'
 export { clusterRowGroups, clusterRowTree } from './cluster'
 export type { DendroLink, Linkage, LeafOrder } from './cluster'

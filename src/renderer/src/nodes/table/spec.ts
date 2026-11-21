@@ -7,7 +7,7 @@ export const tableSpec = defineSpec<'table'>({
   label: 'Data table',
   category: 'plotting',
   // Shows the upstream step's results table; any processing step can feed it.
-  input: { accepts: ['abundance', 'comparison', 'curves', 'contrast'] },
+  input: { accepts: ['quantity', 'comparison', 'curves', 'contrast'] },
   output: null,
   hasRun: true,
   defaultConfig: (): TableConfig => ({}),

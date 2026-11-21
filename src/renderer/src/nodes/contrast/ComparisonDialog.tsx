@@ -163,7 +163,7 @@ function previewContrast(
   const nameB = nameOf(den)
   // The '' column is a UI-only "vs" between the two groups (rendered muted by the table).
   const columns = ['group A', '', 'group B', ...ctx.map(condLabel), 'paired genes']
-  const tableRows: string[][] = ctxKeys.slice(0, 50).map((k) => {
+  const tableRows: string[][] = ctxKeys.map((k) => {
     const aSet = aG.get(k)!
     const bSet = bG.get(k)!
     let n = 0

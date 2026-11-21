@@ -8,7 +8,7 @@ export const pcaSpec = defineSpec<'pca'>({
   category: 'plotting',
   // Sample-level embedding of the clean intensities only; a fold-change "responsome" embedding
   // (Compare-fed) reads differently enough that it isn't offered here.
-  input: { accepts: ['abundance'] },
+  input: { accepts: ['quantity'] },
   output: null,
   hasRun: true,
   // Defaults chosen to match a standard tool's PCA (e.g. Spectronaut): covariance (no per-gene

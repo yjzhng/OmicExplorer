@@ -333,6 +333,13 @@ export async function withParkedResults(p: ProjectFile): Promise<ProjectFile> {
   return { ...p, folders }
 }
 /** A save's folder problems as one message (null when there were none). */
+/** Resolves once the browser has painted a frame — so a notice just set shows before work that
+ *  holds the thread. At once where there's no frame to wait for (tests). */
+const paintFrame = (): Promise<void> =>
+  typeof requestAnimationFrame === 'function'
+    ? new Promise((done) => requestAnimationFrame(() => setTimeout(done, 0)))
+    : Promise.resolve()
+
 export const layoutWarning = (warnings: string[]): string | null =>
   warnings.length ? `Saved, but some folders weren't updated — ${warnings.join('; ')}` : null
 /** Replace the session with a new, unsaved project made from a template's text. Its folders have
@@ -496,17 +503,28 @@ export function projectSlice(
       useAppView.getState().setView('canvas')
     },
     openProject: async (path) => {
+      // One at a time: a click while a project is still loading (a big one takes seconds) is
+      // ignored rather than starting it again.
+      if (get().opening) return
       if (!(await get().confirmDiscard('opening another project'))) return
       set({ openError: null })
       let p = path ?? null
+      // Shows the "Opening…" notice (App), and lets it paint before the reading and unpacking
+      // below hold the thread.
+      const loading = async (file: string): Promise<void> => {
+        set({ opening: file })
+        await paintFrame()
+      }
       try {
         let text: string
         if (p) {
+          await loading(p)
           text = await window.api.readProject(p)
         } else {
           const picked = await window.api.openProject()
           if (!picked) return
           p = picked.path
+          await loading(p)
           text = picked.content
         }
         // Saved by a newer app: it may still open, so warn and carry on rather than refuse.
@@ -605,6 +623,8 @@ export function projectSlice(
             ? `Couldn't open ${p.split(/[/\\]/).pop() ?? p}: ${missing ? 'file not found' : msg}`
             : `Couldn't open project: ${msg}`
         })
+      } finally {
+        if (get().opening) set({ opening: null })
       }
     },
     saveProject: async () => {

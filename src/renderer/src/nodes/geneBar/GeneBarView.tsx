@@ -53,7 +53,7 @@ export function GeneBarView({
   title?: string
   orient?: 'landscape' | 'portrait'
   range?: ValueRange
-  /** the value axis title — the scale, e.g. "log₂ abundance" (see abundanceLabel) */
+  /** the value axis title — the scale, e.g. "log₂ abundance" (see quantityLabel) */
   valueLabel?: string
   /** the replicate dots over the bars (none when unset or hidden) */
   replicates?: ReplicateLook

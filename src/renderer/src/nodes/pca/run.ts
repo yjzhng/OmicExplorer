@@ -1,6 +1,6 @@
 /** The cluster plot's run: the sample embedding (PCA / UMAP / t-SNE) under its computation
  *  settings, in the worker — its view settings draw from it without another run. */
-import { presentScaleOf } from '../../engine'
+import { analysisScaleOf } from '../../engine'
 import { engine } from '../../engine/client'
 import { holderTable } from '../../engine/lazyRows'
 import { clusterRunOf, type ClusterConfig, type NodeResult } from '../../graph/types'
@@ -29,7 +29,7 @@ export async function run(ctx: PlotRunContext): Promise<NodeResult> {
     center: cfg.center,
     topVar: cfg.topVar,
     transform: cfg.transform,
-    autoScale: presentScaleOf(upstream.std),
+    autoScale: analysisScaleOf(upstream.std),
     replicates: cfg.replicates
   })
   return { kind: 'cluster', cluster, ran }

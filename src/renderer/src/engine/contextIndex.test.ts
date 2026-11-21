@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import { contextIndices, contextOf, contrastYRangeOf, rowsOfContexts } from './contextIndex'
-import { abundanceOnScale, contrastYRange, rowsOfFeature, type ContrastResultRow } from './contrast'
+import { quantityOnScale, contrastYRange, rowsOfFeature, type ContrastResultRow } from './contrast'
 import { attachLazyRows, rowsAt } from './lazyRows'
 import { facetDims, type ContextRow } from './plotData'
 import { numericConds } from './types'
@@ -152,10 +152,7 @@ describe('contrastYRangeOf', () => {
           [false, false]
         ] as const) {
           const want = contrastYRange(
-            rowsOfFeature(
-              scale ? abundanceOnScale(plain, scale) : plain,
-              like as ContrastResultRow
-            ),
+            rowsOfFeature(scale ? quantityOnScale(plain, scale) : plain, like as ContrastResultRow),
             errors,
             points
           )

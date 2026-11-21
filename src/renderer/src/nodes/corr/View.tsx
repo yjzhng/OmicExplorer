@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react'
 import { SwitchBar } from '../../dashboard/SwitchBar'
+import { analysisScaleOf } from '../../engine'
 import { quickOn } from '../../graph/registry'
 import { type CorrConfig, SAMPLE_ORDERS, sampleOrderOf } from '../../graph/types'
 import { Empty } from '../kit/views/common'
@@ -10,7 +11,7 @@ import { CorrTile } from './CorrTile'
 /** The corr result body (nodes/views.ts). Plain render function: it runs inside
  *  PanelBody, so it must not call hooks — derive what needs a hook in usePlotContext. */
 export function corrView(v: ViewContext): ReactNode {
-  const { upstream, cfgSource, abScale, paletteOf, patchConfig } = v
+  const { upstream, cfgSource, paletteOf, patchConfig } = v
   if (upstream?.kind !== 'standardize')
     return <Empty text="Connect a Clean data tile and run it." />
   const cfg = cfgSource as CorrConfig
@@ -19,7 +20,8 @@ export function corrView(v: ViewContext): ReactNode {
     <CorrTile
       std={upstream.std}
       cluster={cluster}
-      scale={abScale}
+      // r is computed on the analysis scale (log as Clean data sets it, fractions included)
+      scale={analysisScaleOf(upstream.std)}
       palette={paletteOf(cfg, 'corr', 'palette')}
       sampleOrder={sampleOrderOf(cfg)}
     />

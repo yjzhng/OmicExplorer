@@ -341,6 +341,23 @@ function twoWayToAnova(raw: RawProject): void {
       }
 }
 
+// ── 0.4.3: Clean data's values are quantities ──────────────────────────────────────────────
+
+/** A Contrast of Clean data saved its sides' kind as 'abundance'; it is 'quantity' now (an
+ *  abundance, or a fraction of a reference protein). Its saved result, packed or plain. */
+function contrastQuantity(raw: RawProject): void {
+  for (const f of raw.folders ?? [])
+    for (const w of f.workflows ?? []) {
+      const res = w.results as { results?: Record<string, unknown> } | undefined
+      const byNode = (res?.results ?? res) as Record<string, unknown> | undefined
+      for (const r of Object.values(byNode ?? {})) {
+        const ctr = (r as { kind?: string; ctr?: { valueKind?: string } } | null)?.ctr
+        if ((r as { kind?: string })?.kind === 'contrast' && ctr?.valueKind === 'abundance')
+          ctr.valueKind = 'quantity'
+      }
+    }
+}
+
 // ── the list ────────────────────────────────────────────────────────────────────────────────
 
 /** Every upgrade, in release order. APPEND new ones; never edit or remove one (see top). */
@@ -353,7 +370,8 @@ export const UPGRADES: readonly Upgrade[] = [
   },
   { since: '0.3.6', what: 'genesets belong to the project', run: geneSetsToProject },
   { since: '0.3.7', what: 'every workflow in the current form', run: workflowsToCurrent },
-  { since: '0.3.8', what: 'the 2-way ANOVA is the ANOVA', run: twoWayToAnova }
+  { since: '0.3.8', what: 'the 2-way ANOVA is the ANOVA', run: twoWayToAnova },
+  { since: '0.4.3', what: 'a Contrast of Clean data compares quantities', run: contrastQuantity }
 ]
 
 /** The release of the last upgrade: a file saved before it is written in an older form (Fix). */

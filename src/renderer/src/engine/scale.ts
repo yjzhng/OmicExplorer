@@ -169,6 +169,15 @@ export function sampleValues(values: number[], cap = 50000): number[] {
  *  never looks for the step that chose it. No fallback of the plots' own: raw intensities left
  *  unlogged LOOK wrong on every plot, which is the cue to set the log-transform in Clean data. */
 export function presentScaleOf(std: StandardizeResult): ValueScale {
+  // Fractions of a reference protein are shown as they are — the reference 1, the rest its
+  // fractions — whatever the log-transform (it still sets the scale analyses run on).
+  return valueUnitOf(std) === 'fraction' ? 'linear' : analysisScaleOf(std)
+}
+
+/** The scale analyses run on — a Compare's test (logged or not), the cluster's auto-log, the
+ *  sample correlation: Clean data's log-transform, as the result carries it. The same as the shown
+ *  scale except for fractions of a reference protein, which are shown unlogged (presentScaleOf). */
+export function analysisScaleOf(std: StandardizeResult): ValueScale {
   return std.scale ?? 'linear'
 }
 
@@ -189,9 +198,20 @@ export function withScale(std: StandardizeResult, scale: ValueScale): Standardiz
   return (table && lazyCopy(std, { scale }, table)) ?? { ...std, scale }
 }
 
-/** An abundance axis title on `scale`: "log abundance" (log₁₀ — the app's plain "log"),
- *  "log₂ abundance", or just "abundance" when linear. `noun` swaps the word (e.g. "mean … "). */
-export function abundanceLabel(scale: ValueScale, noun = 'abundance'): string {
+/** What Clean data's values are: abundances, or — divided by a reference protein (normalize.ts)
+ *  — fractions of that protein. Every axis, legend and column that names the values uses it. */
+export type ValueUnit = 'abundance' | 'fraction'
+/** A Clean data result's unit: 'fraction' once its samples were divided by a reference protein. */
+export function valueUnitOf(std: Pick<StandardizeResult, 'normalization'> | undefined): ValueUnit {
+  const nz = std?.normalization
+  return nz?.used === 'protein' && nz.samples > 0 ? 'fraction' : 'abundance'
+}
+
+/** A quantity axis title on `scale`: "log abundance" (log₁₀ — the app's plain "log"), "log₂
+ *  abundance", or just "abundance" when linear. `noun` is the values' unit — always given, so no
+ *  axis can name fractions "abundance" (valueUnitOf: "log fraction" after a reference protein) —
+ *  or a phrase built on it ("mean abundance"). */
+export function quantityLabel(scale: ValueScale, noun: string): string {
   return scale === 'log10' ? `log ${noun}` : scale === 'log2' ? `log₂ ${noun}` : noun
 }
 

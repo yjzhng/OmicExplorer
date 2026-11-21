@@ -33,7 +33,7 @@ const row = (uniqID: string, mean1: number, mean2: number, signf = false): Compa
 
 describe('buildIntensityScatter (basal clpP vs WT from a direct comparison)', () => {
   const rows = [row('g1', 100, 100), row('g2', 1000, 10, true), row('g3', 0, 50)]
-  const sc = buildIntensityScatter(rows)
+  const sc = buildIntensityScatter(rows, { unit: 'abundance' })
 
   it('plots log10 of each group mean, numerator on y', () => {
     expect(sc.points).toHaveLength(2) // g3 dropped: a non-positive mean has no log

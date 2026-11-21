@@ -11,6 +11,7 @@ import { formatSize, REVEAL } from './fileLabels'
 import { Select } from './Select'
 import { TableSearch } from './TableSearch'
 import { UI } from './theme'
+import { VirtualTbody } from './VirtualRows'
 
 type Summary = Awaited<ReturnType<Window['api']['refCacheSummary']>>
 type BrowseQuery = Parameters<Window['api']['browseRefCache']>[0]
@@ -302,7 +303,8 @@ function SourceTable({
   )
 }
 
-/** Proteins the browser fetches per page. */
+/** Proteins the browser reads from the cache at a time — the next chunk as the view nears the
+ *  end (ui/useVirtualRows' onEnd). */
 const BROWSE_PAGE = 100
 
 /** The sources a species' proteins were looked up for. */
@@ -464,8 +466,13 @@ function CacheBrowser({ uni }: { uni: NonNullable<Summary['uniprot']> }): ReactN
               ))}
             </tr>
           </thead>
-          <tbody>
-            {rows.map((r) => {
+          {/* Windowed (ui/VirtualRows); the next chunk is read as the view nears the end. */}
+          <VirtualTbody
+            count={rows.length}
+            span={cols.length + (withGene ? 2 : 1)}
+            onEnd={!loading && rows.length < total ? more : undefined}
+            row={(k) => {
+              const r = rows[k]
               const isOpen = openAcc.has(r.acc)
               const cell = { ...styles.td, ...(isOpen ? styles.wrap : styles.clip) }
               const none = r.values.every((v) => !v)
@@ -499,18 +506,13 @@ function CacheBrowser({ uni }: { uni: NonNullable<Summary['uniprot']> }): ReactN
                   ))}
                 </tr>
               )
-            })}
-          </tbody>
+            }}
+          />
         </table>
       )}
       {rows.length < total && (
         <div style={styles.hint}>
-          <Btn disabled={loading} onClick={more}>
-            Show {count(Math.min(BROWSE_PAGE, total - rows.length))} more
-          </Btn>
-          <span style={{ marginLeft: 8 }}>
-            {count(rows.length)} of {count(total)} shown
-          </span>
+          {loading ? 'Loading more…' : `${count(rows.length)} of ${count(total)} — scroll for more`}
         </div>
       )}
     </>

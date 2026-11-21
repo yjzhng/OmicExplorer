@@ -281,6 +281,9 @@ export interface GraphState {
   recentUpgrades: Record<string, boolean>
   /** last error from opening a project (shown on the Home screen); null when none */
   openError: string | null
+  /** the project file being opened, while it loads (an "Opening…" notice covers the window and
+   *  takes the clicks meanwhile; a second open is ignored); null otherwise */
+  opening: string | null
   /** why the last save failed (cleared by the next successful one) */
   saveError: string | null
   /** the last save went through, but some folders couldn't be renamed/moved to match */
@@ -503,6 +506,7 @@ export const useGraph = create<GraphState>()((set, get) => ({
   recentHeaders: {},
   recentUpgrades: {},
   openError: null,
+  opening: null,
   saveError: null,
   saving: false,
   saveWarning: null,

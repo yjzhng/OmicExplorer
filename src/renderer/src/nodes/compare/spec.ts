@@ -8,7 +8,7 @@ export const compareSpec = defineSpec<'compare'>({
   label: 'Compare',
   subtitle: 'fold change of A | B',
   category: 'processing',
-  input: { accepts: ['abundance'], max: 2 },
+  input: { accepts: ['quantity'], max: 2 },
   output: 'comparison',
   hasRun: true,
   defaultConfig: (): CompareConfig => ({

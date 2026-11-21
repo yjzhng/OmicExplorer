@@ -9,8 +9,8 @@ export const mergeSpec = defineSpec<'merge'>({
   category: 'processing',
   // Chaining works without listing 'merge' here: outputKindOf resolves a Merge to the
   // standardize result it emits.
-  input: { accepts: ['abundance'], max: Infinity },
-  output: 'abundance',
+  input: { accepts: ['quantity'], max: Infinity },
+  output: 'quantity',
   hasRun: true,
   defaultConfig: (): MergeConfig => ({})
 })

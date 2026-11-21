@@ -28,7 +28,17 @@ import { ScatterView } from './ScatterView'
 /** The scatter result body (nodes/views.ts). Plain render function: it runs inside
  *  PanelBody, so it must not call hooks — derive what needs a hook in usePlotContext. */
 export function scatterView(v: ViewContext): ReactNode {
-  const { cfgSource, upstream, numeric, facetSel, abScale, upStep, effectsOf, contrastSource } = v
+  const {
+    cfgSource,
+    upstream,
+    numeric,
+    facetSel,
+    quantityScale,
+    quantityUnit,
+    upStep,
+    effectsOf,
+    contrastSource
+  } = v
   const cfg = cfgSource as ScatterConfig
   // A Compare plots the two compared groups' log10 intensities (mean1 vs mean2); a
   // Contrast plots FC1 vs FC2. Either way the upstream supplies the significance.
@@ -39,8 +49,14 @@ export function scatterView(v: ViewContext): ReactNode {
         <FacetedPlot numeric={numeric} rows={{ of: upstream.cmp }} facetSel={facetSel}>
           {(rows) => (
             <Built
-              build={() => buildIntensityScatter(rows, { displayMap: dm, scale: abScale })}
-              deps={[rows, dm, abScale]}
+              build={() =>
+                buildIntensityScatter(rows, {
+                  displayMap: dm,
+                  scale: quantityScale,
+                  unit: quantityUnit
+                })
+              }
+              deps={[rows, dm, quantityScale, quantityUnit]}
             >
               {(scatter) => (
                 <ScatterView
@@ -66,7 +82,7 @@ export function scatterView(v: ViewContext): ReactNode {
   const ctrStat = (ctrStep?.data.config as ContrastConfig | undefined)?.stat
   // An axis line's value is the facet's feature's (an abundance's own, back in log₁₀ as it's
   // cut); a significance line reads as the p it stands for.
-  const abundance = upstream.ctr.valueKind === 'abundance'
+  const abundance = upstream.ctr.valueKind === 'quantity'
   const statDrag = (feature: ContrastFeatureId) =>
     ctrStep
       ? (edge: 'bandUp' | 'bandDown' | AxisTail, value: number) =>
@@ -78,7 +94,7 @@ export function scatterView(v: ViewContext): ReactNode {
                 ctrStat,
                 edge,
                 abundance && feature === 'value' && edge !== 'bandUp' && edge !== 'bandDown'
-                  ? cutoffFromScale(value, abScale)
+                  ? cutoffFromScale(value, quantityScale)
                   : value,
                 feature
               )
@@ -93,11 +109,12 @@ export function scatterView(v: ViewContext): ReactNode {
               buildScatter(rows, {
                 displayMap: dm,
                 valueKind: upstream.ctr.valueKind,
-                scale: abScale,
+                scale: quantityScale,
+                unit: quantityUnit,
                 valueLabel: contrastFeatureLabel(rows)
               })
             }
-            deps={[rows, dm, upstream.ctr.valueKind, abScale]}
+            deps={[rows, dm, upstream.ctr.valueKind, quantityScale, quantityUnit]}
           >
             {(scatter) => (
               <ScatterView

@@ -8,7 +8,7 @@ export const plotGroupSpec = defineSpec<'plotGroup'>({
   category: 'plotting',
   // Union of every plotting op's inputs, so a group can wire from any of them; all its
   // children must be compatible with the single upstream it actually binds to.
-  input: { accepts: ['abundance', 'comparison', 'curves', 'contrast'] },
+  input: { accepts: ['quantity', 'comparison', 'curves', 'contrast'] },
   output: null,
   hasRun: true,
   defaultConfig: (): PlotGroupConfig => ({ children: [] })

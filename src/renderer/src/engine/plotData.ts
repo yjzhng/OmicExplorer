@@ -22,7 +22,15 @@ import { curveSampleX, logistic } from './curveFit'
 import { embed2D, type ClusterMethod } from './embed'
 import { isSampleIndex, labelGroups, sampleIndex, type SampleIndex } from './sampleIndex'
 import { descValue } from './splineFit'
-import { abundanceLabel, fromLinear, fromLog10, toLinear, type ValueScale } from './scale'
+import {
+  quantityLabel,
+  fromLinear,
+  fromLog10,
+  toLinear,
+  type ValueScale,
+  type ValueUnit,
+  valueUnitOf
+} from './scale'
 import { benjaminiHochberg, studentTppf, studentTTwoSided, type Effect } from './stats'
 import {
   condLabel,
@@ -532,20 +540,23 @@ export interface ScatterData {
   /** what the axes hold: fold changes (0 = no change, so the view keeps the origin in range),
    *  log abundances, or another Contrast feature (both fitted to the data — 0 is no reference
    *  there). Unset → fold changes. */
-  valueKind?: 'abundance' | 'fc' | 'other'
+  valueKind?: 'quantity' | 'fc' | 'other'
 }
 
 export interface ScatterOptions {
   displayMap?: Record<string, string>
   /** what the two sides hold (from ContrastResult.valueKind): fold changes (default) or
    *  abundances from a raw-data contrast — drives the axis titles */
-  valueKind?: 'abundance' | 'fc'
+  valueKind?: 'quantity' | 'fc'
   /** the scale abundances are on (see plotScaleOf): the intensity scatter's values, and the
    *  abundance axis titles. Default log₁₀. */
   scale?: ValueScale
   /** a Contrast feature other than the sides' own value (contrastFeatureLabel): the axes hold
    *  it, titled by it */
   valueLabel?: string | null
+  /** what quantity sides are (valueUnitOf): abundances, or fractions of a reference protein —
+   *  always given, so no axis names fractions "abundance" */
+  unit: ValueUnit
 }
 
 /** A linear cutoff of an abundance contrast's own value (stored, and cut, in log₁₀) where the
@@ -662,7 +673,7 @@ function scatterGuide(
 }
 
 /** Build FC1-vs-FC2 scatter points from contrast rows (identity line drawn by the view). */
-export function buildScatter(rows: ContrastResultRow[], opts: ScatterOptions = {}): ScatterData {
+export function buildScatter(rows: ContrastResultRow[], opts: ScatterOptions): ScatterData {
   const points: ScatterPoint[] = []
   for (const r of rows) {
     if (r.FC1 == null || r.FC2 == null || !Number.isFinite(r.FC1) || !Number.isFinite(r.FC2))
@@ -681,7 +692,7 @@ export function buildScatter(rows: ContrastResultRow[], opts: ScatterOptions = {
   // Group A (FC1) on y, group B (FC2) on x.
   const unit =
     opts.valueLabel ??
-    (opts.valueKind === 'abundance' ? abundanceLabel(opts.scale ?? 'log10') : 'log₂FC')
+    (opts.valueKind === 'quantity' ? quantityLabel(opts.scale ?? 'log10', opts.unit) : 'log₂FC')
   return {
     points,
     xLabel: `${unit} · ${rows[0]?.cmp2 ?? 'group B'}`,
@@ -690,7 +701,7 @@ export function buildScatter(rows: ContrastResultRow[], opts: ScatterOptions = {
     guide: scatterGuide(
       points,
       thrsh,
-      opts.valueKind === 'abundance' && !opts.valueLabel
+      opts.valueKind === 'quantity' && !opts.valueLabel
         ? (v) => cutoffOnScale(v, opts.scale ?? 'log10')
         : undefined
     ),
@@ -706,10 +717,7 @@ export function buildScatter(rows: ContrastResultRow[], opts: ScatterOptions = {
  * already carries mean1/mean2, so no extra statistics are needed — the comparison's own
  * signf/effect colours the divergent genes and the line of identity is the reference.
  */
-export function buildIntensityScatter(
-  rows: CompareResultRow[],
-  opts: ScatterOptions = {}
-): ScatterData {
+export function buildIntensityScatter(rows: CompareResultRow[], opts: ScatterOptions): ScatterData {
   const points: ScatterPoint[] = []
   const scale = opts.scale ?? 'log10'
   for (const r of rows) {
@@ -734,9 +742,9 @@ export function buildIntensityScatter(
   return {
     points,
     // "abundance" (with its log base) — the same word the MA plot and contrast scatter use.
-    xLabel: `${abundanceLabel(scale)} · ${den || 'denominator'}`,
-    yLabel: `${abundanceLabel(scale)} · ${num || 'numerator'}`,
-    valueKind: 'abundance'
+    xLabel: `${quantityLabel(scale, opts.unit)} · ${den || 'denominator'}`,
+    yLabel: `${quantityLabel(scale, opts.unit)} · ${num || 'numerator'}`,
+    valueKind: 'quantity'
   }
 }
 
@@ -764,6 +772,8 @@ export interface MAOptions {
   displayMap?: Record<string, string>
   /** the scale abundance is shown on (see plotScaleOf); default log₁₀ */
   scale?: ValueScale
+  /** what the values are (valueUnitOf): abundances, or fractions of a reference protein */
+  unit: ValueUnit
 }
 
 /** MA plot: mean abundance (A) vs log2 fold change (M). Abundance is on the scale every abundance
@@ -792,7 +802,7 @@ export function buildMA(rows: CompareResultRow[], opts: MAOptions): MAData {
     fcLow: opts.fcLow,
     fcHigh: opts.fcHigh,
     comparison: comparisonOf(rows),
-    xLabel: abundanceLabel(scale, 'mean abundance').replace(/^(log₂?) mean/, 'mean $1')
+    xLabel: quantityLabel(scale, `mean ${opts.unit}`).replace(/^(log₂?) mean/, 'mean $1')
   }
 }
 
@@ -2819,7 +2829,7 @@ export function buildQc(
       meta: metaOf(label)
     }))
     sortGroups(groups, true)
-    return { groups, yLabel: abundanceLabel(sc), metric, summary: 'median' }
+    return { groups, yLabel: quantityLabel(sc, valueUnitOf(std)), metric, summary: 'median' }
   }
 
   // cv: per condition group, the %CV of each protein across its replicates.

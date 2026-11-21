@@ -3,7 +3,7 @@ import { FacetedPlot } from '../../dashboard/FacetedPlot'
 import { GeneSwitch } from '../../dashboard/GeneSwitch'
 import { SwitchBar, SwitchStrip } from '../../dashboard/SwitchBar'
 import {
-  abundanceLabel,
+  quantityLabel,
   buildDR,
   type CompareResultRow,
   type ConditionKey,
@@ -72,7 +72,8 @@ export function drView(v: ViewContext): ReactNode {
     edges,
     upId,
     results,
-    abScale,
+    quantityScale,
+    quantityUnit,
     contrastSource,
     repStd,
     upCompareCfg,
@@ -186,7 +187,8 @@ export function drView(v: ViewContext): ReactNode {
     const present = distinctOf(upstream.ctr, 'uniqID') as Set<string>
     // FC1/FC2 are abundance when the contrast is fed by Clean data inputs (on the plots'
     // abundance scale — see contrastRows), log2 fold-change when fed by Compare inputs.
-    const yLabel = upstream.ctr.valueKind === 'abundance' ? abundanceLabel(abScale) : 'log₂FC'
+    const yLabel =
+      upstream.ctr.valueKind === 'quantity' ? quantityLabel(quantityScale, quantityUnit) : 'log₂FC'
     return (
       <div style={styles.chart}>
         <div style={styles.stack}>
@@ -234,7 +236,7 @@ export function drView(v: ViewContext): ReactNode {
                           ? contrastYRangeOf(
                               upstream.ctr,
                               rows[0],
-                              upstream.ctr.valueKind === 'abundance' ? abScale : undefined,
+                              upstream.ctr.valueKind === 'quantity' ? quantityScale : undefined,
                               drLook(cfg).errors,
                               drLook(cfg).points
                             )

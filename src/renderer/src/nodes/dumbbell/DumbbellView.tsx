@@ -28,8 +28,8 @@ export function DumbbellView({
   title?: string
   /** what the two sides hold (ContrastResult.valueKind, or 'other' for another Contrast feature):
    *  the value axis title follows it — `valueLabel` titles an abundance or a feature */
-  valueKind?: 'abundance' | 'fc' | 'other'
-  /** the abundance axis title, with its log base (see abundanceLabel); default "log abundance" */
+  valueKind?: 'quantity' | 'fc' | 'other'
+  /** the abundance axis title, with its log base (see quantityLabel); default "log abundance" */
   valueLabel?: string
   /** portrait = genes down the y axis (tall list); landscape = genes across x. */
   orient?: 'landscape' | 'portrait'
@@ -104,7 +104,7 @@ export function DumbbellView({
       title:
         valueKind === 'fc'
           ? 'log₂FC'
-          : (valueLabel ?? (valueKind === 'abundance' ? 'log abundance' : '')),
+          : (valueLabel ?? (valueKind === 'quantity' ? 'log abundance' : '')),
       zeroline: false
     }
     const geneAxis = {

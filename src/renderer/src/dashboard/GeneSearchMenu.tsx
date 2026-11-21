@@ -9,13 +9,12 @@ import { IconSearch } from '../ui/GeneSelectMenu'
 import { GENE_LIST_STYLES } from '../ui/geneListStyles'
 import { PALETTES } from '../ui/theme'
 import { useUiTheme } from '../ui/useUiTheme'
+import { useVirtualRows } from '../ui/useVirtualRows'
+import { VirtualList } from '../ui/VirtualRows'
 import { useGeneDescriptions } from './useGeneMenuTabs'
 
 /** The dropdown's width — room for a gene's name and its description, as the nav's menu. */
 const MENU_W = 340
-
-/** Rows the gene dropdown renders at once — the set can be every gene in the data. */
-const LIST_CAP = 300
 
 export function GeneSearchMenu({
   genes,
@@ -73,6 +72,16 @@ export function GeneSearchMenu({
       : genes
   }, [genes, q, displayMap, descs])
 
+  // Opened on a gene: its row in view (wherever it sits in a long list).
+  const vr = useVirtualRows(filtered.length)
+  const opened = useRef(false)
+  useEffect(() => {
+    if (opened.current) return
+    opened.current = true
+    const k = current ? filtered.indexOf(current) : -1
+    if (k > 0) vr.scrollToIndex(k)
+  })
+
   const L = GENE_LIST_STYLES
   return createPortal(
     <div
@@ -110,39 +119,40 @@ export function GeneSearchMenu({
         {filtered.length === 0 ? (
           <div style={{ ...L.more, paddingLeft: 6, color: p.textMuted }}>No match.</div>
         ) : (
-          filtered.slice(0, LIST_CAP).map((id) => {
-            const on = id === current
-            const desc = descs[id]
-            return (
-              <div
-                key={id}
-                role="button"
-                onClick={() => {
-                  onPick(id)
-                  onClose()
-                }}
-                style={{
-                  ...L.geneRow,
-                  paddingLeft: 6,
-                  color: p.text,
-                  fontWeight: on ? 700 : undefined,
-                  ...(on ? { background: `${p.accent}22` } : {})
-                }}
-              >
-                <span style={L.geneName}>{displayMap[id] ?? id}</span>
-                {desc && (
-                  <span style={{ ...L.geneDesc, color: p.textMuted }} title={desc}>
-                    {desc}
-                  </span>
-                )}
-              </div>
-            )
-          })
-        )}
-        {filtered.length > LIST_CAP && (
-          <div style={{ ...L.more, paddingLeft: 6, color: p.textMuted }}>
-            +{(filtered.length - LIST_CAP).toLocaleString()} more — refine search
-          </div>
+          <VirtualList
+            vr={vr}
+            count={filtered.length}
+            style={{ display: 'flex', flexDirection: 'column' }}
+            row={(i) => {
+              const id = filtered[i]
+              const on = id === current
+              const desc = descs[id]
+              return (
+                <div
+                  key={id}
+                  role="button"
+                  onClick={() => {
+                    onPick(id)
+                    onClose()
+                  }}
+                  style={{
+                    ...L.geneRow,
+                    paddingLeft: 6,
+                    color: p.text,
+                    fontWeight: on ? 700 : undefined,
+                    ...(on ? { background: `${p.accent}22` } : {})
+                  }}
+                >
+                  <span style={L.geneName}>{displayMap[id] ?? id}</span>
+                  {desc && (
+                    <span style={{ ...L.geneDesc, color: p.textMuted }} title={desc}>
+                      {desc}
+                    </span>
+                  )}
+                </div>
+              )
+            }}
+          />
         )}
       </div>
     </div>,

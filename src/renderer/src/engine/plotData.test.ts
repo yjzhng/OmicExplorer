@@ -389,7 +389,7 @@ describe('buildMA / buildDumbbell', () => {
           effect: 'none'
         }
       ],
-      { fcLow: -1, fcHigh: 1 }
+      { fcLow: -1, fcHigh: 1, unit: 'abundance' }
     )
     expect(ma.points).toHaveLength(1)
     expect(ma.points[0].x).toBeCloseTo(0.5 * (Math.log10(16) + Math.log10(4)), 9)
