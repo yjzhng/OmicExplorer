@@ -650,6 +650,52 @@ export function surfaceSliceCondOf(cmp: {
   return undefined
 }
 
+/** What a Contrast preview shows for a Compare side's compared condition: the comparison ("X |
+ *  Y"), not the test value its rows carry (a Compare row keeps only the numerator's value on the
+ *  compared condition; the control is in its label). */
+export interface ComparedLabels {
+  /** the compared conditions (every row's cmp_cond) */
+  conds: ReadonlySet<ConditionKey>
+  /** a side row's comparison label, by its condition values */
+  of: (r: StandardRow) => string | undefined
+}
+
+/** A side row's condition values as one key (null and '' alike, `extra` by sorted slug). */
+const condTupleKey = (r: {
+  cell?: string | null
+  cmpd?: string | null
+  dose?: number | null
+  time?: number | null
+  extra?: Record<string, string>
+}): string => {
+  const e = r.extra ?? {}
+  return [
+    r.cell ?? '',
+    r.cmpd ?? '',
+    r.dose ?? '',
+    r.time ?? '',
+    ...Object.keys(e)
+      .sort()
+      .map((k) => `${k}=${e[k]}`)
+  ].join('\u0001')
+}
+
+/** A Compare result's ComparedLabels, read off its context index (one row per comparison context,
+ *  no result row built); null for any other result. */
+export function comparedLabelsOf(r: NodeResult | undefined): ComparedLabels | null {
+  if (r?.kind !== 'compare') return null
+  const conds = new Set<ConditionKey>()
+  const label = new Map<string, string>()
+  for (const c of contextOf(r.cmp).rows) {
+    if (c.term || !c.comparison) continue
+    for (const k of String(c.cmp_cond ?? '').split(':')) if (k) conds.add(k as ConditionKey)
+    const key = condTupleKey(c)
+    if (!label.has(key)) label.set(key, c.comparison)
+  }
+  if (!conds.size) return null
+  return { conds, of: (row) => label.get(condTupleKey(row)) }
+}
+
 /** A result's rows in the shape the group selector reads (uniqID + conditions), plus which
  *  conditions carry values. Compare rows are one per gene × comparison context; Standardize rows
  *  one per gene × sample. */

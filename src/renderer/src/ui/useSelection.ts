@@ -28,8 +28,9 @@ interface SelectionState {
   /** Replace the whole pinned set with `ids` (e.g. loading a saved geneset). */
   setPins: (ids: string[]) => void
   clearPins: () => void
-  /** How several gene groups picked in the gene selector combine: their genes together (union),
-   *  or only the genes every one of them holds (intersect). */
+  /** How gene groups picked in the gene selector combine: their genes together (union), only the
+   *  genes every one of them holds (intersect), or one group at a time — a pick replaces the
+   *  selection (switch). */
   groupCombine: GroupCombine
   /** intersect: the gene groups picked (geneset ids) — the selection is the genes they share */
   pickedGroups: string[]
@@ -37,7 +38,7 @@ interface SelectionState {
   setPickedGroups: (ids: string[]) => void
 }
 
-export type GroupCombine = 'union' | 'intersect'
+export type GroupCombine = 'union' | 'intersect' | 'switch'
 
 const NO_MEMBERS: readonly string[] = []
 

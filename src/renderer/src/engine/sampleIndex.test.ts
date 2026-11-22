@@ -284,6 +284,7 @@ function refCorr(std: StandardizeResult, opts: { cluster?: boolean; scale?: Valu
   }
   let z = Array.from({ length: S }, () => new Array<number>(S).fill(1))
   let lo = 1
+  let hi = -Infinity
   for (let i = 0; i < S; i++) {
     const a = vecs[i]
     for (let j = i + 1; j < S; j++) {
@@ -313,15 +314,27 @@ function refCorr(std: StandardizeResult, opts: { cluster?: boolean; scale?: Valu
       z[i][j] = r
       z[j][i] = r
       if (r < lo) lo = r
+      if (r > hi) hi = r
     }
   }
   if ((opts.cluster ?? true) && S > 2) {
-    const order = clusterRowOrder(z)
+    // clustered on the correlation itself, as a distance (1 − r)
+    const order = clusterRowOrder(
+      z.map((row) => row.map((v) => 1 - v)),
+      { precomputed: true }
+    )
     labels = order.map((i) => labels[i])
     metas = order.map((i) => metas[i])
     z = order.map((i) => order.map((j) => z[i][j]))
   }
-  return { labels, metas, z, min: Number.isFinite(lo) ? lo : 0 }
+  return {
+    metric: 'pearson',
+    labels,
+    metas,
+    z,
+    min: Number.isFinite(lo) ? lo : 0,
+    max: Number.isFinite(hi) ? hi : 1
+  }
 }
 
 /** The Clean data matrix's original pivot (PanelBody's standardizeMatrix, its columns' heat

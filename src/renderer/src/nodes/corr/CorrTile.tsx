@@ -1,41 +1,45 @@
-/** Sample-correlation heatmap panel body. The pairwise correlation is O(samples² × genes)
- *  on the render thread, so it's memoized on the standardized result + clustering flag (not
- *  every parent re-render). */
+/** Sample-correlation heatmap panel body: the plot's run (every metric's matrix, computed in the
+ *  worker — O(samples² × genes) each) arranged for the metric, clustering and sample order on show
+ *  (arrangeSampleCorr: a permutation, cheap). */
 import { useMemo } from 'react'
 
 import {
-  buildSampleCorr,
+  arrangeSampleCorr,
+  type CorrMetric,
+  type SampleCorrAll,
   type SampleOrder,
-  type StandardizeResult,
-  type ValueScale
+  type StandardizeResult
 } from '../../engine'
 import { CorrMatrixView } from './CorrMatrixView'
 import type { PaletteRef } from '../../ui/palettes'
 
 export function CorrTile({
+  all,
   std,
   cluster,
-  scale,
   palette,
-  sampleOrder = 'natural'
+  sampleOrder = 'natural',
+  metric = 'pearson'
 }: {
+  /** how each sample pair is scored */
+  metric?: CorrMetric
+  /** the plot's run: every metric's matrix */
+  all: SampleCorrAll
+  /** the data it was computed from (its samples, for the unclustered order) */
   std: StandardizeResult
   cluster: boolean
   /** the samples' order while unclustered (natural: by condition; original: the data's) */
   sampleOrder?: SampleOrder
-  /** the scale abundance is shown on (presentScaleOf) — log or not changes the correlation */
-  scale?: ValueScale
   /** the correlation palette (the plot's own, else Greens) */
   palette?: PaletteRef
 }) {
   const data = useMemo(
     () =>
-      buildSampleCorr(std, {
+      arrangeSampleCorr(all, metric, {
         cluster,
-        scale,
         order: { by: sampleOrder, samples: std.samples }
       }),
-    [std, cluster, scale, sampleOrder]
+    [all, std, cluster, sampleOrder, metric]
   )
   const title = `sample correlation (${data.labels.length} samples${cluster ? ', clustered' : ''})`
   return <CorrMatrixView data={data} title={title} palette={palette} />

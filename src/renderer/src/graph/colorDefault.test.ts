@@ -3,7 +3,9 @@ import { numericConds } from '../engine'
 
 import type { SampleConds, StandardizeResult } from '../engine'
 import {
-  barColorConds,
+  barColoring,
+  conditionColoring,
+  conditionColorWrite,
   heatmapCondBar,
   primaryColorLevels,
   qcColorBy,
@@ -39,16 +41,48 @@ describe('colour-by-condition default: the primary condition’s levels', () => 
   it('colours by condition while the levels fit the palette (≤ 10)', () => {
     const levels = primaryColorLevels(std(3))
     expect(qcColorBy({ metric: 'intensity', plot: 'box' } as QcConfig, levels)).toBe('condition')
-    expect(barColorConds({} as BarConfig, ['cmpd', 'dose'], levels, numeric)).toEqual(['cmpd'])
+    expect(barColoring({} as BarConfig, ['cmpd', 'dose'], levels, numeric)).toEqual({
+      picks: ['cmpd'],
+      fade: 'dose'
+    })
     expect(heatmapCondBar({} as HeatmapConfig, levels)).toBe(true)
   })
   it('falls back past 10 levels', () => {
     const levels = primaryColorLevels(std(11))
     expect(qcColorBy({ metric: 'intensity', plot: 'box' } as QcConfig, levels)).toBe('single')
-    expect(barColorConds({} as BarConfig, ['cmpd', 'dose'], levels, numeric)).toEqual([])
+    expect(barColoring({} as BarConfig, ['cmpd', 'dose'], levels, numeric)).toBeNull()
     expect(heatmapCondBar({} as HeatmapConfig, levels)).toBe(false)
   })
   it('keeps a choice the tile made', () => {
     expect(qcColorBy({ colorBy: 'condition' } as QcConfig, 50)).toBe('condition')
+  })
+})
+
+describe('QC / gene bar colour by condition: colour picks and a fade', () => {
+  const active = ['time', 'cmpd', 'dose', 'cell'] as const
+  const of = (c: Parameters<typeof conditionColoring>[0]) =>
+    conditionColoring(c, [...active], numeric)
+  it('defaults to every categorical condition, the first numeric as the fade, in order', () => {
+    expect(of({})).toEqual({ picks: ['cell', 'cmpd'], fade: 'dose' })
+  })
+  it('keeps the picks as made — any types, every combination a colour', () => {
+    expect(of(conditionColorWrite(['cmpd', 'time'], 'dose'))).toEqual({
+      picks: ['cmpd', 'time'],
+      fade: 'dose'
+    })
+    expect(of(conditionColorWrite(['cmpd'], null))).toEqual({ picks: ['cmpd'], fade: null })
+  })
+  it('never fades by a colour condition', () => {
+    expect(of(conditionColorWrite(['cmpd', 'dose'], 'dose')).fade).toBeNull()
+  })
+  it('reads an older pair back: the categorical one colours, the numeric one fades', () => {
+    expect(of({ colorConds: ['cmpd', 'dose'] })).toEqual({ picks: ['cmpd'], fade: 'dose' })
+    expect(of({ colorConds: ['dose'] })).toEqual({ picks: ['dose'], fade: null })
+  })
+  it("reads a gene bar's older single condition key", () => {
+    expect(barColoring({ colorBy: 'cell' } as BarConfig, [...active], 3, numeric)).toEqual({
+      picks: ['cell'],
+      fade: null
+    })
   })
 })

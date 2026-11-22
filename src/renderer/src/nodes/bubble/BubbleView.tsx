@@ -19,9 +19,9 @@ import { useUiTheme } from '../../ui/useUiTheme'
 /** Bubble grid: genes (x) × dose/time (y). Each bubble's size, colour and outline width show
  *  its log₂FC or its significance (−log₁₀ of the Compare's P or Q) as configured — by default a
  *  log₂FC fill, sized by |log₂FC|, no outline — and a ∗ can mark the significant ones. Genes are
- *  pre-ordered by their rank score. The base set is top-N (or the selected subset); hovered/pinned
- *  genes are appended to the axis so a linked selection shows up alongside rather than replacing
- *  the list. */
+ *  ordered by their rank score. The base set is top-N (or the selected subset); pinned genes are
+ *  added to it, each in its place in that order, so a linked selection shows up alongside rather
+ *  than replacing the list. */
 /** A bubble's diameter range, px: smallest + the span its measure scales over. */
 const SIZE_MIN = 6
 const SIZE_SPAN = 22
@@ -208,7 +208,7 @@ export function BubbleView({
   sigPalette?: PaletteRef
 }) {
   const mode = useUiTheme((s) => s.mode)
-  // Only PINNED genes are appended to the axis (they need a permanent column). Deliberately NOT
+  // Only PINNED genes are added to the axis (they need a permanent column). Deliberately NOT
   // subscribed to hoverId: re-rendering on hover would re-run Plotly.react and rebuild the axis
   // every hover — which reset the discrete (category) spacing to quantitative. The hovered point
   // is highlighted imperatively by the overlay in PlotlyChart instead (no re-plot).
@@ -320,9 +320,8 @@ export function BubbleView({
       title: '',
       type: 'category',
       categoryorder: 'array',
-      // Landscape (genes on x) reads left→right, so appended (hovered/pinned) genes land
-      // on the RIGHT. Portrait puts genes on y, which runs bottom→up, so reverse the order
-      // to keep the appended genes at the BOTTOM (and the top-N reading top→down).
+      // Landscape (genes on x) reads left→right, highest score first. Portrait puts genes on y,
+      // which runs bottom→up, so reverse the order to keep it reading top→down.
       categoryarray: landscape ? bubble.genes : [...bubble.genes].reverse(),
       // Category values are uniqIDs; show the display names as tick labels (value→label by pairing).
       tickmode: 'array',

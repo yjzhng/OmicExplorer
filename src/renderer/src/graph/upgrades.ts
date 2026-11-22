@@ -20,7 +20,9 @@ import { groupedOrder } from './frameOrder'
 import { geneMaskKey } from './geneMask'
 import { wrapLonePlots } from './plotGroups'
 import { renameStoredResults } from './resultPack'
+import { toPaletteRef, type PaletteRef } from '../ui/palettes'
 import {
+  isComparisonKind,
   isStep,
   migrateCurveCompare,
   normalizeCompareConfig,
@@ -341,7 +343,7 @@ function twoWayToAnova(raw: RawProject): void {
       }
 }
 
-// ── 0.4.3: Clean data's values are quantities ──────────────────────────────────────────────
+// ── 0.5.0: Clean data's values are quantities ──────────────────────────────────────────────
 
 /** A Contrast of Clean data saved its sides' kind as 'abundance'; it is 'quantity' now (an
  *  abundance, or a fraction of a reference protein). Its saved result, packed or plain. */
@@ -354,6 +356,96 @@ function contrastQuantity(raw: RawProject): void {
         const ctr = (r as { kind?: string; ctr?: { valueKind?: string } } | null)?.ctr
         if ((r as { kind?: string })?.kind === 'contrast' && ctr?.valueKind === 'abundance')
           ctr.valueKind = 'quantity'
+      }
+    }
+}
+
+// ── 0.5.0: a plot's effect colours are the plot's ───────────────────────────────────────────
+
+/** The plots that drew a Compare's class colours, and where each keeps its own up / down / none
+ *  colours now: a point plot's group colours (its style), another plot's `effectColors`. */
+const POINT_PLOTS = new Set(['volcano', 'ma', 'scatter', 'potency', 'curveMad'])
+const OWN_COLOUR_PLOTS = new Set(['enrich', 'bubble', 'string'])
+
+/** A Compare no longer colours its classes (a plot's colours come from the plot: its own, else its
+ *  FC palette). Where one did, each plot it fed that drew them — one without a palette of its own,
+ *  which overrode them — takes them as its own colours, so it looks as it did. Then dropped. */
+function effectColoursToPlots(raw: RawProject): void {
+  type Cfg = Record<string, unknown>
+  type Colours = Partial<Record<'up' | 'down' | 'none', string>>
+  const KEYS = ['up', 'down', 'none'] as const
+  const give = (kind: string, cfg: Cfg | undefined, from: Colours): void => {
+    if (!cfg || toPaletteRef(cfg.fcPalette as PaletteRef | undefined)) return
+    for (const k of KEYS) {
+      const c = from[k]
+      if (!c || c === 'auto') continue
+      if (POINT_PLOTS.has(kind)) {
+        const style = ((cfg.style as Cfg | undefined) ?? {}) as Cfg
+        const groups = ((style.groups as Record<string, Cfg> | undefined) ?? {}) as Record<
+          string,
+          Cfg
+        >
+        const g = groups[k] ?? {}
+        if (g.color == null || g.color === 'auto')
+          cfg.style = { ...style, groups: { ...groups, [k]: { ...g, color: c } } }
+      } else if (OWN_COLOUR_PLOTS.has(kind)) {
+        const own = ((cfg.effectColors as Colours | undefined) ?? {}) as Colours
+        if (own[k] == null || own[k] === 'auto') cfg.effectColors = { ...own, [k]: c }
+      }
+    }
+  }
+  for (const f of raw.folders ?? [])
+    for (const w of f.workflows ?? []) {
+      const doc = w.doc
+      if (!doc?.nodes) continue
+      const byId = new Map(doc.nodes.map((n) => [n.id, n]))
+      for (const n of doc.nodes) {
+        const cfg = n?.data?.config as Cfg | undefined
+        const from = cfg?.effectColors as Colours | undefined
+        if (!isComparisonKind(n?.data?.kind) || !cfg || !from) continue
+        for (const e of doc.edges ?? []) {
+          if (e.source !== n.id) continue
+          const t = byId.get(e.target)
+          if (!t?.data) continue
+          if (t.data.kind === 'plotGroup')
+            for (const ch of (t.data.config as PlotGroupConfig).children ?? [])
+              give(ch.kind, ch.config as unknown as Cfg, from)
+          else give(t.data.kind, t.data.config as unknown as Cfg, from)
+        }
+        delete cfg.effectColors
+      }
+    }
+}
+
+// ── 0.5.0: a reference protein divides ─────────────────────────────────────────────────────
+
+/** Whether release `a` came before release `b` (x.y.z). */
+function releasedBefore(a: string, b: string): boolean {
+  const pa = a.split('.').map(Number)
+  const pb = b.split('.').map(Number)
+  for (let i = 0; i < 3; i++) if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) < (pb[i] || 0)
+  return false
+}
+
+/** Normalising to a reference protein used to shift each sample, so the protein read the same in
+ *  all of them; since 0.5.0 it divides by the protein in each sample, so values are fractions of
+ *  it. A Clean data step's saved result from before holds the shifted values, which the app would
+ *  now present as fractions: its result is dropped, so the step shows as not run until re-run.
+ *  Fold changes are the same either way (the two differ by one factor per protein), so the steps
+ *  after it keep theirs. Only files an earlier release saved — a 0.5.0 file's result is divided. */
+function refProteinRerun(raw: RawProject): void {
+  const savedBy = typeof raw.appVersion === 'string' ? raw.appVersion : null
+  if (savedBy && !releasedBefore(savedBy, '0.5.0')) return
+  for (const f of raw.folders ?? [])
+    for (const w of f.workflows ?? []) {
+      const res = w.results as { results?: Record<string, unknown> } | undefined
+      const byNode = (res?.results ?? res) as Record<string, unknown> | undefined
+      for (const n of w.doc?.nodes ?? []) {
+        const cfg = n?.data?.config as
+          { normalizeEnabled?: boolean; normalizeReference?: string } | undefined
+        if (n?.data?.kind !== 'standardize' || !cfg?.normalizeEnabled) continue
+        if (cfg.normalizeReference !== 'protein') continue
+        if (byNode) delete byNode[n.id]
       }
     }
 }
@@ -371,7 +463,17 @@ export const UPGRADES: readonly Upgrade[] = [
   { since: '0.3.6', what: 'genesets belong to the project', run: geneSetsToProject },
   { since: '0.3.7', what: 'every workflow in the current form', run: workflowsToCurrent },
   { since: '0.3.8', what: 'the 2-way ANOVA is the ANOVA', run: twoWayToAnova },
-  { since: '0.4.3', what: 'a Contrast of Clean data compares quantities', run: contrastQuantity }
+  { since: '0.5.0', what: 'a Contrast of Clean data compares quantities', run: contrastQuantity },
+  {
+    since: '0.5.0',
+    what: "a plot's effect colours are its own, not its Compare's",
+    run: effectColoursToPlots
+  },
+  {
+    since: '0.5.0',
+    what: 'a reference protein divides: re-run its Clean data',
+    run: refProteinRerun
+  }
 ]
 
 /** The release of the last upgrade: a file saved before it is written in an older form (Fix). */

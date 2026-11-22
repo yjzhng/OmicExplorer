@@ -11,11 +11,11 @@ import {
 import { createPortal } from 'react-dom'
 import { PagerTrigger } from '../ui/PagerTrigger'
 
-import { ScreenScale } from '../nodes/kit/settings/hooks'
+import { PlotWindow, ScreenScale, type PlotWindowSlots } from '../nodes/kit/settings/hooks'
 import { clusterMinimalAxes } from '../nodes/kit/settings/plotHooks'
 import { styles } from '../nodes/kit/settings/styles'
 import { Chevron, Section } from '../nodes/kit/settings/controls'
-import { AxesSection, LegendSection } from '../nodes/kit/settings/plotSections'
+import { AxesSection, LegendRow, PlotRowsSection } from '../nodes/kit/settings/plotSections'
 import { SETTINGS } from '../nodes/settings'
 import { ErrorBoundary } from '../shared/ErrorBoundary'
 import { IconCopy, IconTrash } from '../ui/icons'
@@ -47,7 +47,8 @@ import {
   type NodeKind,
   type PlotAxes,
   type PlotChild,
-  type PlotGroupConfig
+  type PlotGroupConfig,
+  type PointStyle
 } from './types'
 import { usePlotGroupTitle } from './usePlotGroupTitle'
 
@@ -737,38 +738,48 @@ export function PlotConfig({
 }): ReactNode {
   const entry = SETTINGS[kind]
   const facts = NODE_SPECS[kind].plot
-  // After the plot's own sections (in PlotSections' order), the shared Legend section on every plot
-  // with a legend and the shared Axes section on every plot with axes (network / table / 3-D have
-  // none) — so those two always come last.
-  return (
-    <>
-      {entry && 'plot' in entry && (
-        <ErrorBoundary
-          label={`${plotLabel(kind, config)} settings`}
-          kind={kind}
-          nodeId={edgeNodeId}
-          title="These settings couldn’t be shown."
-        >
-          <entry.plot config={config} update={update} edgeNodeId={edgeNodeId} />
-        </ErrorBoundary>
-      )}
-      {facts?.legend && (
-        <LegendSection
-          config={config as LegendConfig}
-          update={update}
-          groups={facts.legend === 'groups'}
-        />
-      )}
-      {facts?.axes && (
+  // The window's own parts — the legend switch (every plot with a legend; a row of General) and
+  // Axes and lines (every plot with axes; else only the plot's whole-plot rows, if it has any) —
+  // handed to the plot's settings, whose PlotSections puts them in the one order (the legend in
+  // General, before its palettes; Axes and lines last of all).
+  const slots: PlotWindowSlots = {
+    legend: facts?.legend ? (
+      <LegendRow config={config as LegendConfig} update={update} />
+    ) : undefined,
+    axes: (plotRows) =>
+      facts?.axes ? (
         <AxesSection
           config={config as { axes?: PlotAxes }}
           update={update}
           defaults={axisDefaults}
           minimal={kind === 'pca' && clusterMinimalAxes(config as ClusterConfig)}
+          plotRows={plotRows}
+          guides={
+            facts.guides
+              ? {
+                  style: (config as { style?: PointStyle }).style,
+                  set: (patch) =>
+                    update({ style: { ...(config as { style?: PointStyle }).style, ...patch } })
+                }
+              : undefined
+          }
         />
-      )}
-    </>
-  )
+      ) : plotRows ? (
+        <PlotRowsSection>{plotRows}</PlotRowsSection>
+      ) : null
+  }
+  return entry && 'plot' in entry ? (
+    <ErrorBoundary
+      label={`${plotLabel(kind, config)} settings`}
+      kind={kind}
+      nodeId={edgeNodeId}
+      title="These settings couldn’t be shown."
+    >
+      <PlotWindow.Provider value={slots}>
+        <entry.plot config={config} update={update} edgeNodeId={edgeNodeId} />
+      </PlotWindow.Provider>
+    </ErrorBoundary>
+  ) : null
 }
 
 /** The panel's title: the tile's name, exactly as the tile shows it and renames it (see
@@ -965,7 +976,12 @@ export function NodeConfigPanel({
             </button>
           </div>
         </div>
-        <div style={embedded ? styles.scrollEmbedded : styles.scroll}>
+        {/* The app's scrollbar in its own gutter (oe-scroll, scrollbarGutter: stable), not over the
+            right edge of the settings. */}
+        <div
+          className={embedded ? undefined : 'oe-scroll'}
+          style={embedded ? styles.scrollEmbedded : styles.scroll}
+        >
           {inputs && <Section title={inputs.title}>{inputs.body}</Section>}
           {/* A group's subcards are managed on the tile itself (add-plot menu + the card stack);
             the panel shows only the active subcard's config, picked in the header. */}

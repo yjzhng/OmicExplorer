@@ -41,19 +41,49 @@ describe('buildFcHeatmap', () => {
   it('makes one column per comparison × context and one row per gene', () => {
     const h = buildFcHeatmap(rows, { displayMap: { g1: 'GeneOne', g2: 'GeneTwo' }, cluster: false })
     expect(h.columns).toEqual([
-      'drugA | DMSO · dose=5',
-      'drugA | DMSO · dose=10',
-      'drugB | DMSO · dose=5',
-      'drugB | DMSO · dose=10'
+      'drugA | DMSO · dose 5',
+      'drugA | DMSO · dose 10',
+      'drugB | DMSO · dose 5',
+      'drugB | DMSO · dose 10'
     ])
     expect(new Set(h.geneIds)).toEqual(new Set(['g1', 'g2']))
     expect(new Set(h.genes)).toEqual(new Set(['GeneOne', 'GeneTwo']))
   })
 
+  it("carries each column's comparison and context, in column order (clustered or not)", () => {
+    for (const cluster of [false, true]) {
+      const h = buildFcHeatmap(
+        [...rows, row('g3', 'drugA | DMSO', 5, 0.2), row('g3', 'drugB | DMSO', 10, -0.4)],
+        { cluster }
+      )
+      expect(h.colConds).toEqual(['comparison', 'dose'])
+      expect(h.colValues.map((v) => v.join(' · dose '))).toEqual(h.columns)
+    }
+  })
+
+  it('clusters the columns on size and pattern, or on pattern alone', () => {
+    // B moves the same genes as A, three times as far; C the opposite way, half as far
+    const a = [0.4, -0.4, 0.2, -0.2, 0.1, -0.1]
+    const cols: Array<[string, number]> = [
+      ['A | V', 1],
+      ['B | V', 3],
+      ['C | V', -0.5]
+    ]
+    const rs = cols.flatMap(([cmp, k]) => a.map((v, i) => row(`g${i}`, cmp, 5, v * k)))
+    // the first pair the tree joins
+    const firstPair = (colPattern: boolean): string[] => {
+      const h = buildFcHeatmap(rs, { colPattern })
+      const l = h.colTree![0]
+      return [h.columns[l.a], h.columns[l.b]].map((c) => c.slice(0, 1)).sort()
+    }
+    expect(firstPair(false)).toEqual(['A', 'C']) // both small: closest by size
+    expect(firstPair(true)).toEqual(['A', 'B']) // the same genes the same way
+  })
+
   it('places log2FC in the right cell and leaves missing cells null', () => {
     const h = buildFcHeatmap(rows, { cluster: false })
     const gi = h.geneIds.indexOf('g1')
-    const ci = h.columns.indexOf('drugA | DMSO · dose=10')
+    const ci = h.columns.indexOf('drugA | DMSO · dose 10')
     expect(h.z[gi][ci]).toBe(2.0)
     // g2 has no drugA·dose10 row → null
     const g2 = h.geneIds.indexOf('g2')
@@ -117,7 +147,7 @@ describe('buildFcHeatmap — clusters the fold-change patches', () => {
     // Four columns: A at two doses, then B at two doses. "upA" genes rise under A only, "dnB"
     // genes fall under B only — different patches, but the same shape once each gene's mean is
     // taken off ([+, +, −, −]). Magnitudes vary within each group; the input interleaves them.
-    const cols = ['A | V · dose=5', 'A | V · dose=10', 'B | V · dose=5', 'B | V · dose=10']
+    const cols = ['A | V · dose 5', 'A | V · dose 10', 'B | V · dose 5', 'B | V · dose 10']
     // a little measurement noise (seeded), the same size as the gap between the doses' changes
     let seed = 7
     const noise = (): number => ((seed = (seed * 16807) % 2147483647) / 2147483647 - 0.5) * 0.2
@@ -138,7 +168,7 @@ describe('buildFcHeatmap — clusters the fold-change patches', () => {
 
   it('keeps the near-zero genes in one block, not scattered through the strong ones', () => {
     // up under A, down under B, and genes barely changed anywhere (a faint wobble of either sign)
-    const cols = ['A | V · dose=5', 'A | V · dose=10', 'B | V · dose=5', 'B | V · dose=10']
+    const cols = ['A | V · dose 5', 'A | V · dose 10', 'B | V · dose 5', 'B | V · dose 10']
     let seed = 3
     const noise = (): number => ((seed = (seed * 16807) % 2147483647) / 2147483647 - 0.5) * 0.3
     const prof: Record<string, (k: number) => number[]> = {

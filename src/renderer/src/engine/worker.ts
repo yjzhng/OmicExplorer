@@ -16,7 +16,8 @@ import {
   previewScale,
   enrichmentTable,
   enrichmentAll,
-  buildCluster
+  buildCluster,
+  buildSampleCorrAll
 } from './index'
 import type { ContrastInput, ContrastPairInput } from './contrast'
 import { failure } from './engineError'
@@ -32,6 +33,7 @@ import type {
   VehNormInput
 } from './types'
 import type { ClusterOptions } from './plotData'
+import type { ValueScale } from './scale'
 import { curveFitSteps, driveAsync } from './direct'
 import { responseSurfaceSteps, runResponseSurface, type ResponseInput } from './responseSurface'
 import { enrichmentAllSteps } from './plotData'
@@ -72,6 +74,11 @@ export type EngineRequest =
       }
     }
   | { id: number; op: 'buildCluster'; payload: { rows: StandardRow[]; opts: ClusterOptions } }
+  | {
+      id: number
+      op: 'sampleCorr'
+      payload: { rows: StandardRow[]; activeConditions: ConditionKey[]; scale?: ValueScale }
+    }
   | {
       id: number
       op: 'enrichmentAll'
@@ -152,6 +159,8 @@ const OPS: { [O in ComputeRequest['op']]: (payload: PayloadOf<O>, id: number) =>
       : enrichmentAll(p.rows, p.opts)
   },
   buildCluster: (p) => buildCluster(p.rows, p.opts),
+  sampleCorr: (p) =>
+    buildSampleCorrAll({ rows: p.rows, activeConditions: p.activeConditions }, { scale: p.scale }),
   enrichmentTable: (p) => enrichmentTable(p.rows, p.opts, p.facet)
 }
 

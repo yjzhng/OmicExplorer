@@ -1,27 +1,20 @@
 import { type ReactNode, useMemo } from 'react'
 import { useGraph } from '../../graph/store'
 import {
-  defaultColorConds,
+  conditionColoring,
+  conditionColorWrite,
   numericOfResult,
   primaryColorLevels,
   qcColorBy,
-  qcColorConds,
   type QcConfig
 } from '../../graph/types'
-import { AUTO } from '../../ui/ColorPicker'
 import { QC_FILL } from '../../ui/theme'
-import {
-  ColorChip,
-  Field,
-  QuickToggle,
-  SampleOrderField,
-  Section,
-  Select
-} from '../kit/settings/controls'
+import { ToggleSwitch } from '../../ui/ToggleSwitch'
+import { ColorChip, Field, QuickToggle, SampleOrderField, Select } from '../kit/settings/controls'
 import { CONDS } from '../kit/settings/hooks'
 import {
-  CategoricalSection,
-  ConditionColorFields,
+  CategoricalRows,
+  ColorFadeFields,
   type PlotPanelProps,
   PlotSections
 } from '../kit/settings/plotSections'
@@ -45,11 +38,13 @@ export function QcPanel({ config, update, edgeNodeId }: PlotPanelProps<QcConfig>
   const levels = upstream?.kind === 'standardize' ? primaryColorLevels(upstream.std) : 0
   const numeric = useMemo(() => numericOfResult(upstream), [upstream])
   const byCondition = qcColorBy(config, levels) === 'condition'
+  // the colour and fade picked (or the default), as the fields show them
+  const coloring = conditionColoring(config, active, numeric)
   const color = config.color ?? QC_FILL
   return (
     <PlotSections
-      show={
-        <Section title="QC">
+      general={
+        <>
           <div style={styles.hint}>
             Per-sample quality: intensity distribution, %CV, or protein count.
           </div>
@@ -84,56 +79,68 @@ export function QcPanel({ config, update, edgeNodeId }: PlotPanelProps<QcConfig>
               />
             </Field>
           )}
-          {config.metric === 'proteins' && (
-            <Field
-              label="axis scale"
-              aside={<QuickToggle config={config} field="yScale" update={update} />}
-            >
-              <Select
-                value={config.yScale ?? 'global'}
-                onChange={(v) => update({ yScale: v as QcConfig['yScale'] })}
-                options={[
-                  { value: 'range', label: 'adjusted (fit to the counts)' },
-                  { value: 'global', label: 'global (from 0)' }
-                ]}
+          <SampleOrderField config={config} update={update} />
+        </>
+      }
+      // the count axis' range: a whole-plot row of Axes and lines
+      axes={
+        config.metric === 'proteins' && (
+          <Field
+            label="axis scale"
+            aside={<QuickToggle config={config} field="yScale" update={update} />}
+          >
+            <Select
+              value={config.yScale ?? 'global'}
+              onChange={(v) => update({ yScale: v as QcConfig['yScale'] })}
+              options={[
+                { value: 'range', label: 'adjusted (fit to the counts)' },
+                { value: 'global', label: 'global (from 0)' }
+              ]}
+            />
+          </Field>
+        )
+      }
+      colours={
+        <CategoricalRows config={config} update={update}>
+          {/* What the samples are coloured by — by condition (the picks below), or one colour — and,
+              for one colour, which. The mode is its own switch, not hidden in the colour square. */}
+          <Field label="colour by">
+            <ToggleSwitch
+              label="Colour by"
+              value={byCondition ? 'condition' : 'single'}
+              options={[
+                { value: 'condition', label: 'condition' },
+                { value: 'single', label: 'one colour' }
+              ]}
+              onChange={(v) =>
+                v === 'single'
+                  ? update({ colorBy: 'single', color })
+                  : // (what was picked before, else the default: conditionColoring)
+                    update({ colorBy: 'condition' })
+              }
+            />
+          </Field>
+          {!byCondition && (
+            <Field label="colour">
+              <ColorChip
+                color={color}
+                on
+                label="QC colour"
+                title="QC colour"
+                onPick={(c) => update({ colorBy: 'single', color: c })}
               />
             </Field>
           )}
-          <SampleOrderField config={config} update={update} />
-        </Section>
-      }
-      colours={
-        <CategoricalSection config={config} update={update}>
-          {/* One chip, as the gene bar's replicate/error colours: Automatic colours by condition (the
-                picks below), a picked colour fills every sample with it. */}
-          <Field label="colour">
-            <ColorChip
-              color={byCondition ? AUTO : color}
-              on
-              label="QC colour"
-              title={byCondition ? 'QC colour: automatic (by condition)' : 'QC colour'}
-              onPick={(c) => update({ colorBy: 'single', color: c })}
-              onAuto={() =>
-                update({
-                  colorBy: 'condition',
-                  // Start from what was there, else the first categorical condition.
-                  colorConds: config.colorConds?.length
-                    ? config.colorConds
-                    : defaultColorConds(active, numeric)
-                })
-              }
-              autoLabel="Automatic (by condition)"
-            />
-          </Field>
           {byCondition && (
-            <ConditionColorFields
+            <ColorFadeFields
               active={active}
               numeric={numeric}
-              selected={qcColorConds(config, active, levels, numeric)}
-              onChange={(next) => update({ colorConds: next })}
+              picks={coloring.picks}
+              fade={coloring.fade}
+              onChange={(picks, fade) => update(conditionColorWrite(picks, fade))}
             />
           )}
-        </CategoricalSection>
+        </CategoricalRows>
       }
     />
   )

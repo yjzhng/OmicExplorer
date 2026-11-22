@@ -28,7 +28,8 @@ import {
   axisBase,
   CATEGORICAL,
   EFFECT_COLOR,
-  GUIDE_WIDTH,
+  guideLook,
+  guideShapes,
   guideLine,
   PALETTES,
   PLOT_TEXT,
@@ -112,7 +113,7 @@ export function ScatterView({
   )
   const emphasis = useMemo(() => resolveHighlight(style), [style])
   const showLegend = legendOn(style)
-  const gw = style?.guideWidth ?? GUIDE_WIDTH
+  const { show: gShow, dash: gDash, width: gw } = guideLook(style)
 
   const editable = !!onStatDrag
   const { data, layout, labels, guides } = useMemo(() => {
@@ -226,7 +227,7 @@ export function ScatterView({
     // around it — dissonant genes sit outside. An *independent* one gets two thresholds on
     // each axis, carving the plane into 9 zones, and no line of identity.
     const g = scatter.guide
-    const gLine = guideLine(p, gw)
+    const gLine = guideLine(p, gw, gDash)
     const curve = (d: { x: number[]; y: number[] }, dashed: boolean) => ({
       type: 'scatter',
       mode: 'lines',
@@ -234,8 +235,9 @@ export function ScatterView({
       showlegend: false,
       x: d.x,
       y: d.y,
-      line: { color: p.textMuted, width: gw, dash: dashed ? 'dash' : 'solid' },
-      opacity: dashed ? 0.7 : 0.55
+      line: { color: p.textMuted, width: gw, dash: dashed ? gDash : 'solid' },
+      opacity: dashed ? 0.7 : 0.55,
+      visible: gShow
     })
     // The band's edges are path SHAPES (a guide is a shape, so they can be dragged), drawn at the
     // cutoffs in force, centred on the line the calls are measured from (a solid trace, drawn
@@ -257,7 +259,7 @@ export function ScatterView({
     const edge = (side: 1 | -1) => ({
       type: 'path',
       path: bandEdgePath(band!, side > 0 ? conf.confUp : conf.confDown, side),
-      line: { color: p.textMuted, width: gw, dash: 'dash' },
+      line: { color: p.textMuted, width: gw, dash: gDash },
       opacity: 0.7
     })
     const hLine = (y: number) => ({
@@ -289,7 +291,7 @@ export function ScatterView({
         ['bUp', 'x', g.xHi]
       ] as const)
         if (v != null) cutLines.push([key, axis, v])
-    const guideShapes =
+    const guideShapesOf: object[] =
       g?.kind === 'cutoff'
         ? cutLines.map(([, axis, v]) => (axis === 'y' ? hLine(v) : vLine(v)))
         : g?.kind === 'ols'
@@ -363,7 +365,8 @@ export function ScatterView({
       text: pt.label,
       priority: d,
       id: pt.uniqID,
-      color: labelColorOf(look(keyOf(pt)), p.text)
+      color: labelColorOf(look(keyOf(pt)), p.text),
+      fontSize: look(keyOf(pt)).labelSize
     }))
 
     const lay: Record<string, unknown> = {
@@ -381,7 +384,7 @@ export function ScatterView({
         scaleanchor: 'x',
         range: [lo, hi]
       },
-      shapes: guideShapes,
+      shapes: guideShapes(guideShapesOf, gShow),
       // Legend centered ABOVE the plot (horizontal), matching volcano/MA — a right-side legend
       // would steal plot width and shift as group names change. Fixed per config (never toggled
       // by the data) so it doesn't appear/disappear and reflow the layout.
@@ -415,7 +418,13 @@ export function ScatterView({
         }
       ]
     })
-    return { data: [...guideTraces, ...pointTraces, ...selTrace], layout: lay, labels, guides }
+    return {
+      data: [...guideTraces, ...pointTraces, ...selTrace],
+      layout: lay,
+      labels,
+      // threshold lines off: nothing to drag either
+      guides: gShow ? guides : []
+    }
   }, [
     scatter,
     title,
@@ -428,7 +437,9 @@ export function ScatterView({
     editable,
     asymmetric,
     cutText,
-    gw
+    gw,
+    gDash,
+    gShow
   ])
 
   // A released guide → its cutoff: a band edge reports its solved confidence; an axis line, the

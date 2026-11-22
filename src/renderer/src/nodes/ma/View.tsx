@@ -62,7 +62,7 @@ export function maView(v: ViewContext): ReactNode {
                 samThreshold={maSam}
                 asymmetric={threshold.asymmetric ?? false}
                 effectLabels={effectLabelsOf(maCfg)}
-                effectColors={effectsOf(cfg, maCfg)}
+                effectColors={effectsOf(cfg)}
                 style={cfg.style}
                 labelTop={labelCapOn(cfg) ? (cfg.labelTop ?? 0) : 0}
                 onThresholdChange={

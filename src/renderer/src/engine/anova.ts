@@ -28,7 +28,7 @@ import { benjaminiHochberg, studentTTwoSided } from './stats'
 import { condValue, valEq } from './compare'
 import { fSurvival } from './curveFit'
 import { fitPrior, type Moderation } from './splineFit'
-import type { CondSelector, ConditionKey, StandardRow } from './types'
+import { condLabel, type CondSelector, type ConditionKey, type StandardRow } from './types'
 
 /** A factor: a condition and the levels it takes in the model (the order fixes the coding). With
  *  `x`, a numeric condition as a **slope**: one column, linear in each level's position on its
@@ -200,7 +200,7 @@ export function anovaTerms(
   const n = factors.length
   const pick = (start: number, size: number, acc: number[]): void => {
     if (acc.length === size) {
-      out.push({ factors: acc, label: acc.map((i) => factors[i].condition).join(' × ') })
+      out.push({ factors: acc, label: acc.map((i) => condLabel(factors[i].condition)).join(' × ') })
       return
     }
     for (let i = start; i < n; i++) pick(i + 1, size, [...acc, i])

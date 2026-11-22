@@ -2,14 +2,14 @@ import type { ReactNode } from 'react'
 import { METRIC_IDS, METRIC_NAMES, type MetricId } from '../../graph/metricBars'
 import type { MetricsConfig } from '../../graph/types'
 import { ToggleSwitch } from '../../ui/ToggleSwitch'
-import { Field, QuickToggle, Section, Select } from '../kit/settings/controls'
+import { Field, QuickToggle, Select } from '../kit/settings/controls'
 import { type PlotPanelProps, PlotSections } from '../kit/settings/plotSections'
 import { type PlotSettingsProps } from '../settings'
 
 /** The Curve metrics plot: which of the fit's parameters it draws (also the tile's switch). */
 export function MetricsPanel({ config, update }: PlotPanelProps<MetricsConfig>): ReactNode {
   return (
-    <Section title="Curve metrics">
+    <>
       <Field
         label="metric"
         aside={<QuickToggle config={config} field="metric" update={update} />}
@@ -52,11 +52,11 @@ export function MetricsPanel({ config, update }: PlotPanelProps<MetricsConfig>):
           onChange={(v) => update({ show: v })}
         />
       </Field>
-    </Section>
+    </>
   )
 }
 
 /** Its settings panel (nodes/settings.ts): this plot's own sections. */
 export function Settings({ config, ...props }: PlotSettingsProps): ReactNode {
-  return <PlotSections show={<MetricsPanel config={config as MetricsConfig} {...props} />} />
+  return <PlotSections general={<MetricsPanel config={config as MetricsConfig} {...props} />} />
 }

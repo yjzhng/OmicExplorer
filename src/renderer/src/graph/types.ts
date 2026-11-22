@@ -30,7 +30,10 @@ import type {
 } from '../engine'
 import { holderTable, rowCount } from '../engine/lazyRows'
 import {
+  CLUSTER_COLOR,
+  colorByCond,
   condLabel,
+  GROUP_COLOR,
   condValue,
   crossPairs,
   curvesReplicated,
@@ -38,6 +41,7 @@ import {
   axisModelFor,
   isCustomCond,
   isNumericCond,
+  orderConds,
   VALID_CONDITIONS,
   numericConds,
   numericOf,
@@ -307,7 +311,7 @@ export interface StandardizeConfig {
   minSamplePctBy?: ConditionKey[]
   /** The scale Clean data presents its values on (its table, its written CSV): none = as the input
    *  arrived, or log₁₀ / log₂. Analyses always work from exact linear values (see engine scale.ts).
-   *  Absent = the default for the detected input scale: log₁₀ for linear input, none for logged. */
+   *  Absent = none, whatever the input scale (engine scale.ts). */
   logTransform?: 'none' | 'log2' | 'log10'
   /** median normalisation on/off (absent = off) */
   normalizeEnabled?: boolean
@@ -486,9 +490,6 @@ export interface CompareConfig {
   /** display names for the effect classes (legends, tables); absent = "down" / "up" / "none".
    *  Display-only — never stales the result (see setCompareEffectLabels). */
   effectLabels?: EffectLabels
-  /** colours for the effect classes, inherited by every plot the Compare feeds (a plot can
-   *  override its own); absent = the shared red / blue / grey. Display-only, as the labels. */
-  effectColors?: Partial<EffectColors>
 }
 
 /** The molar units the app knows, with their size in molar. A unit is free text (CondUnits); one
@@ -723,31 +724,22 @@ export const fcPaletteOf = (plot: FcPaletteConfig | undefined, global: PaletteRe
   toPaletteRef(plot?.fcPalette) ?? global
 /**
  * The colours a plot draws its effect groups in, most specific first: the plot's own colour for
- * the group; sampled from the plot's own palette, when it has one; the Compare's colour for the
- * group; sampled from the global palette (down its low end, none its middle, up its high end).
+ * the group; else sampled from its FC palette — the plot's own, or the global one (Settings →
+ * Customisation) — down its low end, none its middle, up its high end. (The Compare names the
+ * classes; it doesn't colour them: a plot's colours are the plot's.)
  */
 export function plotEffectColors(
   own: PlotEffectColors | undefined,
-  compare: Pick<CompareConfig, 'effectColors'> | undefined,
   global: PaletteRef = ROLE_DEFAULTS.fcObject,
   plotPalette?: PaletteRef
 ): EffectColors {
-  const own_ = toPaletteRef(plotPalette)
-  const sampled = paletteEffectColors(own_ ?? global)
+  const sampled = paletteEffectColors(toPaletteRef(plotPalette) ?? global)
   const pick = (k: 'up' | 'down' | 'none'): string => {
     const c = own?.[k]
-    if (c && c !== 'auto') return c
-    if (own_) return sampled[k]
-    const fromCompare = compare?.effectColors?.[k]
-    return fromCompare && fromCompare !== 'auto' ? fromCompare : sampled[k]
+    return c && c !== 'auto' ? c : sampled[k]
   }
   return { up: pick('up'), down: pick('down'), none: pick('none') }
 }
-/** A Compare's effect colours: its own where set, else sampled from the (global) palette. */
-export const effectColorsOf = (
-  c: Pick<CompareConfig, 'effectColors'> | undefined,
-  global: PaletteRef = ROLE_DEFAULTS.fcObject
-): EffectColors => plotEffectColors(undefined, c, global)
 /** A Compare's effect names with defaults filled in (blank entries fall back too). */
 export const effectLabelsOf = (
   c: Pick<CompareConfig, 'effectLabels'> | undefined
@@ -960,8 +952,8 @@ export interface PlotAxes {
   y?: AxisStyle
 }
 
-/** A plot's legend switch, plot-wide (the Legend section): false hides the legend and the colour
- *  scale bars; unset = shown. (A point plot saved before the Legend section may still carry its
+/** A plot's legend switch, plot-wide (General's "show legend"): false hides the legend and the colour
+ *  scale bars; unset = shown. (A point plot saved before the plot-wide switch may still carry its
  *  old switch in `style.legend` — see legendShown.) */
 export interface LegendConfig {
   legend?: boolean
@@ -1000,6 +992,8 @@ export interface GroupStyle {
   label?: boolean
   /** its labels' text colour; unset (or automatic) = the group's own marker colour */
   labelColor?: string
+  /** its labels' font size (px); unset = the plots' label size (PLOT_TEXT.label) */
+  labelSize?: number
   /** whether this group has a legend entry (default on; moot while the legend is hidden) */
   legend?: boolean
   /** how THIS group's points look when selected/hovered, and how they fade when others are.
@@ -1038,7 +1032,10 @@ export interface PointStyle {
   highlight?: HighlightStyle
   /** show the legend (default on) */
   legend?: boolean
-  /** the threshold / reference guide lines' width, px (unset = GUIDE_WIDTH, 0.5) */
+  /** the threshold / reference guide lines — Axes and lines › Threshold lines, as the other lines
+   *  there: shown (unset = on), style (unset = dashed), width px (unset = GUIDE_WIDTH, 0.5) */
+  guideShow?: boolean
+  guideStyle?: LineStyle
   guideWidth?: number
 }
 
@@ -1074,6 +1071,9 @@ export interface HeatmapConfig extends FcPaletteConfig {
   linkage?: HeatmapLinkage
   /** a fold-change heatmap's leaf order; unset = by mean (see HEATMAP_LEAF_ORDERS) */
   leafOrder?: LeafOrder
+  /** what a fold-change heatmap's condition columns are clustered on: the size and pattern of
+   *  their changes (unset), or the pattern alone (see HEATMAP_COND_DISTANCES) */
+  condDistance?: HeatmapCondDistance
   /** A fold-change heatmap's gene clustering look: the tree cut into at most `dendroClades`
    *  clusters (unset = DENDRO_CLADES_DEFAULT), a coloured bar over each (modules), the tree itself,
    *  and the bars' palette (unset = the global categorical one). Modules and tree unset = hidden. */
@@ -1106,11 +1106,173 @@ export function defaultColorConds(
  *  that it still includes (a later pick of colorBy alone — the tile's switch — supersedes it), else
  *  colorBy alone; none for the cluster colouring. */
 export function clusterColorConds(c: ClusterConfig, numeric: NumericConds): ConditionKey[] {
-  if (c.colorBy === 'cluster') return []
-  const by = c.colorBy as ConditionKey
+  if (!colorByCond(c.colorBy)) return []
+  const by = c.colorBy
   // the shade is added to a categorical colour only (the picker shows for those alone)
   return !isNumericCond(by, numeric) && c.colorConds?.includes(by) ? c.colorConds.slice(0, 2) : [by]
 }
+
+/** The conditions a cluster coloured by its condition groups (`colorBy: 'groups'`) combines: its
+ *  `groupConds` the data still carries, else every one of `active` — one colour per condition
+ *  group. In `active`'s order, so the group names read the same way whatever order they were
+ *  picked in. */
+export function clusterGroupConds(
+  c: Pick<ClusterConfig, 'groupConds'>,
+  active: readonly ConditionKey[]
+): ConditionKey[] {
+  const picked = active.filter((k) => c.groupConds?.includes(k))
+  return picked.length ? picked : [...active]
+}
+
+/** What a plot coloured by condition colours and fades by: the conditions the colours stand for
+ *  (several: every combination its own colour) and the numeric one fading them (null: none). */
+export interface ConditionColoring {
+  picks: ConditionKey[]
+  fade: ConditionKey | null
+}
+
+/** A plot's default colouring by condition (PCA, QC, gene bar), in the default condition order
+ *  (cell → cmpd → dose → time → customs): every categorical condition on colour, and the first
+ *  numeric one left over as the fade. With no categorical condition at all, the first condition
+ *  colours. */
+export function defaultConditionColoring(
+  active: readonly ConditionKey[],
+  numeric: NumericConds
+): ConditionColoring {
+  const conds = orderConds(active)
+  const cats = conds.filter((k) => !isNumericCond(k, numeric))
+  const picks = cats.length ? cats : conds.slice(0, 1)
+  const fade = conds.find((k) => isNumericCond(k, numeric) && !picks.includes(k)) ?? null
+  return { picks, fade }
+}
+
+/** What a QC or gene bar plot coloured by condition colours and fades by, as the settings show them
+ *  (in the default condition order): its `colorPicks` the data still carries and its `fadeCond`
+ *  (numeric, never a colour condition); else an older config's `colorConds` (its categorical one
+ *  the colour, its numeric one the fade — a numeric one alone the colour); else the default
+ *  (defaultConditionColoring). */
+export function conditionColoring(
+  c: { colorPicks?: ConditionKey[]; fadeCond?: ConditionKey; colorConds?: ConditionKey[] },
+  active: readonly ConditionKey[],
+  numeric: NumericConds
+): ConditionColoring {
+  const conds = orderConds(active)
+  const kept = (ks: readonly ConditionKey[]): ConditionKey[] => conds.filter((k) => ks.includes(k))
+  const valid = (
+    picks: ConditionKey[],
+    fade: ConditionKey | null | undefined
+  ): ConditionColoring => ({
+    picks,
+    fade:
+      fade && conds.includes(fade) && isNumericCond(fade, numeric) && !picks.includes(fade)
+        ? fade
+        : null
+  })
+  const picks = kept(c.colorPicks ?? [])
+  if (picks.length) return valid(picks, c.fadeCond)
+  if (!c.colorPicks && c.colorConds?.length) {
+    const old = kept(c.colorConds)
+    const cats = old.filter((k) => !isNumericCond(k, numeric))
+    if (cats.length)
+      return valid(
+        cats.slice(0, 1),
+        old.find((k) => isNumericCond(k, numeric))
+      )
+    if (old.length) return valid(old.slice(0, 1), null)
+  }
+  return defaultConditionColoring(active, numeric)
+}
+
+/** The config a pick of colour conditions and a fade writes, for QC and the gene bar. */
+export const conditionColorWrite = (
+  picks: readonly ConditionKey[],
+  fade: ConditionKey | null
+): { colorPicks: ConditionKey[]; fadeCond: ConditionKey | undefined; colorConds: undefined } => ({
+  colorPicks: [...picks],
+  fadeCond: fade && !picks.includes(fade) ? fade : undefined,
+  colorConds: undefined
+})
+
+/** What a cluster coloured by conditions colours and fades by, as the settings show them (in the
+ *  default condition order): its `colorPicks` the data still carries and its `fadeCond` (numeric,
+ *  never a colour condition); else, on an older config, read back from its colouring — the
+ *  condition groups' conditions, or the condition and its shade; else — a new plot (`colorPicks:
+ *  []`), coloured by cluster before any pick, or a pick the data no longer carries — the default
+ *  (defaultConditionColoring). */
+export function clusterColoring(
+  c: ClusterConfig,
+  active: readonly ConditionKey[],
+  numeric: NumericConds
+): { picks: ConditionKey[]; fade: ConditionKey | null } {
+  const conds = orderConds(active)
+  const kept = (ks: readonly ConditionKey[]): ConditionKey[] => conds.filter((k) => ks.includes(k))
+  const valid = (picks: ConditionKey[], fade: ConditionKey | null | undefined) => ({
+    picks,
+    fade:
+      fade && conds.includes(fade) && isNumericCond(fade, numeric) && !picks.includes(fade)
+        ? fade
+        : null
+  })
+  const picks = kept(c.colorPicks ?? [])
+  if (picks.length) return valid(picks, c.fadeCond)
+  if (!c.colorPicks) {
+    if (c.colorBy === GROUP_COLOR) return valid(clusterGroupConds(c, conds), null)
+    const two = clusterTwoConds(c, numeric)
+    const old = kept(two?.color ?? clusterColorConds(c, numeric))
+    if (old.length) return valid(old, two?.shade)
+  }
+  return defaultConditionColoring(active, numeric)
+}
+
+/** The conditions a cluster colours by (see clusterColoring). */
+export const clusterColorPicks = (
+  c: ClusterConfig,
+  active: readonly ConditionKey[],
+  numeric: NumericConds
+): ConditionKey[] => clusterColoring(c, active, numeric).picks
+
+/** The condition a cluster coloured by conditions fades by (light = low → dark = high), null for
+ *  none (see clusterColoring). */
+export const clusterFadeCond = (
+  c: ClusterConfig,
+  active: readonly ConditionKey[],
+  numeric: NumericConds
+): ConditionKey | null => clusterColoring(c, active, numeric).fade
+
+/** The config a pick of colour conditions (and a fade) writes — the user's choice as made, nothing
+ *  inferred from the conditions' types: the picks, the fade, and what the run and the simple
+ *  drawing read from them (one condition: its own colours; several: every distinct combination its
+ *  own colour). With a fade, the view draws it by the complex legend (clusterFadeScheme). */
+export function clusterColorWrite(
+  picks: readonly ConditionKey[],
+  fade: ConditionKey | null
+): Pick<ClusterConfig, 'colorBy' | 'colorConds' | 'groupConds' | 'colorPicks' | 'fadeCond'> {
+  const list = [...picks]
+  return {
+    colorPicks: list,
+    fadeCond: fade && !list.includes(fade) ? fade : undefined,
+    colorBy: list.length === 1 ? list[0] : GROUP_COLOR,
+    groupConds: list.length === 1 ? undefined : list,
+    colorConds: undefined
+  }
+}
+
+/** A cluster coloured by conditions with a fade: the scheme its complex drawing takes — the
+ *  colour conditions as picked (several: hue families, every combination distinct), the fade as
+ *  the shade, no arrows. Null without a fade, or coloured by cluster. */
+export function clusterFadeScheme(
+  c: ClusterConfig,
+  active: readonly ConditionKey[],
+  numeric: NumericConds
+): { color: ConditionKey[]; shade: ConditionKey; arrow: 'none' } | null {
+  if (c.colorBy === CLUSTER_COLOR) return null
+  const shade = clusterFadeCond(c, active, numeric)
+  return shade ? { color: clusterColorPicks(c, active, numeric), shade, arrow: 'none' } : null
+}
+
+/** Whether a cluster is coloured by its computed clusters (else by conditions). */
+export const clusterByCluster = (c: Pick<ClusterConfig, 'colorBy'>): boolean =>
+  c.colorBy === CLUSTER_COLOR
 
 /** A cluster coloured by two conditions (`colorConds`: a colour and a shade): the scheme its
  *  multi-condition drawing takes (ClusterView's complex build) — the colour by the one, the shade
@@ -1182,6 +1344,13 @@ export const HEATMAP_LINKAGES: Record<HeatmapLinkage, string> = {
   ward: 'Ward (compact, even-sized clusters)',
   complete: 'complete (farthest pair — tight clusters)'
 }
+/** What a fold-change heatmap's condition columns are clustered on (the genes: always on their
+ *  changes as they are, size included). */
+export type HeatmapCondDistance = 'size' | 'pattern'
+export const HEATMAP_COND_DISTANCES: Record<HeatmapCondDistance, string> = {
+  size: 'size and pattern (euclidean)',
+  pattern: 'pattern only (correlation)'
+}
 /** …and its leaf orders. */
 export const HEATMAP_LEAF_ORDERS: Record<LeafOrder, string> = {
   mean: 'by mean (branches low → high log₂FC)',
@@ -1192,16 +1361,18 @@ export const HEATMAP_LEAF_ORDERS: Record<LeafOrder, string> = {
  *  single condition key in `colorBy` too. Unset (a new tile) → by condition while the primary
  *  condition's levels fit the palette, else by value (condColorByDefault). Coloured by condition with none picked yet → the default
  *  (defaultColorConds of the data's `active` conditions). */
-export function barColorConds(
+export function barColoring(
   c: BarConfig,
   active: readonly ConditionKey[],
   levels: number,
   numeric: NumericConds
-): ConditionKey[] {
+): ConditionColoring | null {
   const by = c.colorBy ?? (condColorByDefault(levels) ? 'condition' : 'value')
-  if (by === 'condition') return (c.colorConds ?? defaultColorConds(active, numeric)).slice(0, 2)
-  if (by !== 'value') return [by]
-  return []
+  if (by === 'condition') return conditionColoring(c, active, numeric)
+  // (an older config's single condition key)
+  if (by !== 'value')
+    return conditionColoring({ colorPicks: active.includes(by) ? [by] : [] }, active, numeric)
+  return null
 }
 
 export const heatmapCapOn = (c: HeatmapConfig): boolean => capOn(c.capEnabled, c.maxGenes)
@@ -1286,6 +1457,9 @@ export interface DRConfig extends FcPaletteConfig {
   /** a response surface method curve fit: draw its description 4PL ('curve', default) or the
    *  spline its detection fitted ('spline') */
   model?: 'spline' | 'curve'
+  /** the categorical palette its lines take a colour each from — a gene each (global, detailed),
+   *  a comparison each (focused, several), a side each (from a Contrast); unset = the global one */
+  categorical?: import('../ui/palettes').CategoricalId
   /** cap genes: explicit switch (undefined on older configs → inferred from topGenes > 0) */
   capEnabled?: boolean
   /** cap genes: colour only the top-N most-differential genes (applied only while `capEnabled`;
@@ -1737,7 +1911,7 @@ export interface CurveMadConfig {
 /** Bubble grid (compare) over dose or time, one gene per row. */
 export interface BubbleConfig extends FcPaletteConfig {
   axis: ConditionKey
-  /** the up / down / none colours, this plot's own; unset (or 'auto') = the upstream Compare's */
+  /** the up / down / none colours, this plot's own; unset (or 'auto') = from its FC palette */
   effectColors?: PlotEffectColors
   /** cap genes: explicit switch (undefined on older configs → inferred from topGenes > 0) */
   capEnabled?: boolean
@@ -1827,7 +2001,7 @@ export interface BarConfig {
   sampleOrder?: SampleOrder
   /** which settings the tile surfaces as quick-access switch bars (unset = all) */
   quick?: QuickAccess
-  /** each replicate drawn as a dot over its bar (off by default) */
+  /** each replicate drawn as a dot over its bar (on for a new tile — the spec's default) */
   replicates?: boolean
   /** replicate dot size (px; default 6) and opacity (0–1; default 0.6) */
   repSize?: number
@@ -1846,11 +2020,15 @@ export interface BarConfig {
   errorColor?: string
   /** bar fill: by value or by condition (`colorConds`); unset = by condition with few samples, by
    *  value with many. An older config may hold a single condition key here — read it through
-   *  barColorConds. */
+   *  barColoring. */
   colorBy?: 'value' | 'condition' | ConditionKey
-  /** colour by condition: up to two — one categorical (the colour) and one numeric, dose or time
-   *  (the shade, light = low → dark = high) */
+  /** Older configs' colour by condition: up to two — one categorical (the colour) and one numeric
+   *  (the fade). Read back through conditionColoring; new picks go to colorPicks / fadeCond. */
   colorConds?: ConditionKey[]
+  /** colour by condition: the conditions the colours stand for (see conditionColoring) */
+  colorPicks?: ConditionKey[]
+  /** colour by condition: the numeric condition fading them, at most one */
+  fadeCond?: ConditionKey
   /** x / y axis overrides (title, fonts, range, ticks, grid, line); unset = the view's layout */
   axes?: PlotAxes
 }
@@ -1859,7 +2037,7 @@ export interface BarConfig {
  *  significant gene set, drawn as a dot or bar plot. Reads the annotations fetched in the
  *  interactive import. */
 export interface EnrichConfig extends FcPaletteConfig {
-  /** the up / down / none colours, this plot's own; unset (or 'auto') = the upstream Compare's */
+  /** the up / down / none colours, this plot's own; unset (or 'auto') = from its FC palette */
   effectColors?: PlotEffectColors
   /** 'ora' = over-representation (hypergeometric); 'gsea' reserved (ranked, not yet computed). */
   method: 'ora' | 'gsea'
@@ -1880,7 +2058,7 @@ export interface EnrichConfig extends FcPaletteConfig {
  *  Species comes from the interactive-import annotation fetch (NCBI taxon); a non-zero `species`
  *  here overrides it. Nodes = genes coloured by log₂FC, sized by degree; edges = STRING confidence. */
 export interface StringConfig extends FcPaletteConfig {
-  /** the up / down / none colours, this plot's own; unset (or 'auto') = the upstream Compare's */
+  /** the up / down / none colours, this plot's own; unset (or 'auto') = from its FC palette */
   effectColors?: PlotEffectColors
   /** STRING confidence cutoff bucket (maps to required_score 150/400/700/900); unset = auto, the
    *  highest level at which the query genes still have a network (medium with interactors on) */
@@ -1927,9 +2105,15 @@ export interface QcConfig {
   colorBy?: 'single' | 'condition'
   /** the single fill colour (default the QC steel blue) */
   color?: string
-  /** colour by condition: up to two — one categorical (the colour) and one numeric, dose or time
-   *  (the shade, light = low → dark = high), as the gene bar does */
+  /** Older configs' colour by condition: up to two — one categorical (the colour) and one numeric
+   *  (the fade). Read back through conditionColoring; new picks go to colorPicks / fadeCond. */
   colorConds?: ConditionKey[]
+  /** colour by condition: the conditions the colours stand for (several: every combination its own
+   *  colour) — see conditionColoring */
+  colorPicks?: ConditionKey[]
+  /** colour by condition: the numeric condition fading them (light = low → dark = high), at most
+   *  one, never a colour condition */
+  fadeCond?: ConditionKey
   /** which of this plot's settings the tile surfaces as quick-access switch bars (unset = all;
    *  the gear always carries every setting). Keyed by config field. */
   quick?: QuickAccess
@@ -1942,20 +2126,21 @@ export interface QcConfig {
 export const qcColorBy = (c: QcConfig, levels: number): 'single' | 'condition' =>
   c.colorBy ?? (condColorByDefault(levels) ? 'condition' : 'single')
 
-/** The conditions a QC plot colours by — none when it uses its single colour; none picked yet (a
- *  new tile) → the default (defaultColorConds of the data's `active` conditions). */
-export const qcColorConds = (
+/** What a QC plot colours and fades by (conditionColoring) — null when it uses its single
+ *  colour. */
+export const qcColoring = (
   c: QcConfig,
   active: readonly ConditionKey[],
   levels: number,
   numeric: NumericConds
-): ConditionKey[] =>
-  qcColorBy(c, levels) === 'condition'
-    ? (c.colorConds ?? defaultColorConds(active, numeric)).slice(0, 2)
-    : []
+): ConditionColoring | null =>
+  qcColorBy(c, levels) === 'condition' ? conditionColoring(c, active, numeric) : null
 
 /** Sample correlation matrix (standardize): all-samples × all-samples Pearson r heatmap. */
 export interface CorrConfig {
+  /** how each sample pair is scored (unset = Pearson r) — see CorrMetric; a metric no longer
+   *  offered reads as Pearson (corrMetricOf) */
+  metric?: import('../engine').CorrMetric | 'gini' | 'lorenz'
   /** cluster samples by correlation profile so replicate groups block on the diagonal */
   cluster: boolean
   /** the samples' order while they aren't clustered (unset = natural) — see SampleOrder; read
@@ -2087,6 +2272,18 @@ export interface ClusterConfig {
    *  numeric, dose or time (the shade, light = low → dark = high), as QC and the gene bar do.
    *  Unset = `colorBy` alone; read only while it includes `colorBy` (see clusterColorConds). */
   colorConds?: ConditionKey[]
+  /** `colorBy: 'groups'` only — the conditions whose every distinct combination is a colour
+   *  (cmpd × time: a colour per compound at each time). Unset = every condition the data carries,
+   *  a colour per condition group (see clusterGroupConds). */
+  groupConds?: ConditionKey[]
+  /** Coloured by conditions: the colour conditions picked (the settings' multi-select). `colorBy`
+   *  and `groupConds` are written from it (clusterColorWrite) and are what the run and the simple
+   *  drawing read; this keeps the pick itself, so colouring by cluster and back restores it.
+   *  Unset (older configs) = read back from those (clusterColorPicks). */
+  colorPicks?: ConditionKey[]
+  /** Coloured by conditions: the numeric condition the colours fade by (light = low → dark =
+   *  high), at most one and never a colour condition (see clusterFadeCond). Unset = no fade. */
+  fadeCond?: ConditionKey
   /** `colorBy: 'cluster'` only — what the grouping is computed from. 'coords' clusters the embedded
    *  x/y, so colours always match the visual grouping; 'features' clusters the high-dimensional
    *  matrix, so the grouping is the real structure and is the same under PCA/UMAP/t-SNE. */
@@ -2365,6 +2562,9 @@ export type NodeResult =
    *  (`ran`, see clusterRunOf) — its view settings (colour by a condition, plot, territory, look)
    *  draw from it without another run */
   | { kind: 'cluster'; cluster: ClusterData; ran: ClusterRun }
+  /** a correlation plot's sample-pair matrix under every metric (in the worker) — the metric,
+   *  clustering and sample order on the tile arrange it without another run */
+  | { kind: 'corr'; corr: import('../engine').SampleCorrAll }
 
 /** The numeric conditions of a data result's dataset — its condition schema (dose and time, plus
  *  the custom ones declared numeric at import), as Clean data recorded it and Compare / Contrast

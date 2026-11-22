@@ -4,16 +4,34 @@
 
 export type ColKind = 'id' | 'sample' | 'cond' | 'label' | 'plain'
 
-/** A picture with nothing to fill in, written `[[name]]`. */
-export const FIXED_VISUALS = [
-  'layouts',
-  'run-states',
-  'protein-groups',
-  'log-shapes',
-  'gene-selector',
-  'tile'
-] as const
+/** A picture with nothing to fill in, written `[[name]]` on a line of its own. */
+export const FIXED_VISUALS = ['layouts', 'run-states', 'protein-groups', 'log-shapes'] as const
 export type FixedVisual = (typeof FIXED_VISUALS)[number]
+
+/** One of the app's own buttons, written `[[name]]` within a line: drawn inline in the guide as the
+ *  real element (guideUi.tsx), so the guide shows exactly what the app shows. */
+export const UI_ELEMENTS = [
+  'home',
+  'save',
+  'save-as',
+  'undo',
+  'redo',
+  'editor-layout',
+  'run',
+  'rerun',
+  'retry',
+  'stop',
+  'project-folder',
+  'guide',
+  'settings',
+  'new-step',
+  'results',
+  'copy',
+  'download',
+  'export-data',
+  'tile-settings'
+] as const
+export type UiElement = (typeof UI_ELEMENTS)[number]
 
 export type GuideBlock =
   | { type: 'p'; text: string }
@@ -21,6 +39,8 @@ export type GuideBlock =
   | { type: 'ul'; items: string[] }
   | { type: 'visual'; name: FixedVisual }
   | { type: 'steps'; steps: { title: string; text: string }[] }
+  /** workflow steps drawn as the canvas's own tiles: a node kind (e.g. `standardize`) and a line */
+  | { type: 'tiles'; tiles: { kind: string; text: string }[] }
   | {
       type: 'folder'
       entries: { name: string; depth: number; folder: boolean; note?: string }[]
@@ -62,6 +82,14 @@ function fenced(info: string, body: string[]): GuideBlock {
         steps: lines.map((l) => {
           const [title, text] = pair(l)
           return { title, text }
+        })
+      }
+    case 'tiles':
+      return {
+        type: 'tiles',
+        tiles: lines.map((l) => {
+          const [kind, text] = pair(l)
+          return { kind, text }
         })
       }
     case 'folder':
@@ -191,18 +219,116 @@ export function parseGuide(md: string): GuidePage[] {
   return pages
 }
 
-export type InlinePart = { kind: 'text' | 'bold' | 'code'; text: string }
+export type InlinePart =
+  | { kind: 'text' | 'bold' | 'code'; text: string }
+  | { kind: 'ui'; name: UiElement }
+  /** a `[[name]]` that names no element: shown as written, so a typo is visible */
+  | { kind: 'unknown'; text: string }
 
-/** `**bold**` and `` `code` `` within a line of text. Code is literal (no bold inside it). */
+/** `**bold**`, `` `code` `` and `[[element]]` within a line of text. Code is literal (nothing
+ *  parsed inside it). */
 export function parseInline(text: string): InlinePart[] {
   const parts: InlinePart[] = []
-  const re = /`([^`]+)`|\*\*(.+?)\*\*/g
+  const re = /`([^`]+)`|\*\*(.+?)\*\*|\[\[\s*([\w-]+)\s*\]\]/g
   let last = 0
   for (let m = re.exec(text); m; m = re.exec(text)) {
     if (m.index > last) parts.push({ kind: 'text', text: text.slice(last, m.index) })
-    parts.push(m[1] !== undefined ? { kind: 'code', text: m[1] } : { kind: 'bold', text: m[2] })
+    if (m[1] !== undefined) parts.push({ kind: 'code', text: m[1] })
+    else if (m[2] !== undefined) parts.push({ kind: 'bold', text: m[2] })
+    else
+      parts.push(
+        (UI_ELEMENTS as readonly string[]).includes(m[3])
+          ? { kind: 'ui', name: m[3] as UiElement }
+          : { kind: 'unknown', text: m[0] }
+      )
     last = m.index + m[0].length
   }
   if (last < text.length) parts.push({ kind: 'text', text: text.slice(last) })
   return parts
+}
+
+/** A line's words as plain text: markup dropped, an app element dropped (it has no words). */
+function plain(text: string): string {
+  return parseInline(text)
+    .map((p) => (p.kind === 'ui' ? '' : p.text))
+    .join('')
+}
+
+/** A block's words as plain text, for search. Pictures have none. */
+export function blockText(b: GuideBlock): string {
+  switch (b.type) {
+    case 'p':
+    case 'h':
+      return plain(b.text)
+    case 'ul':
+      return b.items.map(plain).join(' ')
+    case 'steps':
+      return b.steps.map((s) => `${s.title} ${plain(s.text)}`).join(' ')
+    case 'tiles':
+      return b.tiles.map((t) => plain(t.text)).join(' ')
+    case 'folder':
+      return b.entries.map((e) => `${e.name} ${e.note ?? ''}`).join(' ')
+    case 'table':
+      return [b.head, ...b.rows].map((r) => r.map(plain).join(' ')).join(' ')
+    case 'levels':
+      return `${b.source} ${b.levels.map((l) => `${l.label} ${l.example}`).join(' ')}`
+    default:
+      return ''
+  }
+}
+
+/** The words of a search: lowercased, split on spaces. */
+export function searchWords(query: string): string[] {
+  return query.toLowerCase().split(/\s+/).filter(Boolean)
+}
+
+export interface GuideHit {
+  page: GuidePage
+  /** the block's index in its page */
+  block: number
+  /** the `###` heading the block sits under, if any */
+  heading: string | null
+  /** the block's text around the first match */
+  snippet: { before: string; match: string; after: string }
+}
+
+/** The blocks that match a search, in reading order: every word must appear in the block, or in
+ *  its page title or heading, and at least one in the block itself (so a page title alone doesn't
+ *  list every paragraph under it). */
+export function searchGuide(pages: GuidePage[], query: string, limit = 80): GuideHit[] {
+  const words = searchWords(query)
+  if (!words.length) return []
+  const hits: GuideHit[] = []
+  for (const page of pages) {
+    let heading: string | null = null
+    page.blocks.forEach((b, block) => {
+      if (b.type === 'h') heading = plain(b.text)
+      if (hits.length >= limit) return
+      const text = blockText(b).replace(/\s+/g, ' ').trim()
+      const low = text.toLowerCase()
+      const around = `${page.title} ${heading ?? ''}`.toLowerCase()
+      if (!words.every((w) => low.includes(w) || around.includes(w))) return
+      const at = words
+        .map((w) => [low.indexOf(w), w.length] as const)
+        .filter(([i]) => i >= 0)
+        .sort((a, b) => a[0] - b[0])[0]
+      if (!at) return
+      const [i, n] = at
+      // a little context either side, cut at a space
+      const from = i <= 40 ? 0 : text.lastIndexOf(' ', i - 40) + 1
+      const toAt = text.indexOf(' ', i + n + 70)
+      const to = toAt < 0 ? text.length : toAt
+      hits.push({
+        page,
+        block,
+        heading,
+        snippet: {
+          before: (from > 0 ? '…' : '') + text.slice(from, i),
+          match: text.slice(i, i + n),
+          after: text.slice(i + n, to) + (to < text.length ? '…' : '')
+        }
+      })
+    })
+  }
+  return hits
 }

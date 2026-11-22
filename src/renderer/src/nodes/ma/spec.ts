@@ -16,6 +16,7 @@ export const maSpec = defineSpec<'ma'>({
     tileHint: 'Abundance vs log₂FC. Select to view.',
     configurable: true,
     legend: 'groups',
-    axes: true
+    axes: true,
+    guides: true
   }
 })

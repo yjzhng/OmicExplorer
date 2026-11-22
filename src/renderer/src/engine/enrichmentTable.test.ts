@@ -39,7 +39,7 @@ describe('enrichmentTable', () => {
       numericConditions: []
     })
     const facets = new Set(t.map((r) => r.facet))
-    expect(facets).toEqual(new Set(['cmpd=X · dose=1', 'cmpd=X · dose=10']))
+    expect(facets).toEqual(new Set(['X · dose 1', 'X · dose 10']))
     const a = t.filter((r) => r.term === 'pathway A')
     expect(a).toHaveLength(2) // once per facet
     expect(a.every((r) => r.direction === 'up' && typeof r.NES === 'number')).toBe(true)
@@ -49,8 +49,8 @@ describe('enrichmentTable', () => {
     const t = enrichmentTable(
       rows.filter((r) => r.dose === 1),
       { method: 'gsea', source: 'go', annotationMap: ann, numericConditions: [] },
-      'dose=1'
+      'dose 1'
     )
-    expect(new Set(t.map((r) => r.facet))).toEqual(new Set(['dose=1']))
+    expect(new Set(t.map((r) => r.facet))).toEqual(new Set(['dose 1']))
   })
 })

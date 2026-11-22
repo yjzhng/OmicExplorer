@@ -1,22 +1,15 @@
 import { type ReactNode } from 'react'
 import { useGraph } from '../../graph/store'
+import { DR_DETAIL_CAP, type DRConfig, drYScale, isComparisonKind, isStep } from '../../graph/types'
+import { CapRow, Field, QuickToggle, Select } from '../kit/settings/controls'
 import {
-  capOn,
-  DR_DETAIL_CAP,
-  type DRConfig,
-  drYScale,
-  isComparisonKind,
-  isStep
-} from '../../graph/types'
-import { OnOffSwitch } from '../../ui/ToggleSwitch'
-import { Field, NumberInput, QuickToggle, Section, Select } from '../kit/settings/controls'
-import {
-  ColourSection,
+  CategoricalSelect,
+  ColourRows,
   DRStyleSection,
+  Ec50LineField,
   type PlotPanelProps,
   PlotSections
 } from '../kit/settings/plotSections'
-import { styles } from '../kit/settings/styles'
 import { type PlotSettingsProps } from '../settings'
 
 export function DRPanel({ config, update, edgeNodeId }: PlotPanelProps<DRConfig>) {
@@ -44,96 +37,71 @@ export function DRPanel({ config, update, edgeNodeId }: PlotPanelProps<DRConfig>
   const detailed = fromCompare && config.view === 'detail'
   return (
     <PlotSections
-      show={
-        (fromContrast || fromCompare) && (
-          <Section title="Response">
-            {fromCompare && (
-              <Field
-                label="view"
-                aside={<QuickToggle config={config} field="view" update={update} />}
-              >
-                <Select
-                  value={config.view ?? 'overview'}
-                  onChange={(v) => update({ view: v as DRConfig['view'] })}
-                  options={[
-                    { value: 'overview', label: 'global (every gene)' },
-                    { value: 'detail', label: 'detailed (the coloured genes, in full)' },
-                    { value: 'focus', label: 'focused (one gene)' }
-                  ]}
-                />
-              </Field>
-            )}
-            {/* Top genes is a setting OF the global view (it only decides which of the every-gene
-                        curves are coloured — or, detailed, which are drawn), so it sits under view and goes
-                        away when focused. */}
-            {fromCompare && config.view !== 'focus' && (
-              <div style={styles.subGroup}>
-                <Field label="top genes">
-                  <OnOffSwitch
-                    on={capOn(config.capEnabled, config.topGenes)}
-                    label="Top genes"
-                    onChange={(next) =>
-                      // First switch-on with no N yet → a sensible starting point.
-                      update({
-                        capEnabled: next,
-                        ...(next && !(config.topGenes > 0) ? { topGenes: 10 } : null)
-                      })
-                    }
-                  />
-                </Field>
-                {capOn(config.capEnabled, config.topGenes) && (
-                  <Field label="n">
-                    <div style={{ width: 90 }}>
-                      <NumberInput
-                        value={config.topGenes}
-                        step={10}
-                        min={1}
-                        onChange={(v) => update({ topGenes: Math.max(1, Math.round(v)) })}
-                      />
-                    </div>
-                  </Field>
-                )}
-                <div style={styles.hint}>
-                  {detailed ? (
-                    <>
-                      {capOn(config.capEnabled, config.topGenes)
-                        ? `Draw the top ${config.topGenes} genes by response`
-                        : 'Draw the top genes by response'}
-                      {` (up to ${DR_DETAIL_CAP})`}; picked from the selected genes while any are
-                      selected.
-                    </>
-                  ) : (
-                    <>
-                      {capOn(config.capEnabled, config.topGenes)
-                        ? `Colour the top ${config.topGenes} genes by response`
-                        : 'Colour every significant gene'}
-                      ; every gene stays drawn in the background. Selected genes are coloured
-                      instead while any are selected.
-                    </>
-                  )}
-                </div>
-              </div>
-            )}
-            {(fromContrast || (fromCompare && (focused || detailed))) && (
-              <Field
-                label="axis scale"
-                aside={<QuickToggle config={config} field="yScale" update={update} />}
-              >
-                <Select
-                  value={drYScale(config, fromContrast)}
-                  onChange={(v) => update({ yScale: v as DRConfig['yScale'] })}
-                  options={[
-                    { value: 'gene', label: 'adjusted (each gene’s own range)' },
-                    {
-                      value: 'global',
-                      label: fromContrast ? 'global (whole contrast)' : 'global (all genes)'
-                    }
-                  ]}
-                />
-              </Field>
-            )}
-          </Section>
+      general={
+        fromCompare && (
+          <Field label="view" aside={<QuickToggle config={config} field="view" update={update} />}>
+            <Select
+              value={config.view ?? 'overview'}
+              onChange={(v) => update({ view: v as DRConfig['view'] })}
+              options={[
+                { value: 'overview', label: 'global (every gene)' },
+                { value: 'detail', label: 'detailed (the coloured genes, in full)' },
+                { value: 'focus', label: 'focused (one gene)' }
+              ]}
+            />
+          </Field>
         )
+      }
+      // Top genes is a setting OF the global and detailed views (which of the every-gene curves
+      // are coloured — or, detailed, drawn), so it's offered only there.
+      genes={
+        fromCompare &&
+        config.view !== 'focus' && (
+          <CapRow
+            info={
+              detailed
+                ? `Draw only the top genes by response (up to ${DR_DETAIL_CAP}); picked from the selected genes while any are selected.`
+                : 'Colour only the top genes by response — every gene stays drawn in the background. Selected genes are coloured instead while any are selected.'
+            }
+            label="Max genes"
+            field="topGenes"
+            value={config.topGenes}
+            enabled={config.capEnabled}
+            update={update}
+            defaultValue={10}
+            max={detailed ? DR_DETAIL_CAP : undefined}
+            rule={(n) =>
+              detailed
+                ? `Draw the top ${n} genes by response.`
+                : `Colour the top ${n} genes by response.`
+            }
+            step={10}
+          />
+        )
+      }
+      // the axis' range and the pEC50 line: whole-plot rows of Axes and lines
+      axes={
+        <>
+          {(fromContrast || (fromCompare && (focused || detailed))) && (
+            <Field
+              label="axis scale"
+              aside={<QuickToggle config={config} field="yScale" update={update} />}
+            >
+              <Select
+                value={drYScale(config, fromContrast)}
+                onChange={(v) => update({ yScale: v as DRConfig['yScale'] })}
+                options={[
+                  { value: 'gene', label: 'adjusted (each gene’s own range)' },
+                  {
+                    value: 'global',
+                    label: fromContrast ? 'global (whole contrast)' : 'global (all genes)'
+                  }
+                ]}
+              />
+            </Field>
+          )}
+          {curveFit && (focused || detailed) && <Ec50LineField config={config} update={update} />}
+        </>
       }
       marks={
         <DRStyleSection
@@ -145,7 +113,18 @@ export function DRPanel({ config, update, edgeNodeId }: PlotPanelProps<DRConfig>
           curveFit={curveFit}
         />
       }
-      colours={<ColourSection config={config} update={update} edgeNodeId={edgeNodeId} />}
+      colours={
+        <ColourRows config={config} update={update} edgeNodeId={edgeNodeId}>
+          {/* the lines' own colours: a gene each (global, detailed), a comparison each (focused,
+              several), a side each (from a Contrast) — the Lines section's Automatic */}
+          <Field label="line palette">
+            <CategoricalSelect
+              config={config as unknown as Record<string, unknown>}
+              update={update}
+            />
+          </Field>
+        </ColourRows>
+      }
     />
   )
 }

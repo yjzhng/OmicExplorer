@@ -500,3 +500,8 @@ button.oe-palette-builder:focus-visible {
 .oe-plot-2d .no-webgl {
   display: none;
 }
+
+/* The User guide's search matches, marked in its text (UserGuide.tsx, CSS Custom Highlight API). */
+::highlight(oe-guide-search) {
+  background-color: rgba(255, 196, 0, 0.45);
+}

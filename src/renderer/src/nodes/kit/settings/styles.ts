@@ -85,7 +85,7 @@ export const styles: Record<string, CSSProperties> = {
   // A group's header line: the tile's name, then the plot switcher after it.
   headNameRow: { display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 },
   headId: { color: UI.textMuted, fontSize: 11 },
-  scroll: { flex: 1, overflow: 'auto', minHeight: 0 },
+  scroll: { flex: 1, overflow: 'auto', scrollbarGutter: 'stable', minHeight: 0 },
   // Embedded: no inner scroller, so the page scrolls as one document.
   scrollEmbedded: { overflow: 'visible' },
   section: FORM.section,
@@ -271,16 +271,6 @@ export const styles: Record<string, CSSProperties> = {
     flexDirection: 'column',
     alignItems: 'center',
     justifyContent: 'center'
-  },
-  hlLabelCell: {
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 4,
-    width: '100%',
-    minWidth: 0,
-    flexWrap: 'nowrap',
-    whiteSpace: 'nowrap'
   },
   hlField: { display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 },
   hlFieldLabel: {

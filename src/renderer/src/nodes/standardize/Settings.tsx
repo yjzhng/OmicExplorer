@@ -20,6 +20,7 @@ import {
   outputScale,
   sampleIndex,
   sampleLabel,
+  sampleName,
   toLinear
 } from '../../engine'
 import type { SampleConds } from '../../engine/types'
@@ -344,26 +345,20 @@ export function StandardizePanel({ id, config }: { id: string; config: Standardi
   }, [std, importConds, inputConds])
   const geneTotal = useMemo(() => (std ? new Set(std.rows.map((r) => r.uniqID)).size : 0), [std])
   const r2 = (v: number): number => Math.round(v * 100) / 100
+  // The clean-up rule as chosen, shown under its controls. Only the conditions on offer: one the
+  // data doesn't carry groups nothing.
+  const cleanupRule = (() => {
+    const pct = config.minSamplePct ?? 0
+    const by = (config.minSamplePctBy ?? []).filter((c) => conds.includes(c))
+    const where = by.length === 0 ? '' : ` in every ${by.map(condLabel).join(' × ')} group`
+    return `Dropping genes detected in fewer than ${pct}% of samples${where}.`
+  })()
   return (
     <>
       <DataScaleSection id={id} config={config} std={std} />
       <Section
         title="Clean-up"
-        info={
-          <>
-            Drop low coverage genes.{' '}
-            {(() => {
-              const pct = config.minSamplePct ?? 0
-              // Only the conditions on offer: one the data doesn't carry groups nothing.
-              const by = (config.minSamplePctBy ?? []).filter((c) => conds.includes(c))
-              const where =
-                by.length === 0
-                  ? 'all samples'
-                  : `samples in at least one ${by.map(condLabel).join(' × ')} group`
-              return cleanupOn(config) ? `Keeps genes detected in ≥ ${pct}% of ${where}.` : ''
-            })()}
-          </>
-        }
+        info="Drop low coverage genes."
         action={
           <OnOffSwitch
             on={cleanupOn(config)}
@@ -394,8 +389,8 @@ export function StandardizePanel({ id, config }: { id: string; config: Standardi
                 <span style={{ color: UI.textMuted, fontSize: 12 }}>%</span>
               </div>
             </Field>
-            {/* Which conditions the coverage is judged within. The section's (i) restates the
-                        rule for the current choice, which reads far more plainly than describing "groups". */}
+            {/* Which conditions the coverage is judged within. The note below restates the rule
+                for the current choice, which reads far more plainly than describing "groups". */}
             <Field label="Coverage per">
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0 12px' }}>
                 {conds.map((c) => {
@@ -420,6 +415,7 @@ export function StandardizePanel({ id, config }: { id: string; config: Standardi
                 })}
               </div>
             </Field>
+            <StatusNote kind="warn">{cleanupRule}</StatusNote>
           </>
         )}
         {cleanupOn(config) && std && (std.cleanup?.droppedGenes ?? 0) > 0 && (
@@ -631,6 +627,11 @@ export function BatchSection({
     [input]
   ) as SampleConds[]
   const labels = useMemo(() => [...new Set(samples.map((m) => sampleLabel(m)))], [samples])
+  // A batch's samples are saved by their key (sampleLabel); shown by their name (" · ").
+  const nameOfLabel = useMemo(() => {
+    const names = new Map(samples.map((m) => [sampleLabel(m), sampleName(m)]))
+    return (l: string): string => names.get(l) ?? l
+  }, [samples])
   const sources = input?.sources
   // Fed straight by a Merge whose result doesn't say where its samples came from: it ran before
   // Merge recorded that — a re-run of it does.
@@ -782,6 +783,7 @@ export function BatchSection({
                         members
                         values={labels}
                         selected={b.samples}
+                        labelOf={nameOfLabel}
                         noun="sample"
                         noteOf={(l) => {
                           const k = batchOf.get(l)

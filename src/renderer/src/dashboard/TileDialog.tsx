@@ -77,7 +77,11 @@ export function TileDialog({
       <div style={styles.clickAway} onClick={busy ? undefined : onClose} />
       <div style={{ ...styles.popover, left, width, ...place }} role="dialog" aria-label={label}>
         <div style={styles.head}>{title}</div>
-        <div style={styles.body}>{children}</div>
+        {/* The app's scrollbar (oe-scroll), in a gutter of its own (scrollbarGutter: stable) —
+            never drawn over the content's right edge as the system's overlay one is. */}
+        <div className="oe-scroll" style={styles.body}>
+          {children}
+        </div>
         {/* Outside the scrolling body, so the buttons stay in view however long the settings run. */}
         <div style={styles.foot}>{footer}</div>
       </div>

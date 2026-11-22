@@ -21,9 +21,8 @@ import { DPI_CHOICES, useAppSettings } from '../ui/useAppSettings'
 import { useUiTheme } from '../ui/useUiTheme'
 import type { UpdateInfo } from '../ui/useUpdateCheck'
 import { AppCard } from './Home'
-import { LayoutGlyph, UpdateStatus } from './NavBar'
+import { LayoutPicker, UpdateStatus } from './NavBar'
 import { DEFAULT_STEPS, plotEntriesAfter } from './plotDefaults'
-import { LAYOUTS } from './shared'
 import { styles } from './styles'
 
 /**
@@ -376,7 +375,6 @@ export function SettingsPopover({
   const tableFormat = useAppSettings((s) => s.tableFormat)
   const exportBackground = useAppSettings((s) => s.exportBackground)
   const plotFont = useAppSettings((s) => s.plotFont)
-  const uiStyle = useAppSettings((s) => s.uiStyle)
   const plotsPerRow = useAppSettings((s) => s.plotsPerRow)
   const updateSettings = useAppSettings((s) => s.update)
   const DPI_OPTS = DPI_CHOICES.map((d) => ({ v: String(d), label: `${d} dpi` }))
@@ -498,31 +496,7 @@ export function SettingsPopover({
                 <div style={{ ...styles.settingsSubTitle, marginTop: 24 }}>
                   Workflow editor mode
                 </div>
-                <div style={styles.layoutTiles} role="radiogroup" aria-label="Workflow editor mode">
-                  {LAYOUTS.map((o) => {
-                    const on = uiStyle === o.v
-                    return (
-                      <button
-                        key={o.v}
-                        role="radio"
-                        aria-checked={on}
-                        onClick={() => updateSettings({ uiStyle: o.v })}
-                        style={{
-                          ...styles.layoutTile,
-                          // Whole shorthand, so nothing is left behind when the choice moves.
-                          border: `2px solid ${on ? UI.accent : UI.border}`,
-                          background: on ? UI.panelAlt : 'transparent'
-                        }}
-                      >
-                        <span style={{ color: on ? UI.accent : UI.textMuted }}>
-                          <LayoutGlyph kind={o.v} />
-                        </span>
-                        <span style={styles.layoutTileTitle}>{o.label}</span>
-                        <span style={styles.layoutTileText}>{o.hint}</span>
-                      </button>
-                    )
-                  })}
-                </div>
+                <LayoutPicker />
                 <div style={{ ...styles.settingsSubTitle, marginTop: 24 }}>
                   Results dashboard: default plots per row
                   <span style={{ marginLeft: 4, verticalAlign: 'middle' }}>

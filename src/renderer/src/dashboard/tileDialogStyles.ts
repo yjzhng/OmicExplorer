@@ -36,6 +36,7 @@ export const styles: Record<string, CSSProperties> = {
     flexDirection: 'column',
     gap: 18,
     overflow: 'auto',
+    scrollbarGutter: 'stable',
     minHeight: 0
   },
   // The canvas panel's sections carry their own padding + dividers; let them span the window's

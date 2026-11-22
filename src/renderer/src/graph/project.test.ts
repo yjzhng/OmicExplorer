@@ -422,12 +422,105 @@ describe('project format version', () => {
         }
       ]
     }
-    const up = UPGRADES.find((u) => u.since === '0.4.3')!
+    const up = UPGRADES.find((u) => u.since === '0.5.0')!
     up.run(raw as RawProject, { nextFolderId: () => 'fd-x' })
     up.run(raw as RawProject, { nextFolderId: () => 'fd-x' }) // idempotent
     const res = raw.folders[0].workflows[0].results.results
     expect(res['contrast-1'].ctr.valueKind).toBe('quantity')
     expect(res['contrast-2'].ctr.valueKind).toBe('fc')
+  })
+
+  it('drops a reference-protein Clean data result saved before 0.5.0, so it re-runs', () => {
+    const file = (appVersion?: string) => ({
+      ...(appVersion ? { appVersion } : {}),
+      folders: [
+        {
+          workflows: [
+            {
+              doc: {
+                nodes: [
+                  std('standardize-1', { normalizeEnabled: true, normalizeReference: 'protein' }),
+                  std('standardize-2', { normalizeEnabled: true, normalizeReference: 'shared' }),
+                  std('standardize-3', { normalizeEnabled: false, normalizeReference: 'protein' })
+                ]
+              },
+              results: {
+                results: {
+                  'standardize-1': { kind: 'standardize' },
+                  'standardize-2': { kind: 'standardize' },
+                  'standardize-3': { kind: 'standardize' },
+                  'compare-4': { kind: 'comparison' }
+                }
+              }
+            }
+          ]
+        }
+      ]
+    })
+    function std(id: string, config: Record<string, unknown>) {
+      return { id, type: 'step', position: { x: 0, y: 0 }, data: { kind: 'standardize', config } }
+    }
+    const up = UPGRADES.find((u) => u.what.startsWith('a reference protein divides'))!
+    const kept = (raw: ReturnType<typeof file>) =>
+      Object.keys(raw.folders[0].workflows[0].results.results).sort()
+    for (const v of [undefined, '0.4.2']) {
+      const raw = file(v)
+      up.run(raw as unknown as RawProject, { nextFolderId: () => 'fd-x' })
+      up.run(raw as unknown as RawProject, { nextFolderId: () => 'fd-x' }) // idempotent
+      expect(kept(raw)).toEqual(['compare-4', 'standardize-2', 'standardize-3'])
+    }
+    const now = file('0.5.0')
+    up.run(now as unknown as RawProject, { nextFolderId: () => 'fd-x' })
+    expect(kept(now)).toHaveLength(4)
+  })
+
+  it("hands a Compare's class colours to the plots that drew them, then drops them", () => {
+    const node = (id: string, kind: string, config: Record<string, unknown>) => ({
+      id,
+      position: { x: 0, y: 0 },
+      data: { kind, config }
+    })
+    const raw = {
+      folders: [
+        {
+          workflows: [
+            {
+              doc: {
+                nodes: [
+                  node('cmp-1', 'compare', { effectColors: { up: '#ff0000', none: 'auto' } }),
+                  // drew the Compare's colours: takes them (its own pick kept)
+                  node('pg-1', 'plotGroup', {
+                    children: [
+                      {
+                        id: 'v',
+                        kind: 'volcano',
+                        config: { style: { groups: { down: { color: '#0000ff' } } } }
+                      },
+                      { id: 'e', kind: 'enrich', config: {} },
+                      // its own palette overrode the Compare's: left as it is
+                      { id: 'm', kind: 'ma', config: { fcPalette: 'viridis' } }
+                    ]
+                  })
+                ],
+                edges: [{ id: 'e1', source: 'cmp-1', target: 'pg-1' }]
+              }
+            }
+          ]
+        }
+      ]
+    }
+    const up = UPGRADES.find((u) => u.what.startsWith("a plot's effect colours"))!
+    up.run(raw as unknown as RawProject, { nextFolderId: () => 'fd-x' })
+    up.run(raw as unknown as RawProject, { nextFolderId: () => 'fd-x' }) // idempotent
+    const [cmp, pg] = raw.folders[0].workflows[0].doc.nodes
+    expect(cmp.data.config.effectColors).toBeUndefined()
+    const [v, e, m] = (pg.data.config as { children: { config: Record<string, unknown> }[] })
+      .children
+    expect(v.config.style).toEqual({
+      groups: { down: { color: '#0000ff' }, up: { color: '#ff0000' } }
+    })
+    expect(e.config.effectColors).toEqual({ up: '#ff0000' })
+    expect(m.config).toEqual({ fcPalette: 'viridis' })
   })
 
   it('tells a file the upgrades change from one they leave as it was', () => {

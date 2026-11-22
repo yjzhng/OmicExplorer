@@ -112,7 +112,7 @@ export function curveMadView(v: ViewContext): ReactNode {
                 threshold={upstream.cmp.threshold ?? upCfg?.threshold}
                 doseScale={curveDoseUnit(upCfg, units).scale}
                 effectLabels={effectLabelsOf(upCfg)}
-                effectColors={effectsOf(cfg, upCfg)}
+                effectColors={effectsOf(cfg)}
                 onMetricX={(m) => patchConfig({ metricX: m })}
                 onMetricY={(m) => patchConfig({ metricY: m })}
                 maxPoints={

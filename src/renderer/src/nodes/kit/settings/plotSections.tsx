@@ -1,6 +1,12 @@
 import { useStore } from '@xyflow/react'
 import { type CSSProperties, Fragment, type ReactNode, useContext, useState } from 'react'
-import { type ConditionKey, type NumericConds, condLabel, isNumericCond } from '../../../engine'
+import {
+  type ConditionKey,
+  type NumericConds,
+  condLabel,
+  isNumericCond,
+  orderConds
+} from '../../../engine'
 import {
   type AxisStyle,
   type DRConfig,
@@ -31,10 +37,12 @@ import {
   defaultGroups,
   resolveGroup
 } from '../../../ui/pointStyle'
-import { GUIDE_WIDTH, PALETTES, UI } from '../../../ui/theme'
+import { guideLook, PALETTES, PLOT_TEXT, UI } from '../../../ui/theme'
+import { OpacitySlider } from '../../../ui/OpacitySlider'
 import { OnOffSwitch } from '../../../ui/ToggleSwitch'
 import { useAppSettings, useRolePalette } from '../../../ui/useAppSettings'
 import { useUiTheme } from '../../../ui/useUiTheme'
+import { ValueMultiSelect } from '../../../ui/ValueMultiSelect'
 import {
   ColorChip,
   EffectLabelInput,
@@ -45,80 +53,96 @@ import {
   Select,
   SizeBox
 } from './controls'
-import { ScreenScale } from './hooks'
-import { autoOf, DR_LOOK_FIELDS, legendShown, useEffectColors, useEffectNames } from './plotHooks'
+import { PlotWindow, ScreenScale } from './hooks'
+import {
+  autoOf,
+  DR_LOOK_FIELDS,
+  legendShown,
+  useCategoricalInk,
+  useEffectColors,
+  useEffectNames
+} from './plotHooks'
 import { styles } from './styles'
 
 /**
- * A plot's settings, in the one order every plot's settings window follows: what the plot shows →
- * the statistic it draws (from the upstream step) → its labels → its points / lines → its colours.
- * The window then adds the Legend and Axes sections (graph/NodeConfigPanel, from the spec's
- * `legend` / `axes` facts), so they always come last. Each plot's Settings fills the slots it has;
- * the order is this component's, not each file's.
+ * A plot's settings, in the one order every plot's settings window follows — upstream before
+ * downstream, whole plot before its parts (nodes/README.md › A plot's settings):
+ *   Statistic (what's computed: the upstream step's, written there, or the plot's own analysis)
+ *   → General (the whole plot: what it shows, its label limit, how many genes it draws, its
+ *   legend, its colours) → its Points / Lines / Bars (each group's look) → Axes and lines (per
+ *   axis, then the whole plot's rows).
+ * General is this component's one section: the plot hands it rows (`general`, `genes`, then
+ * `colours` — palettes last) and the window adds the legend switch before them (PlotWindow, from the spec's `legend` fact) — plot-wide
+ * settings each too small for a section of their own. Axes and lines is the window's too; the plot
+ * hands its whole-plot axis rows (an axis scale, a reference line) to `axes`. Each plot's Settings
+ * fills the slots it has; the order is this component's, not each file's (architecture.test.ts
+ * checks every plot goes through it).
  */
 export function PlotSections({
-  show,
   statistic,
-  labels,
+  general,
+  colours,
+  genes,
   marks,
-  colours
+  axes
 }: {
-  /** what the plot draws: its view, metric, genes / cap, ordering */
-  show?: ReactNode
-  /** the upstream step's statistic, offered here (written to that step) */
+  /** what's computed before it's drawn: the upstream step's statistic (written to that step), or
+   *  the plot's own analysis (a PCA's data preparation, a heatmap's clustering) — sections */
   statistic?: ReactNode
-  /** which genes are labelled (the label cap) */
-  labels?: ReactNode
-  /** how points / lines / bars are drawn */
-  marks?: ReactNode
-  /** palettes and colours */
+  /** General's first rows: what the plot draws (view, metric, ordering) and its label limit */
+  general?: ReactNode
+  /** General's colour rows: palettes and colours (ColourRows, CategoricalRows, …) */
   colours?: ReactNode
+  /** General's how-many rows: how many genes (terms, residuals) are drawn — a CapRow */
+  genes?: ReactNode
+  /** how points / lines / bars are drawn: a Points / Lines / Bars section */
+  marks?: ReactNode
+  /** whole-plot rows for the Axes and lines section (an axis scale, a reference line) */
+  axes?: ReactNode
 }): ReactNode {
+  const win = useContext(PlotWindow)
   return (
     <>
-      {show}
       {statistic}
-      {labels}
+      {(general || genes || colours || win.legend) && (
+        <Section title="General">
+          {general}
+          {genes}
+          {win.legend}
+          {colours}
+        </Section>
+      )}
       {marks}
-      {colours}
+      {win.axes?.(axes)}
     </>
   )
 }
-/** The plot-wide legend switch: off hides the legend and the colour scale bars. Every plot with a
- *  legend has it here (the point plots' per-group entries stay in their Points table). A point
- *  plot from before this section kept its switch in `style.legend`: still read, and cleared when
- *  the switch is used, so one switch decides. */
-export function LegendSection({
+/** General's plot-wide legend switch: off hides the legend and the colour scale bars. Every plot
+ *  with a legend has it (the point plots' per-group entries stay in their Points table). A point
+ *  plot from before this switch kept it in `style.legend`: still read, and cleared when the switch
+ *  is used, so one switch decides. */
+export function LegendRow({
   config,
-  update,
-  groups
+  update
 }: {
   config: LegendConfig & { style?: PointStyle }
   update: (patch: Record<string, unknown>) => void
-  /** a point plot: its groups' own entries are switched in Points */
-  groups?: boolean
 }): ReactNode {
   const style = config.style
   return (
-    <Section title="Legend">
-      <Field label="legend">
-        <OnOffSwitch
-          on={legendShown(config)}
-          label="Show legend"
-          // unset = shown, so switching back on clears the field
-          onChange={(on) =>
-            update({
-              legend: on ? undefined : false,
-              ...(style?.legend !== undefined ? { style: { ...style, legend: undefined } } : null)
-            })
-          }
-        />
-      </Field>
-      <div style={styles.hint}>
-        Off hides the legend and any colour scale bar.
-        {groups ? ' Each group’s own entry is switched in Points.' : ''}
-      </div>
-    </Section>
+    <Field label="show legend">
+      <OnOffSwitch
+        on={legendShown(config)}
+        label="Show legend"
+        // unset = shown, so switching back on clears the field
+        onChange={(on) =>
+          update({
+            legend: on ? undefined : false,
+            ...(style?.legend !== undefined ? { style: { ...style, legend: undefined } } : null)
+          })
+        }
+      />
+    </Field>
   )
 }
 /** Common props for every plotting panel. `update` is already bound to the right
@@ -159,10 +183,13 @@ export function PointStyleSections({
   const ink = PALETTES[mode].text
   const defaults = defaultGroups(kind, names, colors)
   const groups = defaults.map((d) => resolveGroup(style, d))
+  // the states the preview shows: plain, and — where the points are genes — selected / not
+  const states = selection ? (['plain', 'selected', 'faded'] as const) : (['plain'] as const)
   /** A group's colour as its chip shows it: what the user picked (or cleared), else Automatic. */
-  // Where a group's automatic colour comes from: an effect group follows the upstream tile.
+  // Where a group's automatic colour comes from: an effect group follows the plot's FC palette
+  // (General).
   const autoSource = (key: string): string =>
-    key === 'up' || key === 'down' || key === 'none' ? "the upstream tile's" : "the plot's default"
+    key === 'up' || key === 'down' || key === 'none' ? 'from the FC palette' : "the plot's default"
   const chipColor = (key: string): string => {
     const c = style?.groups?.[key]?.color
     return c && c !== AUTO ? c : AUTO
@@ -204,6 +231,7 @@ export function PointStyleSections({
     'color',
     'label',
     'labelColor',
+    'labelSize',
     'highlight'
   ]
   const reset = (label: string, onClick: () => void): ReactNode => (
@@ -211,9 +239,15 @@ export function PointStyleSections({
       Reset
     </button>
   )
-  // Value boxes throughout: opacity over 0–1 in 0.05 steps, pixel sizes over a plot-sensible range.
-  const opacity = (label: string, value: number, onChange: (v: number) => void): ReactNode => (
-    <SizeBox value={value} onChange={onChange} min={0} max={1} step={0.05} title={label} />
+  // Opacity as the app's slider (fading to the group's own colour); pixel sizes as value boxes
+  // over a plot-sensible range.
+  const opacity = (
+    label: string,
+    color: string,
+    value: number,
+    onChange: (v: number) => void
+  ): ReactNode => (
+    <OpacitySlider compact label={label} color={color} value={value} onChange={onChange} />
   )
   const px = (
     label: string,
@@ -240,8 +274,8 @@ export function PointStyleSections({
     <>
       <Section
         title="Points"
-        // Reset sits right of the title (the subtitle slot). The plot-wide legend switch is the
-        // Legend section's; the per-group entries are a column of the table below.
+        // Reset sits right of the title (the subtitle slot). The plot-wide legend switch is
+        // General's; the per-group entries are a column of the table below.
         subtitle={
           hasGroupField(LOOK_FIELDS)
             ? reset('point look', () =>
@@ -288,16 +322,30 @@ export function PointStyleSections({
                   onClear={() => setGroup(g.key, { color: CLEAR })}
                   onAuto={() => setGroup(g.key, { color: undefined })}
                   autoLabel={`Automatic (${autoSource(g.key)})`}
+                  autoColor={g.color}
                   style={{ gridRow: 2, gridColumn: i + 2, width: '100%', flex: '1 1 auto' }}
                 />
+              ))}
+              {/* The group's legend entry — a setting of the group, in every state (it needs the
+                  plot's legend on, in General). */}
+              <span style={{ ...styles.rowLabel, gridRow: 3, gridColumn: 1 }}>in legend</span>
+              {groups.map((g, i) => (
+                <div key={g.key} style={{ ...styles.switchCell, gridRow: 3, gridColumn: i + 2 }}>
+                  <OnOffSwitch
+                    on={g.legend}
+                    disabled={!legend}
+                    label={`${g.name} legend entry`}
+                    onChange={(on) => setGroup(g.key, { legend: on })}
+                  />
+                </div>
               ))}
               {/* ONE ground behind every marker: a grid item spanning the three state rows and all
               the group columns. Everything in these rows is placed EXPLICITLY — auto-placement
               treats the ground's cells as taken and would flow the markers below it. */}
-              <div style={styles.previewBox} />
-              {(['plain', 'selected', 'faded'] as const).map((state, r) => (
+              <div style={{ ...styles.previewBox, gridRow: `4 / span ${states.length}` }} />
+              {states.map((state, r) => (
                 <Fragment key={state}>
-                  <span style={{ ...styles.rowLabel, gridRow: r + 3, gridColumn: 1 }}>
+                  <span style={{ ...styles.rowLabel, gridRow: r + 4, gridColumn: 1 }}>
                     {state === 'faded' ? 'not selected' : state}
                   </span>
                   {groups.map((g, i) => (
@@ -306,7 +354,7 @@ export function PointStyleSections({
                       g={g}
                       state={state}
                       ink={ink}
-                      style={{ gridRow: r + 3, gridColumn: i + 2 }}
+                      style={{ gridRow: r + 4, gridColumn: i + 2 }}
                     />
                   ))}
                 </Fragment>
@@ -327,7 +375,7 @@ export function PointStyleSections({
               <span style={styles.rowLabel}>opacity</span>
               {groups.map((g) => (
                 <Fragment key={g.key}>
-                  {opacity(`${g.name} opacity`, g.opacity, (v) => setGroup(g.key, { opacity: v }))}
+                  {opacity(`${g.name}`, g.color, g.opacity, (v) => setGroup(g.key, { opacity: v }))}
                 </Fragment>
               ))}
 
@@ -364,8 +412,8 @@ export function PointStyleSections({
                   >
                     label
                   </span>
-                  {/* Whether its genes are labelled, and in what colour: automatic = the group's
-                        marker colour. */}
+                  {/* Whether its genes are labelled, then the labels' colour (automatic = the
+                      group's marker colour) and size — the order the Selected row repeats. */}
                   {groups.map((g) => (
                     <div key={g.key} style={styles.ringCell}>
                       <OnOffSwitch
@@ -385,24 +433,20 @@ export function PointStyleSections({
                         onPick={(c) => setGroup(g.key, { labelColor: c })}
                         onAuto={() => setGroup(g.key, { labelColor: undefined })}
                         autoLabel="Automatic (the group's colour)"
-                        style={{ flex: '1 1 auto', width: '100%' }}
+                        autoColor={g.color}
                       />
+                      {px(
+                        `${g.name} label size`,
+                        g.labelSize ?? PLOT_TEXT.label,
+                        (v) => setGroup(g.key, { labelSize: v }),
+                        7,
+                        16,
+                        true
+                      )}
                     </div>
                   ))}
                 </>
               )}
-
-              <span style={styles.rowLabel}>legend</span>
-              {groups.map((g) => (
-                <div key={g.key} style={styles.switchCell}>
-                  <OnOffSwitch
-                    on={g.legend}
-                    disabled={!legend}
-                    label={`${g.name} legend entry`}
-                    onChange={(on) => setGroup(g.key, { legend: on })}
-                  />
-                </div>
-              ))}
             </div>
           </div>
 
@@ -448,47 +492,42 @@ export function PointStyleSections({
                   </div>
                 ))}
 
+                {/* The selected gene's name: on, its colour (automatic = its point's colour),
+                    its size — as the Plain row. */}
                 <span style={styles.rowLabel}>label</span>
-                {groups.map((g) => (
-                  <div key={g.key} style={styles.hlLabelCell}>
-                    <OnOffSwitch
-                      on={g.highlight.label}
-                      label={`Label selected ${g.name} points`}
-                      onChange={(on) => setGroupHl(g.key, { label: on })}
-                    />
-                    {g.highlight.label &&
-                      px(
-                        `${g.name} label size`,
-                        g.highlight.labelSize,
-                        (v) => setGroupHl(g.key, { labelSize: v }),
-                        9,
-                        13,
-                        true
-                      )}
-                  </div>
-                ))}
-
-                {/* The selected gene's name colour: automatic = its point's colour. */}
-                <span style={styles.rowLabel}>label colour</span>
                 {groups.map((g) => {
                   const own = style?.groups?.[g.key]?.highlight?.labelColor
                   const c = own && own !== AUTO ? own : AUTO
                   return (
-                    <ColorChip
-                      key={g.key}
-                      color={c}
-                      on
-                      label={`${g.name} selected label colour`}
-                      title={
-                        c === AUTO
-                          ? `${g.name} selected label colour: automatic (the point's colour)`
-                          : `${g.name} selected label colour`
-                      }
-                      onPick={(v) => setGroupHl(g.key, { labelColor: v })}
-                      onAuto={() => setGroupHl(g.key, { labelColor: undefined })}
-                      autoLabel="Automatic (the point's colour)"
-                      style={{ width: '100%', flex: '1 1 auto' }}
-                    />
+                    <div key={g.key} style={styles.ringCell}>
+                      <OnOffSwitch
+                        on={g.highlight.label}
+                        label={`Label selected ${g.name} points`}
+                        onChange={(on) => setGroupHl(g.key, { label: on })}
+                      />
+                      <ColorChip
+                        color={c}
+                        on
+                        label={`${g.name} selected label colour`}
+                        title={
+                          c === AUTO
+                            ? `${g.name} selected label colour: automatic (the point's colour)`
+                            : `${g.name} selected label colour`
+                        }
+                        onPick={(v) => setGroupHl(g.key, { labelColor: v })}
+                        onAuto={() => setGroupHl(g.key, { labelColor: undefined })}
+                        autoLabel="Automatic (the point's colour)"
+                        autoColor={g.color}
+                      />
+                      {px(
+                        `${g.name} selected label size`,
+                        g.highlight.labelSize,
+                        (v) => setGroupHl(g.key, { labelSize: v }),
+                        7,
+                        16,
+                        true
+                      )}
+                    </div>
                   )
                 })}
               </div>
@@ -503,7 +542,7 @@ export function PointStyleSections({
                 <span style={styles.rowLabel}>opacity</span>
                 {groups.map((g) => (
                   <Fragment key={g.key}>
-                    {opacity(`${g.name} faded opacity`, g.highlight.dim, (v) =>
+                    {opacity(`${g.name} not selected`, g.color, g.highlight.dim, (v) =>
                       setGroupHl(g.key, { dim: v })
                     )}
                   </Fragment>
@@ -512,25 +551,32 @@ export function PointStyleSections({
             </div>
           )}
         </div>
-        {/* The threshold / reference guide lines — the plot's dashed cutoffs. */}
-        <Field label="threshold line">
-          <div style={{ width: 64 }}>
-            <SizeBox
-              value={style?.guideWidth ?? GUIDE_WIDTH}
-              onChange={(v) => setStyle({ guideWidth: v })}
-              min={0.5}
-              max={4}
-              step={0.5}
-              title="Threshold line width (px)"
-            />
-          </div>
-        </Field>
       </Section>
     </>
   )
 }
+/** A DR's pEC50 reference line (a curve fit's): a line across the plot at each curve's EC50 — one
+ *  of the plot's whole-plot rows, in Axes and lines. */
+export function Ec50LineField({
+  config,
+  update
+}: {
+  config: DRConfig
+  update: (patch: Record<string, unknown>) => void
+}): ReactNode {
+  return (
+    <Field label="pEC50 line">
+      <OnOffSwitch
+        on={drLook(config, true).ec50Line}
+        label="pEC50 line"
+        title="A dotted line at each curve's EC50 (the 4PL's midpoint), within the tested range"
+        onChange={(v) => update({ ec50Line: v })}
+      />
+    </Field>
+  )
+}
 /** A DR's line / points / error look, one row each: an on/off where the element can be hidden,
- *  then — while shown — its colour, size and opacity (%), as the gene bar's replicate row does.
+ *  then — while shown — its colour, size and opacity (the slider), as the gene bar's replicates.
  *  Points and error are drawn only in the gene-by-gene views (focused, detailed, or from a
  *  Contrast), so they're offered only there. An automatic colour is the gene's effect group
  *  (focused, one comparison), one per comparison (focused, several), per gene (global, detailed),
@@ -565,6 +611,18 @@ export function DRStyleSection({
         : 'one per gene')
   const row: CSSProperties = { display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }
   const custom = DR_LOOK_FIELDS.some((f) => config[f] !== undefined)
+  // Automatic is a colour per gene / group / comparison here, so its chip shows the colours it
+  // picks from, not one of them: the line palette (General) where the lines take a colour each —
+  // a gene, a comparison, a side — or, focused on one gene, its effect group's (the FC palette's
+  // down → none → up). Another plot with this look (`texts`) keeps the effect colours.
+  const effect = useEffectColors(config.fcPalette)
+  const categorical = useCategoricalInk(config)
+  const byPalette = !texts && (!focused || detailed || fromContrast)
+  const autoInk = byPalette
+    ? categorical
+    : `linear-gradient(135deg, ${effect.down}, ${effect.none}, ${effect.up})`
+  // An opacity slider fades to the colour set; Automatic is a palette here, so neutral (unset).
+  const inkOf = (value: string): string | undefined => (value !== AUTO ? value : undefined)
   const color = (field: string, value: string, what: string, auto: string): ReactNode => (
     <ColorChip
       color={value}
@@ -574,6 +632,7 @@ export function DRStyleSection({
       onPick={(c) => update({ [field]: c })}
       onAuto={() => update({ [field]: AUTO })}
       autoLabel={`Automatic (${auto})`}
+      autoColor={autoInk}
     />
   )
   const px = (field: string, value: number, title: string, min: number, max: number): ReactNode => (
@@ -588,22 +647,19 @@ export function DRStyleSection({
       />
     </div>
   )
-  const pct = (field: string, value: number, title: string): ReactNode => (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 3, width: 64, flex: '0 0 auto' }}>
-      <NumberInput
-        value={Math.round(value * 100)}
-        step={10}
-        min={5}
-        max={100}
-        title={title}
-        onChange={(v) => update({ [field]: Math.min(100, Math.max(5, Math.round(v))) / 100 })}
+  const pct = (field: string, value: number, what: string, ink: string): ReactNode => (
+    <div style={{ flex: '1 1 auto', minWidth: 0 }}>
+      <OpacitySlider
+        label={what}
+        color={inkOf(ink)}
+        value={value}
+        onChange={(v) => update({ [field]: v })}
       />
-      <span style={{ color: UI.textMuted, fontSize: 12 }}>%</span>
     </div>
   )
   return (
     <Section
-      title="Style"
+      title="Lines"
       subtitle={
         custom ? (
           <button
@@ -620,7 +676,7 @@ export function DRStyleSection({
         <div style={row}>
           {color('lineColor', look.lineColor, 'Line', autoLine)}
           {px('lineWidth', look.lineWidth, 'Line width (px)', 0.5, 8)}
-          {pct('lineOpacity', look.lineOpacity, 'Line opacity (%)')}
+          {pct('lineOpacity', look.lineOpacity, 'Line', look.lineColor)}
         </div>
       </Field>
       {(focused || detailed) && (
@@ -644,7 +700,7 @@ export function DRStyleSection({
                 <>
                   {color('pointColor', look.pointColor, 'Point', 'the line colour')}
                   {px('pointSize', look.pointSize, 'Point size (px)', 2, 16)}
-                  {pct('pointOpacity', look.pointOpacity, 'Point opacity (%)')}
+                  {pct('pointOpacity', look.pointOpacity, 'Point', look.pointColor)}
                 </>
               )}
             </div>
@@ -677,21 +733,11 @@ export function DRStyleSection({
                     />
                   </div>
                   {color('errorColor', look.errorColor, 'Error', 'the line colour')}
-                  {pct('errorOpacity', look.errorOpacity, 'Error opacity (%)')}
+                  {pct('errorOpacity', look.errorOpacity, 'Error', look.errorColor)}
                 </>
               )}
             </div>
           </Field>
-          {curveFit && (
-            <Field label="pEC50 line">
-              <OnOffSwitch
-                on={look.ec50Line}
-                label="pEC50 line"
-                title="A dotted line at each curve's EC50 (the 4PL's midpoint), within the tested range"
-                onChange={(v) => update({ ec50Line: v })}
-              />
-            </Field>
-          )}
         </>
       )}
       {!focused && !detailed && (
@@ -702,18 +748,21 @@ export function DRStyleSection({
     </Section>
   )
 }
-/** A fold-change plot's colours: its palette (Automatic = the global one, Settings → Customisation) —
+/** A fold-change plot's colour rows (in General): its palette (Automatic = the global one, Settings → Customisation) —
  *  the continuous scale, and what the up / down / none colours are sampled from — and, where the
  *  plot draws those groups without point styles to carry them (enrichment's bars), the groups'
  *  own colours: Automatic by default (from the palette), or the plot's own. */
-export function ColourSection({
+export function ColourRows({
   config,
   update,
   edgeNodeId,
   groups = false,
   hint,
-  role = 'fcObject'
+  role = 'fcObject',
+  children
 }: PlotPanelProps<{ effectColors?: PlotEffectColors; fcPalette?: PaletteRef }> & {
+  /** the plot's other colour settings, under the palette (a heatmap's module palettes) */
+  children?: ReactNode
   /** offer the up / down / none colours too */
   groups?: boolean
   /** the palette role Automatic follows (default: fold change on objects) */
@@ -723,7 +772,7 @@ export function ColourSection({
 }): ReactNode {
   const names = useEffectNames(edgeNodeId)
   const rolePalette = useRolePalette(role)
-  const inherited = useEffectColors(edgeNodeId, config.fcPalette)
+  const inherited = useEffectColors(config.fcPalette)
   const own = config.effectColors
   const chip = (k: 'up' | 'down' | 'none'): ReactNode => {
     const c = own?.[k]
@@ -741,11 +790,12 @@ export function ColourSection({
         onPick={(v) => update({ effectColors: { ...own, [k]: v } })}
         onAuto={() => update({ effectColors: { ...own, [k]: undefined } })}
         autoLabel="Automatic (from the palette)"
+        autoColor={inherited[k]}
       />
     )
   }
   return (
-    <Section title="Colour">
+    <>
       <Field label="FC palette">
         <PanelPaletteSelect
           value={toPaletteRef(config.fcPalette)}
@@ -754,6 +804,7 @@ export function ColourSection({
         />
       </Field>
       {hint && <div style={styles.hint}>{hint}</div>}
+      {children}
       {groups && (
         <Field label="groups">
           <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -766,13 +817,13 @@ export function ColourSection({
           </div>
         </Field>
       )}
-    </Section>
+    </>
   )
 }
-/** A plot's Colour section with a categorical palette (QC, cluster, bar): what it colours by (the
+/** A plot's colour rows (in General) with a categorical palette (QC, cluster, bar): what it colours by (the
  *  plot's own fields, as children), then the palette — Automatic = the global one (Settings →
  *  Customisation), or its own. */
-export function CategoricalSection({
+export function CategoricalRows({
   config,
   update,
   children
@@ -781,12 +832,12 @@ export function CategoricalSection({
   children?: ReactNode
 }): ReactNode {
   return (
-    <Section title="Colour">
+    <>
       {children}
       <Field label="palette">
         <CategoricalSelect config={config} update={update} />
       </Field>
-    </Section>
+    </>
   )
 }
 /** The categorical palette picker itself (the plot's `categorical`, or another `field`):
@@ -920,10 +971,19 @@ export function AxesSection({
   config,
   update,
   defaults,
-  minimal = false
+  minimal = false,
+  guides,
+  plotRows
 }: {
   config: { axes?: PlotAxes }
   update: (patch: Record<string, unknown>) => void
+  /** the plot's own whole-plot rows (an axis scale, a reference line), in the Whole plot group */
+  plotRows?: ReactNode
+  /** the plot draws threshold / reference guide lines (spec `guides`): their look (`style`'s
+   *  guideShow / guideStyle / guideWidth) and how to change it — a row like every other line's,
+   *  but in a group of its own below the X | Y ones, since the lines (cutoffs, curves) belong to
+   *  the plot, not to one axis */
+  guides?: { style: PointStyle | undefined; set: (patch: Partial<PointStyle>) => void }
   /** a cluster's minimal axes: only the title size and the axis line's width apply, so every other
    *  field is greyed (its value kept for when the axes go back to standard) */
   minimal?: boolean
@@ -946,7 +1006,7 @@ export function AxesSection({
   const hasAny = Object.keys(st).length > 0
   return (
     <Section
-      title="Axes"
+      title="Axes and lines"
       subtitle={
         hasAny ? (
           <button
@@ -1132,58 +1192,103 @@ export function AxesSection({
           onWidth={(v) => set({ zerolineWidth: v })}
         />
       </div>
+      {/* The whole plot's rows — not switched with X | Y: its own (an axis scale, a reference line)
+          and the threshold lines (cutoffs and curves across both axes). */}
+      {(guides || plotRows) && (
+        <>
+          <div style={{ ...styles.sideTag, marginTop: 10 }}>Whole plot</div>
+          <div style={styles.subGroup}>
+            {plotRows}
+            {guides && <ThresholdLineRow guides={guides} />}
+          </div>
+        </>
+      )}
     </Section>
   )
 }
-/** Colour by condition's picks (gene bar, QC, cluster), indented under the colour-by: a single
- *  `colour` condition (categorical) and a single `fade` (dose or time: light = low, dark = high).
- *  Stored together as `colorConds`. `colour: false` leaves the colour to the colour-by itself (the
- *  cluster's, which picks the condition directly) and offers the fade alone. */
-export function ConditionColorFields({
+/** The threshold lines' row: shown / style / width, as every other line (guideLook). */
+function ThresholdLineRow({
+  guides
+}: {
+  guides: { style: PointStyle | undefined; set: (patch: Partial<PointStyle>) => void }
+}): ReactNode {
+  const look = guideLook(guides.style)
+  return (
+    <LineRow
+      label="Threshold lines"
+      on={look.show}
+      onShow={(on) => guides.set({ guideShow: on ? undefined : false })}
+      style={look.dash}
+      onStyle={(v) => guides.set({ guideStyle: v === 'dash' ? undefined : v })}
+      width={look.width}
+      onWidth={(v) => guides.set({ guideWidth: v })}
+    />
+  )
+}
+/** Axes and lines for a plot with no axes of its own to set (a 3-D view): only its whole-plot
+ *  rows. */
+export function PlotRowsSection({ children }: { children: ReactNode }): ReactNode {
+  return (
+    <Section title="Axes and lines">
+      <div style={styles.subGroup}>{children}</div>
+    </Section>
+  )
+}
+/** Colour by condition's picks (gene bar, QC, cluster), indented under the colour-by — the
+ *  user's choice as made, nothing inferred from the conditions' types: `colour`, the conditions the
+ *  colours stand for (several: every combination its own colour; at least one), and `fade`, one
+ *  numeric condition at most shading them light = low → dark = high (an ordered channel, so
+ *  numeric only); a condition already on colour is greyed there. In the default condition order. */
+export function ColorFadeFields({
   active,
   numeric,
-  selected,
-  onChange,
-  colour = true
+  picks,
+  fade,
+  onChange
 }: {
   /** the conditions the upstream data carries */
-  active: ConditionKey[]
+  active: readonly ConditionKey[]
   /** of those, the numeric ones (the data's schema): what the fade can take */
   numeric: NumericConds
-  selected: ConditionKey[]
-  onChange: (next: ConditionKey[]) => void
-  colour?: boolean
+  picks: ConditionKey[]
+  fade: ConditionKey | null
+  /** the new picks and fade (a fade now picked for colour comes back as null) */
+  onChange: (picks: ConditionKey[], fade: ConditionKey | null) => void
 }): ReactNode {
-  const NONE = ''
-  const cats = active.filter((c) => !isNumericCond(c, numeric))
-  const nums = active.filter((c) => isNumericCond(c, numeric))
-  const cat = selected.find((c) => !isNumericCond(c, numeric)) ?? NONE
-  const num = selected.find((c) => isNumericCond(c, numeric)) ?? NONE
-  const pick = (c: string, n: string): void =>
-    onChange([c, n].filter((k) => k !== NONE) as ConditionKey[])
-  const opts = (keys: ConditionKey[], none: boolean): Array<{ value: string; label: string }> => [
-    ...(none ? [{ value: NONE, label: 'none' }] : []),
-    ...keys.map((k) => ({ value: k, label: condLabel(k) }))
-  ]
+  const conds = orderConds(active)
+  const nums = conds.filter((c) => isNumericCond(c, numeric))
   return (
     <div style={styles.subGroup}>
-      {colour && (
-        <Field label="colour">
-          <Select
-            value={cat}
-            onChange={(v) => pick(v, num)}
-            // none only while a fade carries the colouring (dose / time alone: shades of one hue)
-            options={opts(cats, num !== NONE || cat === NONE)}
-          />
-        </Field>
-      )}
+      <Field
+        label="colour"
+        info="The conditions the colours stand for. Several: every combination of their values is its own colour."
+      >
+        <ValueMultiSelect
+          members
+          values={conds}
+          selected={picks}
+          labelOf={(c) => condLabel(c as ConditionKey)}
+          noun="condition"
+          onChange={(next) => {
+            // at least one: unticking the last keeps it
+            if (!next.length) return
+            const p = conds.filter((k) => next.includes(k))
+            onChange(p, fade && !p.includes(fade) ? fade : null)
+          }}
+        />
+      </Field>
       {nums.length > 0 && (
-        <Field label="fade">
+        <Field
+          label="fade"
+          info="Shades each colour light → dark along one numeric condition (low → high). A condition already picked for colour can't fade too."
+        >
           <Select
-            value={num}
-            onChange={(v) => pick(cat, v)}
-            // the fade can't go too when it alone carries the colouring
-            options={opts(nums, cat !== NONE || !colour)}
+            value={fade ?? ''}
+            onChange={(v) => onChange(picks, v ? (v as ConditionKey) : null)}
+            options={[
+              { value: '', label: 'none' },
+              ...nums.map((c) => ({ value: c, label: condLabel(c), disabled: picks.includes(c) }))
+            ]}
           />
         </Field>
       )}

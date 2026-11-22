@@ -4,6 +4,8 @@ import { SHOW_KINDS, hasTermRows, presentStd } from '../../engine'
 import { quickOn } from '../../graph/registry'
 import {
   DENDRO_CLADES_DEFAULT,
+  HEATMAP_COND_DISTANCES,
+  type HeatmapCondDistance,
   HEATMAP_LEAF_ORDERS,
   HEATMAP_LINKAGES,
   type HeatmapConfig,
@@ -34,7 +36,8 @@ export function heatmapView(v: ViewContext): ReactNode {
     patchConfig,
     focus,
     paletteOf,
-    quantityScale
+    quantityScale,
+    numeric
   } = v
   const cfg = cfgSource as HeatmapConfig
   // Compare upstream → log2FC heatmap (every comparison/context is a column, no faceting).
@@ -43,6 +46,8 @@ export function heatmapView(v: ViewContext): ReactNode {
     const leafOrder = cfg.leafOrder ?? 'mean'
     const quickLinkage = quickOn(cfg, 'linkage', 'heatmap')
     const quickLeaf = quickOn(cfg, 'leafOrder', 'heatmap')
+    const condDistance = cfg.condDistance ?? 'size'
+    const quickCondDistance = quickOn(cfg, 'condDistance', 'heatmap')
     // Each side's clustering switches on the tile: the genes' and the conditions' modules + tree.
     const sideToggles = (
       [
@@ -68,10 +73,18 @@ export function heatmapView(v: ViewContext): ReactNode {
           ? 'factors'
           : 'overall'
     const heatRows = cmpOfKind(upstream.cmp, fcRows).rows
+    // the comparisons' condition tracks: on unless switched off
+    const fcCondBar = cfg.condBar ?? true
+    const quickCondBar = quickOn(cfg, 'condBar', 'heatmap')
     return (
       <div style={styles.chart}>
         <div style={styles.stack}>
-          {(ownShow || quickLinkage || quickLeaf || sideToggles.length > 0) && (
+          {(ownShow ||
+            quickCondBar ||
+            quickLinkage ||
+            quickLeaf ||
+            quickCondDistance ||
+            sideToggles.length > 0) && (
             <div className="oe-switch-row" style={{ display: 'flex', flexWrap: 'wrap' }}>
               {ownShow && (
                 <SwitchBar
@@ -98,6 +111,15 @@ export function heatmapView(v: ViewContext): ReactNode {
                   onChange={(v) => patchConfig({ leafOrder: v })}
                 />
               )}
+              {quickCondDistance && (
+                <SwitchBar
+                  label="conditions by"
+                  value={condDistance}
+                  options={Object.keys(HEATMAP_COND_DISTANCES)}
+                  optionLabel={(o) => (o === 'size' ? 'size + pattern' : 'pattern')}
+                  onChange={(v) => patchConfig({ condDistance: v as HeatmapCondDistance })}
+                />
+              )}
               {sideToggles.map(([label, f]) => (
                 <SwitchBarToggle
                   key={f}
@@ -106,6 +128,14 @@ export function heatmapView(v: ViewContext): ReactNode {
                   onChange={(on) => patchConfig({ [f]: on })}
                 />
               ))}
+              {/* a display switch, after the clustering ones */}
+              {quickCondBar && (
+                <SwitchBarToggle
+                  label="show conditions"
+                  on={fcCondBar}
+                  onChange={(on) => patchConfig({ condBar: on })}
+                />
+              )}
             </div>
           )}
           <div style={styles.stackBody}>
@@ -123,6 +153,7 @@ export function heatmapView(v: ViewContext): ReactNode {
               palette={paletteOf(cfg, 'fc')}
               linkage={linkage}
               leafOrder={leafOrder}
+              colPattern={condDistance === 'pattern'}
               geneMax={cfg.dendroClades ?? DENDRO_CLADES_DEFAULT}
               geneModules={!!cfg.geneModules}
               geneTree={!!cfg.geneTree}
@@ -131,6 +162,8 @@ export function heatmapView(v: ViewContext): ReactNode {
               condModules={!!cfg.condModules}
               condTree={!!cfg.condTree}
               condColors={catOf(cfg.condCategorical)}
+              condBar={fcCondBar}
+              numeric={numeric}
             />
           </div>
         </div>

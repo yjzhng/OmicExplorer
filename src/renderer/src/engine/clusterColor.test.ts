@@ -7,7 +7,7 @@
 import { describe, expect, it } from 'vitest'
 
 import { suggestClusterCount } from './cluster'
-import { buildCluster, CLUSTER_COLOR } from './plotData'
+import { buildCluster, CLUSTER_COLOR, GROUP_COLOR } from './plotData'
 import type { StandardRow } from './types'
 
 /** Three conditions × 2 replicates, separated on a block of genes each. */
@@ -221,5 +221,15 @@ describe('PCA loadings', () => {
     const all = buildCluster(rows(), { method: 'pca', colorBy: 'cmpd', loadings: 12 }).loadings!
     const few = buildCluster(rows(), { method: 'pca', colorBy: 'cmpd', loadings: 3 }).loadings!
     expect(few).toEqual(all.slice(0, 3))
+  })
+})
+
+describe('colorBy: groups', () => {
+  it('groups each condition’s replicates together (one group per condition group)', () => {
+    const c = buildCluster(rows(), { method: 'pca', colorBy: GROUP_COLOR })
+    expect(c.colorBy).toBe('groups')
+    expect(groupsOf(c.points)).toHaveLength(3)
+    // replicates share their group
+    for (const pt of c.points) expect(pt.group).toBe(pt.cond)
   })
 })

@@ -175,6 +175,24 @@ describe('architecture', () => {
     expect(bad).toEqual([])
   })
 
+  it('plot settings follow the one standard: colour squares show their colour, opacity is the slider', () => {
+    // An Automatic colour square shows what it resolves to (ColorChip autoColor); an opacity is
+    // the OpacitySlider, not a number box (nodes/README.md › A plot's settings).
+    const bad = sources(join(ROOT, 'nodes')).flatMap((p) => {
+      const file = relative(ROOT, p)
+      if (!file.endsWith('.tsx')) return []
+      const text = readFileSync(p, 'utf8')
+      const out: string[] = []
+      for (const m of text.matchAll(/<ColorChip\b[\s\S]*?\/>/g))
+        if (m[0].includes('onAuto=') && !m[0].includes('autoColor='))
+          out.push(`${file}: an Automatic colour square without its colour (autoColor)`)
+      if (/opacity \(%\)|title=\{?["'`][^"'`]*opacity["'`]/i.test(text))
+        out.push(`${file}: an opacity number box (use ui/OpacitySlider)`)
+      return out
+    })
+    expect(bad).toEqual([])
+  })
+
   it("each spec's kind is its key", () => {
     for (const k of ALL_OPS) expect(NODE_SPECS[k].kind).toBe(k)
   })

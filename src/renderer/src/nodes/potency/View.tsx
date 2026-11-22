@@ -82,7 +82,7 @@ export function potencyView(v: ViewContext): ReactNode {
                 fcHigh={wallsFor(rows).high}
                 labelTop={labelCapOn(cfg) ? cfg.labelTop : 0}
                 effectLabels={effectLabelsOf(upCfg)}
-                effectColors={effectsOf(cfg, upCfg)}
+                effectColors={effectsOf(cfg)}
                 style={cfg.style}
                 orient={cfg.orient ?? 'portrait'}
               />

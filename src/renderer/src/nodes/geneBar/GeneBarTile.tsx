@@ -13,7 +13,6 @@ import {
   valueUnitOf,
   buildGeneBar,
   distinctOf,
-  isNumericCond,
   numericOf,
   sampleIndex,
   valuesOf,
@@ -22,7 +21,8 @@ import {
   type StandardizeResult,
   type ValueScale
 } from '../../engine'
-import { barColorConds, primaryColorLevels, sampleOrderOf, type BarConfig } from '../../graph/types'
+import { barColoring, primaryColorLevels, sampleOrderOf, type BarConfig } from '../../graph/types'
+import { colorerArgs } from '../../ui/condColor'
 import { valueRange, type ValueRange } from '../../ui/colormap'
 import { GeneBarView, type ReplicateLook } from './GeneBarView'
 import { GeneSwitch } from '../../dashboard/GeneSwitch'
@@ -35,7 +35,7 @@ function GeneBarBody({
   scale,
   error,
   replicates,
-  colorCat,
+  colorCats,
   colorNum,
   errorWidth,
   errorColor,
@@ -54,7 +54,7 @@ function GeneBarBody({
   scale: ValueScale
   error: NonNullable<BarConfig['error']>
   replicates: ReplicateLook
-  colorCat?: ConditionKey
+  colorCats?: readonly ConditionKey[]
   colorNum?: ConditionKey
   errorWidth?: number
   errorColor?: string
@@ -80,7 +80,7 @@ function GeneBarBody({
       range={range}
       valueLabel={quantityLabel(scale, valueUnitOf(std))}
       replicates={replicates}
-      colorCat={colorCat}
+      colorCats={colorCats}
       colorNum={colorNum}
       errorWidth={errorWidth}
       errorColor={errorColor}
@@ -138,11 +138,12 @@ export function GeneBarTile({
     const pad = (hi - lo) * 0.08 || 1
     return [lo < 0 ? lo - pad : 0, hi + pad]
   }, [range])
-  // Colour by condition: the categorical one sets the colour, the numeric one (dose, time) the shade.
+  // Colour by condition: the colour conditions (every combination its own colour) and the fade.
   const numeric = numericOf(std)
-  const conds = barColorConds(config, std.activeConditions, primaryColorLevels(std), numeric)
-  const colorCat = conds.find((c) => !isNumericCond(c, numeric))
-  const colorNum = conds.find((c) => isNumericCond(c, numeric))
+  const { colorCats, colorNum } = colorerArgs(
+    barColoring(config, std.activeConditions, primaryColorLevels(std), numeric),
+    numeric
+  )
   const { replicates, repSize, repOpacity, repColor, repJitter } = config
   const look = useMemo(
     (): ReplicateLook => ({
@@ -165,7 +166,7 @@ export function GeneBarTile({
           scale={scale}
           error={config.error ?? 'sd'}
           replicates={look}
-          colorCat={colorCat}
+          colorCats={colorCats}
           colorNum={colorNum}
           errorWidth={config.errorWidth}
           errorColor={config.errorColor}

@@ -16,6 +16,7 @@ import { ToggleSwitch } from '../ui/ToggleSwitch'
 import { useAppSettings } from '../ui/useAppSettings'
 import { useAppView } from '../ui/useAppView'
 import type { UpdateInfo } from '../ui/useUpdateCheck'
+import { RUN_FACES, runButtonStyle, type RunState } from './runFaces'
 import { LAYOUTS } from './shared'
 import { styles } from './styles'
 
@@ -264,6 +265,39 @@ export function LayoutGlyph({ kind }: { kind: 'flow' | 'form' }): ReactNode {
       <rect x="29" y="27" width="40" height="17" rx="3" />
       <path d="M35 12h20M35 35h14" />
     </svg>
+  )
+}
+/** The workflow editor mode as two tiles, each a glyph, a name and a line — Settings › Appearance,
+ *  and the User guide, which shows (and sets) the same choice. */
+export function LayoutPicker() {
+  const uiStyle = useAppSettings((s) => s.uiStyle)
+  const update = useAppSettings((s) => s.update)
+  return (
+    <div style={styles.layoutTiles} role="radiogroup" aria-label="Workflow editor mode">
+      {LAYOUTS.map((o) => {
+        const on = uiStyle === o.v
+        return (
+          <button
+            key={o.v}
+            role="radio"
+            aria-checked={on}
+            onClick={() => update({ uiStyle: o.v })}
+            style={{
+              ...styles.layoutTile,
+              // Whole shorthand, so nothing is left behind when the choice moves.
+              border: `2px solid ${on ? UI.accent : UI.border}`,
+              background: on ? UI.panelAlt : 'transparent'
+            }}
+          >
+            <span style={{ color: on ? UI.accent : UI.textMuted }}>
+              <LayoutGlyph kind={o.v} />
+            </span>
+            <span style={styles.layoutTileTitle}>{o.label}</span>
+            <span style={styles.layoutTileText}>{o.hint}</span>
+          </button>
+        )
+      })}
+    </div>
   )
 }
 /** The gene selector, in the top nav in both layouts: the selection it drives is shared by every
@@ -519,13 +553,8 @@ export function RunButton() {
   const hasRunnable = runnable.length > 0
   const allDone = hasRunnable && runnable.every((n) => n.data.status === 'done')
   const anyError = runnable.some((n) => n.data.status === 'error')
-  const rs = runningAll
-    ? { icon: '■', title: 'Stop', bg: '#e2b93b', fg: '#1a1a1a' }
-    : allDone
-      ? { icon: '↻', title: 'Re-run all steps', bg: UI.accent, fg: UI.accentText }
-      : anyError
-        ? { icon: '↻', title: 'Retry failed steps', bg: '#e15759', fg: '#fff' }
-        : { icon: '▶', title: 'Run all steps', bg: UI.accent, fg: UI.accentText }
+  const state: RunState = runningAll ? 'stop' : allDone ? 'rerun' : anyError ? 'retry' : 'run'
+  const rs = RUN_FACES[state]
 
   return (
     <>
@@ -550,14 +579,7 @@ export function RunButton() {
         </span>
       )}
       <button
-        style={{
-          ...styles.navBtn,
-          background: rs.bg,
-          color: rs.fg,
-          borderColor: rs.bg,
-          fontSize: 13,
-          opacity: !hasRunnable && !runningAll ? 0.5 : 1
-        }}
+        style={{ ...runButtonStyle(state), opacity: !hasRunnable && !runningAll ? 0.5 : 1 }}
         disabled={!hasRunnable && !runningAll}
         onClick={() => (runningAll ? stopAll() : void runAll())}
         title={rs.title}

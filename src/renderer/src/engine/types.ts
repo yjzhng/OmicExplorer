@@ -44,6 +44,11 @@ export const customSlug = (c: CustomConditionKey): string => c.slice(1)
 export const customCond = (name: string): CustomConditionKey => `@${name}` as CustomConditionKey
 /** What to call a condition on screen: its slug for a custom one, the key itself for a preset. */
 export const condLabel = (c: ConditionKey): string => (isCustomCond(c) ? customSlug(c) : c)
+/** One context value in a label: dose, time and every custom condition (numeric or not) carry
+ *  their name ("dose 10", "temp 37") since a bare value is ambiguous; cell/cmpd values speak for
+ *  themselves ("WT", "Amk"). Matrix column headers, fold-change heatmap columns, facet labels. */
+export const ctxLabel = (c: ConditionKey, v: unknown): string =>
+  c === 'cell' || c === 'cmpd' ? String(v) : `${condLabel(c)} ${v}`
 /**
  * The conditions a dataset declares numeric — its condition schema: dose and time always (their
  * values are numbers by the data format), plus the custom ones declared numeric at import. Carried

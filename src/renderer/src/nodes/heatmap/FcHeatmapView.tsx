@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 
-import type { DendroLink, FcHeatmapData } from '../../engine'
+import { condLabel, type DendroLink, type FcHeatmapData } from '../../engine'
 import { ROLE_DEFAULTS, paletteRange, paletteScale, type PaletteRef } from '../../ui/palettes'
 import { tooltip } from '../../ui/condTooltip'
 import { PlotlyChart } from '../../ui/PlotlyChart'
@@ -14,6 +14,7 @@ import {
 import { axisBase, CATEGORICAL, PALETTES, PLOT_TEXT, plotBase, withAlpha } from '../../ui/theme'
 import { useSelection } from '../../ui/useSelection'
 import { useUiTheme } from '../../ui/useUiTheme'
+import { levelPalette, type LevelPalettes, trackColours } from './trackColours'
 
 /** How strongly a hovered heatmap veils the cells outside the hovered row and column. */
 const HOVER_VEIL = 0.65
@@ -136,6 +137,130 @@ function barAt(b: GeneBars, px: number, py: number, w: number, h: number): [numb
   return b.clusters.find(([s0, s1]) => row >= s0 && row <= s1) ?? null
 }
 
+/** The colour bar's shortest length (px): Plotly pads it 10px at each end and throws ("axis
+ *  scaling") on one shorter than that. */
+const COLORBAR_MIN_PX = 40
+
+/** A condition track's depth (px) across the comparison columns, the gap between two tracks, and
+ *  the gap between the tracks and the cells. */
+const TRACK_PX = 10
+const TRACK_GAP = 1
+const TRACK_BAND_GAP_PX = 6
+/** The most of the cells' side (their share of the plot) the tracks may take. */
+const TRACK_MAX_FRAC = 0.2
+
+/** The condition tracks along the comparison columns — what tells them apart: the comparison, then
+ *  each context condition (FcHeatmapData.colConds), a track constant over every column left out
+ *  (unless it's the only one). A heatmap trace on its own axis across the columns (`y4` in
+ *  portrait, `x4` in landscape), coloured as the Clean-data heatmap's condition bar is (a numeric
+ *  condition along its level palette, the rest categorical), with a gap in the panel's colour
+ *  where a track's value changes. Null when the data carries none. */
+function buildFcTracks(
+  data: FcHeatmapData,
+  landscape: boolean,
+  bg: string,
+  levels: LevelPalettes
+): { trace: Record<string, unknown>; shapes: Record<string, unknown>[]; n: number } | null {
+  const all = (data.colConds ?? []).map((c, t) => ({
+    c,
+    label: c === 'comparison' ? 'comparison' : condLabel(c),
+    vals: data.colValues.map((v) => v[t] ?? '')
+  }))
+  const varying = all.filter((t) => new Set(t.vals).size > 1)
+  const kept = varying.length ? varying : all.slice(0, 1)
+  if (!kept.length || !data.columns.length) return null
+  const nC = data.columns.length
+  // colours: numbered in the data's track order, so both orientations colour alike
+  const palette: string[] = []
+  const idxOf = new Map<string, number>()
+  const colourIndex = (col: string): number => {
+    let i = idxOf.get(col)
+    if (i == null) {
+      i = palette.length
+      idxOf.set(col, i)
+      palette.push(col)
+    }
+    return i
+  }
+  let catIndex = 0
+  const colourOf = kept.map((t) => {
+    const ramp = t.c === 'comparison' ? null : levelPalette(t.c, levels)
+    return trackColours(t.vals, ramp, ramp ? 0 : catIndex++)
+  })
+  // each track's group per column for the hover focus: its value with every outer track's, so a
+  // hover lights the column's nested group in each track
+  const groups: string[][] = []
+  kept.forEach((t, k) =>
+    groups.push(t.vals.map((v, i) => (k > 0 ? `${groups[k - 1][i]}\u0001${v}` : v)))
+  )
+  // Portrait stacks the tracks up y, row 0 at the bottom: reversed, so they read top-down.
+  const order = kept.map((_, k) => k)
+  if (!landscape) order.reverse()
+  const z = order.map((k) =>
+    kept[k].vals.map((v) => (v === '' ? null : colourIndex(colourOf[k].get(v)!) + 0.5))
+  )
+  const text = order.map((k) =>
+    kept[k].vals.map((v, i) => `${data.columns[i]}<br>${kept[k].label}: ${v || '—'}`)
+  )
+  const focusKeys = order.map((k) => groups[k])
+  const labels = order.map((k) => kept[k].label)
+  const K = palette.length
+  const colorscale: Array<[number, string]> = []
+  for (let i = 0; i < K; i++) colorscale.push([i / K, palette[i]], [(i + 1) / K, palette[i]])
+  const shapes: Record<string, unknown>[] = []
+  order.forEach((k, t) => {
+    const vals = kept[k].vals
+    for (let i = 0; i < nC - 1; i++) {
+      if (vals[i] === vals[i + 1]) continue
+      shapes.push(
+        landscape
+          ? {
+              type: 'line',
+              xref: 'x4',
+              yref: 'y',
+              x0: t - 0.5,
+              x1: t + 0.5,
+              y0: i + 0.5,
+              y1: i + 0.5,
+              line: { color: bg, width: 2 },
+              layer: 'above'
+            }
+          : {
+              type: 'line',
+              xref: 'x',
+              yref: 'y4',
+              x0: i + 0.5,
+              x1: i + 0.5,
+              y0: t - 0.5,
+              y1: t + 0.5,
+              line: { color: bg, width: 2 },
+              layer: 'above'
+            }
+      )
+    }
+  })
+  const trace: Record<string, unknown> = {
+    type: 'heatmap',
+    z: landscape ? transpose(z) : z,
+    x: landscape ? labels : data.columns,
+    y: landscape ? data.columns : labels,
+    // the column and its value as text, not customdata: a string customdata reads as a gene id
+    text: landscape ? transpose(text) : text,
+    hovertemplate: '%{text}<extra></extra>',
+    meta: { focusKeys: landscape ? transpose(focusKeys) : focusKeys },
+    colorscale,
+    zmin: 0,
+    zmax: Math.max(K, 1),
+    showscale: false,
+    // no gap along the columns (a run of one value reads as one bar); a small one between tracks
+    xgap: landscape ? TRACK_GAP : 0,
+    ygap: landscape ? 0 : TRACK_GAP,
+    xaxis: landscape ? 'x4' : 'x',
+    yaxis: landscape ? 'y' : 'y4'
+  }
+  return { trace, shapes, n: kept.length }
+}
+
 /** m[i][j] → m[j][i] (generic; preserves cell values incl. null). */
 function transpose<T>(m: T[][]): T[][] {
   const rows = m.length
@@ -168,7 +293,9 @@ export function FcHeatmapView({
   palette = ROLE_DEFAULTS.fc,
   geneSide = NO_CLUSTER_SIDE,
   condSide = NO_CLUSTER_SIDE,
-  unsigned = false
+  unsigned = false,
+  condBar = false,
+  levels
 }: {
   data: FcHeatmapData
   /** the cells are unsigned effect sizes (a two-way ANOVA's terms): drawn from 0 on the palette's
@@ -182,6 +309,10 @@ export function FcHeatmapView({
    *  to the cells' right when it runs along y, above them along x — clear of the labels. */
   geneSide?: ClusterSide
   condSide?: ClusterSide
+  /** draw the condition tracks along the comparison columns (see buildFcTracks) */
+  condBar?: boolean
+  /** the numeric conditions' track palettes (and which conditions are numeric) */
+  levels?: LevelPalettes
 }) {
   const mode = useUiTheme((s) => s.mode)
   // The tile's size, for how many gene labels fit along the gene axis.
@@ -247,6 +378,13 @@ export function FcHeatmapView({
       xLine: xCl && xLook.tree ? treeLine(evenHeights(xCl.links), true) : null
     }
   }, [data, orient, geneSide, condSide])
+  const tracks = useMemo(
+    () =>
+      condBar && levels
+        ? buildFcTracks(data, orient === 'landscape', PALETTES[mode].panel, levels)
+        : null,
+    [data, orient, condBar, levels, mode]
+  )
 
   const {
     data: traces,
@@ -292,11 +430,15 @@ export function FcHeatmapView({
       ...(unsigned
         ? { colorscale: paletteRange(palette, 0.5, 1), zmin: 0, zmax: m }
         : { colorscale: paletteScale(palette), zmid: 0, zmin: -m, zmax: m }),
-      // 30% of the tile's height, centred on the plot
+      // 30% of the tile's height, centred on the plot — in px, never shorter than COLORBAR_MIN_PX.
+      // Not a share of the plot area: long comparison labels (angled under the cells) can leave a
+      // small tile a plot area of a few dozen px, a bar 30% of it shorter than Plotly's 10px
+      // padding at each end, and Plotly throws ("axis scaling") — the tile shows its error box.
       colorbar: {
         title: { text: unsigned ? 'effect (log₂)' : 'log₂FC', side: 'right' },
         thickness: 12,
-        ...(size.h > 0 ? { lenmode: 'pixels', len: 0.3 * size.h } : { len: 0.3 }),
+        lenmode: 'pixels',
+        len: Math.max(COLORBAR_MIN_PX, 0.3 * size.h),
         y: 0.5,
         yanchor: 'middle',
         ...capTicks
@@ -344,32 +486,75 @@ export function FcHeatmapView({
     const traces: Record<string, unknown>[] = [trace]
     // The trees (cut and drawn above): each in a strip on its own axes.
     const { yLook, xLook, yCl, xCl, yLine, xLine } = trees
+    const nX = landscape ? data.genes.length : data.columns.length
+    const nY = landscape ? data.columns.length : data.genes.length
+    // The strips are laid out in shares of the plot (from its rough size); the bars are drawn
+    // in pixels off the cells' edge (paper-anchored shapes), so their gap and thickness match
+    // exactly on both sides. A strip starts just past its bars — the bars sit on top, so a
+    // rough size never shows the stems short of them or through them.
+    const plotW = area?.w ?? size.w - 140
+    const plotH = area?.h ?? size.h - 120
+    const share = (px: number, len: number): number => (len > 0 ? px / len : 0.01)
+    // One depth in px for both strips (the shorter side's cap applies to both), as a share of
+    // each side's length.
+    const depthPx =
+      plotW > 0 && plotH > 0
+        ? Math.min(DENDRO_PX, DENDRO_MAX_FRAC * Math.min(plotW, plotH))
+        : DENDRO_PX
+    const frac = (len: number): number => (len > 0 ? depthPx / len : DENDRO_MAX_FRAC / 2)
+    const offPx = (cl: ReturnType<typeof cutTree> | null): number =>
+      DENDRO_GAP_PX + (cl?.clusters.length ? CLUSTER_BAR_PX - 1 : 0)
+    const offX = share(offPx(yCl), plotW)
+    const offY = share(offPx(xCl), plotH)
+    // A side shows when it has a tree to draw or bars (modules alone: no tree strip).
+    const ySide = !!yCl && (yLook.tree || yCl.clusters.length > 0)
+    const xSide = !!xCl && (xLook.tree || xCl.clusters.length > 0)
+    // Where the cells and the tracks end — the edge the cluster bars and trees stand off.
+    const xEnd = ySide ? 1 - (yLook.tree ? frac(plotW) : 0) - offX : 1
+    const yEnd = xSide ? 1 - (xLook.tree ? frac(plotH) : 0) - offY : 1
+    // The condition tracks: a band along the comparison columns between the cells and the
+    // comparisons' cluster bars and tree — above the cells in portrait, right of them in landscape.
+    // Sized in px off the plot's length — but never more than TRACK_MAX_FRAC of the cells' side: a
+    // short tile (or a rough size before the first draw) would otherwise give the tracks more than
+    // the whole side, and the cells a negative domain (Plotly: "axis scaling" error).
+    const trackLen = landscape ? plotW : plotH
+    const cellsEnd = landscape ? xEnd : yEnd
+    const wantGap = tracks ? share(TRACK_BAND_GAP_PX, trackLen) : 0
+    const wantBand = tracks ? share(tracks.n * TRACK_PX, trackLen) + wantGap : 0
+    const fit = wantBand > 0 ? Math.min(1, (TRACK_MAX_FRAC * cellsEnd) / wantBand) : 1
+    const bandGap = wantGap * fit
+    const band = wantBand * fit
+    // the cells' own ends: short of the tracks on the columns' cross axis
+    const xCells = landscape ? xEnd - band : xEnd
+    const yCells = landscape ? yEnd : yEnd - band
+    const shapes: Record<string, unknown>[] = []
+    if (tracks) {
+      traces.push(tracks.trace)
+      shapes.push(...tracks.shapes)
+      const trackAxis = {
+        ...axisBase(p),
+        automargin: true,
+        showgrid: false,
+        zeroline: false,
+        fixedrange: true,
+        // every track named (Plotly thins a category axis's labels when the tracks are short)
+        dtick: 1,
+        tickfont: { size: PLOT_TEXT.dense }
+      }
+      if (landscape)
+        lay.xaxis4 = {
+          ...trackAxis,
+          domain: [xCells + bandGap, xEnd],
+          anchor: 'y',
+          tickangle: -45
+        }
+      else lay.yaxis4 = { ...trackAxis, domain: [yCells + bandGap, yEnd], anchor: 'x' }
+    }
+    if (tracks || yCl || xCl) {
+      lay.xaxis = { ...(lay.xaxis as object), domain: [0, xCells] }
+      lay.yaxis = { ...(lay.yaxis as object), domain: [0, yCells] }
+    }
     if (yCl || xCl) {
-      const nX = landscape ? data.genes.length : data.columns.length
-      const nY = landscape ? data.columns.length : data.genes.length
-      // The strips are laid out in shares of the plot (from its rough size); the bars are drawn
-      // in pixels off the cells' edge (paper-anchored shapes), so their gap and thickness match
-      // exactly on both sides. A strip starts just past its bars — the bars sit on top, so a
-      // rough size never shows the stems short of them or through them.
-      const plotW = area?.w ?? size.w - 140
-      const plotH = area?.h ?? size.h - 120
-      const share = (px: number, len: number): number => (len > 0 ? px / len : 0.01)
-      // One depth in px for both strips (the shorter side's cap applies to both), as a share of
-      // each side's length.
-      const depthPx =
-        plotW > 0 && plotH > 0
-          ? Math.min(DENDRO_PX, DENDRO_MAX_FRAC * Math.min(plotW, plotH))
-          : DENDRO_PX
-      const frac = (len: number): number => (len > 0 ? depthPx / len : DENDRO_MAX_FRAC / 2)
-      const offPx = (cl: ReturnType<typeof cutTree> | null): number =>
-        DENDRO_GAP_PX + (cl?.clusters.length ? CLUSTER_BAR_PX - 1 : 0)
-      const offX = share(offPx(yCl), plotW)
-      const offY = share(offPx(xCl), plotH)
-      // A side shows when it has a tree to draw or bars (modules alone: no tree strip).
-      const ySide = !!yCl && (yLook.tree || yCl.clusters.length > 0)
-      const xSide = !!xCl && (xLook.tree || xCl.clusters.length > 0)
-      const xEnd = ySide ? 1 - (yLook.tree ? frac(plotW) : 0) - offX : 1
-      const yEnd = xSide ? 1 - (xLook.tree ? frac(plotH) : 0) - offY : 1
       const bare = {
         visible: false,
         fixedrange: true,
@@ -378,8 +563,7 @@ export function FcHeatmapView({
       }
       // heights on 0–1 (evenHeights), with a little headroom for the root's bar
       const top = 1.02
-      const shapes: Record<string, unknown>[] = []
-      // A bar per cluster along its rows, DENDRO_GAP_PX off the cells, the colours cycling. The
+      // A bar per cluster along its rows, DENDRO_GAP_PX off the edge, the colours cycling. The
       // cells span their axis's domain exactly ([-0.5, n − 0.5]), so a row maps onto paper.
       const bars = (
         cl: ReturnType<typeof cutTree>,
@@ -388,7 +572,7 @@ export function FcHeatmapView({
         colors: readonly string[]
       ): void =>
         cl.clusters.forEach(([s0, s1], i) => {
-          const end = alongX ? xEnd : yEnd
+          const end = alongX ? xCells : yCells
           const at = (pos: number): number => (pos / n) * end
           const from = at(s0)
           const to = at(s1 + 1)
@@ -430,39 +614,36 @@ export function FcHeatmapView({
         hoverinfo: 'skip',
         showlegend: false
       })
-      lay.xaxis = { ...(lay.xaxis as object), domain: [0, xEnd] }
-      lay.yaxis = { ...(lay.yaxis as object), domain: [0, yEnd] }
       if (ySide && yCl) {
         if (yLine) {
           lay.xaxis2 = { ...bare, domain: [xEnd + offX, 1], range: [0, top], anchor: 'y2' }
-          lay.yaxis2 = { ...bare, domain: [0, yEnd], range: [-0.5, nY - 0.5], anchor: 'x2' }
+          lay.yaxis2 = { ...bare, domain: [0, yCells], range: [-0.5, nY - 0.5], anchor: 'x2' }
           traces.push(line(yLine, 'x2', 'y2'))
         }
         bars(yCl, false, nY, yLook.colors)
       }
       if (xSide && xCl) {
         if (xLine) {
-          lay.xaxis3 = { ...bare, domain: [0, xEnd], range: [-0.5, nX - 0.5], anchor: 'y3' }
+          lay.xaxis3 = { ...bare, domain: [0, xCells], range: [-0.5, nX - 0.5], anchor: 'y3' }
           lay.yaxis3 = { ...bare, domain: [yEnd + offY, 1], range: [0, top], anchor: 'x3' }
           traces.push(line(xLine, 'x3', 'y3'))
         }
         bars(xCl, true, nX, xLook.colors)
       }
-      if (shapes.length) lay.shapes = shapes
       // The gene side: on the right in portrait (rows along y), on top in landscape.
       const geneCl = landscape ? xCl : yCl
       const condCl = landscape ? yCl : xCl
       const onX = (cl: { clusters: Array<[number, number]> }): GeneBars => ({
         alongX: true,
         edge: yEnd,
-        span: xEnd,
+        span: xCells,
         n: nX,
         clusters: cl.clusters
       })
       const onY = (cl: { clusters: Array<[number, number]> }): GeneBars => ({
         alongX: false,
         edge: xEnd,
-        span: yEnd,
+        span: yCells,
         n: nY,
         clusters: cl.clusters
       })
@@ -471,8 +652,9 @@ export function FcHeatmapView({
       if (condCl?.clusters.length && (landscape ? yLook : xLook).modules)
         condBars = landscape ? onY(condCl) : onX(condCl)
     }
+    if (shapes.length) lay.shapes = shapes
     return { data: traces, layout: lay, geneBars, condBars }
-  }, [data, cells, trees, title, orient, mode, size, area, palette, unsigned])
+  }, [data, cells, trees, tracks, title, orient, mode, size, area, palette, unsigned])
 
   // Clicking a gene cluster's bar selects its genes (a second click unselects them) — as a legend
   // group does. Clicking a condition cluster's bar picks its columns, adding to any picked already

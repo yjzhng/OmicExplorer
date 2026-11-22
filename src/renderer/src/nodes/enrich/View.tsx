@@ -106,7 +106,7 @@ export function enrichView(v: ViewContext): ReactNode {
                   facetRows.some(isSlopeRow)
                 )}
                 comparison={comparisonOf(facetRows)}
-                effectColors={effectsOf(cfg, upCompareCfg, cfg.effectColors)}
+                effectColors={effectsOf(cfg, cfg.effectColors)}
               />
             )}
           </Built>

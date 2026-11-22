@@ -1,6 +1,6 @@
 import { useMemo } from 'react'
 
-import type { DRData, DRSeries } from '../../engine'
+import { condLabel, type DRData, type DRSeries } from '../../engine'
 import { useGraph } from '../../graph/store'
 import { drLook, type DRLook } from '../../graph/types'
 import { AUTO } from '../../ui/ColorPicker'
@@ -37,7 +37,8 @@ export function DRView({
   title,
   axisLabel,
   look = DEFAULT_LOOK,
-  palette = ROLE_DEFAULTS.fcObject
+  palette = ROLE_DEFAULTS.fcObject,
+  categorical = CATEGORICAL
 }: {
   dr: DRData
   title?: string
@@ -47,6 +48,8 @@ export function DRView({
   look?: DRLook
   /** the fold-change palette an emphasised curve is coloured on, by its peak log₂FC */
   palette?: PaletteRef
+  /** the categorical palette the top genes' curves take a colour each from */
+  categorical?: readonly string[]
 }) {
   const mode = useUiTheme((s) => s.mode)
   const hoverId = useSelection((s) => s.hoverId)
@@ -91,7 +94,7 @@ export function DRView({
       hovertemplate: tooltip(
         {
           title: '%{text}',
-          conds: [[dr.axis, xHover(dr)]],
+          conds: [[condLabel(dr.axis), xHover(dr)]],
           values: [[fcLabel(dr), '%{y:.3f}']]
         },
         p.textMuted,
@@ -128,7 +131,7 @@ export function DRView({
       hovertemplate: tooltip(
         {
           title: s.label,
-          conds: [[dr.axis, xHover(dr)]],
+          conds: [[condLabel(dr.axis), xHover(dr)]],
           values: [[fcLabel(dr), '%{y:.3f}']]
         },
         p.textMuted,
@@ -149,7 +152,7 @@ export function DRView({
     // (which also thickens its legend swatch) — rather than spawning a separate highlight trace,
     // so it never duplicates its own legend item.
     const resting = top.map((s, i) =>
-      line(s, fixed ?? CATEGORICAL[i % CATEGORICAL.length], look.lineWidth)
+      line(s, fixed ?? categorical[i % categorical.length], look.lineWidth)
     )
     // A loop, not Math.max(...points): spreading every point as an argument overflows the stack
     // once there are ~100k of them (fitted curves are sampled finely).
@@ -183,7 +186,7 @@ export function DRView({
       yaxis: { ...axisBase(p), title: fcLabel(dr), zeroline: true }
     }
     return { top, topIds, resting, line, fixed, dcolor, peak, layout: lay }
-  }, [dr, title, axisLabel, mode, look, palette])
+  }, [dr, title, axisLabel, mode, look, palette, categorical])
 
   // The hovered/pinned genes this plot draws (in series order): a hover of a gene it doesn't have
   // (another dataset's, a cleared hover of one) leaves the key — and so the traces — as they were.

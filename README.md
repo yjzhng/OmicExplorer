@@ -1,224 +1,140 @@
-# OmicExplorer
+<p align="center">
+  <img src="build-resources/icon.png" width="96" alt="OmicExplorer icon">
+</p>
 
-Desktop app for exploring omic data — load sample × gene/protein matrices, build
-analysis pipelines in a flow-based editor, and explore live interactive
-visualizations and multi-condition comparisons. Runs as a macOS desktop app or
-from source in the browser.
+<h1 align="center">OmicExplorer</h1>
 
-Features:
+<p align="center">
+  Desktop app for exploring proteomics and other omic data: build an analysis as a workflow of
+  steps, then explore linked, interactive plots.
+</p>
 
-- Flow-based pipeline editor ([React Flow](https://reactflow.dev)) — chain
-  **Clean data → Compare / Contrast → plots** on a canvas
-- Standardization with clean-up (drop genes seen in <n% of samples), vehicle
-  normalization, direct comparisons, two-way ANOVA, and correlated contrasts
-- Live interactive plots ([Plotly](https://plotly.com/javascript/)) — volcano,
-  MA, heatmap, bubble, dumbbell, dose/time-response, cluster (PCA/UMAP/t-SNE),
-  and more, with linked hover/selection across every panel
-- Reconfigurable results dashboard — drag/resize tiles, shared facet context
-  (cell / dose / time), landscape ⇄ portrait per plot
-- Export any panel to PNG/PDF and any table to CSV/XLSX
-- Pure-TypeScript in-memory engine — no Python or external services at runtime
+<p align="center">
+  <a href="https://github.com/yjzhng/OmicExplorer/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/yjzhng/OmicExplorer"></a>
+  <img alt="Platforms" src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows-lightgrey">
+  <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-blue"></a>
+</p>
 
-## Quick start — install the app (macOS)
+## Features
 
-1. Download the `.dmg` from the [latest release](https://github.com/yjzhng/OmicExplorer/releases/latest) — `arm64` (Apple Silicon).
-2. Open it and drag **OmicExplorer** to Applications.
-3. **First launch** may be blocked by system security:
-   - **macOS 15 (Sequoia) or newer:** double-click OmicExplorer → a "not opened"
-     alert appears → open **System Settings → Privacy & Security**, scroll down,
-     and click **Open Anyway**.
-   - **macOS 14 or older:** **right-click** OmicExplorer → **Open** → **Open** in
-     the dialog.
-4. After that it opens normally.
+- **Workflow editor**: chain steps on a canvas or as a form, e.g. Load data → Clean data →
+  Compare → plots. Save the whole analysis in one `.omicexplorer` project file.
+- **Import**: read your own data, samplesheet and metadata files, or turn one raw export
+  (DIA-NN, Spectronaut, MaxQuant or any matrix) into those files with a guided import. Annotations
+  (GO, KEGG, Reactome, COG/KOG, MSigDB, STRING) are fetched for you.
+- **Clean data**: filter by missing values, impute, normalise to a reference protein, and correct
+  batch effects. Subset and Merge steps pick samples or pool datasets.
+- **Statistics**:
+  - **Compare**: t-tests, or an ANOVA over any number of conditions.
+  - **Contrast**: two comparisons side by side.
+  - **Curve fit**: dose and time responses, with 4PL curves, a spline detector, the CurveCurator
+    score and two-condition response surfaces.
+- **Plots**: volcano, MA, scatter, heatmap, PCA / UMAP / t-SNE, enrichment, STRING network,
+  dose/time response, 3-D response surfaces, ANOVA variance and interaction, curve potency and
+  metrics, sample QC and correlation.
+- **Linked exploration**: hover or pin a gene to highlight it in every plot. Search genes and
+  pathways, and save gene groups.
+- **Results dashboard**: drag and resize tiles, and switch dose, time or any other condition for
+  every plot at once.
+- **Export**: plots as SVG, PNG or PDF (vector shapes stay editable in Illustrator), tables as CSV
+  or XLSX.
+- **Local and fast**: a TypeScript engine runs in the app. No Python, server or account is needed,
+  and your data never leaves your machine.
 
-> [!TIP]
-> Terminal alternative to the Gatekeeper prompt, once installed:
-> `xattr -dr com.apple.quarantine /Applications/OmicExplorer.app`
+## Install
 
-### Build directly (no security block)
+Download the latest installer from
+[Releases](https://github.com/yjzhng/OmicExplorer/releases/latest):
 
-Requirement: [git](https://git-scm.com), [Node.js](https://nodejs.org).
+| Platform                      | File                                                  |
+| ----------------------------- | ----------------------------------------------------- |
+| macOS, Apple silicon or Intel | `.dmg`: open it and drag OmicExplorer to Applications |
+| Windows                       | `.exe` installer                                      |
 
-Don't have them? Install once, then open a new terminal (check with `git --version` and
-`node --version`):
+Updates install from **Settings → About → Updates**.
 
-- **macOS**: install [Homebrew](https://brew.sh) (includes git):
+The app isn't signed with an Apple Developer ID, so macOS blocks the first launch:
 
-  ```sh
-  /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-  ```
+- **macOS 15 or newer**: open the app, then **System Settings → Privacy & Security → Open Anyway**.
+- **macOS 14 or older**: right-click the app → **Open** → **Open**.
 
-  Follow its instructions to complete the install, then install Node.js:
+Or run `xattr -dr com.apple.quarantine /Applications/OmicExplorer.app` once.
 
-  ```sh
-  brew install node
-  ```
+### Build from source instead
 
-- **Windows** (PowerShell):
-
-  ```powershell
-  winget install Git.Git
-  winget install OpenJS.NodeJS.LTS
-  ```
-
-  Or download the installers from [git-scm.com](https://git-scm.com) and [nodejs.org](https://nodejs.org).
-
-**macOS** (installs to /Applications):
+This needs [git](https://git-scm.com) and [Node.js](https://nodejs.org), and avoids the security
+prompt. Run the same command again to update.
 
 ```sh
+# macOS (installs to /Applications)
 git clone https://github.com/yjzhng/OmicExplorer.git ~/OmicExplorer
-cd ~/OmicExplorer
-./scripts/install-from-source.sh
+cd ~/OmicExplorer && ./scripts/install-from-source.sh
 ```
 
-**Windows** (in PowerShell; installs per user, with a Start menu shortcut):
-
 ```powershell
+# Windows, in PowerShell (installs for the current user)
 git clone https://github.com/yjzhng/OmicExplorer.git $HOME\OmicExplorer
-cd $HOME\OmicExplorer
-powershell -ExecutionPolicy Bypass -File scripts\install-from-source.ps1
+cd $HOME\OmicExplorer; powershell -ExecutionPolicy Bypass -File scripts\install-from-source.ps1
 ```
 
-#### Update
+## Getting started
 
-The install script pulls the latest version and rebuilds. Run it again:
+1. Put your files in a folder, inside an `input/` subfolder.
+2. In the app, choose **＋ New project** and add that folder.
+3. Add a **Load data** step and pick your files, or use **Interactive** import on a raw export.
+4. Add **Clean data**, then **Compare**, then the plots you want, and press **Run**.
 
-**macOS**:
+The in-app **User guide** (the book icon in the top bar) covers every step and plot.
+
+## Input data
+
+A project reads three CSV files. Only the data matrix is required.
+
+| File                | Contents                                                                                                                                                                     |
+| ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `*_datamatrix.csv`  | Values per feature and sample, either wide (a column per sample) or long (`sample` and `value` columns). Blank, `NA` and `0` mean not measured. Raw or log values both work. |
+| `*_samplesheet.csv` | One row per sample: `sample`, plus conditions such as `cell`, `cmpd`, `dose`, `time`, `rep`, or your own.                                                                    |
+| `*_metadata.csv`    | One row per protein: `uniqID`, plus an optional `gene` label and annotation columns.                                                                                         |
+
+Protein groups (`Q13547;Q92769-2`), isoforms and FASTA headers are matched to the metadata as
+exported. [`templates/`](templates/) has a blank template and a filled example of each file. The
+User guide lists every accepted column.
+
+## Development
 
 ```sh
-cd ~/OmicExplorer
-./scripts/install-from-source.sh
+npm install
+npm run dev          # run the app with hot reload
+npm test             # unit tests (Vitest)
+npm run lint         # ESLint
+npm run typecheck    # TypeScript
+npm run package      # build the installer into dist/
 ```
 
-**Windows** (PowerShell):
+On macOS you can also double-click `OmicExplorer Dev.app`, which runs `npm run dev`.
 
-```powershell
-cd $HOME\OmicExplorer
-powershell -ExecutionPolicy Bypass -File scripts\install-from-source.ps1
-```
+- **Code layout**: each step and plot is a module under
+  [`src/renderer/src/nodes/`](src/renderer/src/nodes/README.md). The analysis engine is in
+  `src/renderer/src/engine/` and runs in a Web Worker.
+- **Releases**: pushing a version tag builds the macOS and Windows installers on GitHub Actions
+  and attaches them to a release. Notes live in [`releases/`](releases/).
+- **App identity**: the name, bundle id and build output all come from `package.json`
+  (`name`, `productName`, `appConfig`).
 
-### Load your data
+## Contributing
 
-A project is a folder with an `input/` directory holding three CSVs: a
-**datamatrix** (wide or long), a **samplesheet** describing each sample's
-conditions (e.g. cell line/strain, compound, dose, time), and an optional
-**metadata** file for labels and annotation. Name them e.g. `mydata_datamatrix.csv`,
-`mydata_samplesheet.csv` and `mydata_metadata.csv`. Open a `.omicexplorer` project
-file, or point the app at a new data folder to start one. [`templates/`](templates/)
-has a blank template and a filled example of each file.
-
-The Load tile has two modes. **Manual** reads the three files as described below.
-**Interactive** takes one raw export (DIA-NN, Spectronaut, MaxQuant or any
-matrix), cleans its IDs, fetches annotations, and writes the three files for you.
-
-#### Datamatrix
-
-Wide (one row per feature, one column per sample) or long (one row per feature ×
-sample, with `sample` and `value` columns); the app tells them apart from the
-columns.
-
-| Column | Format | Needed | What it holds |
-| --- | --- | --- | --- |
-| first column, e.g. `UniProtIDs` | wide | required | Feature ID as the search engine wrote it |
-| one column per sample | wide | required | That sample's values; the header is the sample name |
-| ID column, e.g. `UniProtIDs` | long | required | Feature ID; the first column that isn't `sample` or `value` |
-| `sample` | long | required | Sample name, matching the samplesheet |
-| `value` | long | required | The measured value |
-| `peptides` | long | optional | Peptide count; read but not used in analysis yet |
-
-- In a long file, `sample`, `value` and `peptides` are lowercase and case-sensitive.
-- The ID column is matched to the metadata file's `uniqID`. IDs can stay as the search
-  engine wrote them: a `;`-joined protein group (`Q13547;Q92769-2`, one feature), an
-  isoform (`P06733-2`) or a FASTA header (`sp|O14733|MP2K7_HUMAN`).
-- Decoy IDs (`REV__`, `rev_`, `DECOY_`, `reverse_`) are kept and analysed, but never
-  matched to metadata or fetched, so they can't borrow a real protein's label.
-- In a wide file every column after the first is a sample. One the samplesheet
-  doesn't list is dropped.
-- A blank cell, `NA`, `NaN` and `0` all mean "not measured". Raw or logged values
-  both work.
-
-#### Samplesheet
-
-One row per sample. Headers are matched case-insensitively.
-
-| Column | Needed | What it holds |
-| --- | --- | --- |
-| `sample` | required | Sample name, matching the datamatrix |
-| `cell` | optional | Cell line or strain, text (`strain` is also accepted) |
-| `cmpd` | optional | Compound, text |
-| `dose` | optional | Dose, a number (`0` is the vehicle) |
-| `time` | optional | Time point, a number |
-| `rep` | optional | Replicate number; numbered automatically when absent |
-| your own (e.g. `medium`) | optional | A custom condition, always categorical |
-
-- Only samples listed here are kept.
-- A condition in use must be filled for every sample.
-- Units for `dose` and `time` are set on the Load tile.
-- Custom condition names start with a lowercase letter, then lowercase letters,
-  digits and `_`. Reserved names (`sample`, `value`, `uniqid`, `gene`, `taxon`, …)
-  can't be used. A column that differs on every sample (notes, timestamps) is
-  ignored.
-
-#### Metadata file (optional)
-
-One row per protein. Column names are case-sensitive. Cells with several values
-separate them with `;`.
-
-| Column | Needed | What it holds |
-| --- | --- | --- |
-| `uniqID` | required | One protein's accession, one per row; the datamatrix's IDs are matched to it (`Q9ULV3-5` finds `Q9ULV3`) |
-| `gene` | optional | Gene name, shown as the feature's label |
-| `locus` | optional | Systematic gene name (e.g. `Rv0001`; UniProt's ordered locus name, fetched as **Gene locus**); the label when `gene` is empty |
-| `proteinName` | optional | Protein description, shown beside the name in the gene selector |
-| `taxon` | optional | NCBI taxon id; the most common one sets the STRING species |
-| `GO_BP`, `GO_MF`, `GO_CC` | optional | GO terms: biological process, molecular function, cellular component |
-| `KEGG` | optional | KEGG pathway(s) |
-| `KEGG_cat`, `KEGG_grp` | optional | Each pathway's category and group, in the same order as `KEGG` |
-| `Reactome` | optional | Reactome level-3 pathway(s) (human) |
-| `Reactome_grp`, `Reactome_cat` | optional | Each term's level-2 and top-level pathway, in the same order |
-| `COG` | optional | COG orthologous group name(s) (prokaryotes) |
-| `COG_cat`, `COG_area` | optional | COG functional category, and the area each sits under |
-| `KOG`, `KOG_cat`, `KOG_area` | optional | The same three for KOG (eukaryotes) |
-| `MSigDB` | optional | MSigDB hallmark gene set(s) |
-| `stringId` | optional | The protein's STRING id, for the STRING network |
-| `DEG` | optional | Essentiality from the Database of Essential Genes |
-| anything else | optional | Carried along as an annotation |
-
-Older column names are still read: `GO` (with the GO aspects), `keggPathway` and
-`KG_PW` (→ `KEGG`), `cogCategory` (→ `COG_cat`), `cogArea` (→ `COG_area`),
-`reactomePathway` (→ `Reactome`), `msigdbSet` (→ `MSigDB`), `essentiality`
-(→ `DEG`), `locus_tag` (→ `locus`). Older files named `_wide` / `_long` / `_DB`
-still load.
-
-## Run from source (developers)
-
-Needs [Node.js](https://nodejs.org) + git.
-
-- **Any OS:** `npm install && npm run dev` opens the dev build in its own window.
-- **macOS:** or double-click `OmicExplorer Dev.app` (runs `npm run dev`, installing
-  dependencies when needed); `npm run make:launcher` regenerates it.
-
-## Build the installer
-
-```sh
-npm install          # one-time
-npm run package      # → dist/OmicExplorer-<version>-arm64.dmg (+ zip)
-npm run package:dir  # unpacked .app only (fast, no installer)
-```
-
-Ad-hoc signed (no Apple Developer ID), which is why a downloaded copy shows the
-"unidentified developer / Open Anyway" dialog above.
-
-App identity (name, bundle id, build output) is derived entirely from
-`package.json` — edit the `name` / `productName` / `appConfig` block there and
-every consumer follows.
+Bug reports and pull requests are welcome. Please open an issue first to discuss larger changes.
+In the app, **Help → Copy Diagnostics** copies recent errors with app and system details, ready to
+paste into a bug report.
 
 ## Built with
 
-- [React Flow](https://reactflow.dev) — the flow-based pipeline canvas.
-- [Plotly](https://plotly.com/javascript/) — interactive scientific charts.
-- [react-grid-layout](https://github.com/react-grid-layout/react-grid-layout) — the draggable results dashboard.
-- [umap-js](https://github.com/PAIR-code/umap-js) — dimensionality reduction for cluster embeddings.
-- [PapaParse](https://www.papaparse.com/) — CSV parsing.
-- [Zustand](https://github.com/pmndrs/zustand) — state management.
-- [React](https://react.dev/) · [Vite](https://vitejs.dev/) · [Electron](https://www.electronjs.org/) + [electron-builder](https://www.electron.build) — UI, build, desktop shell & packaging.
+[Electron](https://www.electronjs.org) · [React](https://react.dev) ·
+[React Flow](https://reactflow.dev) · [Plotly](https://plotly.com/javascript/) ·
+[react-grid-layout](https://github.com/react-grid-layout/react-grid-layout) ·
+[umap-js](https://github.com/PAIR-code/umap-js) · [PapaParse](https://www.papaparse.com) ·
+[Zustand](https://github.com/pmndrs/zustand) · [Vite](https://vitejs.dev)
+
+## License
+
+[MIT](LICENSE)

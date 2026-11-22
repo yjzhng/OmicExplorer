@@ -2,9 +2,10 @@
  *  the result + metric — a plot-type toggle or an unrelated re-render won't rebuild it. */
 import { useMemo } from 'react'
 
+import type { ConditionColoring } from '../../graph/types'
+import { colorerArgs } from '../../ui/condColor'
 import {
   buildQc,
-  isNumericCond,
   numericOf,
   type ConditionKey,
   type QcMetric,
@@ -20,7 +21,7 @@ export function QcTile({
   plot,
   scale,
   color,
-  colorConds = [],
+  coloring = null,
   fit,
   categorical,
   condTitle,
@@ -35,8 +36,8 @@ export function QcTile({
   scale?: ValueScale
   /** the single fill colour (unset = the QC default) */
   color?: string
-  /** colour by condition: a categorical one (the colour) and/or a numeric one (the shade) */
-  colorConds?: ConditionKey[]
+  /** colour by condition: the colour conditions and the fade (null: the single colour) */
+  coloring?: ConditionColoring | null
   /** fit the value axis to the bars rather than starting it at zero */
   fit?: boolean
   /** the categorical palette its condition levels cycle (the plot's own, else the global one) */
@@ -53,8 +54,7 @@ export function QcTile({
       data={data}
       plot={plot}
       color={color}
-      colorCat={colorConds.find((c) => !isNumericCond(c, numericOf(std)))}
-      colorNum={colorConds.find((c) => isNumericCond(c, numericOf(std)))}
+      {...colorerArgs(coloring, numericOf(std))}
       fit={fit}
       categorical={categorical}
       condTitle={condTitle}

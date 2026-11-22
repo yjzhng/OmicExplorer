@@ -14,7 +14,8 @@ import { labelColorOf, legendOn, resolveGroups, resolveHighlight } from '../../u
 import {
   axisBase,
   EFFECT_COLOR,
-  GUIDE_WIDTH,
+  guideLook,
+  guideShapes,
   guideLine,
   PALETTES,
   PLOT_TEXT,
@@ -89,7 +90,7 @@ export function MAView({
   const editable = !!onThresholdChange
   const emphasis = useMemo(() => resolveHighlight(style), [style])
   const showLegend = legendOn(style)
-  const gw = style?.guideWidth ?? GUIDE_WIDTH
+  const { show: gShow, dash: gDash, width: gw } = guideLook(style)
 
   const { data, layout, labels, guides } = useMemo(() => {
     const p = PALETTES[mode]
@@ -184,7 +185,7 @@ export function MAView({
       x1: hi,
       y0: y,
       y1: y,
-      line: guideLine(p, gw)
+      line: guideLine(p, gw, gDash)
     })
     // Pin explicit axis ranges (with padding) so the range never re-pads on hover — otherwise
     // the enlarged overlay marker on an edge point shifts the whole cloud and bounces the hover.
@@ -217,7 +218,7 @@ export function MAView({
         autorange: false
       },
       // Guide order: [0]=fcLow, [1]=fcHigh — horizontal log2FC cutoffs. Hidden under SAM.
-      shapes: samThreshold ? [] : [guide(ma.fcLow), guide(ma.fcHigh)]
+      shapes: samThreshold ? [] : guideShapes([guide(ma.fcLow), guide(ma.fcHigh)], gShow)
     }
     // Draggable fold-change lines (linear mode only) — they edit the SAME compare threshold as
     // volcano, so both plots move together. Drag vertically (ns-resize). Symmetric: mirrored;
@@ -266,9 +267,11 @@ export function MAView({
       text: pt.label,
       priority: Math.abs(pt.y),
       id: pt.uniqID,
-      color: labelColorOf(look(pt.effect), p.text)
+      color: labelColorOf(look(pt.effect), p.text),
+      fontSize: look(pt.effect).labelSize
     }))
-    return { data: traces, layout: lay, labels, guides }
+    // threshold lines off: nothing to drag either
+    return { data: traces, layout: lay, labels, guides: gShow ? guides : [] }
   }, [
     ma,
     title,
@@ -280,6 +283,8 @@ export function MAView({
     groups,
     showLegend,
     gw,
+    gDash,
+    gShow,
     labelTop
   ])
 

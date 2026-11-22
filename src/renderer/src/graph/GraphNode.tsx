@@ -897,6 +897,32 @@ function NodeSummary({
   return <div style={muted}>{text ?? 'Genes × samples. Select to view.'}</div>
 }
 
+/** A step tile's face as the canvas draws it — category, name, a finished status and a line of
+ *  description — without the canvas around it (no handles, run control or live state). The User
+ *  guide draws workflow steps with it. */
+export function TileFace({ kind, text }: { kind: NodeKind; text?: string }): ReactNode {
+  const category = categoryOf(kind)
+  const accent = accentOf(category)
+  return (
+    <div style={{ ...card, borderTopColor: accent }}>
+      <div style={header}>
+        <span style={titleWrap}>
+          <span style={{ ...catTag, color: accent }}>{CATEGORIES[category].label}</span>
+          <span style={{ ...tileNameText, ...nameChip }}>{NODE_SPECS[kind].label}</span>
+        </span>
+        <div style={headerRight}>
+          <StatusDot {...plotStatusInfo('done', undefined, null)} />
+        </div>
+      </div>
+      {text && (
+        <div style={body}>
+          <div style={muted}>{text}</div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 /** Transient tile shown between drop and op selection — the type picker *is* the tile,
  *  so there is a single surface at the drop point (not a separate floating menu). */
 export function PlaceholderNode({ id, data }: NodeProps<Node<PlaceholderData>>) {

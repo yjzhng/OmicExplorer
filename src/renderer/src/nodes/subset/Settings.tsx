@@ -6,7 +6,7 @@ import {
   condLabel,
   isCustomCond,
   orderConds,
-  sampleLabel,
+  sampleName,
   sampleLevels,
   samplePasses,
   sheetSamples
@@ -87,11 +87,11 @@ export function SubsetPanel({ id, config }: { id: string; config: SubsetConfig }
     [samples]
   )
   const sampleNames = useMemo(() => (samples ?? []).map((m) => m.sample), [samples])
-  // Each sample named by its conditions (cell_cmpd_dose_time…_r<rep>), not its file name — which
+  // Each sample named by its conditions (cell · cmpd · dose · time … · r<rep>), not its file name — which
   // may say nothing (a run number, an acquisition path). Two that would read alike get their file
   // name after it. What's stored (`drop`) stays the file name, so a renamed condition keeps it.
   const nameOf = useMemo(() => {
-    const label = new Map((samples ?? []).map((m) => [m.sample, sampleLabel(m)]))
+    const label = new Map((samples ?? []).map((m) => [m.sample, sampleName(m)]))
     const seen = new Map<string, number>()
     for (const l of label.values()) seen.set(l, (seen.get(l) ?? 0) + 1)
     return (v: string): string => {

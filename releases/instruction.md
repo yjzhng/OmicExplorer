@@ -1,14 +1,15 @@
-Desktop app for exploring omic data — load sample × gene/protein matrices, build analysis pipelines in a flow-based editor, and explore live interactive visualizations and multi-condition comparisons.
+Desktop app for exploring proteomics and other omic data: build an analysis as a workflow of steps, then explore linked, interactive plots.
 
 <details>
 <summary><b>Highlights</b></summary>
 
-- **Flow-based pipeline editor** — chain **Clean data → Compare / Contrast → plots** on a canvas.
-- **Analysis engine** — standardization with clean-up (drop genes seen in <n% of samples), vehicle normalization, direct comparisons, two-way ANOVA, and correlated contrasts.
-- **Interactive plots** — volcano, MA, heatmap, bubble, dumbbell, dose/time-response, and cluster (PCA/UMAP/t-SNE), with linked hover/selection across every panel.
-- **Reconfigurable dashboard** — drag/resize tiles, shared facet context (cell / dose / time), landscape ⇄ portrait per plot.
-- **Export** any panel to PNG/PDF and any table to CSV/XLSX.
-- Pure-TypeScript in-memory engine — no Python or external services at runtime.
+- **Workflow editor**: chain Load data → Clean data → Compare → plots on a canvas or as a form, saved in one project file.
+- **Import**: your own data, samplesheet and metadata files, or one raw export (DIA-NN, Spectronaut, MaxQuant or any matrix) set up in a guided import, with annotations fetched for you.
+- **Clean data**: missing-value filter, imputation, reference-protein normalisation and batch correction.
+- **Statistics**: t-tests or an ANOVA over any conditions, two comparisons side by side, and dose / time curve fits (4PL, spline detector, CurveCurator score, two-condition surfaces).
+- **Plots**: volcano, MA, scatter, heatmap, PCA / UMAP / t-SNE, enrichment, STRING, dose/time response, 3-D surfaces, ANOVA variance and interaction, potency, QC and correlation, with linked hover and selection across every plot.
+- **Export**: plots as SVG / PNG / PDF, tables as CSV / XLSX.
+- Runs locally: no Python, server or account.
 
 </details>
 

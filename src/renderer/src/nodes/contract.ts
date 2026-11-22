@@ -106,11 +106,15 @@ export interface PlotVariants {
 export interface PlotFacts {
   /** its settings window has a panel (the Results tile shows its gear) */
   configurable?: boolean
-  /** it takes the plot-wide legend switch: the Legend section (every plot with a legend).
+  /** it takes the plot-wide legend switch: a row of General (every plot with a legend).
    *  'groups': a point plot, whose groups' own entries are switched in its Points section */
   legend?: boolean | 'groups'
-  /** it takes the shared Axes section (a Plotly plot with axes) */
+  /** it takes the shared Axes and lines section (a Plotly plot with axes) */
   axes?: boolean
+  /** it draws threshold / reference guide lines (the cutoffs): shown / style / width set in the
+   *  Axes and lines section like its other lines, kept in its point style (`style.guideShow`,
+   *  `guideStyle`, `guideWidth`; read through ui/theme guideLook) */
+  guides?: boolean
   /** its run computes something of its own (enrichment's tests, STRING's network, the cluster's
    *  embedding); every other plot draws live from its upstream, its run only marking it ready */
   computes?: boolean

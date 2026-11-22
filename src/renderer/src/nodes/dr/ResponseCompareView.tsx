@@ -32,7 +32,8 @@ export function ResponseCompareView({
   yLabel = 'log₂FC',
   scaleRows,
   yRange: givenRange,
-  look = DEFAULT_LOOK
+  look = DEFAULT_LOOK,
+  categorical = CATEGORICAL
 }: {
   rows: ContrastResultRow[]
   displayMap: Record<string, string>
@@ -53,6 +54,8 @@ export function ResponseCompareView({
   yRange?: [number, number] | null
   /** line / point / error look (the tile's settings); an automatic colour is one per side */
   look?: DRLook
+  /** the categorical palette the two sides take their colours from (its 1st and 4th) */
+  categorical?: readonly string[]
 }): ReactNode {
   const mode = useUiTheme((s) => s.mode)
 
@@ -180,7 +183,7 @@ export function ResponseCompareView({
     // A side's colour: one per side (automatic), unless one colour is set for every line; points
     // and error follow it unless they have a colour of their own.
     const sideColor = (i: number): string =>
-      look.lineColor !== AUTO ? look.lineColor : CATEGORICAL[i === 0 ? 0 : 3]
+      look.lineColor !== AUTO ? look.lineColor : categorical[(i === 0 ? 0 : 3) % categorical.length]
     const pointColor = (c: string): string => (look.pointColor !== AUTO ? look.pointColor : c)
     const errorColor = (c: string): string => (look.errorColor !== AUTO ? look.errorColor : c)
     const line = (y: (number | null)[], color: string, name: string): Record<string, unknown> => ({
@@ -329,7 +332,7 @@ export function ResponseCompareView({
       ],
       layout: lay
     }
-  }, [series, mode, axis, axisLabel, title, yLabel, yRange, look, rows])
+  }, [series, mode, axis, axisLabel, title, yLabel, yRange, look, rows, categorical])
 
   if (!series)
     return (

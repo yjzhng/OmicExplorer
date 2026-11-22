@@ -121,7 +121,7 @@ export function volcanoView(v: ViewContext): ReactNode {
                       : undefined
                   }
                   effectLabels={effectLabelsOf(upCfg)}
-                  effectColors={effectsOf(cfg, upCfg)}
+                  effectColors={effectsOf(cfg)}
                   labelTop={labelCapOn(cfg) ? cfg.labelTop : 0}
                   style={cfg.style}
                   // Dragging a guide live-rethresholds the upstream Compare (re-classifies genes).

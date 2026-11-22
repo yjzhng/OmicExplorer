@@ -38,7 +38,7 @@ export function GeneBarView({
   range,
   valueLabel = 'value',
   replicates,
-  colorCat,
+  colorCats = [],
   colorNum,
   errorWidth = 1.4,
   errorColor = 'auto',
@@ -58,7 +58,8 @@ export function GeneBarView({
   /** the replicate dots over the bars (none when unset or hidden) */
   replicates?: ReplicateLook
   /** colour by condition: the categorical one (colour) and/or the numeric one (shade) */
-  colorCat?: ConditionKey
+  /** the colour conditions: every combination of their values its own colour (conditionColorer) */
+  colorCats?: readonly ConditionKey[]
   colorNum?: ConditionKey
   /** error bar line width (px) */
   errorWidth?: number
@@ -72,6 +73,8 @@ export function GeneBarView({
   valuePalette?: PaletteRef
 }) {
   const mode = useUiTheme((s) => s.mode)
+  // the colour conditions as one tag (the legend groups' prefix) and a stable memo key
+  const catTag = colorCats.join('×')
 
   const { data, layout } = useMemo(() => {
     const p = PALETTES[mode]
@@ -92,7 +95,9 @@ export function GeneBarView({
     })
     // Colour by condition. A condition the data doesn't carry (a stale setting) is left out; with
     // neither left, bars colour by value.
-    const byCond = conditionColorer(bar.conds, (c) => bar.condMeta[c], colorCat, colorNum, {
+    // the colour conditions (from their tag: the memo keys on it, not the array)
+    const cats = catTag ? (catTag.split('×') as ConditionKey[]) : []
+    const byCond = conditionColorer(bar.conds, (c) => bar.condMeta[c], cats, colorNum, {
       base: categorical[0],
       missing: p.textMuted,
       palette: categorical
@@ -130,10 +135,13 @@ export function GeneBarView({
     // swatch keeps that condition's bars and dots and fades the rest (traceFocus), as on the QC.
     const condGroups = (cond: string): string[] =>
       byCondition && bar.condMeta[cond]
-        ? [colorCat, colorNum].flatMap((c) => {
-            const v = c ? metaValue(bar.condMeta[cond], c) : null
-            return c && v != null && v !== '' ? [`${c}=${v}`] : []
-          })
+        ? [
+            ...(byCond.catOf(cond) ? [`${catTag}=${byCond.catOf(cond)}`] : []),
+            ...[colorNum].flatMap((c) => {
+              const v = c ? metaValue(bar.condMeta[cond], c) : null
+              return c && v != null && v !== '' ? [`${c}=${v}`] : []
+            })
+          ]
         : []
     const keyOf = (cond: string): string | null =>
       bar.condMeta[cond] ? sampleKey(bar.condMeta[cond], null) : null
@@ -296,7 +304,7 @@ export function GeneBarView({
           hovertemplate: `%{text}<br>${valueLine('replicate', valueAt)}<extra></extra>`
         }))
       : []
-    const catName = colorCat ? condTitle(colorCat) : ''
+    const catName = cats.map(condTitle).join(' × ')
     const numName = colorNum ? condTitle(colorNum) : ''
     const lay: Record<string, unknown> = {
       ...plotBase(p),
@@ -318,7 +326,7 @@ export function GeneBarView({
     const key = (name: string, color: string, group: string, section: string) =>
       sectionKey({ name, section, group, marker: { symbol: 'square', size: 11, color } })
     const keys = [
-      ...byCond.cats.map((k) => key(k.value, k.color, `${colorCat}=${k.value}`, catName)),
+      ...byCond.cats.map((k) => key(k.value, k.color, `${catTag}=${k.value}`, catName)),
       ...byCond.nums.map((k) => key(k.value, k.color, `${colorNum}=${k.value}`, numName))
     ]
     // The error bars (see ownErrors): one invisible-marker scatter per colour ('auto': each bar's
@@ -366,7 +374,7 @@ export function GeneBarView({
     range,
     valueLabel,
     replicates,
-    colorCat,
+    catTag,
     colorNum,
     errorWidth,
     errorColor,

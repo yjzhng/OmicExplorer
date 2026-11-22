@@ -1,15 +1,17 @@
 import type { ReactNode } from 'react'
 import { SwitchBar } from '../../dashboard/SwitchBar'
-import {
-  CLUSTER_COLOR,
-  type ClusterColorBy,
-  type ConditionKey,
-  condLabel,
-  VALID_CONDITIONS
-} from '../../engine'
+import { CLUSTER_COLOR, type ConditionKey, VALID_CONDITIONS } from '../../engine'
 import { quickOn } from '../../graph/registry'
 import { useGraph } from '../../graph/store'
-import { type ClusterConfig, clusterLook, clusterStyle, clusterTwoConds } from '../../graph/types'
+import {
+  clusterByCluster,
+  clusterColoring,
+  clusterColorWrite,
+  type ClusterConfig,
+  clusterFadeScheme,
+  clusterLook,
+  clusterStyle
+} from '../../graph/types'
 import { Empty, PlotNotRun } from '../kit/views/common'
 import { type ViewContext } from '../kit/views/context'
 import { styles } from '../kit/views/styles'
@@ -53,15 +55,14 @@ export function pcaView(v: ViewContext): ReactNode {
     upstream?.kind === 'standardize'
       ? upstream.std.activeConditions
       : (VALID_CONDITIONS as ConditionKey[])
-  // `cluster` sits alongside the conditions: same question ("what do the colours mean?"), one
-  // control. A stored colorBy that isn't in the upstream's conditions stays selectable.
-  const byCluster = cfg.colorBy === CLUSTER_COLOR
-  const conds: ClusterColorBy[] = active.includes(cfg.colorBy as ConditionKey)
-    ? active
-    : byCluster
-      ? active
-      : [cfg.colorBy, ...active]
-  const colorOpts: string[] = [...conds, CLUSTER_COLOR]
+  // What the colours mean: the conditions (the ones picked in the settings) or the computed
+  // clusters — the tile's switch flips between the two, the pick kept across.
+  const byCluster = clusterByCluster(cfg)
+  const fadeScheme = clusterFadeScheme(cfg, active, numeric)
+  // The colours drawn, from the picks as the settings show them (a new plot's default included):
+  // one condition its own colours, several every combination's (the fade, if any, by fadeScheme).
+  const { picks, fade } = clusterColoring(cfg, active, numeric)
+  const drawn = byCluster ? null : clusterColorWrite(picks, fade)
   const clusterOn = cfg.clusterOn ?? 'coords'
   const clusterCount = cfg.clusterCount ?? 'fixed'
   const withBar = (body: ReactNode): ReactNode => (
@@ -86,10 +87,13 @@ export function pcaView(v: ViewContext): ReactNode {
           {!scree && quickOn(cfg, 'colorBy', 'pca') && (
             <SwitchBar
               label="colour by"
-              value={cfg.colorBy}
-              options={colorOpts}
-              optionLabel={(o) => (o === CLUSTER_COLOR ? o : condLabel(o as ConditionKey))}
-              onChange={(v) => patchConfig({ colorBy: v })}
+              value={byCluster ? 'clusters' : 'conditions'}
+              options={['conditions', 'clusters']}
+              onChange={(v) =>
+                patchConfig(
+                  v === 'clusters' ? { colorBy: CLUSTER_COLOR } : clusterColorWrite(picks, fade)
+                )
+              }
             />
           )}
           {/* Both cluster knobs only mean anything while the colours ARE clusters. */}
@@ -151,19 +155,21 @@ export function pcaView(v: ViewContext): ReactNode {
       condTitle={condTitle}
       categorical={categoricalOf(cfg)}
       cluster={plotRun.cluster}
-      colorBy={cfg.colorBy}
+      colorBy={drawn?.colorBy ?? CLUSTER_COLOR}
+      groupConds={drawn?.groupConds}
       display={display}
       territory={territory}
       plot={plot}
       loadings={cfg.loadings}
-      // two conditions picked under the simple legend: drawn by the complex legend's colour
-      // and shade (clusterTwoConds)
-      legend={clusterTwoConds(cfg, numeric) ? 'complex' : 'simple'}
+      // coloured by conditions with a fade: drawn by the complex legend — the colour conditions
+      // as picked, the fade as its shade (clusterFadeScheme)
+      legend={fadeScheme ? 'complex' : 'simple'}
       axisMode={cfg.axisMode}
       look={clusterStyle(cfg)}
-      schemeColor={clusterTwoConds(cfg, numeric)?.color}
-      schemeShade={clusterTwoConds(cfg, numeric)?.shade}
-      schemeArrow={clusterTwoConds(cfg, numeric)?.arrow}
+      schemeColor={fadeScheme?.color}
+      schemeShade={fadeScheme?.shade}
+      schemeArrow={fadeScheme?.arrow}
+      schemeAsGiven
       numeric={numeric}
     />
   )

@@ -300,21 +300,24 @@ describe('focus genes', () => {
     expect(focused.points.every((p) => p.uniqID === 'g1')).toBe(true)
   })
 
-  it('bubble appends `extra` genes after the base set, without reshuffling it', () => {
+  it('bubble adds `extra` genes to the base set, each in its place in the score order', () => {
     const rows = [
       cmp({ uniqID: 'g1', dose: 1, log2FC: 0.1, signf: true }),
       cmp({ uniqID: 'g2', dose: 1, log2FC: 3, signf: true }),
       cmp({ uniqID: 'g3', dose: 1, log2FC: -2, signf: true })
     ]
-    // top-1 base is g2 (largest |log2FC|); g3 is appended by the linked selection.
+    // top-1 base is g2 (largest |log2FC|); g3 is added by the linked selection, after it by score.
     const b = buildBubble(rows, { axis: 'dose', topGenes: 1, extra: ['g3'] })
     expect(b.points.map((p) => p.uniqID)).toEqual(['g2', 'g3'])
     // already-shown genes aren't duplicated when also in `extra`.
     const b2 = buildBubble(rows, { axis: 'dose', topGenes: 1, extra: ['g2', 'g3'] })
     expect(b2.points.map((p) => p.uniqID)).toEqual(['g2', 'g3'])
-    // in GOI mode `extra` appends alongside the focus set.
-    const b3 = buildBubble(rows, { axis: 'dose', topGenes: 0, focus: ['g1'], extra: ['g3'] })
+    // in GOI mode `extra` joins the focus set, in order.
+    const b3 = buildBubble(rows, { axis: 'dose', topGenes: 0, focus: ['g3'], extra: ['g1'] })
     expect(b3.points.map((p) => p.uniqID)).toEqual(['g1', 'g3'])
+    // a pinned gene scoring between two shown ones goes between them, not to the end.
+    const b4 = buildBubble(rows, { axis: 'dose', topGenes: 0, focus: ['g2', 'g3'], extra: ['g1'] })
+    expect(b4.points.map((p) => p.uniqID)).toEqual(['g2', 'g1', 'g3'])
   })
 })
 
@@ -357,7 +360,7 @@ describe('buildGeneBar', () => {
     ]
     const bar = buildGeneBar(rows, ['g1'], { g1: 'geneOne' })
     expect(bar.genes).toEqual([{ uniqID: 'g1', label: 'geneOne' }])
-    const c1 = bar.bars.find((b) => b.cond === 'A_1')!
+    const c1 = bar.bars.find((b) => b.cond === 'A · 1')!
     expect(c1.mean).toBe(11)
     expect(c1.n).toBe(2)
     expect(c1.sd).toBeCloseTo(Math.sqrt(2), 9) // sample sd of [10,12]
@@ -607,16 +610,16 @@ describe('sample order', () => {
   it('heatmap columns follow the chosen order', () => {
     const cols = (by: 'natural' | 'original'): string[] =>
       buildHeatmap(rows, { log10: false, cluster: false, order: { by, samples: stdSamples } }).x
-    expect(cols('natural')).toEqual(['A_2_r1', 'A_10_r1', 'B_10_r1'])
-    expect(cols('original')).toEqual(['B_10_r1', 'A_10_r1', 'A_2_r1'])
+    expect(cols('natural')).toEqual(['A · 2 · r1', 'A · 10 · r1', 'B · 10 · r1'])
+    expect(cols('original')).toEqual(['B · 10 · r1', 'A · 10 · r1', 'A · 2 · r1'])
   })
   it('gene bar conditions follow the chosen order', () => {
     const conds = buildGeneBar(rows, ['g'], undefined, false, 'sd', {
       by: 'original',
       samples: stdSamples
     }).conds
-    expect(conds).toEqual(['B_10', 'A_10', 'A_2'])
-    expect(buildGeneBar(rows, ['g']).conds).toEqual(['A_2', 'A_10', 'B_10'])
+    expect(conds).toEqual(['B · 10', 'A · 10', 'A · 2'])
+    expect(buildGeneBar(rows, ['g']).conds).toEqual(['A · 2', 'A · 10', 'B · 10'])
   })
   it('QC groups follow the chosen order', () => {
     const std = {

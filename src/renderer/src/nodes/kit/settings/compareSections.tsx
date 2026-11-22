@@ -3,25 +3,10 @@ import { CC_Q_MIN, type FdrMethod, SAM_PERMUTATIONS, SAM_S0, someNested } from '
 import { ApplyStageContext } from '../../../graph/applyStage'
 import { fitOf } from '../../../graph/axisFits'
 import { useGraph } from '../../../graph/store'
-import {
-  type CompareConfig,
-  curveMethodOf,
-  effectColorsOf,
-  effectLabelsOf,
-  isStep
-} from '../../../graph/types'
+import { type CompareConfig, curveMethodOf, effectLabelsOf, isStep } from '../../../graph/types'
 import { StatusNote } from '../../../ui/StatusNote'
 import { OnOffSwitch, ToggleSwitch } from '../../../ui/ToggleSwitch'
-import { useRolePalette } from '../../../ui/useAppSettings'
-import {
-  ColorChip,
-  EffectLabelInput,
-  Field,
-  NumberInput,
-  PValueInput,
-  Section,
-  Select
-} from './controls'
+import { EffectLabelInput, Field, NumberInput, PValueInput, Section, Select } from './controls'
 import { styles } from './styles'
 
 /** A Compare's significance calls: the method (the p-value route — FDR control, correction,
@@ -111,23 +96,6 @@ export function CompareStatisticSection({
   // stale the result.
   const labels = effectLabelsOf(config)
   const setLabels = useGraph((s) => s.setCompareEffectLabels)
-  // Each class's colour, just after its name: every plot this Compare feeds colours the class with
-  // it unless the plot sets its own. Display-only too.
-  // Automatic: sampled from the fold-change (objects) role's palette.
-  const colors = effectColorsOf(config, useRolePalette('fcObject'))
-  const setColors = useGraph((s) => s.setCompareEffectColors)
-  const effectChip = (key: 'up' | 'down' | 'none'): ReactNode => (
-    <ColorChip
-      color={colors[key]}
-      on
-      label={`${labels[key]} colour`}
-      title={`${labels[key]} colour — inherited by every plot this Compare feeds`}
-      onPick={(c) => setColors(id, { [key]: c })}
-      onAuto={() => setColors(id, { [key]: undefined })}
-      autoLabel="Automatic (from the FC palette)"
-    />
-  )
-
   const curveCurator = t.type === 'curvecurator'
   const ccByFdr = curveCurator && t.ccCallBy === 'fdr'
   // Testing response changes with a 4PL along the picked axis: its F's null is a choice.
@@ -422,7 +390,6 @@ export function CompareStatisticSection({
               <div style={styles.cutoffRow}>
                 <span style={styles.inlineTag}>up</span>
                 <EffectLabelInput value={labels.up} onCommit={(v) => setLabels(id, { up: v })} />
-                {effectChip('up')}
               </div>
               <div style={styles.cutoffRow}>
                 <span style={styles.inlineTag}>down</span>
@@ -430,7 +397,6 @@ export function CompareStatisticSection({
                   value={labels.down}
                   onCommit={(v) => setLabels(id, { down: v })}
                 />
-                {effectChip('down')}
               </div>
               <div style={styles.cutoffRow}>
                 <span style={styles.inlineTag}>none</span>
@@ -439,7 +405,6 @@ export function CompareStatisticSection({
                   onCommit={(v) => setLabels(id, { none: v })}
                   title="Name shown for the genes called neither up nor down"
                 />
-                {effectChip('none')}
               </div>
             </div>
           </Field>
@@ -460,7 +425,6 @@ export function CompareStatisticSection({
                 </div>
                 <span style={{ ...styles.inlineTag, marginLeft: 6 }}>label</span>
                 <EffectLabelInput value={labels.up} onCommit={(v) => setLabels(id, { up: v })} />
-                {effectChip('up')}
               </div>
               <div style={styles.cutoffRow}>
                 <span style={styles.inlineTag}>log₂FC ≤</span>
@@ -478,7 +442,6 @@ export function CompareStatisticSection({
                   value={labels.down}
                   onCommit={(v) => setLabels(id, { down: v })}
                 />
-                {effectChip('down')}
               </div>
               <div style={styles.cutoffRow}>
                 <span style={styles.inlineTag}>otherwise</span>
@@ -488,7 +451,6 @@ export function CompareStatisticSection({
                   onCommit={(v) => setLabels(id, { none: v })}
                   title="Name shown for the genes called neither up nor down"
                 />
-                {effectChip('none')}
               </div>
             </div>
           </Field>
@@ -529,7 +491,6 @@ export function CompareStatisticSection({
                 </div>
                 <span style={{ ...styles.inlineTag, marginLeft: 6 }}>label</span>
                 <EffectLabelInput value={labels.up} onCommit={(v) => setLabels(id, { up: v })} />
-                {effectChip('up')}
               </div>
               <div style={styles.cutoffRow}>
                 <span style={styles.inlineTag}>log₂FC ≤</span>
@@ -547,7 +508,6 @@ export function CompareStatisticSection({
                   value={labels.down}
                   onCommit={(v) => setLabels(id, { down: v })}
                 />
-                {effectChip('down')}
               </div>
               <div style={styles.cutoffRow}>
                 <span style={styles.inlineTag}>otherwise</span>
@@ -557,7 +517,6 @@ export function CompareStatisticSection({
                   onCommit={(v) => setLabels(id, { none: v })}
                   title="Name shown for the genes called neither up nor down"
                 />
-                {effectChip('none')}
               </div>
             </div>
           </Field>

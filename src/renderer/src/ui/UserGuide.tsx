@@ -1,32 +1,45 @@
 /** Sectioned User Guide dialog: a left section list + one scrolling document. The content lives in
  *  `user-guide.md` (edit that, not this file); this renders it, pictures included. */
-import { Fragment, useRef, useState, type CSSProperties, type ReactNode } from 'react'
+import {
+  Fragment,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type ReactNode
+} from 'react'
 
 import {
   FolderTree,
   GroupDiagram,
-  LayoutCards,
   Levels,
   MiniTable,
   RunStates,
-  SelectorMock,
   ShapePair,
-  StepCards,
-  TileMock
+  StepCards
 } from './guideVisuals'
-import { parseGuide, parseInline, type FixedVisual, type GuideBlock } from './guideMarkdown'
-import { UI } from './theme'
+import {
+  parseGuide,
+  parseInline,
+  searchGuide,
+  searchWords,
+  type FixedVisual,
+  type GuideBlock,
+  type GuideHit
+} from './guideMarkdown'
+import { GuideUi, TileRow } from './guideUi'
+import { LayoutPicker } from '../app/NavBar'
+import { motion, UI } from './theme'
 import guideMd from './user-guide.md?raw'
 
 const SECTIONS = parseGuide(guideMd)
 
 const VISUALS: Record<FixedVisual, () => ReactNode> = {
-  layouts: LayoutCards,
+  layouts: LayoutPicker,
   'run-states': RunStates,
   'protein-groups': GroupDiagram,
-  'log-shapes': ShapePair,
-  'gene-selector': SelectorMock,
-  tile: TileMock
+  'log-shapes': ShapePair
 }
 
 function Block({ block }: { block: GuideBlock }): ReactNode {
@@ -43,6 +56,8 @@ function Block({ block }: { block: GuideBlock }): ReactNode {
     }
     case 'steps':
       return <StepCards steps={block.steps} />
+    case 'tiles':
+      return <TileRow tiles={block.tiles} />
     case 'folder':
       return <FolderTree entries={block.entries} />
     case 'table':
@@ -67,6 +82,8 @@ function inline(text: string): ReactNode {
       <B key={i}>{part.text}</B>
     ) : part.kind === 'code' ? (
       <Code key={i}>{part.text}</Code>
+    ) : part.kind === 'ui' ? (
+      <GuideUi key={i} name={part.name} />
     ) : (
       <Fragment key={i}>{part.text}</Fragment>
     )
@@ -91,41 +108,143 @@ export function UserGuide({ onClose }: { onClose: () => void }): ReactNode {
     if (el.scrollTop + el.clientHeight >= el.scrollHeight - 2) current = SECTIONS.at(-1)!.id
     setActive(current)
   }
-  const jumpTo = (id: string): void => {
+  const scrollToNode = (node: Element | null | undefined): void => {
     const el = contentRef.current
-    const node = sectionRefs.current[id]
     if (!el || !node) return
     el.scrollTo({
-      top: node.getBoundingClientRect().top - el.getBoundingClientRect().top + el.scrollTop,
+      top: node.getBoundingClientRect().top - el.getBoundingClientRect().top + el.scrollTop - 12,
       behavior: 'smooth'
     })
   }
+  const jumpTo = (id: string): void => scrollToNode(sectionRefs.current[id])
+
+  // ── search ──
+  const [query, setQuery] = useState('')
+  const searchRef = useRef<HTMLInputElement>(null)
+  const hits = useMemo(() => searchGuide(SECTIONS, query), [query])
+  const searching = searchWords(query).length > 0
+  // A hit: scroll its block into view and flash it, so the eye finds it.
+  const [flash, setFlash] = useState<string | null>(null)
+  const openHit = (h: GuideHit): void => {
+    const key = `${h.page.id}:${h.block}`
+    scrollToNode(contentRef.current?.querySelector(`[data-guide-block="${key}"]`))
+    setFlash(key)
+  }
+  useEffect(() => {
+    if (!flash) return
+    const t = setTimeout(() => setFlash(null), 1400)
+    return () => clearTimeout(t)
+  }, [flash])
+  // ⌘F / Ctrl+F searches the guide while it's open.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent): void => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'f') {
+        e.preventDefault()
+        searchRef.current?.focus()
+        searchRef.current?.select()
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
+  // Every match marked in the text, with the CSS Custom Highlight API (app.css ::highlight): no
+  // change to the rendered tree, so the guide's own elements are left as they are.
+  useEffect(() => {
+    const registry = (CSS as unknown as { highlights?: Map<string, unknown> }).highlights
+    const Hl = (window as unknown as { Highlight?: new (...r: Range[]) => unknown }).Highlight
+    const root = contentRef.current
+    if (!registry || !Hl || !root) return
+    const words = searchWords(query)
+    if (!words.length) {
+      registry.delete(GUIDE_HIGHLIGHT)
+      return
+    }
+    const ranges: Range[] = []
+    const walk = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
+    for (let n = walk.nextNode(); n; n = walk.nextNode()) {
+      const low = (n.textContent ?? '').toLowerCase()
+      for (const w of words)
+        for (let i = low.indexOf(w); i >= 0; i = low.indexOf(w, i + w.length)) {
+          const r = new Range()
+          r.setStart(n, i)
+          r.setEnd(n, i + w.length)
+          ranges.push(r)
+        }
+    }
+    registry.set(GUIDE_HIGHLIGHT, new Hl(...ranges))
+    return () => {
+      registry.delete(GUIDE_HIGHLIGHT)
+    }
+  }, [query])
   return (
     <>
       <div style={styles.scrim} onClick={onClose} />
       <div style={styles.modal} role="dialog" aria-label="User guide">
         <div style={styles.head}>
           <span style={styles.headTitle}>User guide</span>
+          <input
+            ref={searchRef}
+            type="search"
+            value={query}
+            placeholder="Search the guide…"
+            aria-label="Search the guide"
+            onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && hits[0]) openHit(hits[0])
+              else if (e.key === 'Escape' && query) {
+                e.stopPropagation()
+                setQuery('')
+              }
+            }}
+            style={styles.search}
+          />
           <button style={styles.close} onClick={onClose} aria-label="Close">
             ✕
           </button>
         </div>
         <div style={styles.body}>
           <nav style={styles.nav}>
-            {SECTIONS.map((s) => (
-              <button
-                key={s.id}
-                onClick={() => jumpTo(s.id)}
-                style={{
-                  ...styles.navItem,
-                  ...(s.sub ? styles.navSub : null),
-                  background: s.id === active ? UI.accent : 'transparent',
-                  color: s.id === active ? UI.accentText : UI.text
-                }}
-              >
-                {s.title}
-              </button>
-            ))}
+            {searching && (
+              <>
+                <div style={styles.hitCount}>
+                  {hits.length === 0
+                    ? 'No matches'
+                    : `${hits.length}${hits.length >= 80 ? '+' : ''} ${hits.length === 1 ? 'match' : 'matches'}`}
+                </div>
+                {hits.map((h) => (
+                  <button
+                    key={`${h.page.id}:${h.block}`}
+                    onClick={() => openHit(h)}
+                    style={styles.hit}
+                  >
+                    <span style={styles.hitWhere}>
+                      {h.page.title}
+                      {h.heading ? ` › ${h.heading}` : ''}
+                    </span>
+                    <span style={styles.hitText}>
+                      {h.snippet.before}
+                      <mark style={styles.hitMark}>{h.snippet.match}</mark>
+                      {h.snippet.after}
+                    </span>
+                  </button>
+                ))}
+              </>
+            )}
+            {!searching &&
+              SECTIONS.map((s) => (
+                <button
+                  key={s.id}
+                  onClick={() => jumpTo(s.id)}
+                  style={{
+                    ...styles.navItem,
+                    ...(s.sub ? styles.navSub : null),
+                    background: s.id === active ? UI.accent : 'transparent',
+                    color: s.id === active ? UI.accentText : UI.text
+                  }}
+                >
+                  {s.title}
+                </button>
+              ))}
           </nav>
           <div ref={contentRef} style={styles.content} onScroll={onScroll}>
             {SECTIONS.map((s, i) => (
@@ -138,7 +257,13 @@ export function UserGuide({ onClose }: { onClose: () => void }): ReactNode {
               >
                 <h2 style={styles.contentTitle}>{s.title}</h2>
                 {s.blocks.map((b, j) => (
-                  <Block key={j} block={b} />
+                  <div
+                    key={j}
+                    data-guide-block={`${s.id}:${j}`}
+                    style={flash === `${s.id}:${j}` ? styles.flash : styles.blockWrap}
+                  >
+                    <Block block={b} />
+                  </div>
                 ))}
               </section>
             ))}
@@ -176,7 +301,43 @@ function UL({ items }: { items: ReactNode[] }): ReactNode {
   )
 }
 
+/** The name app.css styles the guide's search matches by (`::highlight(oe-guide-search)`). */
+const GUIDE_HIGHLIGHT = 'oe-guide-search'
+
 const styles: Record<string, CSSProperties> = {
+  search: {
+    marginLeft: 'auto',
+    width: 260,
+    padding: '5px 9px',
+    fontSize: 13,
+    color: UI.text,
+    background: UI.panel,
+    border: `1px solid ${UI.border}`,
+    borderRadius: 6,
+    outline: 'none'
+  },
+  hitCount: { fontSize: 11, color: UI.textMuted, padding: '4px 10px 6px' },
+  hit: {
+    textAlign: 'left',
+    border: 'none',
+    borderRadius: 6,
+    padding: '7px 10px',
+    background: 'transparent',
+    cursor: 'pointer',
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 2
+  },
+  hitWhere: { fontSize: 11, fontWeight: 700, color: UI.text },
+  hitText: { fontSize: 11.5, lineHeight: 1.45, color: UI.textMuted },
+  hitMark: { background: 'rgba(255, 196, 0, 0.45)', color: UI.text, borderRadius: 2 },
+  // each block's wrapper: a hit's flash fades out on it
+  blockWrap: { borderRadius: 6, transition: motion('background-color', 'page') },
+  flash: {
+    borderRadius: 6,
+    transition: motion('background-color', 'page'),
+    backgroundColor: 'rgba(255, 196, 0, 0.18)'
+  },
   scrim: { position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', zIndex: 60 },
   modal: {
     position: 'fixed',
@@ -206,7 +367,7 @@ const styles: Record<string, CSSProperties> = {
   },
   headTitle: { fontWeight: 700, fontSize: 14, color: UI.text },
   close: {
-    marginLeft: 'auto',
+    marginLeft: 10,
     background: 'transparent',
     border: 'none',
     color: UI.textMuted,

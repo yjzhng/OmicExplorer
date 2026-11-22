@@ -1,9 +1,9 @@
 import type { ReactNode } from 'react'
 import type { MAConfig } from '../../graph/types'
-import { CapSection, Section } from '../kit/settings/controls'
+import { CapRow } from '../kit/settings/controls'
 import { legendShown, useEffectColors, useEffectNames } from '../kit/settings/plotHooks'
 import {
-  ColourSection,
+  ColourRows,
   type PlotPanelProps,
   PlotSections,
   PointStyleSections
@@ -13,27 +13,24 @@ import { type PlotSettingsProps } from '../settings'
 
 export function MAPanel({ config, update, edgeNodeId }: PlotPanelProps<MAConfig>): ReactNode {
   const names = useEffectNames(edgeNodeId)
-  const colors = useEffectColors(edgeNodeId, config.fcPalette)
+  const colors = useEffectColors(config.fcPalette)
   return (
     <PlotSections
-      show={
-        <Section title="MA">
+      general={
+        <>
           {/* The fold-change lines are driven by (and drag) the upstream Compare's threshold —
               shared with volcano — so there are no per-tile FC cutoffs to set here. */}
           <div style={styles.hint}>Fold-change lines follow the upstream Compare threshold.</div>
-        </Section>
-      }
-      labels={
-        <CapSection
-          title="Cap labels"
-          hint="Label only the genes with the largest fold change."
-          label="Max labels"
-          field="labelTop"
-          value={config.labelTop ?? 0}
-          enabled={config.capEnabled}
-          update={update}
-          rule={(n) => `Label the top ${n} genes by |log₂FC|.`}
-        />
+          <CapRow
+            label="Label limit"
+            info="Name only the genes with the largest fold change."
+            field="labelTop"
+            value={config.labelTop ?? 0}
+            enabled={config.capEnabled}
+            update={update}
+            rule={(n) => `Label the top ${n} genes by |log₂FC|.`}
+          />
+        </>
       }
       marks={
         <PointStyleSections
@@ -45,7 +42,7 @@ export function MAPanel({ config, update, edgeNodeId }: PlotPanelProps<MAConfig>
           update={update}
         />
       }
-      colours={<ColourSection config={config} update={update} edgeNodeId={edgeNodeId} />}
+      colours={<ColourRows config={config} update={update} edgeNodeId={edgeNodeId} />}
     />
   )
 }

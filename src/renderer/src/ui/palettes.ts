@@ -33,6 +33,7 @@ import {
   interpolateYlGnBu,
   interpolateYlOrBr
 } from 'd3-scale-chromatic'
+import { IWANTHUE_LENGTH, iwanthueColors } from './iwanthue'
 
 export type PaletteId =
   | 'viridis'
@@ -144,18 +145,27 @@ export const DEFAULT_SERIES_PALETTE: PaletteRef = { id: 'viridis' }
 export const BUBBLE_SIG_PALETTE: PaletteRef = { id: 'Purples' }
 
 /** Categorical palettes (discrete colours, cycled) for groups and conditions — from
- *  d3-scale-chromatic: 'tab10' is matplotlib's (= d3's category10), 'Set2' ColorBrewer's. */
-export type CategoricalId = 'tab10' | 'Set2' | 'custom'
+ *  d3-scale-chromatic: 'tab10' is matplotlib's (= d3's category10), 'Set2' ColorBrewer's; and
+ *  'iWantHue', generated for any number of categories, distinct for colour-blind viewers too
+ *  (ui/iwanthue.ts). */
+export type CategoricalId = 'tab10' | 'Set2' | 'iWantHue' | 'custom'
+// iWantHue's list, worked out on first use and then the same array (views key memos on it)
+let iwanthueList: readonly string[] | null = null
 export const CATEGORICAL_SCHEMES: Record<CategoricalId, readonly string[]> = {
   tab10: schemeCategory10,
   Set2: schemeSet2,
+  get iWantHue(): readonly string[] {
+    return (iwanthueList ??= iwanthueColors(IWANTHUE_LENGTH))
+  },
   // the user's own (Settings → Customisation → Custom palettes), filled in by setCustomCategorical
   custom: []
 }
 export const DEFAULT_CATEGORICAL: CategoricalId = 'tab10'
 /** The categorical palettes on offer: the built-in ones, and the custom one once defined. */
 export const categoricalIds = (): CategoricalId[] =>
-  CATEGORICAL_SCHEMES.custom.length ? ['tab10', 'Set2', 'custom'] : ['tab10', 'Set2']
+  CATEGORICAL_SCHEMES.custom.length
+    ? ['tab10', 'Set2', 'iWantHue', 'custom']
+    : ['tab10', 'Set2', 'iWantHue']
 export const isCategoricalId = (v: unknown): v is CategoricalId =>
   typeof v === 'string' && (categoricalIds() as string[]).includes(v)
 /** The most colours a custom categorical palette holds. */

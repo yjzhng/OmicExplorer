@@ -1,6 +1,6 @@
 import { useMemo } from 'react'
 
-import type { CorrData } from '../../engine'
+import { CORR_METRIC_LABEL, type CorrData } from '../../engine'
 import { condsOf } from '../../ui/clusterPlan'
 import { condTooltip, valueLine } from '../../ui/condTooltip'
 import { ROLE_DEFAULTS, paletteScale, type PaletteRef } from '../../ui/palettes'
@@ -30,6 +30,7 @@ export function CorrMatrixView({
 
   const { data: traces, layout } = useMemo(() => {
     const p = PALETTES[mode]
+    const name = CORR_METRIC_LABEL[data.metric]
     // A cell is a pair of samples: the row's identity, then the column's, then r — the shared
     // Clean data tooltip (condTooltip), with the two samples apart by a faint rule.
     const conds = condsOf(data.metas)
@@ -41,14 +42,14 @@ export function CorrMatrixView({
       x: data.labels,
       y: data.labels,
       colorscale: paletteScale(palette),
-      // Floor the scale a touch below the lowest r so the range isn't dominated by the 1.0
-      // diagonal; keeps between-sample differences visible.
+      // Floored a touch below the lowest value so the range isn't dominated by the 1.0 diagonal,
+      // keeping between-sample differences visible.
       zmin: Math.min(data.min, 0.99),
       zmax: 1,
-      colorbar: { title: { text: 'r', side: 'right' }, thickness: 12 },
+      colorbar: { title: { text: name, side: 'right' }, thickness: 12 },
       // the pair as text, not customdata: a string customdata reads as a gene id (PlotlyChart)
       text: idents.map((row) => idents.map((col) => `${row}<br>${rule}<br>${col}`)),
-      hovertemplate: `%{text}<br>${valueLine('r', '%{z:.3f}')}<extra></extra>`
+      hovertemplate: `%{text}<br>${valueLine(name, '%{z:.3f}')}<extra></extra>`
     }
     const axis = {
       ...axisBase(p),

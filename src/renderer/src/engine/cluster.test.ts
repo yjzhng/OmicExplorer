@@ -205,3 +205,19 @@ describe('clusterRowTree (dendrogram links in leaf-position space)', () => {
     expect(clusterRowTree([[1], [2]]).links).toEqual([])
   })
 })
+
+describe('clusterRowOrder on precomputed distances', () => {
+  it('groups the rows closest by the given distances, not by their profiles', () => {
+    // 0,2 close; 1,3 close; the two pairs far apart
+    const d = [
+      [0, 0.9, 0.1, 0.8],
+      [0.9, 0, 0.85, 0.15],
+      [0.1, 0.85, 0, 0.9],
+      [0.8, 0.15, 0.9, 0]
+    ]
+    const order = clusterRowOrder(d, { precomputed: true })
+    const pos = (i: number): number => order.indexOf(i)
+    expect(Math.abs(pos(0) - pos(2))).toBe(1)
+    expect(Math.abs(pos(1) - pos(3))).toBe(1)
+  })
+})

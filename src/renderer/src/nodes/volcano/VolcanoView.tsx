@@ -21,7 +21,8 @@ import { labelColorOf, legendOn, resolveGroups, resolveHighlight } from '../../u
 import {
   axisBase,
   EFFECT_COLOR,
-  GUIDE_WIDTH,
+  guideLook,
+  guideShapes,
   guideLine,
   PALETTES,
   PLOT_TEXT,
@@ -112,7 +113,7 @@ export function VolcanoView({
   const editable = !!onThresholdChange
   const emphasis = useMemo(() => resolveHighlight(style), [style])
   const showLegend = legendOn(style)
-  const gw = style?.guideWidth ?? GUIDE_WIDTH
+  const { show: gShow, dash: gDash, width: gw } = guideLook(style)
 
   const { data, layout, labels, guides } = useMemo(() => {
     const p = PALETTES[mode]
@@ -200,7 +201,7 @@ export function VolcanoView({
       x1,
       y0,
       y1,
-      line: guideLine(p, gw)
+      line: guideLine(p, gw, gDash)
     })
     // A loop, not Math.max(...points): spreading every gene as an argument can overflow the stack.
     let yMax = 1
@@ -299,7 +300,7 @@ export function VolcanoView({
           .reverse()
         return `${toPath(left)}${toPath(right)}`
       }
-      samShapes.push({ type: 'path', path: samPath(b), line: guideLine(p, gw) }) // [0] curve
+      samShapes.push({ type: 'path', path: samPath(b), line: guideLine(p, gw, gDash) }) // [0] curve
       // The anchors are SMALL tick marks sitting just OUTSIDE their axis line (not full asymptote
       // lines) — a solid "grab" style that reads as a handle against the dashed curve. The cross-axis
       // extent is PAPER-referenced from the axis (paper 0) OUT into the margin (paper −TICK), so it's
@@ -424,7 +425,7 @@ export function VolcanoView({
         pts.map(([x, y], i) => `${i ? 'L' : 'M'}${x},${y}`).join('')
       const right = branch(need.wallUp, xFarHi)
       const left = branch(need.wallDown, -xFarLo).map(([x, y]) => [-x, y] as [number, number])
-      const look = guideLine(p, need.faint ? (gw * 2) / 3 : gw)
+      const look = guideLine(p, need.faint ? (gw * 2) / 3 : gw, gDash)
       const extra = need.faint ? { opacity: 0.45 } : null
       if (right.length) ccShapes.push({ type: 'path', path: toPath(right), line: look, ...extra })
       if (left.length) ccShapes.push({ type: 'path', path: toPath(left), line: look, ...extra })
@@ -458,7 +459,8 @@ export function VolcanoView({
       // stat cutoff as two horizontals ONLY outside ±fc (no line across the middle, where nothing is
       // significant). Order: [0]=fcLow, [1]=fcHigh, [2]=stat-left, [3]=stat-right.
       // SAM → [0]=curve, [1]=P asymptote, [2/3]=FC asymptotes.
-      shapes:
+      // (threshold lines switched off: kept for the indices, not drawn — guideShapes)
+      shapes: guideShapes(
         isCurveCurator || isSamFdr
           ? ccShapes
           : isSam
@@ -472,7 +474,9 @@ export function VolcanoView({
                   ...hideDown
                 },
                 line(volcano.fcHigh, xFarHi, volcano.statMin, volcano.statMin)
-              ]
+              ],
+        gShow
+      )
     }
     // Collision-managed labels for the genes of every group whose label switch is on (by default
     // the significant ones), ranked by Manhattan distance from the origin — fold change and
@@ -493,7 +497,8 @@ export function VolcanoView({
       text: pt.label,
       priority: d,
       id: pt.uniqID,
-      color: labelColorOf(look(pt.effect), p.text)
+      color: labelColorOf(look(pt.effect), p.text),
+      fontSize: look(pt.effect).labelSize
     }))
     // A bracket CORNER (±fc, statMin) is a 2-D handle adjusting both fold change and stat at once:
     // it live-updates all four bracket segments and commits fcLow/fcHigh/statMin together.
@@ -667,7 +672,8 @@ export function VolcanoView({
                 format: (v) => `${yLabel} ≥ ${Math.max(0, v).toFixed(2)}`
               }
             ]
-    return { data: traces, layout: lay, labels, guides }
+    // threshold lines off: nothing to drag either
+    return { data: traces, layout: lay, labels, guides: gShow ? guides : [] }
   }, [
     volcano,
     title,
@@ -682,7 +688,9 @@ export function VolcanoView({
     nsKey,
     samCut,
     ccAlpha,
-    gw
+    gw,
+    gDash,
+    gShow
   ])
 
   // Route a dragged guide's new value to the right threshold field (called once, on release).

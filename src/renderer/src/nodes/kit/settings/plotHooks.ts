@@ -9,8 +9,13 @@ import {
   type EffectColors,
   type EffectLabels
 } from '../../../graph/types'
-import { type PaletteRef } from '../../../ui/palettes'
-import { useRolePalette } from '../../../ui/useAppSettings'
+import {
+  CATEGORICAL_SCHEMES,
+  paletteAt,
+  toCategoricalId,
+  type PaletteRef
+} from '../../../ui/palettes'
+import { useAppSettings, useRolePalette } from '../../../ui/useAppSettings'
 
 /** Whether a cluster tile draws its embedding scatter with minimal axes (scree and loadings keep
  *  their own, so the setting doesn't reach them). */
@@ -33,19 +38,11 @@ export function useEffectNames(edgeNodeId: string): EffectLabels {
       : undefined
   return effectLabelsOf(cfg)
 }
-/** The up/down/none colours a plot's automatic group colours follow — the upstream Compare's
- *  (the defaults from anything else). */
-/** The effect colours a plot's groups follow when left automatic: sampled from the plot's own
- *  palette when it has one, else the upstream Compare's colours, else sampled from the global
- *  palette (see plotEffectColors). */
-export function useEffectColors(edgeNodeId: string, plotPalette?: PaletteRef): EffectColors {
-  const up = useUpstreamNode(edgeNodeId)
+/** The effect colours a plot's groups follow when left automatic: sampled from its FC palette —
+ *  the plot's own, else the global one (see plotEffectColors). */
+export function useEffectColors(plotPalette?: PaletteRef): EffectColors {
   const globalFc = useRolePalette('fcObject')
-  const cfg =
-    up && isStep(up) && isComparisonKind(up.data.kind)
-      ? (up.data.config as CompareConfig)
-      : undefined
-  return plotEffectColors(undefined, cfg, globalFc, plotPalette)
+  return plotEffectColors(undefined, globalFc, plotPalette)
 }
 /** The DR settings that make up its look, persisted with the tile (see DRConfig / drLook). */
 export const DR_LOOK_FIELDS = [
@@ -72,7 +69,21 @@ export const autoOf = (palette: PaletteRef): { palette: PaletteRef; label: strin
 })
 
 /** Whether a plot's legend is shown: the plot-wide switch (`legend`), and — a point plot from
- *  before the Legend section — its old `style.legend`. */
+ *  before the plot-wide switch — its old `style.legend`. */
 export function legendShown(config: { legend?: unknown; style?: { legend?: boolean } }): boolean {
   return config.legend !== false && config.style?.legend !== false
 }
+
+/** What an Automatic "the group's colour" chip shows where each group has its own: the plot's
+ *  categorical palette's first colours, as diagonal bands (ColorChip `autoColor`). */
+export function useCategoricalInk(config: unknown, field = 'categorical'): string {
+  const global = useAppSettings((s) => s.categorical)
+  const id = toCategoricalId((config as Record<string, unknown> | undefined)?.[field]) ?? global
+  const c = CATEGORICAL_SCHEMES[id].slice(0, 4)
+  return c.length > 1 ? `linear-gradient(135deg, ${c.join(', ')})` : (c[0] ?? 'transparent')
+}
+
+/** What an Automatic chip shows where the colour runs along a palette (a line per level, a value
+ *  scale): the palette itself, low → high, as a diagonal band (ColorChip `autoColor`). */
+export const paletteInk = (ref: PaletteRef): string =>
+  `linear-gradient(135deg, ${paletteAt(ref, 0)}, ${paletteAt(ref, 0.5)}, ${paletteAt(ref, 1)})`

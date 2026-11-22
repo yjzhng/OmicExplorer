@@ -335,7 +335,7 @@ describe('the vehicle-normalised path carries a custom condition as context', ()
       activeConditions: s.activeConditions
     })
     const fc = buildFcHeatmap(r.rows)
-    expect(fc.columns.some((c) => c.includes('medium=rich'))).toBe(true)
+    expect(fc.columns.some((c) => c.includes('medium rich'))).toBe(true)
     expect(fc.columns.every((c) => !c.includes('@medium'))).toBe(true)
   })
 })

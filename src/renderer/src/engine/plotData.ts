@@ -6,7 +6,7 @@
 import { xUnits } from './axisModel'
 import { pairsOf } from './accession'
 import { condValue } from './compare'
-import { sampleLabel } from './sampleLabel'
+import { sampleLabel, sampleName } from './sampleLabel'
 import {
   clusterRowGroups,
   clusterRowOrder,
@@ -35,6 +35,7 @@ import { benjaminiHochberg, studentTppf, studentTTwoSided, type Effect } from '.
 import {
   condLabel,
   condsIn,
+  ctxLabel,
   customCond,
   customSlug,
   isCustomCond,
@@ -1060,8 +1061,8 @@ export interface BubbleOptions {
   displayMap?: Record<string, string>
   /** focus genes (uniqIDs): when non-empty, show exactly these genes instead of top-N */
   focus?: string[]
-  /** linked-selection genes (uniqIDs) appended after the chosen set, so a hovered/pinned
-   *  gene shows up alongside the top-N (or GOI) rather than replacing it */
+  /** linked-selection genes (uniqIDs) added to the chosen set, each in its place in the score
+   *  order, so a pinned gene shows up alongside the top-N (or GOI) rather than replacing it */
   extra?: string[]
 }
 
@@ -1109,15 +1110,12 @@ export function buildBubble(rows: CompareResultRow[], opts: BubbleOptions): Bubb
       ? focus.filter((id) => byGene.has(id))
       : // up / down in proportion to the significant genes on each side; unset ⇒ all (safety-capped)
         pickBalanced(sigGenes, geneLimit(opts.topGenes, sigGenes.length))
-  // Order the chosen genes by their score (descending) for the gene axis.
-  base.sort((a, b) => (topSigned.get(b) ?? 0) - (topSigned.get(a) ?? 0))
-  // Append linked-selection genes not already shown (kept in their own FC order), so a
-  // hovered/pinned gene lands at the end of the axis instead of reshuffling the rest.
+  // Add the linked-selection genes not already shown, then order them all by their score
+  // (descending) for the gene axis: a pinned gene takes its place in the order, between the genes
+  // it ranks between, rather than going to the end.
   const baseSet = new Set(base)
-  const extra = (opts.extra ?? [])
-    .filter((id) => byGene.has(id) && !baseSet.has(id))
-    .sort((a, b) => (topSigned.get(b) ?? 0) - (topSigned.get(a) ?? 0))
-  const top = [...base, ...extra]
+  const extra = (opts.extra ?? []).filter((id) => byGene.has(id) && !baseSet.has(id))
+  const top = [...base, ...extra].sort((a, b) => (topSigned.get(b) ?? 0) - (topSigned.get(a) ?? 0))
   const points: BubblePoint[] = []
   for (const g of top) {
     const label = opts.displayMap?.[g] ?? g
@@ -1635,8 +1633,17 @@ function clusterMetaOf(row: Record<string, unknown> | object): ClusterMeta {
 /** Colour an embedding by a COMPUTED grouping rather than by a condition. Reserved as a `colorBy`
  *  value; it can't collide with a condition key (those are the presets or `@slug`). */
 export const CLUSTER_COLOR = 'cluster'
-/** What an embedding may be coloured by: any condition, or the computed clustering. */
-export type ClusterColorBy = ConditionKey | typeof CLUSTER_COLOR
+/** Colour an embedding by its condition groups: each distinct combination of the chosen
+ *  conditions (ClusterConfig.groupConds — every condition by default, so one colour per condition
+ *  group, its replicates) its own colour. Reserved as CLUSTER_COLOR is; the run groups by the
+ *  full condition identity, the view by the chosen conditions. */
+export const GROUP_COLOR = 'groups'
+/** What an embedding may be coloured by: any condition, the computed clustering, or the condition
+ *  groups. */
+export type ClusterColorBy = ConditionKey | typeof CLUSTER_COLOR | typeof GROUP_COLOR
+/** Whether an embedding's colouring is one condition's (not the clustering or the groups). */
+export const colorByCond = (c: ClusterColorBy): c is ConditionKey =>
+  c !== CLUSTER_COLOR && c !== GROUP_COLOR
 
 /** A cluster/heatmap meta's value for one condition, read the same way everywhere. Custom
  *  conditions live in `extra`; the view must never index the meta object with a custom key. */
@@ -2017,9 +2024,11 @@ export function buildCluster(rows: StandardRow[], opts: ClusterOptions): Cluster
     // Colouring by cluster has no condition to read — embedMatrix replaces the group with the
     // computed label once the embedding (which the clustering may run on) exists.
     group:
-      opts.colorBy === CLUSTER_COLOR
-        ? ''
-        : String(condValue(meta, opts.colorBy as ConditionKey) ?? ''),
+      opts.colorBy === GROUP_COLOR
+        ? sampleCond(meta)
+        : colorByCond(opts.colorBy)
+          ? String(condValue(meta, opts.colorBy) ?? '')
+          : '',
     cond: sampleCond(meta),
     meta: clusterMetaOf(meta)
   }))
@@ -2058,7 +2067,7 @@ export function buildResponseCluster(rows: CompareResultRow[], opts: ClusterOpti
   // 'cluster' is not a context dim but IS a valid choice — keep it rather than snapping to a
   // condition; embedMatrix fills the groups in.
   const colorBy: ClusterColorBy =
-    opts.colorBy === CLUSTER_COLOR || contextDims.includes(opts.colorBy as ConditionKey)
+    !colorByCond(opts.colorBy) || contextDims.includes(opts.colorBy)
       ? opts.colorBy
       : (contextDims[0] ?? opts.colorBy)
   const condIdx = new Map<string, number>()
@@ -2087,7 +2096,12 @@ export function buildResponseCluster(rows: CompareResultRow[], opts: ClusterOpti
     // centroid mode collapses to the point itself (the single-replicate fallback).
     return {
       label,
-      group: colorBy === CLUSTER_COLOR ? '' : String(ctxValue(meta, colorBy as ConditionKey) ?? ''),
+      group:
+        colorBy === GROUP_COLOR
+          ? label
+          : colorByCond(colorBy)
+            ? String(ctxValue(meta, colorBy) ?? '')
+            : '',
       cond: label,
       meta: clusterMetaOf(meta)
     }
@@ -2280,7 +2294,7 @@ function sampleCond(r: StandardRow): string {
       .map((k) => r.extra![k])
   ]
     .filter((p) => p !== '')
-    .join('_')
+    .join(' · ')
 }
 
 /** Pivot the standardized long table into a genes × samples matrix for a heatmap. */
@@ -2379,7 +2393,8 @@ export function* buildHeatmapSteps(
   const conds = (ordering.by === 'natural' ? sampleHierarchy(samples) : condsIn(samples)).filter(
     (c) => samples.some((m) => present(metaValue(m, c)))
   )
-  return { z, x: sampleOrder, y, geneIds: genes, samples, conds }
+  // the columns named on screen as every list of conditions is (" · "); sampleLabel keys the pivot
+  return { z, x: samples.map(sampleName), y, geneIds: genes, samples, conds }
 }
 
 /** What a heatmap's pivot hands the layout: the samples and genes in first-appearance order, each
@@ -2492,6 +2507,11 @@ export interface FcHeatmapData {
   rowTree?: DendroLink[]
   /** the comparison columns' clustering tree, in column-position space (absent likewise) */
   colTree?: DendroLink[]
+  /** what tells the columns apart, for the condition tracks: 'comparison', then each context
+   *  condition (the conditions besides the compared one that vary between columns) */
+  colConds: Array<'comparison' | ConditionKey>
+  /** each column's value on each of `colConds` ('' = none), aligned with `columns` */
+  colValues: string[][]
 }
 
 /** The share of |log2FC| cells the fold-change heatmap's colour range spans. */
@@ -2505,14 +2525,28 @@ export interface FcHeatmapOptions {
   focus?: string[]
   /** bicluster gene rows AND comparison columns by log2FC profile (default true) */
   cluster?: boolean
-  /** keep only genes that are significant (`signf`) in ≥1 comparison column, AND drop columns
-   *  with no significant cell (removes near-zero baseline stripes). Genes are ignored when
-   *  `focus` is set (an explicit gene pick always shows); column pruning still applies. */
+  /** keep only genes that are significant (`signf`) in ≥1 comparison column — every column still
+   *  shows, one with no significant cell included (those genes' fold change there is part of the
+   *  picture: unchanged under one treatment while changed under another). Ignored when `focus` is
+   *  set (an explicit gene pick always shows). */
   differentialOnly?: boolean
   /** how clusters join (default `ward`) — see Linkage */
   linkage?: Extract<Linkage, 'ward' | 'complete'>
   /** how the tree's leaves are laid out (default `mean`) — see LeafOrder */
   leafOrder?: LeafOrder
+  /** cluster the comparison columns on the pattern of their changes alone: each column's profile
+   *  centred and scaled to unit spread before the euclidean distance, which then ranks pairs as
+   *  1 − Pearson r does (and keeps Ward valid). Unset: on the changes as they are — their size
+   *  counts too. The genes are clustered on the changes as they are either way. */
+  colPattern?: boolean
+}
+
+/** A profile centred on its mean and scaled to unit spread (a flat one: all zeros). */
+function standardised(v: number[]): number[] {
+  const n = v.length || 1
+  const m = v.reduce((a, x) => a + x, 0) / n
+  const sd = Math.sqrt(v.reduce((a, x) => a + (x - m) ** 2, 0) / n)
+  return sd > 0 ? v.map((x) => (x - m) / sd) : v.map(() => 0)
 }
 
 /** Pivot a comparison result into a genes × (comparison × context) matrix of log2FC. Each column
@@ -2549,11 +2583,12 @@ export function* buildFcHeatmapSteps(
     (c) => !consumed.has(c) && rows.some((r) => ctxValue(r, c) != null && ctxValue(r, c) !== '')
   )
   const colLabel = (r: CompareResultRow): string =>
-    [r.comparison, ...ctxDims.map((c) => `${condLabel(c)}=${ctxValue(r, c)}`)].join(' · ')
+    [r.comparison, ...ctxDims.map((c) => ctxLabel(c, ctxValue(r, c)))].join(' · ')
 
   const colOrder: string[] = []
   const colSeen = new Set<string>()
-  const colSig = new Set<string>() // columns with ≥1 significant (signf) cell
+  // each column's comparison and context values (its condition tracks)
+  const colValueOf = new Map<string, string[]>()
   const geneOrder: string[] = []
   const geneSeen = new Set<string>()
   const diffGenes = new Set<string>() // genes significant (signf) in ≥1 comparison column
@@ -2564,6 +2599,13 @@ export function* buildFcHeatmapSteps(
     if (!colSeen.has(col)) {
       colSeen.add(col)
       colOrder.push(col)
+      colValueOf.set(col, [
+        r.comparison,
+        ...ctxDims.map((c) => {
+          const v = ctxValue(r, c)
+          return v == null ? '' : String(v)
+        })
+      ])
     }
     if (!geneSeen.has(r.uniqID)) {
       geneSeen.add(r.uniqID)
@@ -2571,7 +2613,6 @@ export function* buildFcHeatmapSteps(
     }
     if (r.signf) {
       diffGenes.add(r.uniqID)
-      colSig.add(col)
     }
     let m = cells.get(r.uniqID)
     if (!m) {
@@ -2582,9 +2623,7 @@ export function* buildFcHeatmapSteps(
   }
   const cellVal = (g: string, c: string): number | null => cells.get(g)?.get(c) ?? null
 
-  // Differential mode also drops columns with no significant cell (e.g. the time=0 baseline
-  // slab, low-dose columns) so the grid isn't dominated by near-zero "banding" stripes.
-  let activeCols = opts.differentialOnly ? colOrder.filter((c) => colSig.has(c)) : colOrder
+  let activeCols = colOrder
 
   const focus = opts.focus ?? []
   // Restrict to differential genes (significant somewhere) before top-N / clustering — an
@@ -2657,7 +2696,11 @@ export function* buildFcHeatmapSteps(
     // Columns first: cluster on each column's gene-response profile.
     if (activeCols.length > 2 && genes.length > 1) {
       const colVecs = activeCols.map((_, ci) => imputed.map((row) => row[ci]))
-      const ct = yield { rows: colVecs, opts: { ...how, weights: colVecs.map(mean) } }
+      // (the leaf order still by each column's own mean change, low → high)
+      const ct = yield {
+        rows: opts.colPattern ? colVecs.map(standardised) : colVecs,
+        opts: { ...how, weights: colVecs.map(mean) }
+      }
       const corder = ct.order
       colTree = ct.links
       activeCols = corder.map((i) => activeCols[i])
@@ -2684,7 +2727,9 @@ export function* buildFcHeatmapSteps(
     absMax: absMax || 1,
     colorMax: colorMax || absMax || 1,
     ...(rowTree?.length ? { rowTree } : null),
-    ...(colTree?.length ? { colTree } : null)
+    ...(colTree?.length ? { colTree } : null),
+    colConds: ['comparison', ...ctxDims],
+    colValues: activeCols.map((c) => colValueOf.get(c) ?? [])
   }
 }
 
@@ -3020,38 +3065,89 @@ export function buildStdMatrix(std: StandardizeResult): {
 
 // ── standardize sample-correlation matrix ─────────────────────────────────────────
 
+/** How a sample pair is scored (see buildSampleCorr): Pearson r (do they fall on a straight
+ *  line), Spearman ρ (do they rank the proteins alike), or Lin's concordance (are they the same values
+ *  — a shift or a stretch counts against it). */
+export type CorrMetric = 'pearson' | 'spearman' | 'ccc'
+export const CORR_METRICS: readonly CorrMetric[] = ['pearson', 'spearman', 'ccc']
+/** A stored metric as offered now (one no longer offered reads as Pearson). */
+export const corrMetricOf = (m: unknown): CorrMetric =>
+  CORR_METRICS.includes(m as CorrMetric) ? (m as CorrMetric) : 'pearson'
+export const CORR_METRIC_LABEL: Record<CorrMetric, string> = {
+  pearson: 'Pearson r',
+  spearman: 'Spearman ρ',
+  ccc: 'CCC'
+}
+
 export interface CorrData {
+  /** what each cell scores */
+  metric: CorrMetric
   /** sample labels, in (optionally clustered) row/column order */
   labels: string[]
   /** each sample's condition values (its replicate included), aligned with `labels` — for the
    *  tooltip */
   metas: SampleMeta[]
-  /** symmetric correlation matrix z[i][j] = r(sample_i, sample_j); diagonal = 1 */
+  /** symmetric matrix z[i][j] = the metric of (sample_i, sample_j); diagonal 1 */
   z: number[][]
-  /** smallest off-diagonal correlation (colour-scale floor) */
+  /** smallest and largest off-diagonal value (the colour scale's range) */
   min: number
+  max: number
+}
+
+/** Each sample's values as ranks among its own present values (ties averaged; NaN stays NaN) —
+ *  Spearman's input. Ranked once per sample rather than per pair: with pairwise-complete data a
+ *  pair's ranks are its samples' own, a close approximation unless many proteins are missing. */
+function rankVector(v: Float64Array): Float64Array {
+  const idx: number[] = []
+  for (let k = 0; k < v.length; k++) if (!Number.isNaN(v[k])) idx.push(k)
+  idx.sort((a, b) => v[a] - v[b])
+  const out = new Float64Array(v.length).fill(NaN)
+  for (let i = 0; i < idx.length;) {
+    let j = i
+    while (j + 1 < idx.length && v[idx[j + 1]] === v[idx[i]]) j++
+    const rank = (i + j) / 2 + 1
+    for (let t = i; t <= j; t++) out[idx[t]] = rank
+    i = j + 1
+  }
+  return out
+}
+
+/** A sample pair's scores under one metric, the samples in data order (see SampleCorrAll). */
+export interface CorrMatrix {
+  z: number[][]
+  min: number
+  max: number
+  /** the samples' clustered order (by their profile of scores): what `cluster` shows */
+  clustered: number[]
+}
+
+/** A correlation plot's run (in the worker): the sample-pair matrix under every metric asked for,
+ *  each with its clustered order — so switching the metric, clustering or the sample order on the
+ *  tile only re-arranges it (arrangeSampleCorr). Samples in data order. */
+export interface SampleCorrAll {
+  labels: string[]
+  /** each sample's active conditions (the tooltip) */
+  metas: SampleMeta[]
+  /** each sample's own conditions, unmasked — what an unclustered order sorts on */
+  ownMetas: SampleMeta[]
+  matrices: Partial<Record<CorrMetric, CorrMatrix>>
 }
 
 /**
- * All-samples × all-samples Pearson correlation of a standardized result, for a QC
+ * All-samples × all-samples sample-pair scores of a standardized result, for a QC
  * correlation heatmap. A "sample" is the active-condition combo + replicate; each pair is
  * correlated over the proteins present in BOTH (pairwise-complete, since per-sample dropout
  * makes a global complete-case intersection nearly empty at scale). Values are log10'd first
- * when they look like raw intensity (matching the heatmap/QC scale). Rows/cols are clustered
- * by correlation profile so replicate groups block along the diagonal (unless `cluster:false`).
+ * when they look like raw intensity (matching the heatmap/QC scale). Every metric in `metrics`
+ * (default all), each with its clustered order.
  */
-export function buildSampleCorr(
-  std: StandardizeResult,
+export function buildSampleCorrAll(
+  std: Pick<StandardizeResult, 'rows' | 'activeConditions'>,
   /** `scale`: the scale abundance is shown on (see plotScaleOf); unset → the old guess (log₁₀
    *  when the values look like raw intensity). A log base doesn't change Pearson r; log vs linear
    *  does. */
-  opts: {
-    cluster?: boolean
-    scale?: ValueScale
-    /** the samples' order when they aren't clustered (unset: as they come in the data) */
-    order?: SampleOrdering
-  } = {}
-): CorrData {
+  opts: { scale?: ValueScale; metrics?: readonly CorrMetric[] } = {}
+): SampleCorrAll {
   const conds = std.activeConditions
   const sampleLabel = (r: StandardRow): string => {
     const p = conds.map((c) => String(condValue(r, c) ?? '')).filter((x) => x !== '')
@@ -3065,8 +3161,8 @@ export function buildSampleCorr(
   const sampleIdx = new Int32Array(groups.labels.length).fill(-1) // label id → matrix index
   const geneIdx = new Int32Array(ix.genes.length).fill(-1) // gene id → vector position
   let G = 0
-  let labels: string[] = []
-  let metas: SampleMeta[] = []
+  const labels: string[] = []
+  const metas: SampleMeta[] = []
   // each sample's own conditions, unmasked — what `opts.order` sorts on (as the heatmap's do)
   const ownMetas: SampleMeta[] = []
   let min = Infinity
@@ -3116,62 +3212,135 @@ export function buildSampleCorr(
     vecs[sampleIdx[groups.of[ix.sample[row]]]][geneIdx[ix.gene[row]]] = log ? Math.log10(v) : v
   }
 
-  // Pairwise-complete Pearson r for every sample pair.
-  let z = Array.from({ length: S }, () => new Array<number>(S).fill(1))
-  let lo = 1
-  for (let i = 0; i < S; i++) {
-    const a = vecs[i]
-    for (let j = i + 1; j < S; j++) {
-      const b = vecs[j]
-      let n = 0
-      let sx = 0
-      let sy = 0
-      let sxx = 0
-      let syy = 0
-      let sxy = 0
-      for (let k = 0; k < G; k++) {
-        const x = a[k]
-        const y = b[k]
-        if (Number.isNaN(x) || Number.isNaN(y)) continue
-        n++
-        sx += x
-        sy += y
-        sxx += x * x
-        syy += y * y
-        sxy += x * y
+  // Every sample pair, scored over the proteins both carry (pairwise-complete). Spearman is
+  // Pearson on the samples' ranks.
+  const scoreAll = (metric: CorrMetric): CorrMatrix => {
+    const cols = metric === 'spearman' ? vecs.map(rankVector) : vecs
+    const self = 1
+    const z = Array.from({ length: S }, () => new Array<number>(S).fill(self))
+    // (the floor never above 1, as before)
+    let lo = 1
+    let hi = -Infinity
+    for (let i = 0; i < S; i++) {
+      const a = cols[i]
+      for (let j = i + 1; j < S; j++) {
+        const b = cols[j]
+        let r: number
+        let n = 0
+        let sx = 0
+        let sy = 0
+        let sxx = 0
+        let syy = 0
+        let sxy = 0
+        for (let k = 0; k < G; k++) {
+          const x = a[k]
+          const y = b[k]
+          if (Number.isNaN(x) || Number.isNaN(y)) continue
+          n++
+          sx += x
+          sy += y
+          sxx += x * x
+          syy += y * y
+          sxy += x * y
+        }
+        if (metric === 'ccc') {
+          // Lin's concordance: 2·cov / (var x + var y + (mean x − mean y)²), population moments
+          const mx = sx / n
+          const my = sy / n
+          const cov = sxy / n - mx * my
+          const den = sxx / n - mx * mx + (syy / n - my * my) + (mx - my) ** 2
+          r = n >= 2 && den > 0 ? (2 * cov) / den : 0
+        } else {
+          const cov = n * sxy - sx * sy
+          const vx = n * sxx - sx * sx
+          const vy = n * syy - sy * sy
+          const denom = Math.sqrt(vx * vy)
+          r = n >= 2 && denom > 0 ? cov / denom : 0
+        }
+        z[i][j] = r
+        z[j][i] = r
+        if (r < lo) lo = r
+        if (r > hi) hi = r
       }
-      const cov = n * sxy - sx * sy
-      const vx = n * sxx - sx * sx
-      const vy = n * syy - sy * sy
-      const denom = Math.sqrt(vx * vy)
-      const r = n >= 2 && denom > 0 ? cov / denom : 0
-      z[i][j] = r
-      z[j][i] = r
-      if (r < lo) lo = r
+    }
+    return {
+      z,
+      min: Number.isFinite(lo) ? lo : 0,
+      max: Number.isFinite(hi) ? hi : self,
+      // Clustered by their profile of scores so replicate groups sit together
+      clustered:
+        S > 2
+          ? // each metric clustered on itself, as a distance, 1 − its value (1 − r, 1 − ρ,
+            // 1 − CCC): identical samples at 0
+            clusterRowOrder(
+              z.map((row) => row.map((v) => 1 - v)),
+              { precomputed: true }
+            )
+          : Array.from({ length: S }, (_, i) => i)
     }
   }
+  const matrices: SampleCorrAll['matrices'] = {}
+  for (const m of opts.metrics ?? CORR_METRICS) matrices[m] = scoreAll(m)
+  return { labels, metas, ownMetas, matrices }
+}
 
-  // Cluster samples by their correlation profile so replicate groups sit together; reorder
-  // both axes symmetrically.
-  // Unclustered, the samples follow `opts.order` (natural: by condition; original: the data's).
-  const clustered = (opts.cluster ?? true) && S > 2
-  const order = clustered
-    ? clusterRowOrder(z)
-    : opts.order
-      ? sortSamples(
-          Array.from({ length: S }, (_, i) => i),
-          opts.order,
-          (i) => ownMetas[i],
-          true
-        )
-      : null
-  if (order) {
-    labels = order.map((i) => labels[i])
-    metas = order.map((i) => metas[i])
-    z = order.map((i) => order.map((j) => z[i][j]))
+/** A correlation plot's matrix as drawn: one metric of a SampleCorrAll, its samples clustered
+ *  (default) or, unclustered, in `order` (natural: by condition; original: the data's). */
+export function arrangeSampleCorr(
+  all: SampleCorrAll,
+  metric: CorrMetric,
+  opts: {
+    cluster?: boolean
+    /** the samples' order when they aren't clustered (unset: as they come in the data) */
+    order?: SampleOrdering
+  } = {}
+): CorrData {
+  const m = all.matrices[metric]
+  const S = all.labels.length
+  if (!m) return { metric, labels: [], metas: [], z: [], min: 0, max: 1 }
+  const order =
+    (opts.cluster ?? true) && S > 2
+      ? m.clustered
+      : opts.order
+        ? sortSamples(
+            Array.from({ length: S }, (_, i) => i),
+            opts.order,
+            (i) => all.ownMetas[i],
+            true
+          )
+        : null
+  return {
+    metric,
+    labels: order ? order.map((i) => all.labels[i]) : all.labels,
+    metas: order ? order.map((i) => all.metas[i]) : all.metas,
+    z: order ? order.map((i) => order.map((j) => m.z[i][j])) : m.z,
+    min: m.min,
+    max: m.max
   }
+}
 
-  return { labels, metas, z, min: Number.isFinite(lo) ? lo : 0 }
+/** One metric's matrix of a standardized result, arranged (buildSampleCorrAll then
+ *  arrangeSampleCorr) — the plot runs the two apart (the first in the worker). */
+export function buildSampleCorr(
+  std: Pick<StandardizeResult, 'rows' | 'activeConditions'>,
+  /** `scale`: the scale abundance is shown on (see plotScaleOf); unset → the old guess (log₁₀
+   *  when the values look like raw intensity). A log base doesn't change Pearson r; log vs linear
+   *  does. */
+  opts: {
+    cluster?: boolean
+    scale?: ValueScale
+    /** the samples' order when they aren't clustered (unset: as they come in the data) */
+    order?: SampleOrdering
+    /** how each pair is scored (unset: Pearson r) */
+    metric?: CorrMetric
+  } = {}
+): CorrData {
+  const metric = opts.metric ?? 'pearson'
+  return arrangeSampleCorr(
+    buildSampleCorrAll(std, { scale: opts.scale, metrics: [metric] }),
+    metric,
+    opts
+  )
 }
 
 // ── enrichment (over-representation analysis) ────────────────────────────────────
@@ -3295,9 +3464,18 @@ export function goAspectsOf(ann: Record<string, Record<string, string>>): Record
   return out
 }
 
-/** A facet's label for a table: "comparison=E28 | DMSO · dose=10". */
+/** A facet's label for a table, worded as the matrix column headers: "E28 | DMSO · dose 10" — the
+ *  comparison bare, a condition as ctxLabel, any other dimension by its name ("show factors"). */
 export const facetLabel = (values: { dim: string; value: string | number }[]): string =>
-  values.map((v) => `${v.dim}=${v.value}`).join(' · ')
+  values
+    .map(({ dim, value }) =>
+      dim === 'comparison'
+        ? String(value)
+        : dim === 'feature' || dim === 'show'
+          ? `${dim} ${value}`
+          : ctxLabel(dim as ConditionKey, value)
+    )
+    .join(' · ')
 
 /** How a source's terms are grouped and coloured: KEGG pathways by pathway category (`categories`,
  *  over the data's KEGG_cat), Reactome terms by top-level pathway, COG / KOG categories by area,

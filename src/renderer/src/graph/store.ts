@@ -126,11 +126,6 @@ export interface GraphState {
   setContrastStat: (id: string, partial: Partial<ContrastStat>) => void
   /** Rename a Compare's effect classes (display-only: the result stays `done`; undoable). */
   setCompareEffectLabels: (id: string, labels: Partial<EffectLabels>) => void
-  /** a Compare's effect colours (unset = the default); display-only, as the labels */
-  setCompareEffectColors: (
-    id: string,
-    colors: Partial<Record<'up' | 'down' | 'none', string | undefined>>
-  ) => void
   /** A Curve fit's method label: 'custom', or unset (the preset its detector implies). UI only —
    *  the run reads the models themselves — so it never stales the result. */
   setCurveMethod: (id: string, method: 'custom' | undefined) => void

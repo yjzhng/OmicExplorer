@@ -42,6 +42,10 @@ export interface ClusterOrderOptions {
   linkage?: Linkage
   /** default `mean` */
   leafOrder?: LeafOrder
+  /** `rows` are already the pairwise distances (a symmetric matrix, 0 on the diagonal — e.g. a
+   *  sample-pair metric that is itself a distance), clustered on as they are rather than on the
+   *  euclidean distance between rows */
+  precomputed?: boolean
 }
 
 /** Return a row ordering that places similar rows adjacent (dendrogram leaf order). */
@@ -313,7 +317,7 @@ export function clusterRowGroups(rows: number[][], k: number): number[][] {
 
 function buildDendrogram(
   rows: number[][],
-  { weights, linkage = 'average' }: ClusterOrderOptions = {}
+  { weights, linkage = 'average', precomputed = false }: ClusterOrderOptions = {}
 ): Dendrogram {
   const ward = linkage === 'ward'
   const complete = linkage === 'complete'
@@ -331,10 +335,12 @@ function buildDendrogram(
     for (let j = i + 1; j < n; j++) {
       const b = rows[j]
       let s = 0
-      for (let k = 0; k < m; k++) {
-        const d = a[k] - b[k]
-        s += d * d
-      }
+      if (precomputed) s = a[j] * a[j]
+      else
+        for (let k = 0; k < m; k++) {
+          const d = a[k] - b[k]
+          s += d * d
+        }
       const dist = ward ? s : Math.sqrt(s)
       D[i * n + j] = dist
       D[j * n + i] = dist

@@ -160,9 +160,9 @@ export function usePlotContext({
   const responseRoles = useMemo(() => ({ value: roles.fc, points: roles.fcObject }), [roles])
   const paletteOf = (c: unknown, role: PaletteRole, field = 'fcPalette'): PaletteRef =>
     toPaletteRef((c as Record<string, unknown> | undefined)?.[field]) ?? roles[role]
-  // A plot's effect colours: its own → its palette → the Compare's → the global palette.
-  const effectsOf = (c: unknown, compare: CompareConfig | undefined, own?: PlotEffectColors) =>
-    plotEffectColors(own, compare, roles.fcObject, (c as FcPaletteConfig | undefined)?.fcPalette)
+  // A plot's effect colours: its own → its FC palette (its own, else the global one).
+  const effectsOf = (c: unknown, own?: PlotEffectColors) =>
+    plotEffectColors(own, roles.fcObject, (c as FcPaletteConfig | undefined)?.fcPalette)
   // The numeric conditions' units, from the import this plot's data came through (axis titles,
   // a curve fit's EC50) — the dose's, for a workflow saved before units moved to the import, the
   // unit its Curve fit carried (as curveDoseUnit reads it), so every axis titles it alike.

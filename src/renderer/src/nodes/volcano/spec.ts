@@ -14,6 +14,7 @@ export const volcanoSpec = defineSpec<'volcano'>({
     tileHint: 'log₂FC vs significance. Select to view.',
     configurable: true,
     legend: 'groups',
-    axes: true
+    axes: true,
+    guides: true
   }
 })

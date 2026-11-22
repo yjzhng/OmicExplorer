@@ -10,7 +10,7 @@ import {
   curvesReplicatedOf
 } from '../../graph/types'
 import { useUpstreamFacts } from '../../graph/useUpstreamFacts'
-import { CapSection, Field, QuickToggle, Section, Select } from '../kit/settings/controls'
+import { CapRow, Field, QuickToggle, Select } from '../kit/settings/controls'
 import { legendShown } from '../kit/settings/plotHooks'
 import { type PlotPanelProps, PlotSections, PointStyleSections } from '../kit/settings/plotSections'
 import { type PlotSettingsProps } from '../settings'
@@ -26,89 +26,95 @@ export function CurveMadPanel({ config, update, edgeNodeId }: PlotPanelProps<Cur
   const metrics = check === 'metrics'
   return (
     <PlotSections
-      show={
+      general={
         <>
-          <Section title="QC">
-            <Field
-              label="check"
-              aside={<QuickToggle config={config} field="check" update={update} />}
-            >
-              <Select
-                value={check}
-                onChange={(v) => update({ check: v as CurveMadConfig['check'] })}
-                options={[
-                  { value: 'dose', label: 'dose' },
-                  ...(replicated ? [{ value: 'sample', label: 'sample' }] : []),
-                  { value: 'fitted', label: 'fitted' },
-                  { value: 'normality', label: 'normality' },
-                  { value: 'metrics', label: 'metrics (curve against curve)' }
-                ]}
-              />
-            </Field>
-            {metrics && (
-              <>
-                <Field label="x">
-                  <Select
-                    value={config.metricX ?? CURVE_QC_DEFAULT_X}
-                    onChange={(v) => update({ metricX: v as CurveQcAxis })}
-                    options={curveQcAxisOptions(config.metricY ?? CURVE_QC_DEFAULT_Y, 'y')}
-                  />
-                </Field>
-                <Field label="y">
-                  <Select
-                    value={config.metricY ?? CURVE_QC_DEFAULT_Y}
-                    onChange={(v) => update({ metricY: v as CurveQcAxis })}
-                    options={curveQcAxisOptions(config.metricX ?? CURVE_QC_DEFAULT_X, 'x')}
-                  />
-                </Field>
-              </>
-            )}
-            {!metrics && (
-              <>
-                <Field
-                  label="show"
-                  aside={<QuickToggle config={config} field="show" update={update} />}
-                >
-                  <Select
-                    value={config.show ?? 'dot'}
-                    onChange={(v) => update({ show: v as CurveMadConfig['show'] })}
-                    options={[
-                      { value: 'violin', label: 'violin' },
-                      { value: 'dot', label: 'dot' }
-                    ]}
-                  />
-                </Field>
-                <Field
-                  label="axis scale"
-                  aside={<QuickToggle config={config} field="yScale" update={update} />}
-                >
-                  <Select
-                    value={config.yScale ?? 'fit'}
-                    onChange={(v) => update({ yScale: v as CurveMadConfig['yScale'] })}
-                    options={[
-                      { value: 'fit', label: 'adjusted (99.9% of residuals, about 0)' },
-                      { value: 'range', label: 'global (every residual)' }
-                    ]}
-                  />
-                </Field>
-              </>
-            )}
-          </Section>
-          <CapSection
-            title="Cap points"
-            hint="Dot views draw only this many residuals, so they stay quick. Every outlier is kept; boxes, medians and trend lines use them all."
-            label="Max points"
-            field="maxPoints"
-            value={config.maxPoints ?? RESIDUAL_DOT_CAP}
-            enabled={config.capEnabled ?? true}
-            update={update}
-            defaultValue={RESIDUAL_DOT_CAP}
-            max={RESIDUAL_DOT_CAP}
-            rule={(n) =>
-              `Draw at most ${n.toLocaleString()} residuals (up to ${RESIDUAL_DOT_CAP.toLocaleString()}).`
-            }
-          />
+          <Field
+            label="check"
+            aside={<QuickToggle config={config} field="check" update={update} />}
+          >
+            <Select
+              value={check}
+              onChange={(v) => update({ check: v as CurveMadConfig['check'] })}
+              options={[
+                { value: 'dose', label: 'dose' },
+                ...(replicated ? [{ value: 'sample', label: 'sample' }] : []),
+                { value: 'fitted', label: 'fitted' },
+                { value: 'normality', label: 'normality' },
+                { value: 'metrics', label: 'metrics (curve against curve)' }
+              ]}
+            />
+          </Field>
+          {metrics && (
+            <>
+              <Field label="x">
+                <Select
+                  value={config.metricX ?? CURVE_QC_DEFAULT_X}
+                  onChange={(v) => update({ metricX: v as CurveQcAxis })}
+                  options={curveQcAxisOptions(config.metricY ?? CURVE_QC_DEFAULT_Y, 'y')}
+                />
+              </Field>
+              <Field label="y">
+                <Select
+                  value={config.metricY ?? CURVE_QC_DEFAULT_Y}
+                  onChange={(v) => update({ metricY: v as CurveQcAxis })}
+                  options={curveQcAxisOptions(config.metricX ?? CURVE_QC_DEFAULT_X, 'x')}
+                />
+              </Field>
+            </>
+          )}
+          {!metrics && (
+            <>
+              <Field
+                label="show"
+                aside={<QuickToggle config={config} field="show" update={update} />}
+              >
+                <Select
+                  value={config.show ?? 'dot'}
+                  onChange={(v) => update({ show: v as CurveMadConfig['show'] })}
+                  options={[
+                    { value: 'violin', label: 'violin' },
+                    { value: 'dot', label: 'dot' }
+                  ]}
+                />
+              </Field>
+            </>
+          )}
         </>
+      }
+      // how many residuals the dot views draw (this plot's "how many are drawn")
+      genes={
+        <CapRow
+          info="Dot views draw only this many residuals, so they stay quick. Every outlier is kept; boxes, medians and trend lines use them all."
+          label="Max residuals"
+          field="maxPoints"
+          value={config.maxPoints ?? RESIDUAL_DOT_CAP}
+          enabled={config.capEnabled ?? true}
+          update={update}
+          defaultValue={RESIDUAL_DOT_CAP}
+          max={RESIDUAL_DOT_CAP}
+          rule={(n) =>
+            `Draw at most ${n.toLocaleString()} residuals (up to ${RESIDUAL_DOT_CAP.toLocaleString()}).`
+          }
+          step={10}
+        />
+      }
+      // the residual axis' range: an axis setting, for the whole plot
+      axes={
+        !metrics && (
+          <Field
+            label="axis scale"
+            aside={<QuickToggle config={config} field="yScale" update={update} />}
+          >
+            <Select
+              value={config.yScale ?? 'fit'}
+              onChange={(v) => update({ yScale: v as CurveMadConfig['yScale'] })}
+              options={[
+                { value: 'fit', label: 'adjusted (99.9% of residuals, about 0)' },
+                { value: 'range', label: 'global (every residual)' }
+              ]}
+            />
+          </Field>
+        )
       }
       marks={
         <PointStyleSections

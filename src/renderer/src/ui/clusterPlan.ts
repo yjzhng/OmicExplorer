@@ -32,7 +32,7 @@ export const condsOf = (metas: ReadonlyArray<Pick<ClusterMeta, 'extra'>>): Condi
  * family and the rest spread within it (so each distinct combination still gets its own colour).
  */
 export interface Plan {
-  /** ≥2 varying qualitatives: `quals[0]` picks the hue family, the rest spread within it. */
+  /** ≥2 varying qualitatives: every combination its own colour, `quals[0]` first in their order. */
   grouped: boolean
   /** the varying qualitatives, in hierarchy order (only meaningful when `grouped`) */
   quals: ConditionKey[]
@@ -48,6 +48,10 @@ export interface PlanOverrides {
   color?: ConditionKey[]
   shade?: ConditionKey | 'none'
   arrow?: ConditionKey | 'none'
+  /** colour by `color` exactly as given: a numeric one among several is one more set of colours
+   *  (its values as categories), not dropped for the ordered channels — the user picked it for
+   *  colour. (A single numeric alone is still a ramp.) */
+  colorAsGiven?: boolean
 }
 
 export function planAesthetics(
@@ -113,7 +117,10 @@ function planWithOverrides(
   // Colour: the chosen conditions that vary (several categoricals → grouped hues; one → its own
   // colours; only numerics → a ramp on the first), else the automatic choice.
   const chosen = (ov.color ?? []).filter((c) => varying.has(c))
-  let quals = chosen.filter((c) => !isNumericCond(c, numeric))
+  let quals =
+    ov.colorAsGiven && (chosen.length > 1 || chosen.some((c) => !isNumericCond(c, numeric)))
+      ? chosen
+      : chosen.filter((c) => !isNumericCond(c, numeric))
   let colorKey: ConditionKey | null = null
   let colorRamp = false
   if (!chosen.length) {

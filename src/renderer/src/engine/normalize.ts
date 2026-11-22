@@ -23,7 +23,7 @@
  * median target — so the values stay abundances, on the scale every later step reads.
  */
 import { sampleKey } from './impute'
-import { sampleLabel } from './sampleLabel'
+import { sampleName } from './sampleLabel'
 import type { StandardRow } from './types'
 
 export type NormalizeReference = 'shared' | 'all' | 'protein'
@@ -142,7 +142,7 @@ export function normalizeSamples(
           protein: protein ?? '',
           missingSamples: missing.length,
           ...(missing.length
-            ? { missingLabels: missing.slice(0, 5).map((sk) => sampleLabel(samples.get(sk)!)) }
+            ? { missingLabels: missing.slice(0, 5).map((sk) => sampleName(samples.get(sk)!)) }
             : null)
         }
       : null)

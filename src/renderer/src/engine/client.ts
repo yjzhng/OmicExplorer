@@ -11,12 +11,14 @@ import type { RecleanInput, ScalePreview } from './ingest'
 import type {
   ClusterData,
   ClusterOptions,
+  SampleCorrAll,
   EnrichData,
   enrichmentAll,
   enrichmentTable
 } from './plotData'
 import type { EngineRequest, EngineResponse } from './worker'
 import type { Progress } from './progress'
+import type { ValueScale } from './scale'
 import type { ResponseInput } from './responseSurface'
 import type {
   CompareInput,
@@ -208,6 +210,12 @@ export const engine = {
   /** A cluster plot's run: the sample embedding (PCA / UMAP / t-SNE) of a Clean data table. */
   buildCluster: (rows: StandardRow[] | Table, opts: ClusterOptions): Promise<ClusterData> =>
     call<ClusterData>('buildCluster', { rows, opts }),
+  /** A correlation plot's run: the sample-pair matrix under every metric (buildSampleCorrAll). */
+  sampleCorr: (
+    rows: StandardRow[] | Table,
+    activeConditions: ConditionKey[],
+    scale: ValueScale | undefined
+  ): Promise<SampleCorrAll> => call<SampleCorrAll>('sampleCorr', { rows, activeConditions, scale }),
   /** Terminate the worker and reject any in-flight calls (backs the Stop button). */
   cancel: (): void => {
     if (worker) {

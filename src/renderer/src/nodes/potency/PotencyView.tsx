@@ -33,7 +33,8 @@ import { labelColorOf, legendOn, resolveGroups, resolveHighlight } from '../../u
 import {
   axisBase,
   EFFECT_COLOR,
-  GUIDE_WIDTH,
+  guideLook,
+  guideShapes,
   guideLine,
   PALETTES,
   PLOT_TEXT,
@@ -109,7 +110,7 @@ export function PotencyView({
   )
   const emphasis = useMemo(() => resolveHighlight(style), [style])
   const showLegend = legendOn(style)
-  const gw = style?.guideWidth ?? GUIDE_WIDTH
+  const { show: gShow, dash: gDash, width: gw } = guideLook(style)
 
   // A surface's curves for its potency: testing changes, those along its response axis (one per
   // level of the other); else its dose curves along the first axis (one per level of the second).
@@ -291,9 +292,12 @@ export function PotencyView({
     // plot, or up it in portrait.
     const guide = (v: number) =>
       flip
-        ? { type: 'line', yref: 'paper', y0: 0, y1: 1, x0: v, x1: v, line: guideLine(p, gw) }
-        : { type: 'line', xref: 'paper', x0: 0, x1: 1, y0: v, y1: v, line: guideLine(p, gw) }
-    const shapes = [fcLow, fcHigh].filter((v): v is number => v != null && v !== 0).map(guide)
+        ? { type: 'line', yref: 'paper', y0: 0, y1: 1, x0: v, x1: v, line: guideLine(p, gw, gDash) }
+        : { type: 'line', xref: 'paper', x0: 0, x1: 1, y0: v, y1: v, line: guideLine(p, gw, gDash) }
+    const shapes = guideShapes(
+      [fcLow, fcHigh].filter((v): v is number => v != null && v !== 0).map(guide),
+      gShow
+    )
 
     const lay: Record<string, unknown> = {
       ...plotBase(p),
@@ -346,7 +350,8 @@ export function PotencyView({
         text: pt.label,
         priority: Math.abs(pt.y),
         id: pt.uniqID,
-        color: labelColorOf(look(pt.effect), p.text)
+        color: labelColorOf(look(pt.effect), p.text),
+        fontSize: look(pt.effect).labelSize
       }))
     if (labelTop > 0) lab = lab.sort((a, b) => b.priority - a.priority).slice(0, labelTop)
     return { data: traces, layout: lay, labels: lab }
@@ -367,7 +372,9 @@ export function PotencyView({
     groups,
     showLegend,
     orient,
-    gw
+    gw,
+    gDash,
+    gShow
   ])
 
   if (!points.length)

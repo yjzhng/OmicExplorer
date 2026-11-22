@@ -34,7 +34,12 @@ import {
   ValChip
 } from '../../graph/condRows'
 import { useCondUnits } from '../../graph/useUpstreamFacts'
-import { pairSides, selectorRowsOf, toContrastSide } from '../../graph/contrastPair'
+import {
+  comparedLabelsOf,
+  pairSides,
+  selectorRowsOf,
+  toContrastSide
+} from '../../graph/contrastPair'
 import {
   compileInter,
   compileIntra,
@@ -136,6 +141,12 @@ export function ContrastDialog({
   const resA = pair?.find((i) => i.id === pairPick.a)?.result
   const resB = pair?.find((i) => i.id === pairPick.b)?.result
   const sideA = useMemo(() => toContrastSide(resA), [resA])
+  // A Compare input's comparison labels, for the preview's compared condition ("A · X | Y"): the
+  // intra-dataset input's, and each dataset's
+  const intraRes = selectInput?.result ?? (inputCount === 1 ? pair![0].result : undefined)
+  const cmpIntra = useMemo(() => comparedLabelsOf(intraRes), [intraRes])
+  const cmpA = useMemo(() => comparedLabelsOf(resA), [resA])
+  const cmpB = useMemo(() => comparedLabelsOf(resB), [resB])
   const sideB = useMemo(() => toContrastSide(resB), [resB])
   const interConds = useMemo(
     () => orderConds(condsIn([...asRows(sideA), ...asRows(sideB)])),
@@ -412,6 +423,7 @@ export function ContrastDialog({
                       conds={isPair ? interConds : active}
                       units={units}
                       numeric={isPair ? interNumeric : intraNumeric}
+                      compared={isPair ? cmpA : cmpIntra}
                     />,
                     'vs',
                     <SideCell
@@ -420,6 +432,7 @@ export function ContrastDialog({
                       conds={isPair ? interConds : active}
                       units={units}
                       numeric={isPair ? interNumeric : intraNumeric}
+                      compared={isPair ? cmpB : cmpIntra}
                     />
                   ]
                 }}

@@ -56,6 +56,7 @@ export function ResultsView(): ReactNode {
   const results = useGraph((s) => s.results)
   const groupLayouts = useGraph((s) => s.groupLayouts)
   const setGroupLayout = useGraph((s) => s.setGroupLayout)
+  const resetGroupLayout = useGraph((s) => s.resetGroupLayout)
   const groupMeta = useGraph((s) => s.groupMeta)
   const reorderGroups = useGraph((s) => s.reorderGroups)
   // Active tab lives in the app-view store (not local state) so it survives Results unmounting
@@ -135,6 +136,25 @@ export function ResultsView(): ReactNode {
     groups.find((g) => g.rootId === activeId) ??
     groups[0] ??
     null
+  // The open tab's tiles as arranged by hand, if they are: "Reset layout" lays them out again as a
+  // new tab would be (`plotsPerRow` across, in member order — and so would follow that setting
+  // again).
+  const perRow = useAppSettings((s) => s.plotsPerRow)
+  const activeSaved = active
+    ? ((groupLayouts[active.id] ?? groupLayouts[active.rootId]) as PanelLayout | undefined)
+    : undefined
+  const activeIds = active ? expandMembers(active.memberIds, nodes) : []
+  const arranged =
+    !!activeSaved &&
+    geometryChanged(reconcileLayout(activeSaved, activeIds, perRow), autoLayout(activeIds, perRow))
+  const resetLayout = (): void => {
+    if (!active) return
+    // Its own layout goes; one it reads from its step (a workflow from before tabs were per plot
+    // group, shared with that step's other tabs) is left alone — this tab gets the default instead.
+    if (active.rootId !== active.id && groupLayouts[active.rootId])
+      setGroupLayout(active.id, autoLayout(activeIds, perRow) as PanelLayoutItem[])
+    else resetGroupLayout(active.id)
+  }
   // Tabs are kept alive once opened: building a tab's plots costs ~1s, and
   // unmounting on every switch made you pay it again each time you came back.
   // Panes are only created on first visit, so unopened tabs still cost nothing.
@@ -310,6 +330,21 @@ export function ResultsView(): ReactNode {
             selector lives in the top nav, shared with the workflow view. */}
         <div style={styles.controlRow}>
           {active && <FacetContextBar group={active} results={results} />}
+          {active && (
+            <button
+              className="oe-press"
+              style={{ ...styles.resetBtn, ...(arranged ? null : styles.resetBtnOff) }}
+              disabled={!arranged}
+              onClick={resetLayout}
+              title={
+                arranged
+                  ? `Lay this tab's plots out again as new: ${perRow} across, in workflow order`
+                  : 'This tab is in its default layout'
+              }
+            >
+              Reset layout
+            </button>
+          )}
         </div>
       </div>
       <div style={styles.panes}>
@@ -566,6 +601,20 @@ const styles: Record<string, CSSProperties> = {
     cursor: 'pointer',
     whiteSpace: 'nowrap'
   },
+  // The controls row's last item, at its right end: back to the default tile layout.
+  resetBtn: {
+    flex: '0 0 auto',
+    marginLeft: 'auto',
+    background: 'transparent',
+    color: UI.textMuted,
+    border: `1px solid ${UI.border}`,
+    borderRadius: 6,
+    padding: '3px 10px',
+    fontSize: 11,
+    cursor: 'pointer',
+    whiteSpace: 'nowrap'
+  },
+  resetBtnOff: { opacity: 0.45, cursor: 'default' },
   // Controls row under the tabs: the condition switchers.
   controlRow: {
     display: 'flex',

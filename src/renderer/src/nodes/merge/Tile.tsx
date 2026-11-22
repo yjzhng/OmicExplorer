@@ -3,6 +3,7 @@ import type { ReactNode } from 'react'
 
 import type { TileContext } from '../tiles'
 import { rowCount } from '../../engine/lazyRows'
+import { condLabel } from '../../engine/types'
 import { muted, stat } from '../kit/tile'
 
 export function tile(t: TileContext): ReactNode {
@@ -12,7 +13,7 @@ export function tile(t: TileContext): ReactNode {
   // the union of conditions is what tells you the merge did what you expected.
   return std ? (
     <div style={stat}>
-      {rowCount(std).toLocaleString()} rows · {std.activeConditions.join(', ')}
+      {rowCount(std).toLocaleString()} rows · {std.activeConditions.map(condLabel).join(', ')}
     </div>
   ) : (
     <div style={muted}>Pool two or more Clean data tiles into one dataset.</div>

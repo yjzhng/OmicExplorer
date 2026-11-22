@@ -1,14 +1,14 @@
 import { type ReactNode, useMemo } from 'react'
 import { useGraph } from '../../graph/store'
 import {
-  barColorConds,
+  barColoring,
   type BarConfig,
-  condColorByDefault,
-  defaultColorConds,
+  conditionColorWrite,
   numericOfResult,
   primaryColorLevels
 } from '../../graph/types'
 import { AUTO } from '../../ui/ColorPicker'
+import { OpacitySlider } from '../../ui/OpacitySlider'
 import { UI } from '../../ui/theme'
 import { OnOffSwitch } from '../../ui/ToggleSwitch'
 import {
@@ -21,9 +21,10 @@ import {
   Select
 } from '../kit/settings/controls'
 import { CONDS } from '../kit/settings/hooks'
+import { useCategoricalInk } from '../kit/settings/plotHooks'
 import {
-  CategoricalSection,
-  ConditionColorFields,
+  CategoricalRows,
+  ColorFadeFields,
   type PlotPanelProps,
   PlotSections
 } from '../kit/settings/plotSections'
@@ -44,37 +45,53 @@ export function GeneBarPanel({ config, update, edgeNodeId }: PlotPanelProps<BarC
   const levels = upstream?.kind === 'standardize' ? primaryColorLevels(upstream.std) : 0
   // the data's numeric conditions (its schema): what the fade can take
   const numeric = useMemo(() => numericOfResult(upstream), [upstream])
-  const colorConds = barColorConds(config, active, levels, numeric)
-  const byCondition =
-    colorConds.length > 0 ||
-    (config.colorBy ?? (condColorByDefault(levels) ? 'condition' : 'value')) === 'condition'
+  // coloured by condition: the colour conditions and fade (picked, or the default); null by value
+  const coloring = barColoring(config, active, levels, numeric)
+  const byCondition = coloring != null
   const repColor = config.repColor ?? 'auto'
   const errorColor = config.errorColor ?? 'auto'
+  // what Automatic (the group colour) shows: the plot's categorical colours
+  const groupInk = useCategoricalInk(config)
   return (
     <PlotSections
-      show={
-        <Section title="Bar">
-          <Field
-            label="axis scale"
-            aside={<QuickToggle config={config} field="yScale" update={update} />}
-          >
+      general={
+        <>
+          <SampleOrderField config={config} update={update} label="condition order" />
+          {/* what the error bars stand for — a statistic, not a look */}
+          <Field label="error bars">
             <Select
-              value={config.yScale ?? 'gene'}
-              onChange={(v) => update({ yScale: v as BarConfig['yScale'] })}
+              value={config.error ?? 'sd'}
+              onChange={(v) => update({ error: v as BarConfig['error'] })}
               options={[
-                { value: 'gene', label: 'adjusted (each gene’s own range)' },
-                { value: 'global', label: 'global (all genes)' }
+                { value: 'sd', label: 'SD' },
+                { value: 'sem', label: 'SEM' },
+                { value: 'ci95', label: '95% CI' }
               ]}
             />
           </Field>
-          <SampleOrderField config={config} update={update} label="condition order" />
-        </Section>
+        </>
+      }
+      // the value axis' range: a whole-plot row of Axes and lines
+      axes={
+        <Field
+          label="axis scale"
+          aside={<QuickToggle config={config} field="yScale" update={update} />}
+        >
+          <Select
+            value={config.yScale ?? 'gene'}
+            onChange={(v) => update({ yScale: v as BarConfig['yScale'] })}
+            options={[
+              { value: 'gene', label: 'adjusted (each gene’s own range)' },
+              { value: 'global', label: 'global (all genes)' }
+            ]}
+          />
+        </Field>
       }
       marks={
-        <Section title="Style">
-          {/* Replicates as dots over the bars: on/off, then — while on — colour, size (px),
-                opacity (%) and jitter, on one line like the error bar's. */}
-          <Field label="replicate">
+        <Section title="Bars">
+          {/* Replicates as dots over the bars: on/off and jitter, then — while on — their colour
+              and size, and their opacity. */}
+          <Field label="replicates">
             <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
               <OnOffSwitch
                 on={!!config.replicates}
@@ -96,6 +113,7 @@ export function GeneBarPanel({ config, update, edgeNodeId }: PlotPanelProps<BarC
                     onPick={(c) => update({ repColor: c })}
                     onAuto={() => update({ repColor: AUTO })}
                     autoLabel="Automatic (the group colour)"
+                    autoColor={groupInk}
                   />
                   <div style={{ width: 48, flex: '0 0 auto' }}>
                     <NumberInput
@@ -108,27 +126,6 @@ export function GeneBarPanel({ config, update, edgeNodeId }: PlotPanelProps<BarC
                       }
                     />
                   </div>
-                  <div
-                    style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: 3,
-                      width: 64,
-                      flex: '0 0 auto'
-                    }}
-                  >
-                    <NumberInput
-                      value={Math.round((config.repOpacity ?? 0.6) * 100)}
-                      step={10}
-                      min={10}
-                      max={100}
-                      title="Dot opacity (%)"
-                      onChange={(v) =>
-                        update({ repOpacity: Math.min(100, Math.max(10, Math.round(v))) / 100 })
-                      }
-                    />
-                    <span style={{ color: UI.textMuted, fontSize: 12 }}>%</span>
-                  </div>
                   <span style={{ color: UI.textMuted, fontSize: 11, marginLeft: 2 }}>jitter</span>
                   <OnOffSwitch
                     on={config.repJitter ?? true}
@@ -140,7 +137,17 @@ export function GeneBarPanel({ config, update, edgeNodeId }: PlotPanelProps<BarC
               )}
             </div>
           </Field>
-          {/* One line: the error bars' colour, line width (px), then what they show. */}
+          {config.replicates && (
+            <Field label="opacity">
+              <OpacitySlider
+                label="Replicate"
+                color={repColor === AUTO ? undefined : repColor}
+                value={config.repOpacity ?? 0.6}
+                onChange={(v) => update({ repOpacity: v })}
+              />
+            </Field>
+          )}
+          {/* The error bars' colour and line width (what they show is General's). */}
           <Field label="error bar">
             <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
               <ColorChip
@@ -155,6 +162,7 @@ export function GeneBarPanel({ config, update, edgeNodeId }: PlotPanelProps<BarC
                 onPick={(c) => update({ errorColor: c })}
                 onAuto={() => update({ errorColor: AUTO })}
                 autoLabel="Automatic (the group colour)"
+                autoColor={groupInk}
               />
               <div style={{ width: 56, flex: '0 0 auto' }}>
                 <NumberInput
@@ -168,23 +176,12 @@ export function GeneBarPanel({ config, update, edgeNodeId }: PlotPanelProps<BarC
                   }
                 />
               </div>
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <Select
-                  value={config.error ?? 'sd'}
-                  onChange={(v) => update({ error: v as BarConfig['error'] })}
-                  options={[
-                    { value: 'sd', label: 'SD' },
-                    { value: 'sem', label: 'SEM' },
-                    { value: 'ci95', label: '95% CI' }
-                  ]}
-                />
-              </div>
             </div>
           </Field>
         </Section>
       }
       colours={
-        <CategoricalSection config={config} update={update}>
+        <CategoricalRows config={config} update={update}>
           <Field label="colour by">
             <Select
               value={byCondition ? 'condition' : 'value'}
@@ -192,13 +189,8 @@ export function GeneBarPanel({ config, update, edgeNodeId }: PlotPanelProps<BarC
                 update(
                   v === 'value'
                     ? { colorBy: 'value' }
-                    : {
-                        colorBy: 'condition',
-                        // Start from what was there, else the first categorical condition.
-                        colorConds: colorConds.length
-                          ? colorConds
-                          : defaultColorConds(active, numeric)
-                      }
+                    : // (what was picked before, else the default: conditionColoring)
+                      { colorBy: 'condition' }
                 )
               }
               options={[
@@ -207,15 +199,18 @@ export function GeneBarPanel({ config, update, edgeNodeId }: PlotPanelProps<BarC
               ]}
             />
           </Field>
-          {byCondition && (
-            <ConditionColorFields
+          {coloring && (
+            <ColorFadeFields
               active={active}
               numeric={numeric}
-              selected={colorConds}
-              onChange={(next) => update({ colorBy: 'condition', colorConds: next })}
+              picks={coloring.picks}
+              fade={coloring.fade}
+              onChange={(picks, fade) =>
+                update({ colorBy: 'condition', ...conditionColorWrite(picks, fade) })
+              }
             />
           )}
-        </CategoricalSection>
+        </CategoricalRows>
       }
     />
   )

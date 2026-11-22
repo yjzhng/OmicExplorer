@@ -207,6 +207,7 @@ export function DRFocusView({
   look = DEFAULT_LOOK,
   scaleOf,
   effectColors,
+  categorical = CATEGORICAL,
   model = 'curve'
 }: {
   /** the gene's rows in the facet on show (one comparison or several) — or, with `genes`, those
@@ -232,6 +233,8 @@ export function DRFocusView({
   scaleOf?: { rows: readonly CompareResultRow[] }
   /** the upstream Compare's effect colours — a lone line's automatic colour */
   effectColors?: EffectColors
+  /** the categorical palette several genes (or one gene's comparisons) take a colour each from */
+  categorical?: readonly string[]
   /** a response surface method curve fit: draw the description 4PL ('curve') or the spline */
   model?: 'spline' | 'curve'
 }) {
@@ -297,12 +300,12 @@ export function DRFocusView({
         : look.lineColor !== AUTO
           ? look.lineColor
           : multi
-            ? CATEGORICAL[ids.indexOf(id) % CATEGORICAL.length]
+            ? categorical[ids.indexOf(id) % categorical.length]
             : comparisons.length === 1
               ? { up: upColor, down: downColor, none: noneColor }[
                   geneEffect(gRows.filter((r) => r.comparison === c))
                 ]
-              : CATEGORICAL[comparisons.indexOf(c) % CATEGORICAL.length]
+              : categorical[comparisons.indexOf(c) % categorical.length]
     // Several genes over several comparisons: the gene sets the colour, the comparison the dash.
     const dash = (c: string): string | undefined =>
       multi && comparisons.length > 1 ? DASHES[comparisons.indexOf(c) % DASHES.length] : undefined
@@ -317,10 +320,12 @@ export function DRFocusView({
     const responses = rows.filter((r) => r.rs?.axis === axis)
 
     for (const id of ids) {
+      const had = new Set(traces)
       const gRows = rowsOf.get(id) ?? []
       const geneStd = stdOf.get(id) ?? []
-      // The gene's name in the hover. (No gene identity on the traces: these are lines and their
-      // points, not gene points — linked selection mustn't emphasise them as a volcano's.)
+      // The gene's name in the hover. (One gene: no gene identity on the traces — these are its
+      // lines and points, not gene points, and linked selection mustn't emphasise them as a
+      // volcano's. Several: each gene's traces carry its id — see the end of this loop.)
       const who = multi ? { title: label(id) } : {}
       if (responses.length) {
         // The response surface method: the chosen line, the level means it was fitted to, and (when
@@ -567,6 +572,17 @@ export function DRFocusView({
             })
         }
       }
+      // With several genes (the detailed view), every trace of this gene's — its lines, points and
+      // band — carries its id, so hovering or clicking any of them focuses and selects the gene, and
+      // the other genes fade while it's selected: by opacity alone (__oeDimOnly — its points are a
+      // line's, not gene dots to emphasise). One gene alone carries none (see above).
+      if (multi)
+        for (let t = 0; t < traces.length; t++)
+          // (not whiskers: a marker trace, it would take emphasis dots at its ends)
+          if (!had.has(traces[t]) && !traces[t].error_y) {
+            const x = (traces[t].x as unknown[] | undefined) ?? []
+            traces[t] = { ...traces[t], customdata: x.map(() => id), __oeDimOnly: true }
+          }
     }
     // A t-test's levels as categories, numerically ordered across every gene drawn.
     const cats = [
@@ -621,6 +637,7 @@ export function DRFocusView({
     downColor,
     noneColor,
     setColor,
+    categorical,
     model
   ])
 

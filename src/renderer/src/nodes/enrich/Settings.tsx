@@ -7,8 +7,8 @@ import {
 } from '../../engine'
 import { useGraph } from '../../graph/store'
 import type { EnrichConfig } from '../../graph/types'
-import { Field, NumberInput, QuickToggle, Section, Select } from '../kit/settings/controls'
-import { ColourSection, type PlotPanelProps, PlotSections } from '../kit/settings/plotSections'
+import { Field, NumberInput, QuickToggle, Select } from '../kit/settings/controls'
+import { ColourRows, type PlotPanelProps, PlotSections } from '../kit/settings/plotSections'
 import { styles } from '../kit/settings/styles'
 import { type PlotSettingsProps } from '../settings'
 
@@ -58,7 +58,7 @@ export function EnrichPanel({ config, update, edgeNodeId }: PlotPanelProps<Enric
   const style = config.style === 'ridge' && method !== 'gsea' ? 'dot' : (config.style ?? 'dot')
   const styleOpts = method === 'gsea' ? ['dot', 'bar', 'ridge'] : ['dot', 'bar']
   return (
-    <Section title="Enrichment">
+    <>
       <Field label="method" aside={<QuickToggle config={config} field="method" update={update} />}>
         <Select
           value={method}
@@ -86,18 +86,22 @@ export function EnrichPanel({ config, update, edgeNodeId }: PlotPanelProps<Enric
           options={styleOpts.map((o) => ({ value: o, label: o }))}
         />
       </Field>
-      <Field label="Top terms">
-        <div style={{ width: 90 }}>
-          <NumberInput
-            value={config.topTerms ?? 15}
-            step={5}
-            min={1}
-            onChange={(v) => update({ topTerms: Math.max(1, Math.round(v)) })}
-          />
-        </div>
-      </Field>
-      <div style={styles.hint}>Show the {config.topTerms ?? 15} most enriched terms.</div>
-    </Section>
+    </>
+  )
+}
+/** How many terms are drawn — this plot's "how many" (General's genes rows). */
+function EnrichTerms({ config, update }: PlotPanelProps<EnrichConfig>): ReactNode {
+  return (
+    <Field label="Max terms" info={`Show the ${config.topTerms ?? 15} most enriched terms.`}>
+      <div style={{ width: 90 }}>
+        <NumberInput
+          value={config.topTerms ?? 15}
+          step={5}
+          min={1}
+          onChange={(v) => update({ topTerms: Math.max(1, Math.round(v)) })}
+        />
+      </div>
+    </Field>
   )
 }
 
@@ -105,9 +109,10 @@ export function EnrichPanel({ config, update, edgeNodeId }: PlotPanelProps<Enric
 export function Settings({ config, ...props }: PlotSettingsProps): ReactNode {
   return (
     <PlotSections
-      show={<EnrichPanel config={config as EnrichConfig} {...props} />}
+      general={<EnrichPanel config={config as EnrichConfig} {...props} />}
+      genes={<EnrichTerms config={config as EnrichConfig} {...props} />}
       colours={
-        <ColourSection
+        <ColourRows
           config={config as EnrichConfig}
           {...props}
           groups

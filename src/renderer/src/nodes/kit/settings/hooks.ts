@@ -1,4 +1,4 @@
-import { createContext, useEffect, useState } from 'react'
+import { createContext, useEffect, useState, type ReactNode } from 'react'
 import { type ConditionKey } from '../../../engine'
 import { locationOf } from '../../../graph/state/shared'
 import { useGraph } from '../../../graph/store'
@@ -12,6 +12,16 @@ export const CONDS: ConditionKey[] = ['cell', 'cmpd', 'dose', 'time']
  *  GraphNode; in the form workflow it's off the canvas), so a menu matches the panel it opens from. A select on a
  *  tile itself (outside a panel) still follows the canvas zoom. */
 export const ScreenScale = createContext(false)
+
+/** The sections the settings window itself supplies to a plot's settings (graph/NodeConfigPanel):
+ *  the legend switch (General's last row), and the shared Axes and lines section — built with the plot's own
+ *  whole-plot rows (an axis scale, a reference line) in it. PlotSections places them in the one
+ *  order every plot follows. */
+export interface PlotWindowSlots {
+  legend?: ReactNode
+  axes?: (plotRows?: ReactNode) => ReactNode
+}
+export const PlotWindow = createContext<PlotWindowSlots>({})
 // ── per-kind panels ─────────────────────────────────────────────────────────────
 /** An input file's text, read from the data folder — null while it's being read, or when no file
  *  is named or it can't be read. Re-read when the name (or the data folder) changes. */

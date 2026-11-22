@@ -7,53 +7,37 @@ import { AUTO } from '../../ui/ColorPicker'
 import { BUBBLE_SIG_PALETTE, toPaletteRef } from '../../ui/palettes'
 import { OnOffSwitch, ToggleSwitch } from '../../ui/ToggleSwitch'
 import { useRolePalette } from '../../ui/useAppSettings'
-import {
-  CapSection,
-  ColorChip,
-  Field,
-  QuickToggle,
-  Section,
-  Select
-} from '../kit/settings/controls'
-import { autoOf } from '../kit/settings/plotHooks'
+import { CapRow, ColorChip, Field, QuickToggle, Section, Select } from '../kit/settings/controls'
+import { autoOf, useEffectColors } from '../kit/settings/plotHooks'
 import { PanelPaletteSelect, type PlotPanelProps, PlotSections } from '../kit/settings/plotSections'
 import { type PlotSettingsProps } from '../settings'
 
 /** The bubbles' look: what their size, colour and outline width show — |log₂FC| or −log₁₀ of the
  *  Compare's P/Q — the colour's palette (Automatic: the global FC one, or Purples), the
  *  outline's colour (Automatic: a darker shade of each bubble's own), and a ∗ on the significant. */
-export function BubbleLookSection({
+/** A bubble plot's colour rows (in General): what colours the bubbles (log₂FC or significance), and the
+ *  palette for it. */
+export function BubbleColourRows({
   config,
   update,
   statName
 }: Pick<PlotPanelProps<BubbleConfig>, 'config' | 'update'> & {
-  /** the Compare's significance column, named (P-value / Q-value) */
   statName: string
 }): ReactNode {
   const sig = `−log₁₀ ${statName === 'P-value' ? 'P' : 'Q'}`
-  const measures = (abs: boolean) => [
-    { value: 'fc' as const, label: abs ? '|log₂FC|' : 'log₂FC' },
+  const measures = [
+    { value: 'fc' as const, label: 'log₂FC' },
     { value: 'sig' as const, label: sig }
   ]
   const colorBy = config.colorBy ?? 'fc'
   const fcRole = useRolePalette('fcObject')
-  const outlineBy = config.outlineBy ?? 'none'
-  const outline = config.outlineColor && config.outlineColor !== AUTO ? config.outlineColor : AUTO
   return (
-    <Section title="Style">
-      <Field label="size">
-        <ToggleSwitch
-          label="Size"
-          value={config.sizeBy ?? 'fc'}
-          options={measures(true)}
-          onChange={(v) => update({ sizeBy: v })}
-        />
-      </Field>
-      <Field label="colour">
+    <>
+      <Field label="colour by">
         <ToggleSwitch
           label="Colour"
           value={colorBy}
-          options={measures(false)}
+          options={measures}
           onChange={(v) => update({ colorBy: v })}
         />
       </Field>
@@ -71,6 +55,36 @@ export function BubbleLookSection({
             auto={autoOf(BUBBLE_SIG_PALETTE)}
           />
         )}
+      </Field>
+    </>
+  )
+}
+export function BubbleLookSection({
+  config,
+  update,
+  statName
+}: Pick<PlotPanelProps<BubbleConfig>, 'config' | 'update'> & {
+  /** the Compare's significance column, named (P-value / Q-value) */
+  statName: string
+}): ReactNode {
+  const sig = `−log₁₀ ${statName === 'P-value' ? 'P' : 'Q'}`
+  const measures = (abs: boolean) => [
+    { value: 'fc' as const, label: abs ? '|log₂FC|' : 'log₂FC' },
+    { value: 'sig' as const, label: sig }
+  ]
+  const outlineBy = config.outlineBy ?? 'none'
+  const outline = config.outlineColor && config.outlineColor !== AUTO ? config.outlineColor : AUTO
+  // Automatic outline: a darker shade of each bubble's colour — the palette's colours, shown
+  const effect = useEffectColors(config.fcPalette)
+  return (
+    <Section title="Points">
+      <Field label="size">
+        <ToggleSwitch
+          label="Size"
+          value={config.sizeBy ?? 'fc'}
+          options={measures(true)}
+          onChange={(v) => update({ sizeBy: v })}
+        />
       </Field>
       <Field label="outline">
         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -93,6 +107,7 @@ export function BubbleLookSection({
               onPick={(v) => update({ outlineColor: v })}
               onAuto={() => update({ outlineColor: undefined })}
               autoLabel="Automatic (darker bubble colour)"
+              autoColor={`linear-gradient(135deg, ${effect.down}, ${effect.none}, ${effect.up})`}
             />
           )}
         </div>
@@ -128,68 +143,70 @@ export function BubblePanel({ config, update, edgeNodeId }: PlotPanelProps<Bubbl
   }, [avail.join('|'), config.axis])
   return (
     <PlotSections
-      show={
+      general={
         <>
-          <Section title="Bubble">
-            {axes.length > 1 && (
-              <Field
-                label="axis"
-                aside={<QuickToggle config={config} field="axis" update={update} />}
-              >
-                <Select
-                  value={config.axis}
-                  onChange={(v) => update({ axis: v as BubbleConfig['axis'] })}
-                  options={axes}
-                />
-              </Field>
-            )}
+          {axes.length > 1 && (
             <Field
-              label="rank"
-              info="What picks and orders the top genes: their log₂FC, or their significance (the Compare's own P or Q value, in the fold change's direction)."
-              aside={<QuickToggle config={config} field="rank" update={update} />}
+              label="axis"
+              aside={<QuickToggle config={config} field="axis" update={update} />}
             >
-              <ToggleSwitch
-                label="Rank"
-                value={config.rank ?? 'fc'}
-                options={[
-                  { value: 'fc', label: 'log₂FC' },
-                  { value: 'sig', label: statName }
-                ]}
-                onChange={(v) => update({ rank: v })}
+              <Select
+                value={config.axis}
+                onChange={(v) => update({ axis: v as BubbleConfig['axis'] })}
+                options={axes}
               />
             </Field>
-            <Field
-              label="over levels"
-              info="How a gene's rank score is taken over its doses or times: its peak (the level scoring furthest from 0, its direction kept), or its total (summed, so up and down levels cancel to the net direction)."
-              aside={<QuickToggle config={config} field="over" update={update} />}
-            >
-              <ToggleSwitch
-                label="Over levels"
-                value={over}
-                options={[
-                  { value: 'peak', label: 'peak' },
-                  { value: 'total', label: 'total' }
-                ]}
-                onChange={(v) => update({ over: v })}
-              />
-            </Field>
-          </Section>
-          <CapSection
-            title="Cap genes"
-            hint="Show only the strongest genes."
-            field="topGenes"
-            value={config.topGenes}
-            enabled={config.capEnabled}
-            update={update}
-            defaultValue={20}
-            rule={(n) =>
-              byFc
-                ? `Keep the top ${n} genes by largest ${over} |log₂FC|.`
-                : `Keep the top ${n} genes by ${over === 'peak' ? 'smallest' : 'largest total −log₁₀'} ${statName}.`
-            }
-          />
+          )}
+          <Field
+            label="rank"
+            info="What picks and orders the top genes: their log₂FC, or their significance (the Compare's own P or Q value, in the fold change's direction)."
+            aside={<QuickToggle config={config} field="rank" update={update} />}
+          >
+            <ToggleSwitch
+              label="Rank"
+              value={config.rank ?? 'fc'}
+              options={[
+                { value: 'fc', label: 'log₂FC' },
+                { value: 'sig', label: statName }
+              ]}
+              onChange={(v) => update({ rank: v })}
+            />
+          </Field>
+          <Field
+            label="over levels"
+            info="How a gene's rank score is taken over its doses or times: its peak (the level scoring furthest from 0, its direction kept), or its total (summed, so up and down levels cancel to the net direction)."
+            aside={<QuickToggle config={config} field="over" update={update} />}
+          >
+            <ToggleSwitch
+              label="Over levels"
+              value={over}
+              options={[
+                { value: 'peak', label: 'peak' },
+                { value: 'total', label: 'total' }
+              ]}
+              onChange={(v) => update({ over: v })}
+            />
+          </Field>
         </>
       }
+      genes={
+        <CapRow
+          label="Max genes"
+          info="Show only the strongest genes."
+          field="topGenes"
+          value={config.topGenes}
+          enabled={config.capEnabled}
+          update={update}
+          defaultValue={20}
+          rule={(n) =>
+            byFc
+              ? `Keep the top ${n} genes by largest ${over} |log₂FC|.`
+              : `Keep the top ${n} genes by ${over === 'peak' ? 'smallest' : 'largest total −log₁₀'} ${statName}.`
+          }
+          step={10}
+        />
+      }
+      colours={<BubbleColourRows config={config} update={update} statName={statName} />}
       marks={<BubbleLookSection config={config} update={update} statName={statName} />}
     />
   )

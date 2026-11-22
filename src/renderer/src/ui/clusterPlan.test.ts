@@ -226,3 +226,26 @@ describe('a custom condition declared numeric takes the ordered channels, as dos
     })
   })
 })
+
+describe("planAesthetics — colour as given (the cluster settings' colour picks)", () => {
+  const numeric = numericConds()
+  const all: ConditionKey[] = ['cell', 'cmpd', 'dose', 'time']
+  const withOv = (ov: Parameters<typeof planAesthetics>[3]) =>
+    planAesthetics(new Set(all), all, numeric, ov)
+  it('keeps a numeric colour pick on colour beside a categorical, the fade as shade', () => {
+    expect(
+      withOv({ color: ['cmpd', 'dose'], shade: 'time', arrow: 'none', colorAsGiven: true })
+    ).toMatchObject({ grouped: true, quals: ['cmpd', 'dose'], shadeKey: 'time', arrowKey: null })
+  })
+  it('two numerics picked for colour are both colours', () => {
+    expect(
+      withOv({ color: ['dose', 'time'], shade: 'none', arrow: 'none', colorAsGiven: true })
+    ).toMatchObject({ grouped: true, quals: ['dose', 'time'], shadeKey: null })
+  })
+  it('without it, a numeric colour pick still goes to the ordered channels', () => {
+    expect(withOv({ color: ['cmpd', 'dose'], arrow: 'none' })).toMatchObject({
+      grouped: false,
+      colorKey: 'cmpd'
+    })
+  })
+})

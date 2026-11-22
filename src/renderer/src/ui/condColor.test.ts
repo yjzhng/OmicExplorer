@@ -14,7 +14,7 @@ const opts = { base: '#6ea8fe', missing: '#888888' }
 
 describe('conditionColorer', () => {
   it('colours by the categorical condition, one palette colour per level', () => {
-    const c = conditionColorer(items, (m) => m, 'cell', undefined, opts)
+    const c = conditionColorer(items, (m) => m, ['cell'], undefined, opts)
     expect(c.on).toBe(true)
     expect(items.map(c.fill)).toEqual([
       CATEGORICAL[0],
@@ -26,14 +26,14 @@ describe('conditionColorer', () => {
   })
 
   it('shades the base by dose alone: low pale, high the base itself', () => {
-    const c = conditionColorer(items, (m) => m, undefined, 'dose', opts)
+    const c = conditionColorer(items, (m) => m, [], 'dose', opts)
     expect(c.fill(items[1])).toBe('rgb(110,168,254)')
     expect(c.fill(items[0])).not.toBe(c.fill(items[1]))
     expect(c.primary(items[0])).toBe(opts.base)
   })
 
   it('is off when the items carry neither condition', () => {
-    const c = conditionColorer([{ cell: '', dose: null }], (m) => m, 'cell', 'dose', opts)
+    const c = conditionColorer([{ cell: '', dose: null }], (m) => m, ['cell'], 'dose', opts)
     expect(c.on).toBe(false)
   })
 })

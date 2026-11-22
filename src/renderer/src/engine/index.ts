@@ -35,7 +35,7 @@ export {
   type BatchSpec,
   type BatchSummary
 } from './batch'
-export { sampleLabel } from './sampleLabel'
+export { sampleLabel, sampleName } from './sampleLabel'
 export {
   contextIndices,
   contextOf,
@@ -242,6 +242,11 @@ export {
   type StdMatrixSample,
   type SampleQc,
   buildSampleCorr,
+  buildSampleCorrAll,
+  arrangeSampleCorr,
+  CORR_METRICS,
+  corrMetricOf,
+  CORR_METRIC_LABEL,
   buildEnrichment,
   facetContextDims,
   responseColorDims,
@@ -257,7 +262,9 @@ export {
   showKindOf,
   SHOW_KINDS,
   sortSamples,
-  CLUSTER_COLOR
+  CLUSTER_COLOR,
+  GROUP_COLOR,
+  colorByCond
 } from './plotData'
 export type { ClusterMethod } from './embed'
 export { recommendedPlots } from './plotChoice'
@@ -273,6 +280,7 @@ export {
   RESERVED_COND_NAMES,
   condLabel,
   condsIn,
+  ctxLabel,
   customCond,
   customCondsIn,
   customSlug,
@@ -370,6 +378,8 @@ export type {
   EnrichSource,
   EnrichMethod,
   CorrData,
+  SampleCorrAll,
+  CorrMetric,
   FacetGroup,
   FacetKey,
   ContextRow,

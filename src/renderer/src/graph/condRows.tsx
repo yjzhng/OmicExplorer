@@ -24,6 +24,7 @@ import { VirtualTbody } from '../ui/VirtualRows'
 import { valuesOf } from './compareModel'
 import { DOCKED_CARD, DOCKED_WRAP, useDialogDock } from './dialogDock'
 import { AU, unitOf, type CondUnits } from './types'
+import type { ComparedLabels } from './contrastPair'
 import { selectorStyles as S } from './selectorParts'
 
 /** The window: a modal over the app, or docked into the form workflow's details column. */
@@ -305,12 +306,14 @@ export function Tag({
 }
 
 /** How a group of samples reads in the preview: its conditions in canonical order, one value each;
- *  a condition it merges several values of moves to a subtitle, "pooled: cond first–last (n)". */
+ *  a condition it merges several values of moves to a subtitle, "pooled: cond first–last (n)".
+ *  Rows of a Compare (`compared`) show their compared condition as the comparison: "A · X | Y". */
 export function SideCell({
   rows,
   conds,
   units,
-  numeric
+  numeric,
+  compared
 }: {
   rows: readonly StandardRow[]
   conds: readonly ConditionKey[]
@@ -318,16 +321,35 @@ export function SideCell({
   numeric: NumericConds
   /** the imported dose / time units, shown after their values ("10 µM", "8 h"); a.u. shows none */
   units?: CondUnits
+  /** the rows are a Compare's: their comparison labels (comparedLabelsOf) */
+  compared?: ComparedLabels | null
 }): ReactNode {
   const main: string[] = []
   const sub: string[] = []
+  // The comparisons these rows stand for, shown once where the first compared condition would be.
+  const labels = compared
+    ? [...new Set(rows.map((r) => compared.of(r)).filter((l): l is string => !!l))]
+    : []
+  let placed = false
   for (const c of orderConds(conds)) {
+    if (labels.length && compared!.conds.has(c)) {
+      if (placed) continue
+      placed = true
+      if (labels.length === 1) main.push(labels[0])
+      else sub.push(`${labels.length} comparisons`)
+      continue
+    }
     const vs = valuesOf(rows, c, numeric)
     if (!vs.length) continue
     const u = unitOf(units, c)
     const unit = u && u !== AU ? ` ${u}` : ''
     if (vs.length === 1) main.push(vs[0] + unit)
     else sub.push(`${condLabel(c)} ${vs[0]}–${vs[vs.length - 1]}${unit} (${vs.length})`)
+  }
+  // a compared condition the listed ones don't include (a curve's axis): the comparison still shows
+  if (labels.length && !placed) {
+    if (labels.length === 1) main.push(labels[0])
+    else sub.push(`${labels.length} comparisons`)
   }
   return (
     <div>

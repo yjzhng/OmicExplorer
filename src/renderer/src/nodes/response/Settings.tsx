@@ -17,6 +17,7 @@ import {
 } from '../../graph/types'
 import { useUpstreamFacts } from '../../graph/useUpstreamFacts'
 import { AUTO } from '../../ui/ColorPicker'
+import { OpacitySlider } from '../../ui/OpacitySlider'
 import { UI } from '../../ui/theme'
 import { OnOffSwitch, ToggleSwitch } from '../../ui/ToggleSwitch'
 import { useRolePalette } from '../../ui/useAppSettings'
@@ -28,10 +29,9 @@ import {
   Section,
   Select
 } from '../kit/settings/controls'
-import { autoOf, paletteLabel } from '../kit/settings/plotHooks'
+import { autoOf, paletteInk, paletteLabel } from '../kit/settings/plotHooks'
 import { PanelPaletteSelect, type PlotPanelProps, PlotSections } from '../kit/settings/plotSections'
 import { styles } from '../kit/settings/styles'
-import { responseLabel } from '../kit/variants'
 import { type PlotSettingsProps } from '../settings'
 import { RESPONSE_LOOK_FIELDS } from './model'
 
@@ -67,7 +67,16 @@ export function ResponsePanel({
   const valueScale = show !== 'line'
   const row: CSSProperties = { display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }
   const custom = RESPONSE_LOOK_FIELDS.some((f) => config[f] !== undefined)
-  const color = (field: string, value: string, what: string, auto: string): ReactNode => (
+  // What an Automatic chip shows: the palette the colours run along (the lines', or the value's)
+  const lineInk = paletteInk(look.linePalette ?? lineRole)
+  const valueInk = paletteInk(look.valuePalette ?? globalFc)
+  const color = (
+    field: string,
+    value: string,
+    what: string,
+    auto: string,
+    autoInk: string
+  ): ReactNode => (
     <ColorChip
       color={value}
       on
@@ -76,6 +85,7 @@ export function ResponsePanel({
       onPick={(c) => update({ [field]: c })}
       onAuto={() => update({ [field]: AUTO })}
       autoLabel={`Automatic (${auto})`}
+      autoColor={autoInk}
     />
   )
   const px = (field: string, value: number, title: string, min: number, max: number): ReactNode => (
@@ -90,23 +100,20 @@ export function ResponsePanel({
       />
     </div>
   )
-  const pct = (field: string, value: number, title: string): ReactNode => (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 3, width: 64, flex: '0 0 auto' }}>
-      <NumberInput
-        value={Math.round(value * 100)}
-        step={10}
-        min={5}
-        max={100}
-        title={title}
-        onChange={(v) => update({ [field]: Math.min(100, Math.max(5, Math.round(v))) / 100 })}
+  const pct = (field: string, value: number, what: string, ink?: string): ReactNode => (
+    <div style={{ flex: '1 1 auto', minWidth: 0 }}>
+      <OpacitySlider
+        label={what}
+        color={ink && ink !== AUTO ? ink : undefined}
+        value={value}
+        onChange={(v) => update({ [field]: v })}
       />
-      <span style={{ color: UI.textMuted, fontSize: 12 }}>%</span>
     </div>
   )
   return (
     <PlotSections
-      show={
-        <Section title={responseLabel([px0, py0])}>
+      general={
+        <>
           <Field label="view" aside={<QuickToggle config={config} field="dim" update={update} />}>
             <ToggleSwitch
               label="View"
@@ -151,6 +158,40 @@ export function ResponsePanel({
               />
             </Field>
           )}
+          <div style={styles.hint}>
+            {measured
+              ? show === 'line'
+                ? dim === '3d'
+                  ? slice === 'dose'
+                    ? 'Each dose’s time curve through its measured log₂FC, drawn at its dose in dose × time × effect.'
+                    : 'Each time point’s dose curve through its measured log₂FC, drawn at its time in dose × time × effect.'
+                  : 'Each time point’s dose curve through its measured log₂FC, coloured early → late.'
+                : show === 'surface'
+                  ? 'The measured log₂FC, joined by straight lines across dose and time.'
+                  : 'The measured log₂FC over dose × time.'
+              : show === 'line'
+                ? dim === '3d'
+                  ? joint
+                    ? slice === 'dose'
+                      ? 'Slices of the joint model at each dose: its time curves.'
+                      : 'Slices of the joint model at each time: its dose curves.'
+                    : slice === 'dose'
+                      ? 'Each dose’s 4PL time curve, drawn at its dose in dose × time × effect.'
+                      : 'Each time’s 4PL dose curve, drawn at its time in dose × time × effect.'
+                  : 'Each time point’s dose curve, coloured early → late.'
+                : show === 'surface'
+                  ? joint
+                    ? 'The joint model over dose × time, with the measured means.'
+                    : slice === 'dose'
+                      ? 'Each dose’s 4PL time curve, joined across doses, with the measured means.'
+                      : 'Each time’s 4PL dose curve, joined across times, with the measured means.'
+                  : 'The measured effect over dose × time.'}
+          </div>
+        </>
+      }
+      // the 3-D camera and the value axis' range: whole-plot rows of Axes and lines
+      axes={
+        <>
           {/* Perspective draws the far side smaller; orthographic keeps parallels parallel, so a
                 level lines up with its tick across the box. */}
           {dim === '3d' && (
@@ -189,82 +230,69 @@ export function ResponsePanel({
               ]}
             />
           </Field>
-          <div style={styles.hint}>
-            {measured
-              ? show === 'line'
-                ? dim === '3d'
-                  ? slice === 'dose'
-                    ? 'Each dose’s time curve through its measured log₂FC, drawn at its dose in dose × time × effect.'
-                    : 'Each time point’s dose curve through its measured log₂FC, drawn at its time in dose × time × effect.'
-                  : 'Each time point’s dose curve through its measured log₂FC, coloured early → late.'
-                : show === 'surface'
-                  ? 'The measured log₂FC, joined by straight lines across dose and time.'
-                  : 'The measured log₂FC over dose × time.'
-              : show === 'line'
-                ? dim === '3d'
-                  ? joint
-                    ? slice === 'dose'
-                      ? 'Slices of the joint model at each dose: its time curves.'
-                      : 'Slices of the joint model at each time: its dose curves.'
-                    : slice === 'dose'
-                      ? 'Each dose’s 4PL time curve, drawn at its dose in dose × time × effect.'
-                      : 'Each time’s 4PL dose curve, drawn at its time in dose × time × effect.'
-                  : 'Each time point’s dose curve, coloured early → late.'
-                : show === 'surface'
-                  ? joint
-                    ? 'The joint model over dose × time, with the measured means.'
-                    : slice === 'dose'
-                      ? 'Each dose’s 4PL time curve, joined across doses, with the measured means.'
-                      : 'Each time’s 4PL dose curve, joined across times, with the measured means.'
-                  : 'The measured effect over dose × time.'}
-          </div>
-        </Section>
+        </>
+      }
+      colours={
+        (lines && look.lineColor === AUTO) || valueScale ? (
+          <>
+            {/* The palette the automatic line colours run along, low → high (early → late). */}
+            {lines && look.lineColor === AUTO && (
+              <Field label="line palette">
+                <PanelPaletteSelect
+                  value={look.linePalette}
+                  onChange={(v) => update({ linePalette: v, linePaletteReverse: undefined })}
+                  auto={{
+                    palette: lineRole,
+                    label: `${paletteLabel(lineRole)} (${condLabel(linesPer)})`
+                  }}
+                />
+              </Field>
+            )}
+            {valueScale && (
+              <Field label="FC palette">
+                <PanelPaletteSelect
+                  value={look.valuePalette}
+                  onChange={(v) => update({ fcPalette: v, colorScale: undefined })}
+                  auto={autoOf(globalFc)}
+                />
+              </Field>
+            )}
+          </>
+        ) : null
       }
       marks={
-        <Section
-          title="Style"
-          subtitle={
-            custom ? (
-              <button
-                style={styles.resetBtn}
-                onClick={() =>
-                  update(Object.fromEntries(RESPONSE_LOOK_FIELDS.map((f) => [f, undefined])))
-                }
-                title="Restore the default look"
-              >
-                Reset
-              </button>
-            ) : null
-          }
-        >
-          {lines && (
-            <Field label="line">
-              <div style={row}>
-                {color(
-                  'lineColor',
-                  look.lineColor,
-                  'Line',
-                  `one per ${condLabel(linesPer)}, along the line palette`
-                )}
-                {px('lineWidth', look.lineWidth, 'Line width (px)', 0.5, 8)}
-                {pct('lineOpacity', look.lineOpacity, 'Line opacity (%)')}
-              </div>
-            </Field>
-          )}
-          {/* The palette the automatic line colours run along, low → high (early → late). */}
-          {lines && look.lineColor === AUTO && (
-            <Field label="line palette">
-              <PanelPaletteSelect
-                value={look.linePalette}
-                onChange={(v) => update({ linePalette: v, linePaletteReverse: undefined })}
-                auto={{
-                  palette: lineRole,
-                  label: `${paletteLabel(lineRole)} (${condLabel(linesPer)})`
-                }}
-              />
-            </Field>
-          )}
-          {show !== 'heatmap' && (
+        show !== 'heatmap' && (
+          <Section
+            title={lines ? 'Lines' : 'Surface'}
+            subtitle={
+              custom ? (
+                <button
+                  style={styles.resetBtn}
+                  onClick={() =>
+                    update(Object.fromEntries(RESPONSE_LOOK_FIELDS.map((f) => [f, undefined])))
+                  }
+                  title="Restore the default look"
+                >
+                  Reset
+                </button>
+              ) : null
+            }
+          >
+            {lines && (
+              <Field label="line">
+                <div style={row}>
+                  {color(
+                    'lineColor',
+                    look.lineColor,
+                    'Line',
+                    `one per ${condLabel(linesPer)}, along the line palette`,
+                    lineInk
+                  )}
+                  {px('lineWidth', look.lineWidth, 'Line width (px)', 0.5, 8)}
+                  {pct('lineOpacity', look.lineOpacity, 'Line', look.lineColor)}
+                </div>
+              </Field>
+            )}
             <Field label="points">
               <div style={row}>
                 <OnOffSwitch
@@ -281,7 +309,8 @@ export function ResponsePanel({
                       'pointColor',
                       look.pointColor,
                       'Point',
-                      show === 'surface' ? 'by log₂, on the FC palette' : 'the line colour'
+                      show === 'surface' ? 'by log₂, on the FC palette' : 'the line colour',
+                      show === 'surface' ? valueInk : lineInk
                     )}
                     {/* its own size in each view: the 3-D scene's points read smaller */}
                     {px(
@@ -291,77 +320,66 @@ export function ResponsePanel({
                       1,
                       16
                     )}
-                    {pct('pointOpacity', look.pointOpacity, 'Point opacity (%)')}
+                    {pct('pointOpacity', look.pointOpacity, 'Point', look.pointColor)}
                   </>
                 )}
               </div>
             </Field>
-          )}
-          {/* The measured values' error, as the Dose/time-response plot's focused view draws it. */}
-          {measured && lines && (
-            <Field label="error">
-              <div style={row}>
-                <OnOffSwitch
-                  on={look.errors}
-                  label="Error"
-                  title="The fold change's standard error"
-                  onChange={(v) => update({ errors: v })}
-                />
-                {look.errors && (
-                  <>
-                    <div style={{ width: 92, flex: '0 0 auto' }}>
-                      <Select
-                        value={look.errorStyle}
-                        onChange={(v) => update({ errorStyle: v as TdrConfig['errorStyle'] })}
-                        options={[
-                          { value: 'whisker', label: 'whisker' },
-                          { value: 'band', label: 'band' }
-                        ]}
-                      />
-                    </div>
-                    {color('errorColor', look.errorColor, 'Error', 'the line colour')}
-                    {pct('errorOpacity', look.errorOpacity, 'Error opacity (%)')}
-                  </>
-                )}
-              </div>
-            </Field>
-          )}
-          {show === 'surface' && (
-            <Field label="surface">
-              <div style={row}>
-                {pct('surfaceOpacity', look.surfaceOpacity, 'Surface opacity (%)')}
-              </div>
-            </Field>
-          )}
-          {show === 'surface' && (
-            <Field label="curves">
-              <div style={row}>
-                <OnOffSwitch
-                  on={look.curves}
-                  label="Curves"
-                  title="The surface's curves traced on it: a dose curve at each time, a time curve at each dose"
-                  onChange={(v) => update({ curves: v })}
-                />
-                {look.curves && (
-                  <>
-                    {color('curveColor', look.curveColor, 'Curve', 'the text colour')}
-                    {px('curveWidth', look.curveWidth, 'Curve width (px)', 0.5, 8)}
-                    {pct('curveOpacity', look.curveOpacity, 'Curve opacity (%)')}
-                  </>
-                )}
-              </div>
-            </Field>
-          )}
-          {valueScale && (
-            <Field label="FC palette">
-              <PanelPaletteSelect
-                value={look.valuePalette}
-                onChange={(v) => update({ fcPalette: v, colorScale: undefined })}
-                auto={autoOf(globalFc)}
-              />
-            </Field>
-          )}
-        </Section>
+            {/* The measured values' error, as the Dose/time-response plot's focused view draws it. */}
+            {measured && lines && (
+              <Field label="error">
+                <div style={row}>
+                  <OnOffSwitch
+                    on={look.errors}
+                    label="Error"
+                    title="The fold change's standard error"
+                    onChange={(v) => update({ errors: v })}
+                  />
+                  {look.errors && (
+                    <>
+                      <div style={{ width: 92, flex: '0 0 auto' }}>
+                        <Select
+                          value={look.errorStyle}
+                          onChange={(v) => update({ errorStyle: v as TdrConfig['errorStyle'] })}
+                          options={[
+                            { value: 'whisker', label: 'whisker' },
+                            { value: 'band', label: 'band' }
+                          ]}
+                        />
+                      </div>
+                      {color('errorColor', look.errorColor, 'Error', 'the line colour', lineInk)}
+                      {pct('errorOpacity', look.errorOpacity, 'Error', look.errorColor)}
+                    </>
+                  )}
+                </div>
+              </Field>
+            )}
+            {show === 'surface' && (
+              <Field label="surface">
+                <div style={row}>{pct('surfaceOpacity', look.surfaceOpacity, 'Surface')}</div>
+              </Field>
+            )}
+            {show === 'surface' && (
+              <Field label="curves">
+                <div style={row}>
+                  <OnOffSwitch
+                    on={look.curves}
+                    label="Curves"
+                    title="The surface's curves traced on it: a dose curve at each time, a time curve at each dose"
+                    onChange={(v) => update({ curves: v })}
+                  />
+                  {look.curves && (
+                    <>
+                      {color('curveColor', look.curveColor, 'Curve', 'the text colour', UI.text)}
+                      {px('curveWidth', look.curveWidth, 'Curve width (px)', 0.5, 8)}
+                      {pct('curveOpacity', look.curveOpacity, 'Curve', look.curveColor)}
+                    </>
+                  )}
+                </div>
+              </Field>
+            )}
+          </Section>
+        )
       }
     />
   )

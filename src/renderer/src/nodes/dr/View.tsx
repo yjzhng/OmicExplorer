@@ -76,8 +76,8 @@ export function drView(v: ViewContext): ReactNode {
     quantityUnit,
     contrastSource,
     repStd,
-    upCompareCfg,
-    paletteOf
+    paletteOf,
+    categoricalOf
   } = v
   const cfg = cfgSource as DRConfig
   // One Response plot per numeric condition: the axis is the tile's own, never switched — data
@@ -153,7 +153,8 @@ export function drView(v: ViewContext): ReactNode {
                       axisLabel={axisTitle(axis, units)}
                       gene={gene}
                       look={drLook(cfg, true)}
-                      effectColors={effectsOf(cfg, undefined)}
+                      effectColors={effectsOf(cfg)}
+                      categorical={categoricalOf(cfg)}
                       model={model}
                       scaleOf={drYScale(cfg, false) === 'global' ? asHolder(rows) : undefined}
                     />
@@ -243,6 +244,7 @@ export function drView(v: ViewContext): ReactNode {
                           : undefined
                       }
                       look={drLook(cfg)}
+                      categorical={categoricalOf(cfg)}
                     />
                   )}
                 </FacetedPlot>
@@ -358,7 +360,8 @@ export function drView(v: ViewContext): ReactNode {
                       gene={gene}
                       std={repStd ? stdLookupOf(repStd) : undefined}
                       look={drLook(cfg, drCurveFit)}
-                      effectColors={effectsOf(cfg, upCompareCfg)}
+                      effectColors={effectsOf(cfg)}
+                      categorical={categoricalOf(cfg)}
                       model={model}
                       // Global: one y scale for the WHOLE Compare, so paging genes (or switching
                       // facets) doesn't rescale. Per gene (default): each gene's own range.
@@ -403,7 +406,8 @@ export function drView(v: ViewContext): ReactNode {
                         axisLabel={axisTitle(axis, units)}
                         std={repStd ? stdLookupOf(repStd) : undefined}
                         look={drLook(cfg, drCurveFit)}
-                        effectColors={effectsOf(cfg, upCompareCfg)}
+                        effectColors={effectsOf(cfg)}
+                        categorical={categoricalOf(cfg)}
                         model={model}
                         scaleOf={drYScale(cfg, false) === 'global' ? upstream.cmp : undefined}
                       />
@@ -441,6 +445,7 @@ export function drView(v: ViewContext): ReactNode {
                       axisLabel={axisTitle(dr.axis, units)}
                       look={drLook(cfg, drCurveFit)}
                       palette={paletteOf(cfg, 'fcObject')}
+                      categorical={categoricalOf(cfg)}
                     />
                   )}
                 </Built>

@@ -2,6 +2,7 @@ import type { ReactNode } from 'react'
 import { STRING_OUTLINE, type StringConfig } from '../../graph/types'
 import { AUTO } from '../../ui/ColorPicker'
 import { STRING_LEVEL_ORDER, stringLevelScore } from '../../ui/stringModel'
+import { UI } from '../../ui/theme'
 import {
   Checkbox,
   ColorChip,
@@ -11,7 +12,7 @@ import {
   Section,
   Select
 } from '../kit/settings/controls'
-import { ColourSection, type PlotPanelProps, PlotSections } from '../kit/settings/plotSections'
+import { ColourRows, type PlotPanelProps, PlotSections } from '../kit/settings/plotSections'
 import { styles } from '../kit/settings/styles'
 import { type PlotSettingsProps } from '../settings'
 
@@ -19,7 +20,7 @@ import { type PlotSettingsProps } from '../settings'
  *  The same fields as the tile's quick switch bars, so either place edits the one config. */
 export function StringPanel({ config, update }: PlotPanelProps<StringConfig>) {
   return (
-    <Section title="STRING network">
+    <>
       <Field
         label="confidence"
         aside={<QuickToggle config={config} field="confidence" update={update} />}
@@ -36,24 +37,6 @@ export function StringPanel({ config, update }: PlotPanelProps<StringConfig>) {
           ]}
         />
       </Field>
-      <Field
-        label="Max genes"
-        aside={<QuickToggle config={config} field="maxGenes" update={update} />}
-      >
-        <div style={{ width: 90 }}>
-          <NumberInput
-            value={config.maxGenes > 0 ? config.maxGenes : 40}
-            step={10}
-            min={1}
-            onChange={(v) => update({ maxGenes: Math.max(1, Math.round(v)) })}
-          />
-        </div>
-      </Field>
-      <div style={styles.hint}>
-        Draw at most {config.maxGenes > 0 ? config.maxGenes : 40} nodes — query genes first (by
-        |log₂FC|), then any first-shell interactors, each by how connected they are. Unconnected
-        genes are never drawn.
-      </div>
       <Field
         label="interactors"
         aside={<QuickToggle config={config} field="addInteractors" update={update} />}
@@ -77,11 +60,39 @@ export function StringPanel({ config, update }: PlotPanelProps<StringConfig>) {
         </div>
       </Field>
       <div style={styles.hint}>NCBI taxon override (e.g. 9606 human); 0 = detected species.</div>
+    </>
+  )
+}
+/** How many nodes are drawn (General's genes rows). */
+function StringGenes({ config, update }: PlotPanelProps<StringConfig>): ReactNode {
+  const n = config.maxGenes > 0 ? config.maxGenes : 40
+  return (
+    <Field
+      label="Max genes"
+      aside={<QuickToggle config={config} field="maxGenes" update={update} />}
+      info={`Draw at most ${n} nodes — query genes first (by |log₂FC|), then any first-shell interactors, each by how connected they are. Unconnected genes are never drawn.`}
+    >
+      <div style={{ width: 90 }}>
+        <NumberInput
+          value={config.maxGenes > 0 ? config.maxGenes : 40}
+          step={10}
+          min={1}
+          onChange={(v) => update({ maxGenes: Math.max(1, Math.round(v)) })}
+        />
+      </div>
+    </Field>
+  )
+}
+/** The nodes' look: each kind's outline (the marks). */
+function StringNodes({ config, update }: PlotPanelProps<StringConfig>): ReactNode {
+  return (
+    <Section title="Nodes">
       <StringOutlineField
         label="query outline"
         width={config.queryOutline}
         color={config.queryOutlineColor}
         auto="black"
+        autoInk="#000000"
         onWidth={(v) => update({ queryOutline: v })}
         onColor={(c) => update({ queryOutlineColor: c })}
       />
@@ -90,6 +101,7 @@ export function StringPanel({ config, update }: PlotPanelProps<StringConfig>) {
         width={config.interactorOutline}
         color={config.interactorOutlineColor}
         auto="the background"
+        autoInk={UI.panel}
         onWidth={(v) => update({ interactorOutline: v })}
         onColor={(c) => update({ interactorOutlineColor: c })}
       />
@@ -102,6 +114,7 @@ export function StringOutlineField({
   width,
   color,
   auto,
+  autoInk,
   onWidth,
   onColor
 }: {
@@ -109,6 +122,8 @@ export function StringOutlineField({
   width: number | undefined
   color: string | undefined
   auto: string
+  /** the colour Automatic resolves to, for the chip */
+  autoInk?: string
   onWidth: (v: number) => void
   onColor: (c: string) => void
 }): ReactNode {
@@ -134,6 +149,7 @@ export function StringOutlineField({
           onPick={onColor}
           onAuto={() => onColor(AUTO)}
           autoLabel={`Automatic (${auto})`}
+          autoColor={autoInk}
         />
       </div>
     </Field>
@@ -144,8 +160,10 @@ export function StringOutlineField({
 export function Settings({ config, ...props }: PlotSettingsProps): ReactNode {
   return (
     <PlotSections
-      show={<StringPanel config={config as StringConfig} {...props} />}
-      colours={<ColourSection config={config as StringConfig} {...props} />}
+      general={<StringPanel config={config as StringConfig} {...props} />}
+      genes={<StringGenes config={config as StringConfig} {...props} />}
+      colours={<ColourRows config={config as StringConfig} {...props} />}
+      marks={<StringNodes config={config as StringConfig} {...props} />}
     />
   )
 }

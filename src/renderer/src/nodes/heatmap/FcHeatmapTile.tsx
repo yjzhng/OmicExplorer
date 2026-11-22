@@ -10,7 +10,8 @@ import {
   clusterRowTree,
   type CompareResultRow,
   type FcHeatmapData,
-  type LeafOrder
+  type LeafOrder,
+  type NumericConds
 } from '../../engine'
 import { engineUi } from '../../engine/client'
 import type { HeatmapLinkage } from '../../graph/types'
@@ -18,6 +19,7 @@ import { FcHeatmapView, type ClusterSide } from './FcHeatmapView'
 import type { PaletteRef } from '../../ui/palettes'
 import { Spinner } from '../../ui/Spinner'
 import { CATEGORICAL } from '../../ui/theme'
+import { useRolePalette } from '../../ui/useAppSettings'
 
 /** Built heatmaps by rows, display map and options key, app-wide: a remount (a tab, facet or
  *  show switch back) shows the heatmap at once rather than clustering again. */
@@ -46,6 +48,7 @@ export function FcHeatmapTile({
   palette,
   linkage,
   leafOrder,
+  colPattern = false,
   geneMax = 0,
   geneModules = false,
   geneTree = false,
@@ -54,7 +57,9 @@ export function FcHeatmapTile({
   condModules = false,
   condTree = false,
   condColors = CATEGORICAL,
-  unsigned = false
+  unsigned = false,
+  condBar = false,
+  numeric
 }: {
   rows: CompareResultRow[]
   /** the rows are a two-way ANOVA's terms (unsigned effect sizes; see FcHeatmapView) */
@@ -69,6 +74,8 @@ export function FcHeatmapTile({
   /** clustering linkage and leaf order (see buildFcHeatmap) */
   linkage?: HeatmapLinkage
   leafOrder?: LeafOrder
+  /** cluster the comparison columns on the pattern of their changes alone (see buildFcHeatmap) */
+  colPattern?: boolean
   /** the genes' clustering look: the tree cut into at most `geneMax` clusters, a bar per cluster
    *  (modules), the tree, the bars' colours (see ClusterSide) */
   geneMax?: number
@@ -80,9 +87,20 @@ export function FcHeatmapTile({
   condModules?: boolean
   condTree?: boolean
   condColors?: readonly string[]
+  /** the condition tracks along the comparison columns */
+  condBar?: boolean
+  /** the dataset's numeric conditions: their tracks run along a level palette */
+  numeric?: NumericConds
 }) {
+  // The tracks' level palettes: the dose and time roles' global ones, as Clean data's heatmap.
+  const dosePalette = useRolePalette('dose')
+  const timePalette = useRolePalette('time')
+  const levels = useMemo(
+    () => (numeric ? { dose: dosePalette, time: timePalette, numeric } : undefined),
+    [dosePalette, timePalette, numeric]
+  )
   const focusKey = focus.join(',')
-  const key = `${maxGenes}\u0000${focusKey}\u0000${linkage ?? ''}\u0000${leafOrder ?? ''}`
+  const key = `${maxGenes}\u0000${focusKey}\u0000${linkage ?? ''}\u0000${leafOrder ?? ''}\u0000${colPattern}`
   const cached = cacheFor(rows, displayMap).get(key)
   // the last one built here — shown, while a new one clusters, until it's in
   const [last, setLast] = useState<FcHeatmapData | null>(null)
@@ -99,7 +117,8 @@ export function FcHeatmapTile({
       focus,
       differentialOnly: true,
       linkage,
-      leafOrder
+      leafOrder,
+      colPattern
     })
     const step = (r: ReturnType<typeof gen.next>): void => {
       if (r.done) {
@@ -120,7 +139,7 @@ export function FcHeatmapTile({
     return () => {
       live = false
     }
-    // key stands in for maxGenes, focus's contents, linkage and leafOrder
+    // key stands in for maxGenes, focus's contents, linkage, leafOrder and colPattern
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rows, displayMap, key])
   // Each side's look, kept while its settings hold (so the view's layout isn't redone per render).
@@ -149,6 +168,8 @@ export function FcHeatmapTile({
       geneSide={geneSide}
       condSide={condSide}
       unsigned={unsigned}
+      condBar={condBar}
+      levels={levels}
     />
   )
 }

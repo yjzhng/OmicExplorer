@@ -6,7 +6,7 @@ import {
   type QcConfig,
   SAMPLE_ORDERS,
   primaryColorLevels,
-  qcColorConds,
+  qcColoring,
   sampleOrderOf
 } from '../../graph/types'
 import { Empty } from '../kit/views/common'
@@ -79,7 +79,7 @@ export function qcView(v: ViewContext): ReactNode {
             plot={plot}
             scale={quantityScale}
             color={cfg.color}
-            colorConds={qcColorConds(
+            coloring={qcColoring(
               cfg,
               upstream.std.activeConditions,
               primaryColorLevels(upstream.std),

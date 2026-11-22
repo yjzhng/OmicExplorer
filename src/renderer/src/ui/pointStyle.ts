@@ -9,8 +9,8 @@ import { CATEGORICAL, EFFECT_COLOR } from './theme'
  *  is the plot-wide one with this group's own overrides on top. */
 export interface ResolvedGroup
   extends
-    Required<Omit<GroupStyle, 'highlight' | 'outlineColor' | 'labelColor'>>,
-    Pick<GroupStyle, 'outlineColor'> {
+    Required<Omit<GroupStyle, 'highlight' | 'outlineColor' | 'labelColor' | 'labelSize'>>,
+    Pick<GroupStyle, 'outlineColor' | 'labelSize'> {
   key: string
   name: string
   highlight: ResolvedHighlight
@@ -41,16 +41,32 @@ export const DEFAULT_HIGHLIGHT: ResolvedHighlight = {
   labelSize: 10
 }
 
-/** The point plots' highlight defaults: the shared ones, the emphasised gene's name in its point's
- *  colour (labelColor AUTO). Any other chart's overlay names it in the theme text (no labelColor). */
-const POINT_HIGHLIGHT: ResolvedHighlight = { ...DEFAULT_HIGHLIGHT, labelColor: AUTO }
+/** The point plots' highlight defaults: the shared ones, but a thinner selected outline (0.5, as
+ *  a significant dot's), the rest faded to 20%, and the emphasised gene's name in its point's colour
+ *  (labelColor AUTO). Any other chart's overlay keeps the shared look and names it in the theme
+ *  text (no labelColor). */
+const POINT_HIGHLIGHT: ResolvedHighlight = {
+  ...DEFAULT_HIGHLIGHT,
+  ring: 0.5,
+  dim: 0.2,
+  labelColor: AUTO
+}
+
+/** A point plot's default selected dot, px: 9 — above the plain dots' 7 / 8; a group drawn at 9 or
+ *  more is selected 1 px larger than its own dot. */
+export const SELECTED_SIZE = 9
 
 /** A point's default outline width, px — every group of every point plot except 'none'. */
 export const DEFAULT_OUTLINE = 0.5
 
-/** The non-significant ('none') group's default opacity — faded behind the hits, and drawn
- *  without an outline. */
+/** The point plots' default dots, px: not significant ('none') 7, significant 8. */
+const DOT = { none: 7, sig: 8 }
+
+/** The non-significant ('none') group's default opacity; it's drawn without an outline. */
 const NONE_OPACITY = 0.5
+
+/** A significant group's default opacity. */
+const SIG_OPACITY = 0.8
 
 // Marginal (independent) contrasts label each significant gene by which quadrant it falls in —
 // the composite "<FC1 dir>, <FC2 dir>" effect, where an em-dash means that axis wasn't itself
@@ -141,11 +157,11 @@ export function defaultGroups(
 ): ResolvedGroup[] {
   switch (kind) {
     case 'volcano':
-      return effectGroups({ none: 7, sig: 7 }, 0.85, names, colors)
+      return effectGroups(DOT, SIG_OPACITY, names, colors)
     case 'ma':
-      return effectGroups({ none: 6, sig: 6 }, 0.8, names, colors)
+      return effectGroups(DOT, SIG_OPACITY, names, colors)
     case 'potency':
-      return effectGroups({ none: 6, sig: 8 }, 0.85, names, colors)
+      return effectGroups(DOT, SIG_OPACITY, names, colors)
     case 'curveMad':
       // The fit-residual QC's residuals: the control samples' and the dosed ones' (small and faint —
       // there's one per gene per sample).
@@ -175,13 +191,13 @@ export function defaultGroups(
         }
       ]
     case 'scatter':
-      return effectGroups({ none: 6, sig: 8 }, 0.85, names, colors)
+      return effectGroups(DOT, SIG_OPACITY, names, colors)
     case 'scatterQuad':
       return [
         {
           key: 'none',
           name: 'none',
-          size: 6,
+          size: DOT.none,
           opacity: NONE_OPACITY,
           color: colors?.none ?? EFFECT_COLOR.none,
           label: false,
@@ -192,8 +208,8 @@ export function defaultGroups(
         ...QUAD_ORDER.map((k) => ({
           key: k,
           name: k,
-          size: 8,
-          opacity: 0.85,
+          size: DOT.sig,
+          opacity: SIG_OPACITY,
           color: QUAD_COLORS[k],
           label: true,
           legend: true,
@@ -207,13 +223,16 @@ export function defaultGroups(
 /** A group's look with the config's overrides applied over its default. */
 export function resolveGroup(style: PointStyle | undefined, def: ResolvedGroup): ResolvedGroup {
   const o = style?.groups?.[def.key]
-  const highlight = resolveHighlight(style, o?.highlight)
+  const size = o?.size ?? def.size
+  // Selected: the size set, else SELECTED_SIZE — or 1 px over a dot already that large.
+  const hl = resolveHighlight(style, o?.highlight)
+  const highlight = hl.size != null ? hl : { ...hl, size: Math.max(SELECTED_SIZE, size + 1) }
   if (!o) return { ...def, highlight }
   const color = o.color && o.color !== AUTO ? o.color : def.color
   return {
     ...def,
     name: o.name?.trim() || def.name,
-    size: o.size ?? def.size,
+    size,
     opacity: o.opacity ?? def.opacity,
     // Automatic (unset, or AUTO) follows the default — for an effect group, the upstream's colour.
     color,
@@ -222,6 +241,7 @@ export function resolveGroup(style: PointStyle | undefined, def: ResolvedGroup):
     label: o.label ?? def.label,
     // Automatic (unset, or AUTO) follows the marker colour (labelColorOf).
     labelColor: o.labelColor && o.labelColor !== AUTO ? o.labelColor : undefined,
+    labelSize: o.labelSize,
     legend: o.legend ?? def.legend,
     highlight
   }
@@ -246,7 +266,7 @@ export function resolveHighlight(
   const h = style?.highlight
   if (!h && !group) return POINT_HIGHLIGHT
   const pick = <K extends keyof ResolvedHighlight>(k: K): ResolvedHighlight[K] =>
-    (group?.[k] as ResolvedHighlight[K]) ?? (h?.[k] as ResolvedHighlight[K]) ?? DEFAULT_HIGHLIGHT[k]
+    (group?.[k] as ResolvedHighlight[K]) ?? (h?.[k] as ResolvedHighlight[K]) ?? POINT_HIGHLIGHT[k]
   return {
     size: group?.size ?? h?.size,
     bump: pick('bump'),

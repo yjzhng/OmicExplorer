@@ -14,6 +14,7 @@
 import { useMemo } from 'react'
 
 import {
+  condLabel,
   curveMetrics,
   curvePointsFromStd,
   curveResidualMad,
@@ -44,7 +45,16 @@ import { condLine, tooltip, valueLine } from '../../ui/condTooltip'
 import { useAxisTitlePickers } from '../../ui/useAxisTitlePickers'
 import { PlotlyChart } from '../../ui/PlotlyChart'
 import { legendOn, resolveGroups, resolveHighlight, type ResolvedGroup } from '../../ui/pointStyle'
-import { axisBase, CATEGORICAL, guideLine, PALETTES, PLOT_TEXT, plotBase } from '../../ui/theme'
+import {
+  axisBase,
+  CATEGORICAL,
+  guideLine,
+  guideLook,
+  guideShapes,
+  PALETTES,
+  PLOT_TEXT,
+  plotBase
+} from '../../ui/theme'
 import { useUiTheme } from '../../ui/useUiTheme'
 
 /** The share of each dose's residuals marked as outlier dots: the most extreme by |residual|
@@ -157,7 +167,8 @@ export function CurveMadView({
   const { data, layout, missing } = useMemo(() => {
     const p = PALETTES[mode]
     const comparisons = [...new Set(curves.map((r) => r.comparison))]
-    const axis = curves.find((r) => r.curve)?.curve?.axis ?? 'dose'
+    // the curve axis's display name (a custom condition by its slug): titles and tooltips only
+    const axis = condLabel(curves.find((r) => r.curve)?.curve?.axis ?? 'dose')
     // the run's scale: every curve of a run shares it
     const sc: StoredScale = curves.find((r) => r.curve)?.curve ?? {}
     const curvesOf = (c: string) =>
@@ -760,6 +771,8 @@ function normalityCheck(
 ): Built {
   const many = comparisons.length > 1
   const g = resolveGroups(style, 'curveMad').get('dose')!
+  // the y = x reference: the plot's threshold lines (Axes and lines)
+  const guide = guideLook(style)
   const K = 400
   const data: Record<string, unknown>[] = []
   const all: number[] = []
@@ -827,18 +840,21 @@ function normalityCheck(
         ...(r ? { range: r, autorange: false } : {})
       },
       shapes: r
-        ? [
-            {
-              type: 'line',
-              xref: 'x',
-              yref: 'y',
-              x0: r[0],
-              y0: r[0],
-              x1: r[1],
-              y1: r[1],
-              line: guideLine(p, style?.guideWidth)
-            }
-          ]
+        ? guideShapes(
+            [
+              {
+                type: 'line',
+                xref: 'x',
+                yref: 'y',
+                x0: r[0],
+                y0: r[0],
+                x1: r[1],
+                y1: r[1],
+                line: guideLine(p, guide.width, guide.dash)
+              }
+            ],
+            guide.show
+          )
         : []
     }
   }

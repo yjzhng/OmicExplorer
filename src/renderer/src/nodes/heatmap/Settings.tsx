@@ -3,9 +3,11 @@ import type { LeafOrder } from '../../engine'
 import { useGraph } from '../../graph/store'
 import {
   DENDRO_CLADES_DEFAULT,
+  HEATMAP_COND_DISTANCES,
   HEATMAP_LEAF_ORDERS,
   HEATMAP_LINKAGES,
   heatmapCondBar,
+  type HeatmapCondDistance,
   type HeatmapConfig,
   type HeatmapLinkage,
   isComparisonKind,
@@ -17,7 +19,7 @@ import { toPaletteRef } from '../../ui/palettes'
 import { OnOffSwitch } from '../../ui/ToggleSwitch'
 import { useRolePalette } from '../../ui/useAppSettings'
 import {
-  CapSection,
+  CapRow,
   Field,
   NumberInput,
   QuickToggle,
@@ -28,7 +30,7 @@ import {
 import { autoOf } from '../kit/settings/plotHooks'
 import {
   CategoricalSelect,
-  ColourSection,
+  ColourRows,
   PanelPaletteSelect,
   type PlotPanelProps,
   PlotSections
@@ -39,7 +41,7 @@ import { type PlotSettingsProps } from '../settings'
 /** A heatmap's palette follows what it draws: from a Compare, log₂FC on the fold-change palette
  *  (Automatic = the global one); from Clean data, abundance on its value palette (Automatic =
  *  viridis). */
-export function HeatmapColourSection(props: PlotPanelProps<HeatmapConfig>): ReactNode {
+export function HeatmapColourRows(props: PlotPanelProps<HeatmapConfig>): ReactNode {
   // Decided as the plot decides (PanelBody: the upstream RESULT is a comparison's — a Compare's or
   // a Curve fit's), so the panel's Automatic always names what's drawn; the upstream node's kind
   // covers a tile not yet run.
@@ -47,9 +49,28 @@ export function HeatmapColourSection(props: PlotPanelProps<HeatmapConfig>): Reac
   const { kind: upKind, result } = useUpstreamFacts(upId)
   const fromCompare = result ? result.kind === 'compare' : isComparisonKind(upKind)
   const dataRole = useRolePalette('data')
-  if (fromCompare) return <ColourSection {...props} role="fc" />
+  // From a Compare: the modules' palettes too (the clusters' coloured bars).
+  if (fromCompare)
+    return (
+      <ColourRows {...props} role="fc">
+        <Field label="gene modules">
+          <CategoricalSelect
+            config={props.config as unknown as Record<string, unknown>}
+            update={props.update}
+            field="geneCategorical"
+          />
+        </Field>
+        <Field label="condition modules">
+          <CategoricalSelect
+            config={props.config as unknown as Record<string, unknown>}
+            update={props.update}
+            field="condCategorical"
+          />
+        </Field>
+      </ColourRows>
+    )
   return (
-    <Section title="Colour">
+    <>
       <Field label="palette">
         <PanelPaletteSelect
           value={toPaletteRef(props.config.valuePalette)}
@@ -57,12 +78,13 @@ export function HeatmapColourSection(props: PlotPanelProps<HeatmapConfig>): Reac
           auto={autoOf(dataRole)}
         />
       </Field>
-    </Section>
+    </>
   )
 }
 /** One side of a fold-change heatmap's clustering (its genes, or its conditions): a caption, and
- *  under it, indented, the most clusters, the modules (a coloured bar per cluster), the tree, and
- *  the bars' palette. `fields` names the config keys the side's settings live in. */
+ *  under it, indented, the most clusters, the modules (a coloured bar per cluster) and the tree
+ *  (the bars' palette is in General). `fields` names the config keys the side's settings
+ *  live in. */
 export function ClusterSideFields({
   caption,
   noun,
@@ -76,7 +98,6 @@ export function ClusterSideFields({
     max: keyof HeatmapConfig
     modules: keyof HeatmapConfig
     tree: keyof HeatmapConfig
-    palette: keyof HeatmapConfig
   }
 }): ReactNode {
   const cfg = config as unknown as Record<string, unknown>
@@ -120,21 +141,93 @@ export function ClusterSideFields({
             onChange={(v) => update({ [fields.tree]: v })}
           />
         </Field>
-        <Field label="palette">
-          <CategoricalSelect config={cfg} update={update} field={fields.palette} />
-        </Field>
       </div>
     </>
   )
 }
-export function HeatmapPanel({ config, update, edgeNodeId }: PlotPanelProps<HeatmapConfig>) {
-  // The gene cap is a fold-change concept (top-N differential genes); the intensity heatmap
-  // always shows the full proteome, on Clean data's own log-transform scale (no setting here).
-  // Gate the cap on the upstream kind; an unwired heatmap offers it.
-  const upstreamKind = useGraph((s) => {
+/** A fold-change heatmap's clustering — an analysis of the data before it's drawn, so a section of
+ *  the Statistic slot; a Clean-data heatmap has none (its samples keep their order). */
+function HeatmapClustering({ config, update, edgeNodeId }: PlotPanelProps<HeatmapConfig>) {
+  const upstreamKind = useHeatmapUpstream(edgeNodeId)
+  if (upstreamKind !== 'compare') return null
+  return (
+    <Section
+      title="Clustering"
+      info="Hierarchical clustering of the genes and the comparison columns, on the euclidean distance between their log₂FC (capped at the colour limit) — for the columns, optionally on the pattern of their changes alone."
+    >
+      <Field
+        label="linkage"
+        aside={<QuickToggle config={config} field="linkage" update={update} kind="heatmap" />}
+      >
+        <Select
+          value={config.linkage ?? 'ward'}
+          onChange={(v) => update({ linkage: v as HeatmapLinkage })}
+          options={Object.entries(HEATMAP_LINKAGES).map(([value, label]) => ({ value, label }))}
+        />
+      </Field>
+      <Field
+        label="leaf order"
+        aside={<QuickToggle config={config} field="leafOrder" update={update} kind="heatmap" />}
+      >
+        <Select
+          value={config.leafOrder ?? 'mean'}
+          onChange={(v) => update({ leafOrder: v as LeafOrder })}
+          options={Object.entries(HEATMAP_LEAF_ORDERS).map(([value, label]) => ({
+            value,
+            label
+          }))}
+        />
+      </Field>
+      <Field
+        label="conditions by"
+        info="What makes two comparison columns alike. Size and pattern: the same genes changing by similar amounts (a column whose changes are twice another's sits apart from it). Pattern only: the same genes moving the same way, however far — each column's changes scaled to the same spread first, so the distance ranks pairs as 1 − Pearson r. The genes are always clustered on size and pattern."
+        aside={<QuickToggle config={config} field="condDistance" update={update} kind="heatmap" />}
+      >
+        <Select
+          value={config.condDistance ?? 'size'}
+          onChange={(v) => update({ condDistance: v as HeatmapCondDistance })}
+          options={Object.entries(HEATMAP_COND_DISTANCES).map(([value, label]) => ({
+            value,
+            label
+          }))}
+        />
+      </Field>
+      <ClusterSideFields
+        caption="gene cluster"
+        noun="genes"
+        fields={{
+          max: 'dendroClades',
+          modules: 'geneModules',
+          tree: 'geneTree'
+        }}
+        config={config}
+        update={update}
+      />
+      <ClusterSideFields
+        caption="condition cluster"
+        noun="comparisons"
+        fields={{
+          max: 'dendroColClades',
+          modules: 'condModules',
+          tree: 'condTree'
+        }}
+        config={config}
+        update={update}
+      />
+    </Section>
+  )
+}
+/** The upstream step's kind (undefined unwired). */
+function useHeatmapUpstream(edgeNodeId: string) {
+  return useGraph((s) => {
     const up = s.nodes.find((n) => n.id === s.edges.find((e) => e.target === edgeNodeId)?.source)
     return up && isStep(up) ? up.data.kind : undefined
   })
+}
+/** General's rows: the condition bar (along a Clean-data heatmap's samples, a fold-change one's
+ *  comparison columns), and a Clean-data heatmap's sample order. */
+export function HeatmapPanel({ config, update, edgeNodeId }: PlotPanelProps<HeatmapConfig>) {
+  const upstreamKind = useHeatmapUpstream(edgeNodeId)
   // The Clean data's primary colour condition's levels, for the condition bar's default (on while
   // they fit the palette). A number, so the selector stays stable.
   const condLevels = useGraph((s) => {
@@ -142,92 +235,45 @@ export function HeatmapPanel({ config, update, edgeNodeId }: PlotPanelProps<Heat
     const r = upId ? s.results[upId] : undefined
     return r?.kind === 'standardize' ? primaryColorLevels(r.std) : 0
   })
+  const fc = upstreamKind === 'compare'
   return (
     <>
-      {upstreamKind !== 'standardize' && (
-        <CapSection
-          title="Cap genes"
-          hint="Show only the strongest differential genes."
-          field="maxGenes"
-          value={config.maxGenes}
-          enabled={config.capEnabled}
-          update={update}
-          defaultValue={50}
-          rule={(n) => `Keep the top ${n} differential genes by largest |log₂FC|.`}
+      <Field
+        label="Show conditions"
+        aside={<QuickToggle config={config} field="condBar" update={update} />}
+      >
+        <OnOffSwitch
+          // a fold-change heatmap's tracks are on unless switched off
+          on={fc ? (config.condBar ?? true) : heatmapCondBar(config, condLevels)}
+          label="Show conditions"
+          title={
+            fc
+              ? 'A coloured track per condition along the comparisons: the comparison, then each condition that tells them apart'
+              : 'A coloured track per condition along the samples'
+          }
+          onChange={(v) => update({ condBar: v })}
         />
-      )}
-      {upstreamKind === 'compare' && (
-        <Section
-          title="Clustering"
-          info="Hierarchical clustering of the genes and the comparison columns, on the euclidean distance between their log₂FC (capped at the colour limit)."
-        >
-          <Field
-            label="linkage"
-            aside={<QuickToggle config={config} field="linkage" update={update} kind="heatmap" />}
-          >
-            <Select
-              value={config.linkage ?? 'ward'}
-              onChange={(v) => update({ linkage: v as HeatmapLinkage })}
-              options={Object.entries(HEATMAP_LINKAGES).map(([value, label]) => ({ value, label }))}
-            />
-          </Field>
-          <Field
-            label="leaf order"
-            aside={<QuickToggle config={config} field="leafOrder" update={update} kind="heatmap" />}
-          >
-            <Select
-              value={config.leafOrder ?? 'mean'}
-              onChange={(v) => update({ leafOrder: v as LeafOrder })}
-              options={Object.entries(HEATMAP_LEAF_ORDERS).map(([value, label]) => ({
-                value,
-                label
-              }))}
-            />
-          </Field>
-          <ClusterSideFields
-            caption="gene cluster"
-            noun="genes"
-            fields={{
-              max: 'dendroClades',
-              modules: 'geneModules',
-              tree: 'geneTree',
-              palette: 'geneCategorical'
-            }}
-            config={config}
-            update={update}
-          />
-          <ClusterSideFields
-            caption="condition cluster"
-            noun="comparisons"
-            fields={{
-              max: 'dendroColClades',
-              modules: 'condModules',
-              tree: 'condTree',
-              palette: 'condCategorical'
-            }}
-            config={config}
-            update={update}
-          />
-        </Section>
-      )}
-      {/* The condition bar belongs to the Clean-data heatmap (a fold-change one has none). */}
-      {upstreamKind !== 'compare' && (
-        <Section title="Heatmap">
-          <Field
-            label="Show conditions"
-            aside={<QuickToggle config={config} field="condBar" update={update} />}
-          >
-            <OnOffSwitch
-              on={heatmapCondBar(config, condLevels)}
-              label="Show conditions"
-              title="A coloured track per condition along the samples"
-              onChange={(v) => update({ condBar: v })}
-            />
-          </Field>
-          <SampleOrderField config={config} update={update} />
-        </Section>
-      )}
+      </Field>
+      {!fc && <SampleOrderField config={config} update={update} />}
     </>
+  )
+}
+
+/** A fold-change heatmap's gene cap (a Clean-data one draws every gene it's given). */
+function HeatmapGenes({ config, update, edgeNodeId }: PlotPanelProps<HeatmapConfig>): ReactNode {
+  if (useHeatmapUpstream(edgeNodeId) === 'standardize') return null
+  return (
+    <CapRow
+      label="Max genes"
+      info="Show only the strongest differential genes."
+      field="maxGenes"
+      value={config.maxGenes}
+      enabled={config.capEnabled}
+      update={update}
+      defaultValue={50}
+      rule={(n) => `Keep the top ${n} differential genes by largest |log₂FC|.`}
+      step={10}
+    />
   )
 }
 
@@ -235,8 +281,10 @@ export function HeatmapPanel({ config, update, edgeNodeId }: PlotPanelProps<Heat
 export function Settings({ config, ...props }: PlotSettingsProps): ReactNode {
   return (
     <PlotSections
-      show={<HeatmapPanel config={config as HeatmapConfig} {...props} />}
-      colours={<HeatmapColourSection config={config as HeatmapConfig} {...props} />}
+      statistic={<HeatmapClustering config={config as HeatmapConfig} {...props} />}
+      general={<HeatmapPanel config={config as HeatmapConfig} {...props} />}
+      genes={<HeatmapGenes config={config as HeatmapConfig} {...props} />}
+      colours={<HeatmapColourRows config={config as HeatmapConfig} {...props} />}
     />
   )
 }

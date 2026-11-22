@@ -8,7 +8,7 @@ import {
   type VolcanoConfig
 } from '../../graph/types'
 import { CompareStatisticSection } from '../kit/settings/compareSections'
-import { CapSection } from '../kit/settings/controls'
+import { CapRow } from '../kit/settings/controls'
 import {
   legendShown,
   useEffectColors,
@@ -16,7 +16,7 @@ import {
   useUpstreamNode
 } from '../kit/settings/plotHooks'
 import {
-  ColourSection,
+  ColourRows,
   type PlotPanelProps,
   PlotSections,
   PointStyleSections
@@ -28,7 +28,7 @@ import { type PlotSettingsProps } from '../settings'
  *  Per tile there's the label cap and the look (per-group markers, highlight, legend). */
 export function VolcanoPanel({ config, update, edgeNodeId }: PlotPanelProps<VolcanoConfig>) {
   const names = useEffectNames(edgeNodeId)
-  const colors = useEffectColors(edgeNodeId, config.fcPalette)
+  const colors = useEffectColors(config.fcPalette)
   const up = useUpstreamNode(edgeNodeId)
   const compare = up && isStep(up) && isComparisonKind(up.data.kind) ? up : undefined
   return (
@@ -43,11 +43,10 @@ export function VolcanoPanel({ config, update, edgeNodeId }: PlotPanelProps<Volc
           />
         )
       }
-      labels={
-        <CapSection
-          title="Cap labels"
-          hint="Label only the most significant genes."
-          label="Max labels"
+      general={
+        <CapRow
+          label="Label limit"
+          info="Name only the most significant genes."
           field="labelTop"
           value={config.labelTop}
           enabled={config.capEnabled}
@@ -65,7 +64,7 @@ export function VolcanoPanel({ config, update, edgeNodeId }: PlotPanelProps<Volc
           update={update}
         />
       }
-      colours={<ColourSection config={config} update={update} edgeNodeId={edgeNodeId} />}
+      colours={<ColourRows config={config} update={update} edgeNodeId={edgeNodeId} />}
     />
   )
 }

@@ -90,11 +90,9 @@ export const effectName =
         : v === 'none'
           ? labels.none
           : String(v ?? '')
-/** One context value in a matrix column header: dose, time and every custom condition (numeric or
- *  not) carry their name ("dose 10", "temp 37") since a bare value is ambiguous; cell/cmpd values
- *  speak for themselves ("WT", "Amk"). */
-export const ctxLabel = (c: ConditionKey, v: unknown): string =>
-  c === 'cell' || c === 'cmpd' ? String(v) : `${condLabel(c)} ${v}`
+/** One context value in a matrix column header (the engine's, shared with the fold-change heatmap's
+ *  columns and the facet labels so the same column reads the same everywhere). */
+export { ctxLabel } from '../../../engine'
 /** A matrix column's context conditions as header lines: name → value, blank values left out. */
 export function ctxLines(r: Parameters<typeof ctxValue>[0], dims: ConditionKey[]): HeaderLine[] {
   return dims

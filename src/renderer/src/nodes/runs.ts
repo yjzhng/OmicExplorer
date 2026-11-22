@@ -9,6 +9,7 @@ import { run as compare } from './compare/run'
 import { run as contrast } from './contrast/run'
 import { run as merge } from './merge/run'
 import type { PlotRun, StepRun } from './runContext'
+import { run as corrRun } from './corr/run'
 import { run as pcaRun } from './pca/run'
 import { run as enrichRun } from './enrich/run'
 import { run as stringRun } from './string/run'
@@ -51,6 +52,7 @@ export const STEP_RUNS: Record<NodeKind, StepRun | null> = {
  *  other plot draws live from its upstream, its run only checking it can. */
 export const PLOT_RUNS: Partial<Record<NodeKind, PlotRun>> = {
   pca: { run: pcaRun },
+  corr: { run: corrRun },
   enrich: { run: enrichRun },
   string: { run: stringRun, afterRequirement: true }
 }

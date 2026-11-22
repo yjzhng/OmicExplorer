@@ -1,5 +1,5 @@
 import { useMemo, type ReactNode } from 'react'
-import { previewContrastPair, type ConditionKey } from '../../engine'
+import { condLabel, previewContrastPair, type ConditionKey } from '../../engine'
 import {
   isPairable,
   pairSides,
@@ -92,7 +92,7 @@ export function ContrastPanel({ id, config }: { id: string; config: ContrastConf
     }
   }, [pairReady, A, B, match, config.pairFix])
   const contrastsMsg = (n: number, on: ConditionKey[], nameA: string, nameB: string): string =>
-    `Ready, ${n} contrast${n === 1 ? '' : 's'}${on.length ? ` on ${on.join(', ')}` : ''}: ${nameA} vs ${nameB}`
+    `Ready, ${n} contrast${n === 1 ? '' : 's'}${on.length ? ` on ${on.map(condLabel).join(', ')}` : ''}: ${nameA} vs ${nameB}`
   // One input ⇒ intra-dataset only; two or more ⇒ the config's choice (inter by default).
   const source = resolveContrastSource(config, inputs.length)
   const canConfigure = inputs.some((i) => isPairable(i.result))

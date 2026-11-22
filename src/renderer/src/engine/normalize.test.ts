@@ -129,7 +129,7 @@ describe('normalizeSamples on a reference protein', () => {
       protein: 'g0',
       spread: true
     })
-    expect(summary).toMatchObject({ samples: 2, missingSamples: 1, missingLabels: ['A_r3'] })
+    expect(summary).toMatchObject({ samples: 2, missingSamples: 1, missingLabels: ['A · r3'] })
     expect(summary.spread).toBeUndefined()
     expect(rows.map((r) => r.value)).toEqual(input.map((r) => r.value))
   })
@@ -189,6 +189,6 @@ describe('Clean data with a reference protein', () => {
 
   it('stops, naming the samples, when one lacks the reference', () => {
     const data = DATA.replace('R,1000,2000,500,1500', 'R,1000,,500,1500')
-    expect(() => run(data)).toThrow(/wasn't measured in 1 sample \(A_r2\)/)
+    expect(() => run(data)).toThrow(/wasn't measured in 1 sample \(A · r2\)/)
   })
 })

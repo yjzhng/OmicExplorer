@@ -1,9 +1,9 @@
 import type { ReactNode } from 'react'
 import type { PotencyConfig } from '../../graph/types'
-import { CapSection, Field, QuickToggle, Section, Select } from '../kit/settings/controls'
+import { CapRow, Field, QuickToggle, Select } from '../kit/settings/controls'
 import { legendShown, useEffectColors, useEffectNames } from '../kit/settings/plotHooks'
 import {
-  ColourSection,
+  ColourRows,
   type PlotPanelProps,
   PlotSections,
   PointStyleSections
@@ -16,11 +16,11 @@ export function PotencyPanel({
   edgeNodeId
 }: PlotPanelProps<PotencyConfig>): ReactNode {
   const names = useEffectNames(edgeNodeId)
-  const colors = useEffectColors(edgeNodeId, config.fcPalette)
+  const colors = useEffectColors(config.fcPalette)
   return (
     <PlotSections
-      show={
-        <Section title="Potency">
+      general={
+        <>
           <Field
             label="curves"
             aside={<QuickToggle config={config} field="show" update={update} />}
@@ -34,19 +34,16 @@ export function PotencyPanel({
               ]}
             />
           </Field>
-        </Section>
-      }
-      labels={
-        <CapSection
-          title="Cap labels"
-          hint="Label only the curves with the largest fold change."
-          label="Max labels"
-          field="labelTop"
-          value={config.labelTop}
-          enabled={config.capEnabled}
-          update={update}
-          rule={(n) => `Label the top ${n} curves by |fold change|.`}
-        />
+          <CapRow
+            label="Label limit"
+            info="Name only the curves with the largest fold change."
+            field="labelTop"
+            value={config.labelTop}
+            enabled={config.capEnabled}
+            update={update}
+            rule={(n) => `Label the top ${n} curves by |fold change|.`}
+          />
+        </>
       }
       marks={
         <PointStyleSections
@@ -58,7 +55,7 @@ export function PotencyPanel({
           update={update}
         />
       }
-      colours={<ColourSection config={config} update={update} edgeNodeId={edgeNodeId} />}
+      colours={<ColourRows config={config} update={update} edgeNodeId={edgeNodeId} />}
     />
   )
 }

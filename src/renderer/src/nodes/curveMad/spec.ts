@@ -20,6 +20,7 @@ export const curveMadSpec = defineSpec<'curveMad'>({
     tileHint: 'Curve-fit QC: residuals and fit metrics. Select to view.',
     configurable: true,
     legend: 'groups',
-    axes: true
+    axes: true,
+    guides: true
   }
 })

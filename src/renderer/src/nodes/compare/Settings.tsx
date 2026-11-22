@@ -4,6 +4,7 @@ import {
   CURVE_MIN_TREATED,
   type ConditionKey,
   type StandardizeResult,
+  analysisScaleOf,
   analysisUnmet,
   batchesOf,
   classifyConditions,
@@ -183,7 +184,7 @@ export function ComparePanel({
   const readyMsg = surfaceRun
     ? `Ready, one ${pairName} surface per gene × compound`
     : nComparisons
-      ? `Ready, ${nComparisons.n} ${unit}${nComparisons.n === 1 ? '' : 's'}${nComparisons.on.length ? ` on ${nComparisons.on.join(', ')}` : ''}`
+      ? `Ready, ${nComparisons.n} ${unit}${nComparisons.n === 1 ? '' : 's'}${nComparisons.on.length ? ` on ${nComparisons.on.map(condLabel).join(', ')}` : ''}`
       : 'Ready'
   // The axis a curve runs over, or the dose × time surface. An axis the data can't fit over (too
   // few levels — unknown until Clean data has run) is offered greyed.
@@ -356,6 +357,8 @@ export function ComparePanel({
             rows={stdSampleRows(std)}
             active={std.activeConditions}
             numericConditions={std.numericConditions ?? []}
+            // the scale the test runs on (run.ts testsLogged), for the preview's formula
+            logged={analysisScaleOf(std) !== 'linear'}
             shape={shape ?? undefined}
             initial={{
               num: config.num,

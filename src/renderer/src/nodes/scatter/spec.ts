@@ -18,6 +18,7 @@ export const scatterSpec = defineSpec<'scatter'>({
     tileHint: 'Group A vs group B. Select to view.',
     configurable: true,
     legend: 'groups',
-    axes: true
+    axes: true,
+    guides: true
   }
 })

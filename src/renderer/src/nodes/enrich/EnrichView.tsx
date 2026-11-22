@@ -401,7 +401,9 @@ export function EnrichView({
       // its leading-edge genes.
       const boldTicks = {
         // bold while one of its genes is active, or the term itself (its ridge or label hovered)
-        genesByTick: rows.map((r) => (r.id ? [r.id, ...r.lead.ids] : r.lead.ids)),
+        // a term's label bolds with the term itself — hovered, or selected (all its genes are) —
+        // not with any one of its genes, which many terms share
+        genesByTick: rows.map((r) => (r.id ? [r.id] : [])),
         tickLabel,
         categoryByTick: rows.map((r) => r.category),
         legendItemText: cats.length ? legendItemText : undefined,
@@ -550,23 +552,29 @@ export function EnrichView({
     const maxNegLog = Math.max(-Math.log10(0.05), ...all.map((t) => negLog(t.pAdjust)))
 
     // Lollipop stems: a thin line from centre (x=0) to each dot, so a dot tracks back to its term.
-    const stems = (terms: EnrichTerm[], sign: 1 | -1, hue: string): Record<string, unknown> => {
-      const x: (number | null)[] = []
-      const y: (string | null)[] = []
-      for (const t of terms) {
-        x.push(0, sign * mag(t), null)
-        y.push(t.term, t.term, null)
-      }
-      return {
+    // One trace per stem, carrying its dot's id (its hover text — an own id, as the dot's), so a
+    // stem fades and stays with its dot when a term is hovered or selected. Its faintness is in its
+    // colour, so the fade (a trace opacity) dims it further rather than resetting it.
+    const stems = (
+      terms: EnrichTerm[],
+      n: number,
+      sign: 1 | -1,
+      dir: string,
+      hue: string
+    ): Record<string, unknown>[] => {
+      const ids = hover(terms, n, dir)
+      return terms.map((t, k) => ({
         type: 'scatter',
         mode: 'lines',
         __oeNoLabel: true,
-        x,
-        y,
+        __oeOwnIds: true,
+        x: [0, sign * mag(t)],
+        y: [t.term, t.term],
+        customdata: [ids[k], ids[k]],
         hoverinfo: 'skip',
-        line: { color: hue, width: 1.3 },
-        opacity: 0.4
-      }
+        showlegend: false,
+        line: { color: hexA(hue, 0.4), width: 1.3 }
+      }))
     }
 
     const dots = (
@@ -734,8 +742,8 @@ export function EnrichView({
       ]
     } else {
       data = [
-        stems(down, -1, downColor),
-        stems(up, 1, upColor),
+        ...stems(down, enrich.querySize.down, -1, 'down', downColor),
+        ...stems(up, enrich.querySize.up, 1, 'up', upColor),
         dots(down, enrich.querySize.down, -1, 'down', halves.down, down.length ? downBar : null),
         dots(up, enrich.querySize.up, 1, 'up', halves.up, up.length ? upBar : null)
       ]
@@ -860,10 +868,9 @@ export function EnrichView({
       boldTicks: empty
         ? undefined
         : {
-            genesByTick: order.map((term) => [
-              ...(idsByTerm.get(term) ?? []),
-              ...both.filter((t) => t.term === term).flatMap((t) => t.geneIds ?? [])
-            ]),
+            // the term itself, hovered or selected (all its genes are) — not any one of its genes,
+            // which many terms share
+            genesByTick: order.map((term) => idsByTerm.get(term) ?? []),
             tickLabel: (i: number, active: boolean, anyActive: boolean) =>
               termTick(order[i], active, anyActive),
             // a label hovers / selects its term, as its dot or bar does (a term on both sides

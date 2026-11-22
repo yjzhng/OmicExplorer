@@ -11,38 +11,59 @@ import { slashBackground } from './slash'
 import type { CSSProperties, ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 
-import { PALETTES } from './theme'
+import { PALETTES, UI } from './theme'
 import { POPOVER_PROPS, usePopover } from './usePopover'
 import { useUiTheme } from './useUiTheme'
 
 /** A cleared colour: drawn as nothing. The grid's clear chip sets it, and marks itself on it. */
 export const CLEAR = 'transparent'
 /** The automatic colour: the plot picks it (e.g. a bar's group colour). The grid's "Automatic" row
- *  sets it, and marks itself on it; a trigger shows it as the letter A (AutoMark). */
+ *  sets it, and marks itself on it (AutoMark); a trigger shows the colour it resolves to, with a
+ *  corner mark (AutoCorner) saying it's automatic. */
 export const AUTO = 'auto'
 
-/** The automatic colour's chip background: diagonal stripes of a few plot colours — "it picks
- *  the colour itself". The letter A (AutoMark) sits on it. */
+/** An automatic colour's chip background where no single colour stands for it (one per gene, say):
+ *  faint diagonal stripes of a few plot colours — "it picks the colour itself". */
 export const AUTO_BACKGROUND =
-  'linear-gradient(135deg, #4e79a7 0 25%, #f28e2b 25% 50%, #59a14f 50% 75%, #e15759 75% 100%)'
+  'linear-gradient(135deg, #4e79a740 0 25%, #f28e2b40 25% 50%, #59a14f40 50% 75%, #e1575940 75% 100%)'
 
-/** The automatic colour's mark: the letter A, white with a soft shadow so it reads on the
- *  stripes (AUTO_BACKGROUND) — in a trigger chip or the grid's top row. */
+/** The picker's Automatic row's mark: the letter A in its little square, beside the word. */
 export function AutoMark({ size = 11 }: { size?: number }): ReactNode {
   return (
     <span
       aria-hidden
       style={{
         fontSize: size,
-        fontWeight: 800,
+        fontWeight: 700,
         lineHeight: 1,
         fontFamily: 'inherit',
-        color: '#ffffff',
-        textShadow: '0 0 2px rgba(0,0,0,0.75)'
+        color: UI.text
       }}
     >
       A
     </span>
+  )
+}
+
+/** An automatic colour's mark on its chip (which shows the colour it resolves to): a small folded
+ *  corner, top right, in the theme's text colour over a ring of the panel's, so it reads on any
+ *  colour. A colour you picked has none. */
+export function AutoCorner(): ReactNode {
+  return (
+    <span
+      aria-hidden
+      style={{
+        position: 'absolute',
+        top: 0,
+        right: 0,
+        width: 0,
+        height: 0,
+        borderTop: `9px solid ${UI.text}`,
+        borderLeft: '9px solid transparent',
+        filter: `drop-shadow(-1px 1px 0 ${UI.panel})`,
+        pointerEvents: 'none'
+      }}
+    />
   )
 }
 

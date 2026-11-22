@@ -21,7 +21,8 @@ export const heatmapSpec = defineSpec<'heatmap'>({
       // the tile by default (a gene module and a condition module pick a block together); the
       // trees are tuned in the settings window
       geneTree: false,
-      condTree: false
+      condTree: false,
+      condDistance: false
     }
   }
 })

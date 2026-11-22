@@ -15,6 +15,7 @@ export const potencySpec = defineSpec<'potency'>({
     tileHint: 'Curve potency (pEC50) vs fold change. Select to view.',
     configurable: true,
     legend: 'groups',
-    axes: true
+    axes: true,
+    guides: true
   }
 })

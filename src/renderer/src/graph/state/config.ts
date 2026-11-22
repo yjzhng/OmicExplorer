@@ -44,7 +44,6 @@ export function configSlice(
   | 'updateConfig'
   | 'setCompareEffectLabels'
   | 'setCurveMethod'
-  | 'setCompareEffectColors'
   | 'setLoadUnits'
   | 'setLoadNumeric'
   | 'previewStdScale'
@@ -141,22 +140,6 @@ export function configSlice(
         nodes: s.nodes.map((n) =>
           n.id === id && isStep(n)
             ? { ...n, data: { ...n.data, config: { ...cfg, curveMethod: method } as NodeConfig } }
-            : n
-        ),
-        dirty: true
-      }))
-    },
-    setCompareEffectColors: (id, colors) => {
-      const node = get().nodes.find((n) => n.id === id)
-      if (!node || !isStep(node) || !isComparisonKind(node.data.kind)) return
-      const cfg = node.data.config as CompareConfig
-      const effectColors = { ...cfg.effectColors, ...colors }
-      get().commit()
-      // Display-only, so patch the config directly (updateConfig would stale the compare).
-      set((s) => ({
-        nodes: s.nodes.map((n) =>
-          n.id === id && isStep(n)
-            ? { ...n, data: { ...n.data, config: { ...cfg, effectColors } as NodeConfig } }
             : n
         ),
         dirty: true

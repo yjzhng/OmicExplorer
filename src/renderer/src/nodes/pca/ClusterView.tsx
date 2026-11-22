@@ -1,7 +1,7 @@
 import { useContext, useMemo, type CSSProperties } from 'react'
 
 import {
-  CLUSTER_COLOR,
+  colorByCond,
   condLabel,
   isNumericCond,
   metaValue,
@@ -17,7 +17,6 @@ import { condsOf, planAesthetics, type PlanOverrides } from '../../ui/clusterPla
 import { condTooltip, valueLine } from '../../ui/condTooltip'
 import { bindSampleLink, sampleKey, sampleMeta } from '../../ui/sampleLink'
 import { territoryRing, type TerritoryShape } from '../../ui/territory'
-import { hslHex } from '../../ui/colormap'
 import { shade } from '../../ui/condColor'
 import { PlotlyChart } from '../../ui/PlotlyChart'
 import { AXIS_LINE_WIDTH, PlotAxesContext, type PlotAxesCtx } from '../../ui/plotAxes'
@@ -74,12 +73,16 @@ export function ClusterView({
   scheme = NO_SCHEME,
   categorical = CATEGORICAL,
   condTitle = condLabel,
+  colorTitle,
   numeric
 }: {
   /** the dataset's numeric conditions (its schema): ordered colour, shade and arrows */
   numeric: NumericConds
   /** a condition's legend heading — with its unit for dose / time (default: its name) */
   condTitle?: (c: ConditionKey) => string
+  /** the legend's heading when the colours aren't one condition's (the condition groups: their
+   *  conditions, "cmpd × time") */
+  colorTitle?: string
   cluster: ClusterData
   title?: string
   display?: Mode
@@ -157,7 +160,7 @@ export function ClusterView({
     // and QC / the gene bar do) — instead of unordered categorical colours. Groups are then ordered
     // by value so the legend reads low→high.
     const quant =
-      cluster.colorBy !== CLUSTER_COLOR &&
+      colorByCond(cluster.colorBy) &&
       isNumericCond(cluster.colorBy, numeric) &&
       [...groups.keys()].every((g) => g === '' || Number.isFinite(Number(g)))
     const nums = [...new Set([...groups.keys()].map(Number).filter(Number.isFinite))].sort(
@@ -192,9 +195,18 @@ export function ClusterView({
         traces.push(...territoryTrace(reps, territory, groupColor.get(g)!, g || '(none)'))
       }
     }
-    // the legend headed by what the colours are: the condition (dose / time with its unit)
-    if (cluster.colorBy !== 'cluster')
-      lay.legend = { title: { text: condTitle(cluster.colorBy as ConditionKey) } }
+    // the legend headed by what the colours are: the condition (dose / time with its unit). On top
+    // of the theme's placement (plotBase) — replacing it had left the title flush against the
+    // plot — set a little further out, so the heading has room from the frame; and no gap between
+    // the entries: each colour is its own legend group (territory + markers toggle together), and
+    // Plotly's default gap between groups spread them far apart.
+    const heading = colorByCond(cluster.colorBy) ? condTitle(cluster.colorBy) : colorTitle
+    lay.legend = {
+      ...(lay.legend as object),
+      x: 1.05,
+      tracegroupgap: 0,
+      ...(heading ? { title: { text: heading } } : null)
+    }
     return { data: territoriesBehind(traces), layout: lay, xLabel, yLabel }
   }, [
     cluster,
@@ -207,6 +219,7 @@ export function ClusterView({
     scheme,
     categorical,
     condTitle,
+    colorTitle,
     numeric
   ])
 
@@ -554,15 +567,14 @@ function buildComplex(
     return numeric ? arr.sort((a, b) => Number(a) - Number(b)) : arr.sort()
   }
 
-  // Grouped colour: the first qualitative (`outer`) picks a hue family; every remaining
-  // qualitative combines into an `inner` tuple that spreads across a window within that family.
-  // With exactly cell + cmpd varying that is one cell family per cmpd, as before; a third
-  // qualitative simply refines the tuple, so distinct combinations never share a colour.
+  // Grouped colour (several colour conditions): the first (`outer`) orders the combinations, the
+  // rest combine into an `inner` tuple within each — every combination its own colour (below).
   const [outerKey, ...innerKeys] = plan.quals
   const outerOf = (m: ClusterMeta): string => (outerKey ? String(metaValue(m, outerKey) ?? '') : '')
   const innerOf = (m: ClusterMeta): string =>
-    innerKeys.map((c) => String(metaValue(m, c) ?? '')).join(' | ')
-  const outerList = outerKey ? sortedVals(outerKey, false) : []
+    innerKeys.map((c) => String(metaValue(m, c) ?? '')).join(' · ')
+  // (a numeric condition picked for colour reads in number order)
+  const outerList = outerKey ? sortedVals(outerKey, isNumericCond(outerKey, numeric)) : []
   const innerByOuter = new Map<string, string[]>()
   if (plan.grouped) {
     const tmp = new Map<string, Set<string>>()
@@ -571,17 +583,22 @@ function buildComplex(
       if (!tmp.has(o)) tmp.set(o, new Set())
       tmp.get(o)!.add(innerOf(m))
     }
-    for (const [o, set] of tmp) innerByOuter.set(o, [...set].sort())
+    // numeric parts in number order ("2" before "10")
+    for (const [o, set] of tmp)
+      innerByOuter.set(
+        o,
+        [...set].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))
+      )
   }
-  const FAMILY_SPAN = 60
-  const groupedHue = (outer: string, inner: string): number => {
-    const si = Math.max(0, outerList.indexOf(outer))
-    const center = (360 * si) / Math.max(1, outerList.length)
-    const inners = innerByOuter.get(outer) ?? [inner]
-    const ci = Math.max(0, inners.indexOf(inner))
-    const off = inners.length > 1 ? (ci / (inners.length - 1) - 0.5) * FAMILY_SPAN : 0
-    return center + off
-  }
+  // Each combination its own colour from the plot's categorical palette, in reading order (the
+  // first condition's values, then the rest's within each): the palette's order is its
+  // distinctness order (iWantHue's most-distinct-first), so the first combinations get the most
+  // distinct colours — rather than hues spread round the wheel, which read as a rainbow.
+  const comboIdx = new Map<string, number>()
+  for (const o of outerList)
+    for (const inner of innerByOuter.get(o) ?? []) comboIdx.set(`${o}\u0001${inner}`, comboIdx.size)
+  const groupedColor = (outer: string, inner: string): string =>
+    categorical[(comboIdx.get(`${outer}\u0001${inner}`) ?? 0) % categorical.length]
 
   // Single-qualitative colour (categorical).
   const qualVals = plan.colorKey && !plan.colorRamp ? sortedVals(plan.colorKey, false) : []
@@ -598,7 +615,7 @@ function buildComplex(
   const tShade = (v: number | null): number => rankT(shadeNums, v)
 
   const baseColor = (m: ClusterMeta): string => {
-    if (plan.grouped) return hslHex(groupedHue(outerOf(m), innerOf(m)), 0.62, 0.5)
+    if (plan.grouped) return groupedColor(outerOf(m), innerOf(m))
     if (plan.colorKey && !plan.colorRamp) {
       const i = qualIdx.get(String(metaValue(m, plan.colorKey))) ?? 0
       return categorical[i % categorical.length]
@@ -620,7 +637,7 @@ function buildComplex(
   }
 
   const groupName = (m: ClusterMeta): string => {
-    if (plan.grouped) return [outerOf(m), innerOf(m)].filter((x) => x !== '').join(' | ')
+    if (plan.grouped) return [outerOf(m), innerOf(m)].filter((x) => x !== '').join(' · ')
     if (plan.colorKey) return String(metaValue(m, plan.colorKey)) || '(none)'
     return '(all)'
   }

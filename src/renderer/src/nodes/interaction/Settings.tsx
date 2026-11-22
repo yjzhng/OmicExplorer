@@ -2,7 +2,7 @@ import { type ReactNode } from 'react'
 import { condLabel, interactionAxes } from '../../engine'
 import { useGraph } from '../../graph/store'
 import type { InteractionConfig } from '../../graph/types'
-import { Field, QuickToggle, Section, Select } from '../kit/settings/controls'
+import { Field, QuickToggle, Select } from '../kit/settings/controls'
 import { DRStyleSection, type PlotPanelProps, PlotSections } from '../kit/settings/plotSections'
 import { styles } from '../kit/settings/styles'
 import { type PlotSettingsProps } from '../settings'
@@ -22,8 +22,8 @@ export function InteractionPanel({
   const axes = factors ? interactionAxes({ factors }, config.xFactor, config.lineFactor) : null
   return (
     <PlotSections
-      show={
-        <Section title="Interaction">
+      general={
+        <>
           {factors && factors.length >= 2 && (
             <Field
               label="x axis"
@@ -57,7 +57,7 @@ export function InteractionPanel({
             factors, the others are averaged (the model’s marginal means). A slope along x is drawn
             to its scale: the model’s straight lines.
           </div>
-        </Section>
+        </>
       }
       marks={
         <DRStyleSection

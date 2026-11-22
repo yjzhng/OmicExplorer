@@ -42,3 +42,28 @@ describe('selected label colour', () => {
     expect(DEFAULT_HIGHLIGHT.labelColor).toBeUndefined()
   })
 })
+
+describe('label size', () => {
+  const [, down] = defaultGroups('volcano')
+  it('is the plots’ label size unless the group sets its own', () => {
+    // unset: the chart's default (PLOT_TEXT.label)
+    expect(resolveGroup(undefined, down).labelSize).toBeUndefined()
+    expect(resolveGroup({ groups: { down: { labelSize: 13 } } }, down).labelSize).toBe(13)
+  })
+})
+
+describe('point plot defaults', () => {
+  const [none, down] = defaultGroups('volcano')
+  it('dots 7 / 8, outline 0 / 0.5, opacity 50% / 80%', () => {
+    expect([none.size, none.outline, none.opacity]).toEqual([7, 0, 0.5])
+    expect([down.size, down.outline, down.opacity]).toEqual([8, 0.5, 0.8])
+  })
+  it('selected: 9 px (1 px over a larger dot), outline 0.5; the rest at 20%', () => {
+    const g = resolveGroup(undefined, down)
+    expect([g.highlight.size, g.highlight.ring, g.highlight.dim]).toEqual([9, 0.5, 0.2])
+    expect(resolveGroup({ groups: { down: { size: 12 } } }, down).highlight.size).toBe(13)
+    expect(
+      resolveGroup({ groups: { down: { highlight: { size: 6 } } } }, down).highlight.size
+    ).toBe(6)
+  })
+})

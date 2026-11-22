@@ -8,28 +8,19 @@ import {
   type HeatmapData,
   type NumericConds
 } from '../../engine'
-import { ROLE_DEFAULTS, paletteScale, paletteSeries, type PaletteRef } from '../../ui/palettes'
+import { ROLE_DEFAULTS, paletteScale, type PaletteRef } from '../../ui/palettes'
 import { condTooltip, geneLine, valueLine } from '../../ui/condTooltip'
 import { PlotlyChart } from '../../ui/PlotlyChart'
 import { truncatedTicks } from '../../ui/plotAxes'
 import { bindHeatmapFocus, GENE_TICK_PX, LINK_DELAY } from '../../ui/heatmapFocus'
 import { sampleKey } from '../../ui/sampleLink'
-import { axisBase, CATEGORICAL, PALETTES, PLOT_TEXT, plotBase, withAlpha } from '../../ui/theme'
+import { axisBase, PALETTES, PLOT_TEXT, plotBase, withAlpha } from '../../ui/theme'
 import { useRolePalette } from '../../ui/useAppSettings'
 import { useUiTheme } from '../../ui/useUiTheme'
+import { levelPalette, type LevelPalettes, trackColours } from './trackColours'
 
 /** Pixel gap between adjacent condition tracks (along the condition axis). */
 const TRACK_GAP = 1
-
-/** The numeric conditions' track palettes — their levels in order along a palette role: time's
- *  (Greens by default), dose's (Blues) for dose and any declared numeric condition (app settings →
- *  palettes) — with the dataset's numeric conditions (`numeric`). */
-type LevelPalettes = { dose: PaletteRef; time: PaletteRef; numeric: NumericConds }
-const levelPalette = (c: ConditionKey, lp: LevelPalettes): PaletteRef | null =>
-  isNumericCond(c, lp.numeric) ? (c === 'time' ? lp.time : lp.dose) : null
-/** A categorical track's start along the categorical palette, per track: far enough along that the
- *  next track's first levels don't repeat this one's. */
-const TRACK_ROTATE = 5
 
 /** How strongly a hovered heatmap veils the cells outside the hovered row and column. */
 const HOVER_VEIL = 0.65
@@ -43,37 +34,19 @@ function transpose<T>(m: T[][]): T[][] {
   return out
 }
 
-/** Distinct values of a condition → track colour. Numeric conditions (dose, time) run along their
- *  level palette by sorted value (low → high, its pale end skipped — see paletteSeries);
- *  categorical ones cycle the categorical palette, each further track (`catIndex`) starting
- *  TRACK_ROTATE colours on, so no two tracks (cell, cmpd, a custom condition) read alike. */
+/** Distinct values of a condition → track colour (see trackColours). */
 function condColours(
   samples: HeatmapData['samples'],
   c: ConditionKey,
   catIndex: number,
   levels: LevelPalettes
 ): Map<string, string> {
-  const ramp = levelPalette(c, levels)
-  const seen = new Set<string>()
   const vals: string[] = []
   for (const m of samples) {
     const raw = metaValue(m, c)
-    if (raw == null || raw === '') continue
-    const key = String(raw)
-    if (!seen.has(key)) {
-      seen.add(key)
-      vals.push(key)
-    }
+    if (raw != null && raw !== '') vals.push(String(raw))
   }
-  vals.sort((a, b) => (ramp ? Number(a) - Number(b) : a < b ? -1 : a > b ? 1 : 0))
-  const map = new Map<string, string>()
-  if (ramp) {
-    vals.forEach((v, i) => map.set(v, paletteSeries(ramp, i, vals.length)))
-  } else {
-    const rot = catIndex * TRACK_ROTATE
-    vals.forEach((v, i) => map.set(v, CATEGORICAL[(i + rot) % CATEGORICAL.length]))
-  }
-  return map
+  return trackColours(vals, levelPalette(c, levels), catIndex)
 }
 
 /** Build the condition-track trace (one row per condition, one column per sample) + the axis it

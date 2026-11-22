@@ -5,7 +5,7 @@ import { useUpstreamFacts } from '../../graph/useUpstreamFacts'
 import { toPaletteRef } from '../../ui/palettes'
 import { OnOffSwitch } from '../../ui/ToggleSwitch'
 import { useRolePalette } from '../../ui/useAppSettings'
-import { Field, NumberInput, Section, Select } from '../kit/settings/controls'
+import { Field, NumberInput, Select } from '../kit/settings/controls'
 import { autoOf } from '../kit/settings/plotHooks'
 import { PanelPaletteSelect, type PlotPanelProps, PlotSections } from '../kit/settings/plotSections'
 import { type PlotSettingsProps } from '../settings'
@@ -23,8 +23,8 @@ export function TablePanel({ config, update, edgeNodeId }: PlotPanelProps<TableC
   const colored = config.colored ?? true
   return (
     <PlotSections
-      show={
-        <Section title="Table">
+      general={
+        <>
           <Field label={fromClean ? 'view' : 'default view'}>
             <Select
               value={config.view === 'qc' && !fromClean ? 'matrix' : (config.view ?? 'matrix')}
@@ -58,10 +58,10 @@ export function TablePanel({ config, update, edgeNodeId }: PlotPanelProps<TableC
               </div>
             </Field>
           ))}
-        </Section>
+        </>
       }
       colours={
-        <Section title="Colour">
+        <>
           <Field label="colour cells">
             <OnOffSwitch
               on={colored}
@@ -79,7 +79,7 @@ export function TablePanel({ config, update, edgeNodeId }: PlotPanelProps<TableC
               />
             </Field>
           )}
-        </Section>
+        </>
       }
     />
   )

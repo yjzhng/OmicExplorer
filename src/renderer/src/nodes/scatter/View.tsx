@@ -64,7 +64,7 @@ export function scatterView(v: ViewContext): ReactNode {
                   labelTop={labelCapOn(cfg) ? cfg.labelTop : 0}
                   style={cfg.style}
                   effectLabels={effectLabelsOf(upStep?.data.config as CompareConfig | undefined)}
-                  effectColors={effectsOf(cfg, upStep?.data.config as CompareConfig | undefined)}
+                  effectColors={effectsOf(cfg)}
                 />
               )}
             </Built>

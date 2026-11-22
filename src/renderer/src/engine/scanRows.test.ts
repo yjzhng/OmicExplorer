@@ -69,3 +69,51 @@ describe('scanRows over a columnar result', () => {
       )
   })
 })
+
+describe('sample correlation metrics', () => {
+  /** Two samples over 400 proteins spanning 4 log units; the second = the first + noise (sd 0.1),
+   *  a shift, and (optionally) a minority of 20 proteins changed by 3 log units. */
+  function pair(shift: number, minority: boolean): StandardizeResult {
+    let seed = 7
+    const rnd = (): number => {
+      seed = (seed * 1103515245 + 12345) % 2147483648
+      return seed / 2147483648
+    }
+    const noise = (): number =>
+      Math.sqrt(-2 * Math.log(rnd() || 1e-9)) * Math.cos(2 * Math.PI * rnd()) * 0.1
+    const rows: StandardRow[] = []
+    for (let g = 0; g < 400; g++) {
+      const base = (g / 400) * 4
+      const b = base + shift + noise() + (minority && g % 20 === 0 ? 3 : 0)
+      // (as intensities: the matrix logs them)
+      const at = (cmpd: string, log: number): StandardRow =>
+        ({
+          uniqID: `P${g}`,
+          cell: '',
+          cmpd,
+          dose: null,
+          time: null,
+          rep: 1,
+          value: 10 ** (4 + log)
+        }) as StandardRow
+      rows.push(at('A', base), at('B', b))
+    }
+    return { rows, activeConditions: ['cmpd'], displayMap: {} } as unknown as StandardizeResult
+  }
+  const score = (s: StandardizeResult, metric: 'pearson' | 'spearman' | 'ccc'): number =>
+    buildSampleCorr(s, { scale: 'log10', metric, cluster: false }).z[0][1]
+
+  it('Pearson and Spearman ignore a shift; concordance counts it', () => {
+    const shifted = pair(0.5, false)
+    expect(score(shifted, 'pearson')).toBeGreaterThan(0.99)
+    expect(score(shifted, 'spearman')).toBeGreaterThan(0.99)
+    expect(score(shifted, 'ccc')).toBeLessThan(score(pair(0, false), 'ccc'))
+  })
+
+  it('reports its metric and puts 1 on the diagonal', () => {
+    const d = buildSampleCorr(pair(0, true), { metric: 'ccc', cluster: false })
+    expect(d.metric).toBe('ccc')
+    expect(d.z[0][0]).toBe(1)
+    expect(d.max).toBeGreaterThan(d.min - 1e-12)
+  })
+})

@@ -9,8 +9,9 @@ export const geneBarSpec = defineSpec<'geneBar'>({
   input: { accepts: ['quantity'] },
   output: null,
   hasRun: true,
-  // Colour left unset: by condition with few samples, by value with many (barColorConds).
-  defaultConfig: (): BarConfig => ({}),
+  // Colour left unset: by condition with few samples, by value with many (barColoring). The
+  // replicates are shown as dots over their bars from the start.
+  defaultConfig: (): BarConfig => ({ replicates: true }),
   plot: {
     tileHint: 'Selected gene value across conditions. Select to view.',
     configurable: true,

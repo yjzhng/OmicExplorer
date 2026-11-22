@@ -89,6 +89,7 @@ export function CompareDialog({
   rows,
   active,
   numericConditions,
+  logged,
   shape,
   initial,
   onClose
@@ -99,6 +100,9 @@ export function CompareDialog({
   active: ConditionKey[]
   /** Clean data's declared numeric custom conditions (its schema, with dose and time) */
   numericConditions: readonly CustomConditionKey[]
+  /** whether the test runs on logged values (Clean data presenting them logged) or as they are —
+   *  what the preview's formula names as its response */
+  logged: boolean
   shape?: DataShape
   initial: Pick<
     CompareConfig,
@@ -131,6 +135,9 @@ export function CompareDialog({
   const analysis: Analysis = choice ? goal : 'compare'
   const anova = analysis === 'anova'
   const any = m.CMP.length > 0
+  // The preview formula's response: the test runs in log space only when Clean data presents its
+  // values logged, and on them as they are otherwise (run.ts).
+  const response = logged ? 'log₂ abundance' : 'abundance'
   const input = useMemo<CompareInput>(
     () => ({
       rows: samples,
@@ -597,7 +604,7 @@ export function CompareDialog({
         {any && (
           <div style={styles.formula}>
             {anova && anovaView
-              ? `log₂ abundance ~ ${anovaView.terms
+              ? `${response} ~ ${anovaView.terms
                   .map((t) =>
                     t
                       .split(' × ')
@@ -605,7 +612,7 @@ export function CompareDialog({
                       .join(' × ')
                   )
                   .join(' + ')}`
-              : `log₂ abundance ~ ${m.CMP.length === 1 ? condLabel(m.CMP[0]) : `group(${m.CMP.map(condLabel).join(' × ')})`}`}
+              : `${response} ~ ${m.CMP.length === 1 ? condLabel(m.CMP[0]) : `group(${m.CMP.map(condLabel).join(' × ')})`}`}
             <div style={styles.formulaNote}>
               {anova
                 ? slopes.length

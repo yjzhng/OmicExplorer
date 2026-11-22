@@ -46,7 +46,7 @@ export function QcPlotView({
   plot,
   title,
   color = QC_FILL,
-  colorCat,
+  colorCats = [],
   colorNum,
   fit = false,
   categorical,
@@ -60,7 +60,8 @@ export function QcPlotView({
   /** the single fill colour (hex), and the base a dose/time shades when it colours alone */
   color?: string
   /** colour by condition: the categorical one (colour) and/or the numeric one (shade) */
-  colorCat?: ConditionKey
+  /** the colour conditions: every combination of their values its own colour (conditionColorer) */
+  colorCats?: readonly ConditionKey[]
   colorNum?: ConditionKey
   /** bar plot: fit the value axis to the bar tops (with headroom) instead of starting at zero —
    *  near-equal counts read as level from zero */
@@ -82,10 +83,14 @@ export function QcPlotView({
     nBars > 0 &&
     (boxW > 0 ? (boxW - DENSE_ALLOWANCE) / nBars < DENSE_SLOT : nBars > 80)
 
+  // the colour conditions as one tag (the legend groups' prefix) and a stable memo key
+  const catTag = colorCats.join('×')
   const { data: traces, layout } = useMemo(() => {
     const p = PALETTES[mode]
     const labels = data.groups.map((g) => g.label)
-    const byCond = conditionColorer(data.groups, (g: QcGroup) => g.meta, colorCat, colorNum, {
+    // the colour conditions (from their tag: the memo keys on it, not the array)
+    const cats = catTag ? (catTag.split('×') as ConditionKey[]) : []
+    const byCond = conditionColorer(data.groups, (g: QcGroup) => g.meta, cats, colorNum, {
       base: color,
       missing: p.textMuted,
       palette: categorical
@@ -107,10 +112,13 @@ export function QcPlotView({
     // selecting a swatch keeps that condition's samples and fades the rest (traceFocus).
     const condGroups = (g: QcGroup): string[] =>
       byCond.on
-        ? [colorCat, colorNum].flatMap((c) => {
-            const v = c ? metaValue(g.meta, c) : null
-            return c && v != null && v !== '' ? [`${c}=${v}`] : []
-          })
+        ? [
+            ...(byCond.catOf(g) ? [`${catTag}=${byCond.catOf(g)}`] : []),
+            ...[colorNum].flatMap((c) => {
+              const v = c ? metaValue(g.meta, c) : null
+              return c && v != null && v !== '' ? [`${c}=${v}`] : []
+            })
+          ]
         : []
     let trace: Record<string, unknown>
     let traces: Record<string, unknown>[] = []
@@ -247,7 +255,7 @@ export function QcPlotView({
         }
       ]
     }
-    const catName = colorCat ? condTitle(colorCat) : ''
+    const catName = cats.map(condTitle).join(' × ')
     const numName = colorNum ? condTitle(colorNum) : ''
     // A stacked bar's two shares, in one neutral grey at their own strengths (the bars' colours
     // are the conditions'): imputed solid, measured faint and outlined. A section of their own
@@ -282,7 +290,7 @@ export function QcPlotView({
               sectionKey({
                 name: k.value,
                 section: catName,
-                group: `${colorCat}=${k.value}`,
+                group: `${catTag}=${k.value}`,
                 marker: swatch(k.color)
               })
             ),
@@ -355,7 +363,7 @@ export function QcPlotView({
       }
     }
     return { data: [trace, ...traces, ...extra, ...keys], layout: lay }
-  }, [data, plot, title, mode, color, colorCat, colorNum, fit, categorical, condTitle, dense])
+  }, [data, plot, title, mode, color, catTag, colorNum, fit, categorical, condTitle, dense])
 
   return (
     // Measured for the bars' density only; the chart fills it as before.

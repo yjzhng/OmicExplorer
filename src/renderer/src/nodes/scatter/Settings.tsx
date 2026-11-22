@@ -10,7 +10,7 @@ import {
 } from '../../graph/types'
 import { CompareStatisticSection } from '../kit/settings/compareSections'
 import { ContrastStatPanel } from '../kit/settings/contrastSections'
-import { CapSection } from '../kit/settings/controls'
+import { CapRow } from '../kit/settings/controls'
 import {
   legendShown,
   useEffectColors,
@@ -18,7 +18,7 @@ import {
   useUpstreamNode
 } from '../kit/settings/plotHooks'
 import {
-  ColourSection,
+  ColourRows,
   type PlotPanelProps,
   PlotSections,
   PointStyleSections
@@ -27,7 +27,7 @@ import { type PlotSettingsProps } from '../settings'
 
 export function ScatterPanel({ config, update, edgeNodeId }: PlotPanelProps<ScatterConfig>) {
   const names = useEffectNames(edgeNodeId)
-  const colors = useEffectColors(edgeNodeId, config.fcPalette)
+  const colors = useEffectColors(config.fcPalette)
   // An independent (linear cutoff) contrast colours by quadrant, so the look is per quadrant group.
   const up = useUpstreamNode(edgeNodeId)
   const contrast = up && isStep(up) && up.data.kind === 'contrast' ? up : undefined
@@ -56,11 +56,10 @@ export function ScatterPanel({ config, update, edgeNodeId }: PlotPanelProps<Scat
           )}
         </>
       }
-      labels={
-        <CapSection
-          title="Cap labels"
-          hint="Label only the most divergent genes."
-          label="Max labels"
+      general={
+        <CapRow
+          label="Label limit"
+          info="Name only the most divergent genes."
           field="labelTop"
           value={config.labelTop}
           enabled={config.capEnabled}
@@ -78,7 +77,7 @@ export function ScatterPanel({ config, update, edgeNodeId }: PlotPanelProps<Scat
           update={update}
         />
       }
-      colours={<ColourSection config={config} update={update} edgeNodeId={edgeNodeId} />}
+      colours={<ColourRows config={config} update={update} edgeNodeId={edgeNodeId} />}
     />
   )
 }

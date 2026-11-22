@@ -14,7 +14,7 @@ import {
   type NodeKind,
   type QuickAccess
 } from '../../../graph/types'
-import { AUTO, AUTO_BACKGROUND, AutoMark, CLEAR, ColorPicker } from '../../../ui/ColorPicker'
+import { AUTO, AUTO_BACKGROUND, AutoCorner, CLEAR, ColorPicker } from '../../../ui/ColorPicker'
 import { IconGear } from '../../../ui/icons'
 import type { ResolvedGroup } from '../../../ui/pointStyle'
 import { Select as AppSelect, type SelectOption } from '../../../ui/Select'
@@ -29,73 +29,72 @@ import { Section } from '../../../ui/Section'
 import { PREVIEW_DOT } from './layout'
 import { styles } from './styles'
 
-/** A "Cap …" section in the Clean-up style: a Switch in the header; while on, the N box and a
- *  sentence restating the rule. `field` is the config key holding N; the switch itself is the
- *  shared `capEnabled` key (see `capOn` for how older configs without it are read). */
-export function CapSection({
-  title,
-  hint,
-  label = 'Max genes',
+/** A top-N cap as one row of General (its label limit, its max genes): the switch, then — while
+ *  on — the N box beside it; while off, nothing (no cap, so no N). What it does, and the rule for
+ *  the N chosen, are the row's (i) tip. `field` is the config key holding N; the switch itself is
+ *  the shared `capEnabled` key (see `capOn` for how older configs without it are read). */
+export function CapRow({
+  label,
+  info,
   field,
   value,
   enabled,
   update,
   defaultValue = 20,
+  step = 5,
   max,
   rule
 }: {
-  title: string
-  hint: string
-  label?: string
-  /** config key holding N */
+  label: string
+  /** what the cap does — the row's (i) tip, with the rule for the N chosen after it */
+  info?: ReactNode
   field: string
-  /** current N (the value under `field`) */
   value: number
   enabled: boolean | undefined
   update: (patch: Record<string, unknown>) => void
   defaultValue?: number
-  /** the largest N the box takes (unset = no limit) */
+  step?: number
   max?: number
   rule: (n: number) => string
-}) {
+}): ReactNode {
   const n = value ?? 0
   const on = capOn(enabled, n)
   return (
-    <Section
-      title={title}
-      // While off, show the default N that switching on applies; once on, the box carries it.
-      subtitle={on ? undefined : `top ${n > 0 ? n : defaultValue}`}
-      action={
+    <Field
+      label={label}
+      info={
+        info != null || on ? (
+          <>
+            {info}
+            {info != null && on ? ' ' : null}
+            {on ? rule(n) : null}
+          </>
+        ) : undefined
+      }
+    >
+      <div style={styles.cutoffRow}>
         <OnOffSwitch
           on={on}
-          label={title}
+          label={label}
           onChange={(next) =>
-            // First switch-on with no N yet → a sensible starting point.
             update({ capEnabled: next, ...(next && !(n > 0) ? { [field]: defaultValue } : null) })
           }
         />
-      }
-    >
-      <div style={styles.hint}>{hint}</div>
-      {on && (
-        <>
-          <Field label={label}>
-            <div style={{ width: 90 }}>
-              <NumberInput
-                value={n}
-                step={label === 'Max labels' ? 5 : 10}
-                min={1}
-                max={max}
-                onChange={(v) =>
-                  update({ [field]: Math.min(max ?? Infinity, Math.max(1, Math.round(v))) })
-                }
-              />
-            </div>
-          </Field>
-          <div style={styles.hint}>{rule(n)}</div>
-        </>
-      )}
-    </Section>
+        {on && (
+          <div style={{ width: 90 }}>
+            <NumberInput
+              value={n}
+              step={step}
+              min={1}
+              max={max}
+              onChange={(v) =>
+                update({ [field]: Math.min(max ?? Infinity, Math.max(1, Math.round(v))) })
+              }
+            />
+          </div>
+        )}
+      </div>
+    </Field>
   )
 }
 // ── small controls ──────────────────────────────────────────────────────────────
@@ -386,10 +385,15 @@ export function ColorChip({
   onClear,
   onAuto,
   autoLabel,
+  autoColor,
   style
 }: {
-  /** a colour, or AUTO (shown as the letter A — see the picker's Automatic row) */
+  /** a colour, or AUTO: the chip then shows `autoColor` — the colour it resolves to — with a
+   *  corner mark (AutoCorner) */
   color: string
+  /** what AUTO resolves to, as the chip should show it: a colour, or a CSS background (a gradient
+   *  of the colours, where it's one per gene / comparison); unset = faint stripes */
+  autoColor?: string
   /** false = the colour is cleared: the chip is hatched rather than showing an ink. Independent of
    *  the width beside it — a width of 0 just means nothing is drawn at the moment. */
   on: boolean
@@ -425,18 +429,12 @@ export function ColorChip({
       closeKey={tf}
       triggerStyle={{
         ...styles.swatch,
-        background: color === AUTO ? AUTO_BACKGROUND : on ? color : slashBackground(border),
-        ...(color === AUTO
-          ? {
-              display: 'inline-flex',
-              alignItems: 'center',
-              justifyContent: 'center'
-            }
-          : null),
+        background:
+          color === AUTO ? (autoColor ?? AUTO_BACKGROUND) : on ? color : slashBackground(border),
         ...style
       }}
     >
-      {color === AUTO ? <AutoMark /> : <span />}
+      {color === AUTO ? <AutoCorner /> : <span />}
     </ColorPicker>
   )
 }

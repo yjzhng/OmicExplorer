@@ -18,6 +18,9 @@ export const pcaSpec = defineSpec<'pca'>({
   defaultConfig: (): ClusterConfig => ({
     method: 'pca',
     colorBy: 'cmpd',
+    // the default colouring, worked out from the data (defaultConditionColoring): every categorical
+    // condition on colour, the first numeric one as the fade
+    colorPicks: [],
     display: 'replicate',
     territory: 'hull',
     plot: 'pc',

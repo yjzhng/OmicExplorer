@@ -275,9 +275,11 @@ export const motion = (props: string, job: MotionJob, ease: EaseKind = 'move'): 
 /** The looping cues (ms per cycle): a spinner's turn, a status dot's pulse, an indeterminate
  *  progress sweep, a hint's drift, and a refused connection's alarm flash (quick on purpose). */
 export const LOOP_MS = { spin: 900, pulse: 1100, sweep: 1400, drift: 1800, alarm: 550 } as const
-/** How long a brief confirmation stays up ("Copied", "Saved", "Refreshed"), and a warning or an
- *  armed confirm-click (long enough to read, or to click again). */
-export const NOTICE_MS = { done: 1200, warn: 3000 } as const
+/** How long a brief confirmation stays up ("Copied", "Saved", "Refreshed"), a warning or an
+ *  armed confirm-click (long enough to read, or to click again), and a one-off attention cue — a
+ *  control flashing once that something changed it from elsewhere (the gene selector's button
+ *  when a plot click selects genes): in, held, out, once. */
+export const NOTICE_MS = { done: 1200, warn: 3000, cue: 1400 } as const
 
 /**
  * The plots' one text scale (px): every plot draws its text at these sizes, so a figure reads the
@@ -327,13 +329,37 @@ export function plotBase(p: Palette): Record<string, unknown> {
 /** A threshold / reference guide line's default width, px (a point plot's `guideWidth`). */
 export const GUIDE_WIDTH = 0.5
 
+/** A line's dash, as the line settings offer it (and Plotly names it). */
+export type GuideDash = 'solid' | 'dash' | 'dot'
+
+/** A point plot's threshold lines as its settings set them (Axes and lines › Threshold lines, the
+ *  same on / style / width as every other line there): shown, dashed and GUIDE_WIDTH by default. */
+export function guideLook(style?: {
+  guideShow?: boolean
+  guideStyle?: GuideDash
+  guideWidth?: number
+}): { show: boolean; dash: GuideDash; width: number } {
+  return {
+    show: style?.guideShow ?? true,
+    dash: style?.guideStyle ?? 'dash',
+    width: style?.guideWidth ?? GUIDE_WIDTH
+  }
+}
+
 /** Shared style for threshold / reference guide lines (volcano/MA/scatter). Uses the muted text
  *  colour (not the near-invisible border) so thresholds read clearly against the cloud. */
 export function guideLine(
   p: Palette,
-  width = GUIDE_WIDTH
-): { color: string; width: number; dash: 'dash' } {
-  return { color: p.textMuted, width, dash: 'dash' }
+  width = GUIDE_WIDTH,
+  dash: GuideDash = 'dash'
+): { color: string; width: number; dash: GuideDash } {
+  return { color: p.textMuted, width, dash }
+}
+
+/** A plot's guide shapes with its threshold lines switched off: kept (a drag maps back to its
+ *  threshold by index) but not drawn. */
+export function guideShapes<T extends object>(shapes: T[], show: boolean): T[] {
+  return show ? shapes : shapes.map((s) => ({ ...s, visible: false }))
 }
 
 /**

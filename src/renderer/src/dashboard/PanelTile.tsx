@@ -47,6 +47,7 @@ import { Spinner } from '../ui/Spinner'
 import { EMPTY_SEL, resolveFacets } from './facet'
 import { SUBSET_TOGGLE_KINDS } from './subset'
 import { PanelBody } from './PanelBody'
+import { TILE_BUTTON_STYLE } from './tileButton'
 import { PanelErrorBoundary } from './PanelErrorBoundary'
 import { enqueueReveal, type Reveal } from './renderQueue'
 import { PanelSettingsDialog, type TilePlotConfig } from './PanelSettingsDialog'
@@ -107,7 +108,8 @@ function IconSpin(): ReactNode {
 /** Download: tray with a downward arrow (matches the top-nav export glyph). */
 /** Data (a file: folded corner, lines of text) — saving a table: a Data table tile's download, and
  *  the Enrichment / STRING tiles' Export data button. */
-function IconData(): ReactNode {
+/** (also drawn by the User guide) */
+export function IconData(): ReactNode {
   return (
     <svg {...glyph}>
       <path d="M6 3h8l4 4v14H6z" />
@@ -117,7 +119,8 @@ function IconData(): ReactNode {
   )
 }
 
-function IconDownload(): ReactNode {
+/** (also drawn by the User guide) */
+export function IconDownload(): ReactNode {
   return (
     <svg {...glyph}>
       <path d="M12 4v11" />
@@ -811,18 +814,7 @@ const styles: Record<string, CSSProperties> = {
   },
   // `.oe-tilebtn` (dashboard.css) adds hover/active feedback, no UA focus outline and a keyboard
   // focus-visible ring; the copy button's `data-tint` suspends hover while its feedback fill shows.
-  dlBtn: {
-    display: 'inline-flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    width: 28,
-    height: 26,
-    background: 'transparent',
-    color: UI.textMuted,
-    border: `1px solid ${UI.border}`,
-    borderRadius: 5,
-    cursor: 'pointer'
-  },
+  dlBtn: TILE_BUTTON_STYLE,
   // Copy feedback: the button fills with the accent on success, the plotting-category red on
   // failure, for 1 s.
   // Written as the `border` shorthand, like dlBtn: a `borderColor` longhand on top would be

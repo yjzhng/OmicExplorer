@@ -56,20 +56,39 @@ in the plot pickers (unmet entries are hidden) and in the Results tile.
    (engine/worker.ts) with its request type.
 
 Everything else — wiring, the pickers, the status dot, staleness, save / load, undo, the settings
-window's Legend and Axes sections (`plot.legend` / `plot.axes`), export — follows from the spec.
+window's legend switch and Axes and lines section (`plot.legend` / `plot.axes`), export — follows from the spec.
 
 ## A plot's settings and text
 
-- **Order.** A plot's `Settings` returns `<PlotSections show statistic labels marks colours />`
-  (kit/settings/plotSections.tsx): what it shows → the upstream statistic → its labels → its
-  points / lines → its colours. The window adds Legend and Axes after them. The order is the
-  component's, so a new plot can't drift from it (architecture.test.ts checks every plot uses it).
-- **Legend.** One switch, in the Legend section (`plot.legend`); a point plot's per-group entries
-  stay in its Points table (`plot.legend: 'groups'`).
-- **Label cap.** Every plot that labels genes offers `CapSection` in its `labels` slot.
+- **Order — upstream before downstream, whole plot before its parts.** A plot's `Settings`
+  returns `<PlotSections statistic general colours genes marks axes />`
+  (kit/settings/plotSections.tsx), which lays out every plot's settings in one order:
+  1. **Statistic** — what's computed before it's drawn: the upstream step's (written to that
+     step), or the plot's own analysis (a PCA's Data, a heatmap's Clustering);
+  2. **General** — one section for the whole plot, built by PlotSections from rows: what it shows
+     (view, metric, ordering) and its **Label limit** (`general`); how many genes — terms,
+     residuals — it draws (`genes`: a `CapRow`, Max genes); the window's **show legend** switch
+     (`plot.legend`); and last its colours (palettes, what colours by: `ColourRows` /
+     `CategoricalRows`) — plot-wide settings, each too small for a section. A row's explanation is
+     its (i) tip (a cap's tip restates its rule for the N chosen), not text under it;
+  3. **Points / Lines / Bars** — each group's look;
+  4. **Axes and lines** — the window's (`plot.axes`): per axis, then a Whole plot group with the
+     plot's own `axes` rows (an axis scale, a 3-D projection, a reference line) and the threshold
+     lines of a plot whose spec sets `guides`.
+     The order is the component's, so a new plot can't drift from it (architecture.test.ts checks
+     every plot uses it). The `general`, `genes` and `colours` slots take rows, not sections.
+- **One level per setting.** A setting sits once, at the level it applies to: the whole plot, a
+  group, or a group in one state. In a group table (Points), the rows that hold in every state —
+  name, colour, in legend — come first; the Plain / Selected / Not selected blocks hold only what
+  changes with state (size, opacity, outline, labels).
+- **Legend.** One switch, General's "show legend"; a point plot's per-group entries are the "in
+  legend" row of its Points table (`plot.legend: 'groups'`).
+- **Colours and opacity.** Every colour is a colour square (`ColorChip`); Automatic shows the
+  colour it resolves to (`autoColor` — a palette band where it's one per gene / level) with a
+  corner mark. Every opacity is the `OpacitySlider` (0–100%, stored 0–1).
 - **Controls.** One per job, in ui/: `Section`, `Field`, `NumberInput` (with an `optional` empty
   state), `Checkbox`, `Chevron`, and `ToggleSwitch` / `ChoiceSwitch` / `SwitchBar` for choices; the
-  kit re-exports them with the settings-only controls (`Select` at canvas zoom, `CapSection`,
+  kit re-exports them with the settings-only controls (`Select` at canvas zoom, `CapRow`,
   `QuickToggle`, `SampleOrderField`, …). The architecture test fails on a second copy.
 - **Text.** Plot text comes from `PLOT_TEXT` (ui/theme.ts): 13 heading and axis titles, 11 ticks
   and legend, 10 annotations and labels, 9 only for dense row / column labels. The layout font

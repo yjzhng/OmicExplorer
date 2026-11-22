@@ -597,7 +597,7 @@ export function previewFactorAnova(input: FactorAnovaInput): FactorAnovaPreview 
         : 'No context has a test level with its control — no overall rows; the factor still runs.'
     )
   return {
-    factors: factors.map((f) => f.condition).join(' × '),
+    factors: factors.map((f) => condLabel(f.condition)).join(' × '),
     terms: terms.map((t) => t.label),
     sharedBaseline: shared,
     tested: terms.filter((_, ti) => best[ti] > 0).map((t) => t.label),
