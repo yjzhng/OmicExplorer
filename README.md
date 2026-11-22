@@ -5,14 +5,20 @@
 <h1 align="center">OmicExplorer</h1>
 
 <p align="center">
-  Desktop app for exploring proteomics and other omic data: build an analysis as a workflow of
-  steps, then explore linked, interactive plots.
+  Open-source desktop app for exploring proteomics and other omic data: build an analysis as a workflow of
+  steps, then explore linked, interactive plots instantly.
 </p>
 
 <p align="center">
   <a href="https://github.com/yjzhng/OmicExplorer/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/yjzhng/OmicExplorer"></a>
   <img alt="Platforms" src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows-lightgrey">
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-blue"></a>
+</p>
+
+<p align="center">
+  <img src=".github/screenshots/hero.png" alt="USP7 PROTAC NK250 against its parent inhibitor NK192 in Panc89 cells at 72 h: volcano, time response and bubble plots">
+  <br>
+  <sub>A USP7 degrader against its parent inhibitor in Panc89 cells: volcano, time response and bubble plots. Data: <a href="#examples">Klink et al. 2026</a>.</sub>
 </p>
 
 ## Features
@@ -40,6 +46,38 @@
   or XLSX.
 - **Local and fast**: a TypeScript engine runs in the app. No Python, server or account is needed,
   and your data never leaves your machine.
+
+## Examples
+
+The example analyses below were created with published USP7 degrader proteomics data (PRIDE
+[PXD063917](https://www.ebi.ac.uk/pride/archive/projects/PXD063917) and
+[PXD063920](https://www.ebi.ac.uk/pride/archive/projects/PXD063920)). In that study, Panc89 and
+Ma-Mel-47 cancer cells were treated with the USP7 PROTACs NK250 and NK266, the parent USP7
+inhibitor NK192, or DMSO for 6, 24 and 72 h, in four replicates.
+
+> Klink N, Urban S, Seier JA, Adhikari B, Schwalm MP, Müller J, Dorsch M, Steinbach P, Jung J,
+> Vogt M, Kaschani F, Koch J, Führer S, Kaiser M, Schulze N, Knapp S, Wolf E, Paschen A, Grüner BM,
+> Gersch M. Targeted degradation of USP7 in solid cancer cells reveals distinct effects of
+> deubiquitinase degraders and inhibitors. _Nat Commun_ **17** (2026).
+> [doi:10.1038/s41467-026-72295-x](https://doi.org/10.1038/s41467-026-72295-x)
+
+**Workflow editor.** One dataset cleaned once, then compared and contrasted, each step with its
+own plots.
+
+![Workflow canvas](.github/screenshots/workflow.png)
+
+**Data quality.** Clean data's plots: heatmap, a gene across every condition, PCA, per-sample CV,
+sample correlation and the table.
+
+![Clean data plots: heatmap, bar, PCA, QC, correlation and data table](.github/screenshots/cleandata.png)
+
+**Contrast.** The degrader against the parent inhibitor, each relative to DMSO, side by side.
+
+![Contrast results: scatter, time response, dumbbell and data table](.github/screenshots/contrast.png)
+
+**Built-in User guide.** Every step and plot explained, and searchable.
+
+![User guide searching for "batch"](.github/screenshots/guide.png)
 
 ## Install
 

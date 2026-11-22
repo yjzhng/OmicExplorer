@@ -260,8 +260,8 @@ Each is off until switched on:
 - **Clean-up:** drop genes measured in fewer than **Min. coverage** % of samples (50% to start).
   With **Coverage per** a condition, a gene is kept if any one group clears the bar.
 - **Normalisation:** **Median** or **Distribution** (Perseus width adjustment), on common or all
-  genes. Or **Reference protein**: shift each sample so one chosen protein reads the same
-  everywhere.
+  genes. Or **Reference protein**: divide each sample by one chosen protein, so values are
+  fractions of it. The protein must be measured in every sample.
 - **Batch correction:** removes each batch's offset while protecting your conditions. Fill batches
   from a condition or from **Merge inputs**, then adjust them by hand. It refuses a design where
   batches and conditions can't be told apart.

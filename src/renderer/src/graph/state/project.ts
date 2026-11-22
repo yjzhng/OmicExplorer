@@ -72,7 +72,7 @@ export async function checkUpgrades(
     }
     try {
       const text = await window.api.readProject(path)
-      upgradeWorker ??= new Worker(new URL('./upgradeCheck.worker.ts', import.meta.url), {
+      upgradeWorker ??= new Worker(new URL('../upgradeCheck.worker.ts', import.meta.url), {
         type: 'module'
       })
       const w = upgradeWorker
