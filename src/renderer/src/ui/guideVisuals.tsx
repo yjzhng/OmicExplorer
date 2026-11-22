@@ -4,6 +4,7 @@
 import type { CSSProperties, ReactNode } from 'react'
 
 import { RUN_FACES, runButtonStyle, type RunState } from '../app/runFaces'
+import { FileIcon, IconFolder } from './fileIcons'
 import { CATEGORICAL, UI } from './theme'
 
 const mono = 'ui-monospace, SFMono-Regular, Menlo, monospace'
@@ -50,20 +51,32 @@ export function RunStates(): ReactNode {
   )
 }
 
-/** A folder tree: each entry an icon, a name and a note. `depth` indents it. */
+/** A folder tree: each entry an icon, a name and a note. `depth` indents it; `stem` is a part
+ *  of the name drawn faint before it — a placeholder, or a part that's up to the user. */
 export function FolderTree({
   entries
 }: {
-  entries: { name: string; depth: number; folder?: boolean; note?: string }[]
+  entries: { name: string; stem?: string; depth: number; folder?: boolean; note?: string }[]
 }): ReactNode {
   return (
     <div style={s.tree}>
       {entries.map((e) => (
-        <div key={`${e.depth}-${e.name}`} style={{ ...s.treeRow, paddingLeft: 8 + e.depth * 18 }}>
-          <span style={{ ...s.treeIcon, color: e.folder ? CATEGORICAL[1] : UI.textMuted }}>
-            {e.folder ? '▰' : '▭'}
+        <div
+          key={`${e.depth}-${e.stem ?? ''}${e.name}`}
+          style={{ ...s.treeRow, paddingLeft: 8 + e.depth * 18 }}
+        >
+          {/* The project folder viewer's icons: a folder, or a file marked by its kind. */}
+          <span style={s.treeIcon}>
+            {e.folder ? (
+              <IconFolder size={15} />
+            ) : (
+              <FileIcon name={e.name.replace(/\/$/, '')} size={15} />
+            )}
           </span>
-          <span style={{ ...s.treeName, fontWeight: e.folder ? 700 : 500 }}>{e.name}</span>
+          <span style={{ ...s.treeName, fontWeight: e.folder ? 700 : 500 }}>
+            {e.stem && <span style={s.treeStem}>{e.stem}</span>}
+            {e.name}
+          </span>
           {e.note && <span style={s.treeNote}>{e.note}</span>}
         </div>
       ))}
@@ -289,9 +302,10 @@ const s: Record<string, CSSProperties> = {
   runItem: { display: 'inline-flex', alignItems: 'center', gap: 6 },
   runLabel: { fontSize: 12, color: UI.textMuted },
   tree: { ...box, padding: '8px 0', margin: '0 0 14px', fontSize: 12 },
-  treeRow: { display: 'flex', alignItems: 'baseline', gap: 8, padding: '2px 10px' },
-  treeIcon: { fontSize: 11, width: 12, flex: '0 0 auto' },
+  treeRow: { display: 'flex', alignItems: 'baseline', gap: 6, padding: '2px 10px' },
+  treeIcon: { display: 'inline-flex', alignSelf: 'center', flex: '0 0 auto', color: UI.textMuted },
   treeName: { fontFamily: mono, color: UI.text, flex: '0 0 auto' },
+  treeStem: { color: UI.textMuted, opacity: 0.6, fontWeight: 500 },
   treeNote: { color: UI.textMuted, fontSize: 11 },
   tableWrap: { margin: '0 0 14px', overflowX: 'auto' },
   table: {

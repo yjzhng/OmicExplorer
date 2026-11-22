@@ -281,6 +281,11 @@ export const LOOP_MS = { spin: 900, pulse: 1100, sweep: 1400, drift: 1800, alarm
  *  when a plot click selects genes): in, held, out, once. */
 export const NOTICE_MS = { done: 1200, warn: 3000, cue: 1400 } as const
 
+/** The dot grid's dots (px across at 100% zoom) and spacing — the workflow canvas's backdrop.
+ *  Results' snap dots take the same dot (and colour, the palette's `axis`), spaced by its own
+ *  grid instead. */
+export const DOT_GRID = { size: 2.2, gap: 24 } as const
+
 /**
  * The plots' one text scale (px): every plot draws its text at these sizes, so a figure reads the
  * same whichever plot it is.

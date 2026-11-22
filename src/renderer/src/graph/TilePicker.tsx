@@ -35,7 +35,8 @@ export function TilePicker({
   onCancel,
   ticked,
   onTickedChange,
-  preview = false
+  preview = false,
+  onStage
 }: {
   ops: NodeKind[]
   /** Chosen picks. One → a single node; two or more plotting picks → a group tile. Each pick may
@@ -57,6 +58,8 @@ export function TilePicker({
   /** Settings' stand-in for the canvas picker: the same list, its footer saying how many plots a
    *  new tile comes with instead of adding them */
   preview?: boolean
+  /** each move between its two lists: the categories (null), or one category's steps */
+  onStage?: (cat: NodeCategory | null) => void
 }) {
   const avail = upstream ?? UNWIRED
   // The user's default plots for a tile made from this kind of step (Settings › Plot defaults) —
@@ -83,7 +86,11 @@ export function TilePicker({
         ).length
       : g.ops.length
   // If only one category is offered, drop straight to its operations.
-  const [cat, setCat] = useState<NodeCategory | null>(byCat.length === 1 ? byCat[0].cat : null)
+  const [cat, setCatState] = useState<NodeCategory | null>(byCat.length === 1 ? byCat[0].cat : null)
+  const setCat = (next: NodeCategory | null): void => {
+    setCatState(next)
+    onStage?.(next)
+  }
   const [hovered, setHovered] = useState<string | null>(null)
   // Multi-select is offered only in the plotting category (to build a group tile). Keyed by
   // entryKey (not kind), so each Response plot (Dose response, Time response, …) checks on its own.

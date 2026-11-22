@@ -25,6 +25,8 @@ interface Props {
   /** the tile fallback's first line (default: "This plot couldn’t be drawn.") */
   title?: string
   variant?: 'tile' | 'app'
+  /** a tile's inputs (its results, its condition): a change gives a failed tile a fresh attempt */
+  resetKey?: unknown
   children: ReactNode
 }
 
@@ -50,10 +52,48 @@ export class ErrorBoundary extends Component<Props, { error: Error | null }> {
     )
   }
 
-  /** A different part in this place gets a fresh attempt rather than staying failed. */
+  /** A different part in this place, or new inputs for it, gets a fresh attempt rather than
+   *  staying failed. */
   componentDidUpdate(prev: Props): void {
-    if ((prev.label !== this.props.label || prev.nodeId !== this.props.nodeId) && this.state.error)
+    if (
+      this.state.error &&
+      (prev.label !== this.props.label ||
+        prev.nodeId !== this.props.nodeId ||
+        prev.resetKey !== this.props.resetKey)
+    )
       this.setState({ error: null })
+    this.watchSize()
+  }
+
+  componentDidMount(): void {
+    this.watchSize()
+  }
+
+  componentWillUnmount(): void {
+    this.sizeWatch?.disconnect()
+  }
+
+  // A failed tile tries again once it's resized: a plot can fail at one size only (Plotly throws
+  // when the box leaves it no room), and without this one bad moment mid-drag left the tile failed
+  // at any size until it was rebuilt. Watched only while failed.
+  private fallback: HTMLDivElement | null = null
+  private sizeWatch: ResizeObserver | null = null
+  private watchSize(): void {
+    const el = this.state.error && this.props.variant !== 'app' ? this.fallback : null
+    if (!el || typeof ResizeObserver === 'undefined') {
+      this.sizeWatch?.disconnect()
+      this.sizeWatch = null
+      return
+    }
+    if (this.sizeWatch) return
+    let first: string | null = null
+    this.sizeWatch = new ResizeObserver(() => {
+      const size = `${el.clientWidth}x${el.clientHeight}`
+      // (the first report is the size it failed at)
+      if (first === null) first = size
+      else if (size !== first) this.setState({ error: null })
+    })
+    this.sizeWatch.observe(el)
   }
 
   render(): ReactNode {
@@ -62,6 +102,9 @@ export class ErrorBoundary extends Component<Props, { error: Error | null }> {
     if (this.props.variant === 'app') return <AppFallback error={error} />
     return (
       <div
+        ref={(n) => {
+          this.fallback = n
+        }}
         style={{
           height: '100%',
           display: 'flex',

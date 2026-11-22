@@ -15,15 +15,24 @@ export function PanelErrorBoundary({
   label,
   nodeId,
   kind,
+  resetKey,
   children
 }: {
   label: string
   nodeId?: string
   kind?: string
+  /** the tile's inputs: when they change, a failed tile tries again (as it does when resized) */
+  resetKey?: unknown
   children: ReactNode
 }): ReactNode {
   return (
-    <ErrorBoundary label={label} nodeId={nodeId} kind={kind} where="render-tile">
+    <ErrorBoundary
+      label={label}
+      nodeId={nodeId}
+      kind={kind}
+      where="render-tile"
+      resetKey={resetKey}
+    >
       {children}
     </ErrorBoundary>
   )

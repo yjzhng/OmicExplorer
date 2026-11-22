@@ -25,6 +25,7 @@ import { cssVars, PALETTES } from './ui/theme'
 import { useAppSettings } from './ui/useAppSettings'
 import { useAppView } from './ui/useAppView'
 import { UserGuide } from './ui/UserGuide'
+import { TutorialOverlay } from './ui/tutorial/TutorialOverlay'
 import { useUiTheme } from './ui/useUiTheme'
 import { useUpdateCheck } from './ui/useUpdateCheck'
 
@@ -130,7 +131,9 @@ export default function App() {
             folder / workflow selector) and the Run button: equal spacers on either side. */}
         {projectOpen && (
           <>
-            <NavGeneSelector />
+            <div data-tour="genes" style={{ display: 'flex' }}>
+              <NavGeneSelector />
+            </div>
             <div style={styles.navSpacer} />
           </>
         )}
@@ -140,6 +143,7 @@ export default function App() {
         {projectOpen && <div style={styles.navSep} />}
         <button
           data-open={guideOpen}
+          data-tour="guide"
           style={styles.navBtn}
           onClick={() => setGuideOpen(true)}
           title="User guide"
@@ -178,6 +182,7 @@ export default function App() {
       ) : (
         <FlowViews view={view} />
       )}
+      <TutorialOverlay />
     </div>
   )
 }

@@ -26,7 +26,7 @@ import { TILES } from '../nodes/tiles'
 import { Chevron } from '../ui/Chevron'
 import { IconJump } from '../ui/icons'
 import { StatusNote } from '../ui/StatusNote'
-import { UI } from '../ui/theme'
+import { EASE, MOTION_MS, NOTICE_MS, UI } from '../ui/theme'
 import { useAppView } from '../ui/useAppView'
 import { useFrameEdit, useFrameEditMark } from './frameEdit'
 import { FrameNode } from './FrameNode'
@@ -62,6 +62,7 @@ import { TilePicker } from './TilePicker'
 import type {
   CompareConfig,
   LoadConfig,
+  NodeCategory,
   NodeData,
   NodeKind,
   PlaceholderData,
@@ -316,6 +317,10 @@ export function GraphNode({ id, data, selected: rfSelected }: NodeProps<Node<Nod
       deriveTabs(s.nodes, s.edges).some((t) => t.id === id)
   )
 
+  // Back from Results: this tile is the tab you were on, so it takes a cue once the slide back
+  // settles (useAppView.backToWorkflow) — keyed, so each return plays it again.
+  const cueKey = useAppView((s) => (s.tileCue?.id === id ? s.tileCue.key : null))
+
   const statusInfo = useStepStatus(id, data)
   // A done plot tile whose plots compute nothing offers no Re-run (registry.nothingToRerun).
   const noRerun = nothingToRerun(data)
@@ -385,6 +390,27 @@ export function GraphNode({ id, data, selected: rfSelected }: NodeProps<Node<Nod
   const rf = useReactFlow()
   const flowStore = useStoreApi()
   const cardRef = useRef<HTMLDivElement>(null)
+  // The hover can outlive the pointer: mouseleave never fires when the tile moves out from under a
+  // still cursor (Tidy, undo, a pan or zoom), when a drag holds the pointer (a connection dragged
+  // out of the "+"), or when the cursor leaves the window — and the "+" kept animating on a tile
+  // nowhere near the cursor. While hovered, every pointer move re-checks that it's still over the
+  // tile, and leaving the window ends it.
+  useEffect(() => {
+    if (!hovered) return
+    const onMove = (e: PointerEvent): void => {
+      const card = cardRef.current
+      if (!card || !(e.target instanceof Node) || !card.contains(e.target)) setHovered(false)
+    }
+    const onLeave = (): void => setHovered(false)
+    document.addEventListener('pointermove', onMove, true)
+    document.documentElement.addEventListener('mouseleave', onLeave)
+    window.addEventListener('blur', onLeave)
+    return () => {
+      document.removeEventListener('pointermove', onMove, true)
+      document.documentElement.removeEventListener('mouseleave', onLeave)
+      window.removeEventListener('blur', onLeave)
+    }
+  }, [hovered])
   // Which side the detail panel opens on. Default right of the tile; flip to the left when the
   // panel would run past the canvas's right edge and there's room on the left. Decided ONCE when
   // the panel opens — it stays put while the user pans/zooms, so it never jumps mid-edit.
@@ -544,6 +570,21 @@ export function GraphNode({ id, data, selected: rfSelected }: NodeProps<Node<Nod
         boxShadow: selected ? `0 0 0 1px ${accent}, 0 3px 14px rgba(0,0,0,0.4)` : card.boxShadow
       }}
     >
+      {/* the cue: a halo in the tile's accent, in and out once (app.css oe-halo) */}
+      {cueKey !== null && (
+        <span
+          key={cueKey}
+          aria-hidden
+          onAnimationEnd={() => useAppView.getState().endCue('tileCue', cueKey)}
+          style={
+            {
+              ...tileCue,
+              '--oe-halo': `0 0 10px 2px ${accent}99, 0 0 30px 8px ${accent}4d`,
+              animation: `oe-halo ${NOTICE_MS.cue}ms ${EASE.move} ${MOTION_MS.page}ms forwards`
+            } as CSSProperties
+          }
+        />
+      )}
       {groupMark && (
         <div style={{ ...markRing, borderColor: groupMark === 'add' ? UI.ok : UI.err }}>
           <span style={{ ...markBadge, background: groupMark === 'add' ? UI.ok : UI.err }}>
@@ -619,9 +660,7 @@ export function GraphNode({ id, data, selected: rfSelected }: NodeProps<Node<Nod
               aria-label="Open in Results"
               onClick={(e) => {
                 e.stopPropagation()
-                const view = useAppView.getState()
-                view.setResultsTab(id)
-                view.setView('results')
+                useAppView.getState().openResultsTab(id)
               }}
               style={{ ...resultsJump, color: accent, borderColor: accent }}
             >
@@ -741,6 +780,7 @@ export function GraphNode({ id, data, selected: rfSelected }: NodeProps<Node<Nod
           >
             <div
               ref={panelRef}
+              data-tour="step-settings"
               className={`nodrag nowheel ${configLeaving ? 'oe-config-out' : 'oe-config-in'}`}
               style={{
                 ['--oe-config-from' as string]: panelSide === 'left' ? '10px' : '-10px',
@@ -930,6 +970,10 @@ export function PlaceholderNode({ id, data }: NodeProps<Node<PlaceholderData>>) 
   // Gate plot options by what the upstream data actually carries (see requirements.ts), reading
   // through a stale upstream to the Clean data tile's declared conditions.
   const facts = useUpstreamFacts(data.source ?? undefined)
+  // The workflow's first step: a guide beside the picker, as the canvas's own prompts guide the
+  // data folder and ＋ New step before it — part of the tile, so it goes wherever the tile was put.
+  const first = useGraph((s) => !s.nodes.some(isStep))
+  const [stage, setStage] = useState<NodeCategory | null>(null)
   return (
     <div style={{ position: 'relative' }}>
       <Handle type="target" position={Position.Left} style={handleStyle} />
@@ -938,9 +982,58 @@ export function PlaceholderNode({ id, data }: NodeProps<Node<PlaceholderData>>) 
         header="New step"
         upstream={data.source ? facts : undefined}
         onPick={(picks) => resolvePlaceholder(id, picks)}
+        onStage={setStage}
       />
+      {first && (
+        <div style={pickHint}>
+          <span style={pickHintArrow}>←</span>
+          <span>
+            <span style={pickHintTitle}>
+              {stage ? 'Choose the step' : 'Choose one type of analysis step'}
+            </span>
+            <span style={pickHintText}>
+              {stage
+                ? 'Each is described in its row; ‹ goes back to the types.'
+                : 'Data brings files in, Processing analyses them, Visualisation plots the results.'}
+            </span>
+          </span>
+        </div>
+      )}
     </div>
   )
+}
+
+// The first-step guide: to the right of the picker, its arrow at the list's first rows; drawn
+// like the canvas's other prompts (bold title, muted line, accent arrow), and not clickable.
+const pickHint: CSSProperties = {
+  position: 'absolute',
+  left: '100%',
+  top: 44,
+  marginLeft: 14,
+  width: 240,
+  display: 'flex',
+  gap: 8,
+  alignItems: 'flex-start',
+  pointerEvents: 'none'
+}
+const pickHintArrow: CSSProperties = {
+  fontSize: 20,
+  lineHeight: 1,
+  color: UI.accent,
+  fontWeight: 700
+}
+const pickHintTitle: CSSProperties = {
+  display: 'block',
+  fontSize: 15,
+  fontWeight: 700,
+  color: UI.text,
+  marginBottom: 4
+}
+const pickHintText: CSSProperties = {
+  display: 'block',
+  fontSize: 12,
+  color: UI.textMuted,
+  lineHeight: 1.5
 }
 
 // eslint-disable-next-line react-refresh/only-export-components
@@ -1102,6 +1195,14 @@ const card: CSSProperties = {
   color: UI.text,
   fontSize: 12,
   boxShadow: '0 2px 10px rgba(0,0,0,0.3)'
+}
+/** The return cue's layer: the card's own outline, drawing the halo around it, never in the way. */
+const tileCue: CSSProperties = {
+  position: 'absolute',
+  // the card's outer edge (its border, and the thicker accent strip on top), so the halo rings it
+  inset: `-${TILE_STRIP}px -1px -1px -1px`,
+  borderRadius: 8,
+  pointerEvents: 'none'
 }
 const header: CSSProperties = {
   display: 'flex',

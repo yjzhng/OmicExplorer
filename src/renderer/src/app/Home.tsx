@@ -471,7 +471,11 @@ export function Home({
                       <span
                         style={{
                           ...styles.statusDot,
-                          background: last.dirty ? '#e2b93b' : '#3fb950'
+                          // Amber for unsaved edits or a live project never saved to a file.
+                          background:
+                            last.dirty || (last.mode === 'resume' && !last.path)
+                              ? '#e2b93b'
+                              : '#3fb950'
                         }}
                       />
                       {last.name}

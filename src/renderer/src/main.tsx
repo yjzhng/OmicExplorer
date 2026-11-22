@@ -1,3 +1,5 @@
+// First: whether this install is new is read before anything else stores anything (see firstRun).
+import './ui/tutorial/firstRun'
 import React from 'react'
 import ReactDOM from 'react-dom/client'
 import App from './App'

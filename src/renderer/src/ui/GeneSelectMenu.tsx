@@ -40,11 +40,7 @@ function ensureMenuCss(): void {
   }
   el.textContent =
     '.oe-gs-row .oe-gs-actions{display:none}' +
-    '.oe-gs-row:hover .oe-gs-actions{display:inline-flex;align-items:center;gap:1px}' +
-    // The trigger's nudge when the selection changes from outside the menu (a plot click): the pill
-    // takes the editing tint, deepened so a moment of it reads — in, held, then out — with nothing
-    // drawn outside it.
-    '@keyframes oe-gs-nudge{0%,100%{background:transparent}20%,55%{background:var(--oe-nudge-bg)}}'
+    '.oe-gs-row:hover .oe-gs-actions{display:inline-flex;align-items:center;gap:1px}'
   // The action-name tooltip is portal-rendered (see ActionTip) so the scroll container can't crop it.
 }
 
@@ -1179,7 +1175,7 @@ export function GeneSelectMenu({ tabs }: { tabs: GeneGroupTab[] }): ReactNode {
         }}
       >
         {/* The selection just changed from outside the menu: the editing tint, in and out (see
-            ensureMenuCss), keyed so each change plays it again. */}
+            app.css oe-cue), keyed so each change plays it again. */}
         {nudge && (
           <span
             key={nudge.key}
@@ -1189,8 +1185,8 @@ export function GeneSelectMenu({ tabs }: { tabs: GeneGroupTab[] }): ReactNode {
                 ...styles.triggerNudge,
                 // the trigger's editing / open tint (accent at 22), deepened: that faint a tint
                 // passing in a moment went unseen
-                '--oe-nudge-bg': `${p.accent}59`,
-                animation: `oe-gs-nudge ${NOTICE_MS.cue}ms ${EASE.move} forwards`
+                '--oe-cue-bg': `${p.accent}59`,
+                animation: `oe-cue ${NOTICE_MS.cue}ms ${EASE.move} forwards`
               } as CSSProperties
             }
           />
@@ -1269,6 +1265,7 @@ export function GeneSelectMenu({ tabs }: { tabs: GeneGroupTab[] }): ReactNode {
         createPortal(
           <div
             ref={menuRef}
+            data-tour="gene-menu"
             className={menuLeaving ? 'oe-menu-out' : 'oe-menu-in'}
             onAnimationEnd={(e) => {
               if (e.target === e.currentTarget && menuLeaving) setMenuMounted(false)

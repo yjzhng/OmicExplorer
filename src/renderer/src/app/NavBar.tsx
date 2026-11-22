@@ -2,6 +2,7 @@ import { Panel } from '@xyflow/react'
 import { type CSSProperties, type ReactNode, useEffect, useState } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 import { menuParts, useGeneMenuTabs } from '../dashboard/useGeneMenuTabs'
+import { deriveTabs } from '../graph/groups'
 import { NODE_SPECS } from '../graph/registry'
 import { useGraph } from '../graph/store'
 import { type StepNode, isStep } from '../graph/types'
@@ -21,15 +22,30 @@ import { LAYOUTS } from './shared'
 import { styles } from './styles'
 
 /** Top-right button from the canvas to the results dashboard — the way there; the dashboard's
- *  "← Workflow" is the way back. */
+ *  "← Workflow" is the way back. With a plot tile selected, it opens that tile's tab. */
 export function ResultsLink() {
   const setView = useAppView((s) => s.setView)
+  const open = (): void => {
+    const g = useGraph.getState()
+    const tabs = new Set(deriveTabs(g.nodes, g.edges).map((t) => t.id))
+    // the tile whose settings are open, else the one tile selected on the canvas
+    const picked = g.nodes.filter((n) => n.selected && tabs.has(n.id))
+    const tab =
+      g.selectedId && tabs.has(g.selectedId)
+        ? g.selectedId
+        : picked.length === 1
+          ? picked[0].id
+          : null
+    if (tab) useAppView.getState().openResultsTab(tab)
+    else setView('results')
+  }
   return (
     <Panel position="top-right">
       <button
         className="new-step-btn oe-view-btn oe-press"
+        data-tour="results"
         style={styles.resultsLink}
-        onClick={() => setView('results')}
+        onClick={open}
         title="Open the results dashboard"
       >
         Results →
@@ -139,11 +155,14 @@ export function UpdateTag({ update }: { update: UpdateInfo }) {
 export function NavMenu({
   open,
   style,
-  children
+  children,
+  tour
 }: {
   open: boolean
   style: CSSProperties
   children: ReactNode
+  /** its name for the tutorial (data-tour), when a tour stop shows it */
+  tour?: string
 }) {
   const [mounted, setMounted] = useState(open)
   if (open && !mounted) setMounted(true)
@@ -152,6 +171,7 @@ export function NavMenu({
   return (
     <div
       className={leaving ? 'oe-menu-out' : 'oe-menu-in'}
+      data-tour={tour}
       style={{ ...style, ...(leaving ? { pointerEvents: 'none' } : null) }}
       onAnimationEnd={(e) => {
         if (e.target === e.currentTarget && leaving) setMounted(false)
@@ -339,12 +359,12 @@ export function FolderChip() {
         <NavCaret open={open} />
       </button>
       {open && <div style={styles.scrim} onClick={() => setOpen(false)} />}
-      <NavMenu open={open} style={styles.folderMenu}>
+      <NavMenu open={open} style={styles.folderMenu} tour="folder-menu">
         {folders.map((f) => {
           const missing = f.id === activeFolderId && dataDirMissing
-          // A path-less folder is an unset placeholder: show a plain call-to-action to pick a
-          // folder, not a dummy "(no path)" tile (and nothing to delete).
-          const noPath = !f.path && !missing
+          // A path-less folder is an unset placeholder (a new project's first folder): no row of
+          // its own — "＋ Add folder…" below sets its path in place (see addFolder).
+          if (!f.path && !missing) return null
           return (
             <div
               key={f.id}
@@ -357,38 +377,29 @@ export function FolderChip() {
                 style={styles.folderPick}
                 title={f.path || 'Select a data folder'}
                 onClick={() => {
-                  // A missing OR path-less folder needs a folder picked for it; otherwise just
-                  // switch to it.
+                  // A missing folder needs a folder picked for it; otherwise just switch to it.
                   if (missing || !f.path) void repathFolder(f.id)
                   else switchFolder(f.id)
                   setOpen(false)
                 }}
               >
-                {noPath ? (
-                  <span style={styles.folderName}>
-                    Select folder where project data is saved to
-                  </span>
+                {missing ? (
+                  <StatusNote kind="warn" style={{ marginTop: 0, fontSize: 12 }}>
+                    {f.name} — not found
+                  </StatusNote>
                 ) : (
-                  <>
-                    {missing ? (
-                      <StatusNote kind="warn" style={{ marginTop: 0, fontSize: 12 }}>
-                        {f.name} — not found
-                      </StatusNote>
-                    ) : (
-                      <span style={styles.folderName}>{f.name}</span>
-                    )}
-                    <span style={{ ...styles.folderPath, ...(missing ? styles.pathWarn : null) }}>
-                      {f.path || '—'}
-                    </span>
-                    {missing && (
-                      <StatusNote kind="warn" style={{ marginTop: 2, fontWeight: 600 }}>
-                        Click to re-select folder…
-                      </StatusNote>
-                    )}
-                  </>
+                  <span style={styles.folderName}>{f.name}</span>
+                )}
+                <span style={{ ...styles.folderPath, ...(missing ? styles.pathWarn : null) }}>
+                  {f.path || '—'}
+                </span>
+                {missing && (
+                  <StatusNote kind="warn" style={{ marginTop: 2, fontWeight: 600 }}>
+                    Click to re-select folder…
+                  </StatusNote>
                 )}
               </button>
-              {!noPath && !missing && (
+              {!missing && (
                 <button
                   style={styles.rowIconBtn}
                   title="Change location… (moves the project data; copies the input files used)"
@@ -401,20 +412,16 @@ export function FolderChip() {
                   <IconEdit />
                 </button>
               )}
-              {!noPath && (
-                <button
-                  style={{ ...styles.rowIconBtn, color: '#e15759' }}
-                  title={
-                    folders.length > 1
-                      ? 'Delete folder'
-                      : 'Delete folder (resets to an empty folder)'
-                  }
-                  aria-label="Delete folder"
-                  onClick={() => deleteFolder(f.id)}
-                >
-                  <IconTrash />
-                </button>
-              )}
+              <button
+                style={{ ...styles.rowIconBtn, color: '#e15759' }}
+                title={
+                  folders.length > 1 ? 'Delete folder' : 'Delete folder (resets to an empty folder)'
+                }
+                aria-label="Delete folder"
+                onClick={() => deleteFolder(f.id)}
+              >
+                <IconTrash />
+              </button>
             </div>
           )
         })}
@@ -579,6 +586,7 @@ export function RunButton() {
         </span>
       )}
       <button
+        data-tour="run"
         style={{ ...runButtonStyle(state), opacity: !hasRunnable && !runningAll ? 0.5 : 1 }}
         disabled={!hasRunnable && !runningAll}
         onClick={() => (runningAll ? stopAll() : void runAll())}
@@ -632,6 +640,7 @@ export function ProjectMenu() {
     <div style={{ position: 'relative' }}>
       <button
         data-open={open}
+        data-tour="project"
         style={{ ...styles.projectChip, color: projectOpen ? UI.text : UI.textMuted }}
         title="Project menu"
         onClick={() => setOpen((o) => !o)}
@@ -644,9 +653,16 @@ export function ProjectMenu() {
               <StatusIcon kind="progress" />
             </span>
           ) : (
+            // Green only once the project is on disk with nothing pending: a project never saved
+            // (no file yet) is unsaved even before its first edit.
             <span
-              style={{ ...styles.statusDot, background: dirty ? '#e2b93b' : '#3fb950' }}
-              title={dirty ? 'Unsaved changes' : 'All changes saved'}
+              style={{
+                ...styles.statusDot,
+                background: dirty || !projectPath ? '#e2b93b' : '#3fb950'
+              }}
+              title={
+                !projectPath ? 'Not saved yet' : dirty ? 'Unsaved changes' : 'All changes saved'
+              }
             />
           ))}
         <NavCaret open={open} />
@@ -811,7 +827,9 @@ export function IconEdit() {
 }
 /** Control chip: save / save-as / undo / redo, one bordered group split by dividers. */
 export function ControlChip() {
-  const dirty = useGraph((s) => s.dirty)
+  // A never-saved project has something to save even before its first edit (its first save
+  // writes the file — saveProject routes to save-as).
+  const dirty = useGraph((s) => s.dirty || !s.projectPath)
   const saveProject = useGraph((s) => s.saveProject)
   const [saveAsOpen, setSaveAsOpen] = useState(false)
   const canUndo = useGraph((s) => s.past.length > 0)
@@ -830,7 +848,7 @@ export function ControlChip() {
       const s = useGraph.getState()
       if (s.saving) return
       if (e.shiftKey) void s.saveProjectAs()
-      else if (s.dirty) void s.saveProject()
+      else if (s.dirty || !s.projectPath) void s.saveProject()
     }
     document.addEventListener('keydown', onKey)
     return () => document.removeEventListener('keydown', onKey)
@@ -847,6 +865,7 @@ export function ControlChip() {
         </div>
       )}
       <button
+        data-tour="save"
         style={{
           ...styles.ctrlBtn,
           color: saveError ? UI.err : dirty ? UI.text : UI.textMuted,

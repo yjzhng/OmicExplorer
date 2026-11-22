@@ -127,8 +127,10 @@
   opacity: 0;
   transition: opacity var(--motion-hover) var(--ease-move);
 }
+/* Faded, not the full accent: the dashboard's accent is near-white on dark (near-black on light),
+   and a solid bar of it outshone the plots it sits between. */
 .oe-grid .react-grid-item > .react-resizable-handle:hover::after {
-  opacity: 1;
+  opacity: 0.4;
 }
 .oe-grid .react-grid-item > .react-resizable-handle.react-resizable-handle-n::after,
 .oe-grid .react-grid-item > .react-resizable-handle.react-resizable-handle-s::after {

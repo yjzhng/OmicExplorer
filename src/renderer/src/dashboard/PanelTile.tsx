@@ -573,11 +573,11 @@ export const PanelTile = memo(function PanelTile({
   }
 
   return (
-    <div style={styles.tile} ref={tileRef}>
+    <div style={styles.tile} ref={tileRef} data-tour={isPlot ? 'plot' : undefined}>
       <div className="panel-drag" style={{ ...styles.head, cursor: editing ? 'grab' : 'default' }}>
         <span style={{ ...styles.dot, background: accentOf(categoryOf(kind)) }} />
         <span style={styles.title}>{label}</span>
-        <div style={styles.controls}>
+        <div style={styles.controls} data-tour={isPlot ? 'plot-tools' : undefined}>
           {isPlot && (
             <button
               onClick={() => void runCopy()}
@@ -699,6 +699,7 @@ export const PanelTile = memo(function PanelTile({
                 label={`${label} · ${child ? `${node.id}/${child.id}` : node.id}`}
                 nodeId={child ? `${node.id}/${child.id}` : node.id}
                 kind={child ? child.kind : node.data.kind}
+                resetKey={applied}
               >
                 <PlotBody
                   key={`${categorical}|${customKey}|${plotFont}`}

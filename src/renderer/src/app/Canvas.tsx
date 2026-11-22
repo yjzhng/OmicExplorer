@@ -47,8 +47,9 @@ import {
   type PlotGroupConfig,
   type StepNode
 } from '../graph/types'
-import { EASE, MOTION_MS, NOTICE_MS, PALETTES, UI } from '../ui/theme'
+import { DOT_GRID, EASE, MOTION_MS, NOTICE_MS, PALETTES, UI } from '../ui/theme'
 import type { AppView } from '../ui/useAppView'
+import { setCanvasNav } from '../ui/tutorial/canvasNav'
 import { useUiTheme } from '../ui/useUiTheme'
 import {
   ACT_DONE,
@@ -73,6 +74,7 @@ export function NewStep({
     <Panel position="bottom-center">
       <button
         className="new-step-btn"
+        data-tour="new-step"
         style={{ ...styles.newStepBtn, ...(placing ? styles.newStepBtnActive : {}) }}
         onClick={onToggle}
       >
@@ -397,7 +399,18 @@ export function Canvas() {
   useEffect(() => {
     nodesRef.current = nodes
   }, [nodes])
-  const { screenToFlowPosition, getViewport, setViewport } = useReactFlow()
+  const { screenToFlowPosition, getViewport, setViewport, fitView } = useReactFlow()
+  // The tutorial moves the view while its dimming covers the canvas (ui/tutorial/canvasNav).
+  useEffect(() => {
+    setCanvasNav({
+      fit: () => void fitView({ padding: 0.25, maxZoom: 1, duration: MOTION_MS.page }),
+      panBy: (dx, dy) => {
+        const v = getViewport()
+        void setViewport({ x: v.x - dx, y: v.y - dy, zoom: v.zoom })
+      }
+    })
+    return () => setCanvasNav(null)
+  }, [fitView, getViewport, setViewport])
   // Frames React Flow's drag-select is touching, while one is under way (null otherwise). Frames
   // aren't selected themselves (see onNodesChange) — at the drag's end each stands for its tiles.
   const marqueeFrames = useRef<Set<string> | null>(null)
@@ -993,8 +1006,8 @@ export function Canvas() {
       >
         <Background
           variant={BackgroundVariant.Dots}
-          gap={20}
-          size={1.4}
+          gap={DOT_GRID.gap}
+          size={DOT_GRID.size}
           color={PALETTES[mode].axis}
         />
         {/* No data folder yet: an in-canvas hint anchored top-left, its ↑ arrow pointing up toward

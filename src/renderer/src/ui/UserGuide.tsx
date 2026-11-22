@@ -30,6 +30,7 @@ import {
 } from './guideMarkdown'
 import { GuideUi, TileRow } from './guideUi'
 import { LayoutPicker } from '../app/NavBar'
+import { PlayTutorial } from './tutorial/PlayTutorial'
 import { motion, UI } from './theme'
 import guideMd from './user-guide.md?raw'
 
@@ -201,6 +202,10 @@ export function UserGuide({ onClose }: { onClose: () => void }): ReactNode {
           <button style={styles.close} onClick={onClose} aria-label="Close">
             ✕
           </button>
+        </div>
+        {/* The tutorial, across the top of the guide: the way in for anyone reading from the start. */}
+        <div style={styles.tutorialBar}>
+          <PlayTutorial onStart={onClose} />
         </div>
         <div style={styles.body}>
           <nav style={styles.nav}>
@@ -375,6 +380,11 @@ const styles: Record<string, CSSProperties> = {
     cursor: 'pointer',
     padding: 4,
     lineHeight: 1
+  },
+  tutorialBar: {
+    padding: '10px 16px',
+    borderBottom: `1px solid ${UI.border}`,
+    flex: '0 0 auto'
   },
   body: { display: 'flex', flex: 1, minHeight: 0 },
   nav: {

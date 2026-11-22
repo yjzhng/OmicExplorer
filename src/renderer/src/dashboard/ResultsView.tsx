@@ -27,7 +27,8 @@ import { useGraph } from '../graph/store'
 import { isStep, type NodeResult, type PlotGroupConfig, type StepNode } from '../graph/types'
 import type { PanelLayoutItem } from '../graph/types'
 import { Chevron } from '../ui/Chevron'
-import { UI } from '../ui/theme'
+import { EASE, MOTION_MS, NOTICE_MS, UI } from '../ui/theme'
+import { useUiTheme } from '../ui/useUiTheme'
 import { useAppSettings } from '../ui/useAppSettings'
 import { useAppView } from '../ui/useAppView'
 import { DashboardGrid } from './DashboardGrid'
@@ -63,13 +64,14 @@ export function ResultsView(): ReactNode {
   // when you switch to the canvas — returning lands on the same tab, not the first.
   const activeId = useAppView((s) => s.resultsTab)
   const setResultsTab = useAppView((s) => s.setResultsTab)
-  const setView = useAppView((s) => s.setView)
-  // Back to the canvas — the counterpart of the canvas's "Results →" button.
+  const toWorkflow = useAppView((s) => s.backToWorkflow)
+  // Back to the canvas — the counterpart of the canvas's "Results →" button. The tile of the tab
+  // you were on gets a cue there, so it's found again in a large workflow.
   const backToWorkflow = (
     <button
       className="oe-view-btn oe-press"
       style={styles.backBtn}
-      onClick={() => setView('canvas')}
+      onClick={toWorkflow}
       title="Back to the workflow canvas"
     >
       ← Workflow
@@ -292,7 +294,8 @@ export function ResultsView(): ReactNode {
                           : groupTitle(g, results)
                       }
                     >
-                      {titles.get(g.id)}
+                      <TabChipCue id={g.id} />
+                      <span style={styles.tabName}>{titles.get(g.id)}</span>
                       {/* Real panel count: plot groups unfold into one panel per subcard, so this
                         matches the tiles actually shown (a folded group is not counted as 1). */}
                       <span style={styles.tabCount}>
@@ -555,6 +558,47 @@ function GroupPane({
   )
 }
 
+/** A tab chip's cue when you jump to it from the canvas (useAppView.openResultsTab): the gene
+ *  selector's — the same layer and animation (app.css oe-cue) — once the slide across settles.
+ *  The chip lightens, fill and outline: the layer reaches over the chip's border, under its text.
+ *  The chip is first scrolled into view in its row.
+ *
+ *  Its own component, subscribed on its own, so the dashboard doesn't re-render when the cue starts
+ *  or clears; and the scroll moves only the tab row — `scrollIntoView` also scrolls every ancestor,
+ *  the sliding page among them, and shook it mid-slide. */
+function TabChipCue({ id }: { id: string }): ReactNode {
+  const key = useAppView((s) => (s.tabCue?.id === id ? s.tabCue.key : null))
+  const mode = useUiTheme((s) => s.mode)
+  const ref = useRef<HTMLSpanElement>(null)
+  useLayoutEffect(() => {
+    const chip = ref.current?.parentElement
+    const row = chip?.parentElement
+    if (key === null || !chip || !row) return
+    const c = chip.getBoundingClientRect()
+    const r = row.getBoundingClientRect()
+    if (c.left < r.left) row.scrollLeft -= r.left - c.left
+    else if (c.right > r.right) row.scrollLeft += c.right - r.right
+  }, [key])
+  if (key === null) return null
+  return (
+    <span
+      ref={ref}
+      key={key}
+      aria-hidden
+      onAnimationEnd={() => useAppView.getState().endCue('tabCue', key)}
+      style={
+        {
+          ...styles.tabCue,
+          // toward white: more on the dark theme's light-grey chip, less on the light theme's dark
+          // one, whose white text must stay readable
+          '--oe-cue-bg': `rgba(255, 255, 255, ${mode === 'dark' ? 0.75 : 0.3})`,
+          animation: `oe-cue ${NOTICE_MS.cue}ms ${EASE.move} ${MOTION_MS.page}ms forwards`
+        } as CSSProperties
+      }
+    />
+  )
+}
+
 const styles: Record<string, CSSProperties> = {
   view: { display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0, background: UI.bg },
   panes: { flex: 1, minHeight: 0, position: 'relative' },
@@ -654,13 +698,11 @@ const styles: Record<string, CSSProperties> = {
     alignItems: 'center',
     gap: 7,
     whiteSpace: 'nowrap',
-    // Never shrink: `overflow: hidden` drops a flex item's minimum width to 0, so without this a
-    // long row squeezed every tab to a sliver instead of overflowing into the scroller. Long names
-    // still ellipsize at the max width.
+    // Never shrink: a long row overflows into the scroller rather than squeezing every tab to a
+    // sliver. Long names ellipsize at the max width (tabName) — on the name, not the chip, which
+    // mustn't clip: its cue's layer reaches over its border.
     flex: '0 0 auto',
     maxWidth: 260,
-    overflow: 'hidden',
-    textOverflow: 'ellipsis',
     background: 'transparent',
     color: UI.textMuted,
     border: `1px solid ${UI.border}`,
@@ -668,7 +710,19 @@ const styles: Record<string, CSSProperties> = {
     padding: '5px 14px',
     fontSize: 12,
     fontWeight: 600,
-    cursor: 'pointer'
+    cursor: 'pointer',
+    // (the cue's layer sits inside it, between its fill and border and its text)
+    position: 'relative',
+    isolation: 'isolate'
+  },
+  tabName: { minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' },
+  // the cue's layer: the chip's own shape, over its fill and border (1px), under its text
+  tabCue: {
+    position: 'absolute',
+    inset: -1,
+    borderRadius: 'inherit',
+    pointerEvents: 'none',
+    zIndex: -1
   },
   // The whole `border`, not just its colour: React clears a longhand (borderColor) set over the
   // shorthand when the style drops it, which left the last active tab with a dark outline.
@@ -680,6 +734,7 @@ const styles: Record<string, CSSProperties> = {
     cursor: 'text'
   },
   tabCount: { fontSize: 10, opacity: 0.7 },
+
   // The overflow menu (TabMenu): its button at the tab row's right end, sized like a tab, and the
   // list it opens below, right-aligned to it.
   // Shown only while the tabs overflow, so the tabs' scrollbar strip (4px, .oe-tabscroll) sits under

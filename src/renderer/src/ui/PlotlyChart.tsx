@@ -26,7 +26,6 @@ import { createPortal } from 'react-dom'
 import Plotly, { type PlotlyGraphDiv } from 'plotly.js-strict-dist-min'
 import {
   applyPlotAxes,
-  fitMargins,
   thinAxes,
   withoutLegend,
   axisTitleText,
@@ -73,6 +72,7 @@ import {
   applyHighlight
 } from './plotly/highlight'
 import { bindLegendHover } from './plotly/legendHover'
+import { fitToBox, refitForResize, type FitState } from './plotly/boxFit'
 import { type Aspect, bindPinchZoom, liveCameras } from './plotly/cameras'
 
 export type { PlotLabel } from './plotly/labels'
@@ -348,6 +348,9 @@ export function PlotlyChart({
   // True while the left margin is pinned for bold tick labels (see reserveBoldMargin) — the pin is
   // imperative, so it must be released when the plot stops needing it.
   const pinnedMarginRef = useRef(false)
+  // What the last draw fitted to its box (fitToBox): the unfitted traces and layout, each colour
+  // bar's level and the margins — for the resize to refit from.
+  const fitRef = useRef<FitState | null>(null)
   // The layout this chart was last rendered with, for restoring a margin the pin overwrote.
   const layoutRef = useRef(layout)
   /** True from the start of a Plotly.react until it resolves (see the react effect). */
@@ -629,12 +632,20 @@ export function PlotlyChart({
     }
     // The tile's legend switched off: no legend, no colour scale bars.
     const legendFree = legendOff ? withoutLegend(shown.traces, shown.layout) : shown
-    // Margins that fit the box actually there (a small tile, a facet's cell): ones that left the
-    // plot no room made Plotly throw "Something went wrong with axis scaling", taking the tile down.
-    const drawn = {
+    // Margins and colour bars that fit the box (a small tile, a facet's cell): margins that left
+    // the plot no room, or a colour bar too long for its plot (scaleFit), made Plotly throw
+    // "Something went wrong with axis scaling", taking the tile down. Fitted to the smaller of the
+    // box and the size Plotly will lay this draw out at — once it has autosized, a re-render keeps
+    // its last size until the resize below catches up, so a tile just made bigger still draws at
+    // the old, smaller size first (the resize then gives back what the new size has room for).
+    const fitted = fitToBox(el, legendFree.traces, legendFree.layout)
+    fitRef.current = {
       traces: legendFree.traces,
-      layout: fitMargins(legendFree.layout, el.clientWidth, el.clientHeight)
+      layout: legendFree.layout,
+      levels: fitted.levels,
+      margin: fitted.margin
     }
+    const drawn = { traces: fitted.traces, layout: fitted.layout }
     void track(
       Plotly.react(el, drawn.traces, drawn.layout, {
         responsive: true,
@@ -1004,7 +1015,13 @@ export function PlotlyChart({
           )
           return
         }
-        Plotly.Plots.resize(el)
+        // Refit the margins and colour bars for the new size, in the order that never draws one
+        // too big for the plot: what the new size takes away before Plotly resizes, what it gives
+        // back after.
+        const after = refitForResize(el, fitRef)
+        void Promise.resolve(Plotly.Plots.resize(el))
+          .then(after)
+          .catch(() => {})
         // Also the moment a hidden tab is revealed (0×0 → sized): flush the highlight
         // that was skipped while it was hidden.
         applyHighlight(

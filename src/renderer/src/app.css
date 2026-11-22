@@ -34,6 +34,33 @@
   }
 }
 
+/* A one-off attention cue (NOTICE_MS.cue): a control's tint, in, held, then out, so the eye finds
+   it — the gene selector's button when a plot click selects genes. Drawn by a layer over the
+   control with `--oe-cue-bg` set; nothing is drawn outside it. */
+@keyframes oe-cue {
+  0%,
+  100% {
+    background: transparent;
+  }
+  20%,
+  55% {
+    background: var(--oe-cue-bg);
+  }
+}
+
+/* A tile's one-off cue (NOTICE_MS.cue): a halo around it, in, held, then out — the tile of the
+   Results tab you just came back from. `--oe-halo` is the halo's box-shadow. */
+@keyframes oe-halo {
+  0%,
+  100% {
+    box-shadow: none;
+  }
+  20%,
+  55% {
+    box-shadow: var(--oe-halo);
+  }
+}
+
 /* Connection-drag validity feedback. `isValidConnection` (see store) already REJECTS an illegal
    wiring — this makes that rejection visible: while dragging a new edge, the handle the cursor is
    over flashes RED when the connection is disallowed (e.g. a plot that can't consume this node's

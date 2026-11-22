@@ -38,7 +38,9 @@ export function LoadPanel({ id, config }: { id: string; config: LoadConfig }) {
   const refreshDataFiles = useGraph((s) => s.refreshDataFiles)
   const [dialogOpen, setDialogOpen] = useConfigWindowOpen(id)
   const [refreshState, setRefreshState] = useState<'idle' | 'busy' | 'done'>('idle')
-  const opts = [{ value: '', label: '—' }, ...inputFiles.map((f) => ({ value: f, label: f }))]
+  // The input files only: with none chosen a file select shows its muted placeholder ("Select
+  // file…" / "Select data…"), not a "—" entry.
+  const opts = inputFiles.map((f) => ({ value: f, label: f }))
   // The matrix may be an external file (absolute path) picked from outside the data folder — surface
   // it as a selectable option so the dropdown shows it instead of falling back to blank.
   const matrixExternal = !!config.matrix && !inputFiles.includes(config.matrix)
@@ -163,6 +165,7 @@ export function LoadPanel({ id, config }: { id: string; config: LoadConfig }) {
                 value={config.data ?? ''}
                 onChange={(v) => update(id, { data: v || null })}
                 options={opts}
+                placeholder="Select file…"
               />
             </Field>
             <Field label="samplesheet" labelAside={formatButton('samplesheet')}>
@@ -170,13 +173,17 @@ export function LoadPanel({ id, config }: { id: string; config: LoadConfig }) {
                 value={config.samplesheet ?? ''}
                 onChange={(v) => update(id, { samplesheet: v || null })}
                 options={opts}
+                placeholder="Select file…"
               />
             </Field>
             <Field label="metadata" labelAside={formatButton('metadata')}>
               <Select
                 value={config.db ?? ''}
                 onChange={(v) => update(id, { db: v || null })}
-                options={opts}
+                // Metadata is optional: once one is picked, "No metadata" clears it again (listed
+                // only then, so an unset select shows its placeholder rather than this entry).
+                options={config.db ? [...opts, { value: '', label: 'No metadata' }] : opts}
+                placeholder="Select file…"
               />
             </Field>
             <button style={styles.linkNote} onClick={() => setFormatTab('datamatrix')}>
@@ -227,6 +234,7 @@ export function LoadPanel({ id, config }: { id: string; config: LoadConfig }) {
                   value={config.matrix ?? ''}
                   onChange={(v) => update(id, { matrix: v || null })}
                   options={matrixOpts}
+                  placeholder="Select data…"
                 />
               </div>
             </div>

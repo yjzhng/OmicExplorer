@@ -208,6 +208,7 @@ export function RunControl({
   const chip = (label: string, color: string, fn: () => void) => (
     <button
       className="nodrag"
+      data-tour="step-run"
       onClick={(e) => {
         e.stopPropagation()
         fn()

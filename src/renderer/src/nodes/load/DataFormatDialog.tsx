@@ -13,7 +13,9 @@ import exampleMetadata from '../../../../../templates/example_metadata.csv?raw'
 import templateDatamatrix from '../../../../../templates/template_datamatrix.csv?raw'
 import templateSamplesheet from '../../../../../templates/template_samplesheet.csv?raw'
 import templateMetadata from '../../../../../templates/template_metadata.csv?raw'
+import { useGraph } from '../../graph/store'
 import { Chevron } from '../../ui/Chevron'
+import { FolderTree } from '../../ui/guideVisuals'
 import { InfoTip } from '../../ui/InfoTip'
 import { StatusNote } from '../../ui/StatusNote'
 import { TableScroll } from '../../ui/TableScroll'
@@ -201,6 +203,7 @@ export function DataFormatDialog({
           </button>
         </div>
         <div style={styles.body}>
+          <FolderLayout />
           {FILES.map((f) => (
             <FileSection key={f.id} file={f} startOpen={f.id === initialTab} />
           ))}
@@ -208,6 +211,47 @@ export function DataFormatDialog({
       </div>
     </div>,
     document.body
+  )
+}
+
+/** Where the three files go: the data folder (the active one's name, once picked), its input/
+ *  subfolder, and the files in it — the same layout as the User Guide's "Data folder". */
+function FolderLayout(): ReactNode {
+  const folderName = useGraph((s) => {
+    const f = s.folders.find((x) => x.id === s.activeFolderId)
+    return f?.path ? f.name : null
+  })
+  return (
+    <div style={styles.layout}>
+      <div style={styles.fileConventionLabel}>Where the files go:</div>
+      {/* Faint = a placeholder or up to you: the folder's name until one is picked, and each
+          file's prefix (as on its "File name:" line). */}
+      <FolderTree
+        entries={[
+          folderName
+            ? { name: `${folderName}/`, depth: 0, folder: true, note: 'your data folder' }
+            : {
+                stem: 'data_folder',
+                name: '/',
+                depth: 0,
+                folder: true,
+                note: 'your data folder, picked in the folder chip'
+              },
+          {
+            name: 'input/',
+            depth: 1,
+            folder: true,
+            note: 'put the files here; the name prefix is up to you (e.g. the project name)'
+          },
+          ...FILES.map((f) => ({
+            stem: 'project_',
+            name: `${f.id}.csv`,
+            depth: 2,
+            note: f.fileRequired ? 'required' : 'optional'
+          }))
+        ]}
+      />
+    </div>
   )
 }
 
@@ -471,6 +515,9 @@ const styles: Record<string, CSSProperties> = {
     color: UI.text,
     cursor: 'pointer'
   },
+  // The folder layout at the top: label, then the tree (its own bottom margin dropped — the
+  // body's gap spaces it from the first file).
+  layout: { display: 'flex', flexDirection: 'column', gap: 6, marginBottom: -14 },
   fileBody: { display: 'flex', flexDirection: 'column', gap: 6, paddingLeft: 16, minWidth: 0 },
   fileConvention: { fontSize: 12, color: UI.text, fontFamily: 'ui-monospace, monospace' },
   fileTip: { marginLeft: 6, verticalAlign: 'middle', fontFamily: 'inherit' },
