@@ -127,6 +127,7 @@ export function FacetedPlot<T extends ContextRow>({
               <ChoiceSwitch
                 size="sm"
                 cap={isNumericFacet(dim, numeric) ? Infinity : PILL_CAP}
+                fit
                 counter
                 label={facetBarLabel(bar)}
                 value={String(value)}
@@ -155,7 +156,15 @@ const styles: Record<string, CSSProperties> = {
     padding: '3px 10px',
     flex: '0 0 auto'
   },
-  bar: { display: 'inline-flex', alignItems: 'center', gap: 6, flex: '0 0 auto' },
+  // Never wider than the strip: it shrinks to the room and the pills wrap (as SwitchBar's).
+  bar: {
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: 6,
+    flex: '0 1 auto',
+    minWidth: 0,
+    maxWidth: '100%'
+  },
   barLabel: {
     fontSize: 9,
     textTransform: 'uppercase',

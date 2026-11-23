@@ -49,6 +49,9 @@ export function SwitchBar({
             }
           })}
           onChange={onChange}
+          fit
+          // a plot's own settings: different things, no ‹ › to step through them
+          pager={false}
         />
       </div>
     </div>
@@ -94,10 +97,27 @@ const styles: Record<string, CSSProperties> = {
     rowGap: 4,
     columnGap: 14,
     padding: '3px 10px',
-    flex: '0 0 auto'
+    // Never wider than the row it sits in: it shrinks to the room, and the pills wrap within it
+    // (ToggleSwitch's track) rather than running the tile sideways.
+    flex: '0 1 auto',
+    minWidth: 0,
+    maxWidth: '100%'
   },
-  inline: { display: 'flex', alignItems: 'center', flex: '0 0 auto' },
-  bar: { display: 'inline-flex', alignItems: 'center', gap: 6, flex: '0 0 auto' },
+  inline: {
+    display: 'flex',
+    alignItems: 'center',
+    flex: '0 1 auto',
+    minWidth: 0,
+    maxWidth: '100%'
+  },
+  bar: {
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: 6,
+    flex: '0 1 auto',
+    minWidth: 0,
+    maxWidth: '100%'
+  },
   barLabel: {
     fontSize: 9,
     textTransform: 'uppercase',

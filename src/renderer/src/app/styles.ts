@@ -895,9 +895,9 @@ export const styles: Record<string, CSSProperties> = {
     background: '#3b82f6',
     flex: '0 0 auto'
   },
+  // inline with the update row's text (no offset of its own, so it sits on the same line)
   aboutLink: {
     display: 'inline-block',
-    marginTop: 4,
     fontSize: 12,
     color: UI.accent,
     textDecoration: 'underline',

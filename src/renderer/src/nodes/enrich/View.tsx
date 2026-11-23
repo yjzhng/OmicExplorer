@@ -18,13 +18,23 @@ import { Built, Empty } from '../kit/views/common'
 import { type ViewContext } from '../kit/views/context'
 import { styles } from '../kit/views/styles'
 import { EnrichView } from './EnrichView'
+import { groupOrderOf } from './groupOrder'
 
 export const NO_CATS: Record<string, string> = {}
 /** The enrich result body (nodes/views.ts). Plain render function: it runs inside
  *  PanelBody, so it must not call hooks — derive what needs a hook in usePlotContext. */
 export function enrichView(v: ViewContext): ReactNode {
-  const { upstream, cfgSource, patchConfig, numeric, facetSel, plotRun, upCompareCfg, effectsOf } =
-    v
+  const {
+    upstream,
+    cfgSource,
+    patchConfig,
+    numeric,
+    facetSel,
+    plotRun,
+    upCompareCfg,
+    effectsOf,
+    categoricalOf
+  } = v
   if (upstream?.kind !== 'compare')
     return <Empty text="Connect a Compare or Curve fit tile and run it." />
   const cfg = cfgSource as EnrichConfig
@@ -107,6 +117,9 @@ export function enrichView(v: ViewContext): ReactNode {
                 )}
                 comparison={comparisonOf(facetRows)}
                 effectColors={effectsOf(cfg, cfg.effectColors)}
+                groupOrder={groupOrderOf(source as EnrichSource, ann, cats)}
+                categorical={categoricalOf(cfg)}
+                termOrder={cfg.termOrder}
               />
             )}
           </Built>

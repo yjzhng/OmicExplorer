@@ -1,27 +1,43 @@
 import { useCallback, useContext, useMemo, useState } from 'react'
 
+import { GridPitchContext } from '../../dashboard/gridPitch'
 import { useElementSize } from '../../dashboard/useElementSize'
 
 import type { EnrichData, EnrichTerm } from '../../engine'
-import { fitText, flowChips, measureText } from '../../ui/legendChips'
+import { measureText } from '../../ui/legendChips'
 import { tooltip } from '../../ui/condTooltip'
 import { PlotlyChart, type PlotLabel } from '../../ui/PlotlyChart'
 import { effectHalves } from '../../ui/palettes'
-import { AXIS_LINE_WIDTH, PlotAxesContext } from '../../ui/plotAxes'
+import { PlotAxesContext } from '../../ui/plotAxes'
 import {
   axisBase,
   CATEGORICAL,
   EFFECT_COLOR,
   PALETTES,
   PLOT_TEXT,
-  plotBase,
   plotFontCss
 } from '../../ui/theme'
 import { useUiTheme } from '../../ui/useUiTheme'
 import type { EffectColors } from '../../graph/types'
-
-/** Prefix of a clickable legend chip's annotation name (the rest is its group). */
-const CHIP = 'oe-cat:'
+import {
+  axisTitle,
+  categoryLegend,
+  CHIP,
+  emptyLayout,
+  frame,
+  hexA,
+  labelTextBudget,
+  minFigureWidth,
+  LEGEND_INSET,
+  MARGIN_BOTTOM,
+  margins,
+  note,
+  PLAIN_RIGHT,
+  termAxis,
+  termGroups,
+  termLabels
+} from './chrome'
+import { groupIndexer } from './groupOrder'
 
 /** Diverging over-representation plot: enriched terms share one y axis, DOWN-regulated hits
  *  extend LEFT and UP-regulated hits extend RIGHT of centre. Bar style plots ±(−log₁₀ FDR),
@@ -36,7 +52,10 @@ export function EnrichView({
   title,
   effectColors,
   measure = 'log₂FC',
-  comparison
+  comparison,
+  groupOrder = [],
+  categorical = CATEGORICAL,
+  termOrder = 'significance'
 }: {
   enrich: EnrichData
   style?: 'dot' | 'bar' | 'ridge'
@@ -48,8 +67,34 @@ export function EnrichView({
   /** the upstream Compare's effect colours (with any of the plot's own on top); unset = the
    *  shared defaults */
   effectColors?: EffectColors
+  /** every term group the source has in the dataset, in its fixed order (groupOrder.ts): a group's
+   *  colour is its place here, so it's the same in every enrichment plot */
+  groupOrder?: readonly string[]
+  /** the term groups' palette (the plot's own, else the global one); unset = the global one */
+  categorical?: readonly string[]
+  /** stack the terms by significance alone, or by category first (in the fixed order), then by
+   *  significance within each */
+  termOrder?: 'significance' | 'category'
 }) {
   const mode = useUiTheme((s) => s.mode)
+  // A term group's colour: its place in the source's fixed order, the same in every plot.
+  const groupIndex = useMemo(() => groupIndexer(groupOrder), [groupOrder])
+  // The groups a plot has, in that fixed order (any the order lacks after, as they came).
+  const inGroupOrder = useCallback(
+    (seen: string[]): string[] =>
+      seen
+        .map((c, i) => [c, groupIndex(c, i)] as const)
+        .sort((a, b) => a[1] - b[1])
+        .map(([c]) => c),
+    [groupIndex]
+  )
+  const byCategory = termOrder === 'category'
+  // A term's category's place in the fixed order (no category: after every one), for stacking by
+  // category — the first at the top.
+  const catRank = useCallback(
+    (c: string | undefined): number => (c ? groupIndex(c, groupOrder.length) : Infinity),
+    [groupIndex, groupOrder]
+  )
   const upColor = effectColors?.up ?? EFFECT_COLOR.up
   const downColor = effectColors?.down ?? EFFECT_COLOR.down
   const noneColor = effectColors?.none ?? EFFECT_COLOR.none
@@ -59,12 +104,15 @@ export function EnrichView({
   // The tile's height, in 10px steps (0 = not measured yet) — to stack the dot plot's right-margin
   // keys in pixels under one another.
   const heightBudget = boxH > 0 ? Math.floor(boxH / 10) * 10 : 0
-  // Room for the legend: the figure's width less the inset either side; a fallback before measuring.
-  // In 20px steps, so dragging a tile's edge rebuilds the figure only when the wrap could change.
-  const legendBudget = boxW > 0 ? Math.max(160, Math.floor((boxW - 40) / 20) * 20) : 520
-  // The widest a term's label may be: ~40% of the tile, so one very long term name can't take the
-  // margin and squash the plot. The full name stays in the hover. 20px steps, as above.
-  const termBudget = boxW > 0 ? Math.max(120, Math.floor((boxW * 0.4) / 20) * 20) : 280
+  // Room for the legend: the figure's width less its inset (chrome.ts); a fallback before
+  // measuring. In 10px steps, so dragging a tile's edge rebuilds the figure only when the wrap
+  // could change.
+  const legendBudget = boxW > 0 ? Math.max(160, Math.floor((boxW - LEGEND_INSET) / 10) * 10) : 520
+  // The figure's width for the labels / plot split (chrome.ts labelTextBudget), stepped with the
+  // Results grid's columns — so a resize re-cuts the labels only as the tile passes a column, as
+  // it will snap to (10px steps outside the grid).
+  const pitch = useContext(GridPitchContext) || 10
+  const figW = boxW > 0 ? Math.floor(boxW / pitch) * pitch : 0
   // Term groups to show — click a legend chip to show only its terms, click more to add them, click
   // a chosen one again to drop it; none chosen = every term. View state, not saved with the tile.
   const [onlyCats, setOnlyCats] = useState<string[]>([])
@@ -78,45 +126,45 @@ export function EnrichView({
   // bar) — and so no group filter either.
   const legendOff = useContext(PlotAxesContext)?.legend === false
 
-  const { data, layout, labels, labelColor, boldTicks, genesById } = useMemo(() => {
+  const { data, layout, labels, labelColor, boldTicks, genesById, minWidth } = useMemo(() => {
     // The dots' significance ramps (faint → strong): each side's own colour, from a pale tint of it
     // to the colour its stems, bars and axis note draw in.
     const halves = effectHalves({ up: upColor, down: downColor })
     const p = PALETTES[mode]
     const gsea = enrich.method === 'gsea'
+    // The groups, legend, labels, axes and margins: chrome.ts, the same for every style.
+    const groupOpts = { onlyCats, legendOff, categorical, groupIndex, inGroupOrder }
+    const nothing = {
+      data: [] as Record<string, unknown>[],
+      layout: emptyLayout(p),
+      labels: [] as PlotLabel[],
+      labelColor: p.text,
+      boldTicks: undefined,
+      genesById: null as Map<string, string[]> | null,
+      minWidth: 0
+    }
 
     // ── ridgeline (GSEA only): each set's member-log₂FC distribution as a stacked density ridge,
     //    on the real log₂FC axis, so up sets sit right of 0 and down sets left. ──────────────────
     if (style === 'ridge' && gsea) {
       const terms = [...enrich.up, ...enrich.down].filter((t) => (t.dist?.length ?? 0) > 0)
-      if (terms.length === 0)
-        return {
-          data: [],
-          layout: {
-            ...plotBase(p),
-            annotations: [note('No enriched sets', 0.5, 0.5, p.textMuted, 12)],
-            xaxis: { ...axisBase(p), visible: false },
-            yaxis: { ...axisBase(p), visible: false }
-          },
-          labels: [] as PlotLabel[],
-          labelColor: p.text,
-          boldTicks: undefined as undefined,
-          genesById: null as Map<string, string[]> | null
-        }
+      if (terms.length === 0) return nothing
       // Ascending NES → index 0 (bottom) is the most down-regulated set, top the most up.
       terms.sort((a, b) => (a.nes ?? 0) - (b.nes ?? 0))
-      // Every group present (bottom → top, as before) — the chips, whichever are chosen; then only
-      // the chosen groups' sets are drawn (a choice the data no longer has is ignored).
-      const allCats: string[] = []
-      for (const t of terms)
-        if (t.category && !allCats.includes(t.category)) allCats.push(t.category)
-      // (no chips to undo a choice with while the legend is off: every term)
-      const only = (legendOff ? [] : onlyCats).filter((c) => allCats.includes(c))
-      const shown = only.length
-        ? terms.filter((t) => !!t.category && only.includes(t.category))
-        : terms
+      // Every group present; only the chosen groups' sets drawn.
+      const g = termGroups(terms, groupOpts)
+      const L = termLabels(g, labelTextBudget(figW, PLAIN_RIGHT), p)
+      const chosen = terms.filter(g.keep)
+      // By category first: the categories top → bottom in the fixed order, each's sets by NES
+      // (most up at the top) — index 0 is the bottom, so the last category comes first.
+      const shown = byCategory
+        ? [...chosen].sort(
+            (a, b) => catRank(b.category) - catRank(a.category) || (a.nes ?? 0) - (b.nes ?? 0)
+          )
+        : chosen
       // Build the row list, slotting the global (all-genes) reference ridge at the NES≈0 midline —
-      // between the down sets (below) and the up sets (above).
+      // between the down sets (below) and the up sets (above); stacked by category there's no
+      // midline, so at the bottom.
       interface Row {
         label: string
         dist: number[]
@@ -132,13 +180,9 @@ export function EnrichView({
         /** KEGG top-level category (undefined for GO source / the reference row) */
         category?: string
       }
+      const setLabel = (t: EnrichTerm): string => L.fit(`${t.term} (${t.setSize})`)
       const rows: Row[] = shown.map((t) => ({
-        // Measured bold, as the margin below is — the widest a label gets (on hover).
-        label: fitText(
-          `${t.term} (${t.setSize})`,
-          termBudget,
-          `bold ${PLOT_TEXT.tick}px ${plotFontCss()}`
-        ),
+        label: setLabel(t),
         dist: t.dist as number[],
         hue: (t.nes ?? 0) >= 0 ? upColor : downColor,
         ref: false,
@@ -160,9 +204,9 @@ export function EnrichView({
       }))
       const globalDist = enrich.ranked && enrich.ranked.length > 1 ? enrich.ranked : null
       if (globalDist) {
-        const nDown = shown.filter((t) => (t.nes ?? 0) < 0).length
+        const nDown = byCategory ? 0 : shown.filter((t) => (t.nes ?? 0) < 0).length
         rows.splice(nDown, 0, {
-          label: `all genes (${globalDist.length})`,
+          label: L.fit(`all genes (${globalDist.length})`),
           dist: globalDist,
           hue: noneColor,
           ref: true,
@@ -207,6 +251,12 @@ export function EnrichView({
       const maxD = Math.max(1e-9, ...dens.flat())
       const step = 1
       const overlap = 1.9
+      // The top of the drawn ridges: each one's own peak above its baseline (the tallest any could
+      // reach, overlap, is the highest density of all — usually not the top row's, which left an
+      // empty band over the plot up to it).
+      const ridgeTop = Math.max(
+        ...dens.map((d, r) => r * step + (Math.max(0, ...d) / maxD) * overlap * step)
+      )
       const data: Record<string, unknown>[] = rows.map((row, r) => {
         const base = r * step
         const topY = dens[r].map((v) => base + (v / maxD) * overlap * step)
@@ -258,119 +308,29 @@ export function EnrichView({
         })
         // Leading-edge genes are shown as dots only (names appear on hover); no baseline labels.
       })
-      // Term group → colour (a KEGG pathway's category, a COG category's area; stable order = first
-      // appearance, top→bottom). Mark each term's y-tick label with a square in its group's
-      // colour and show a centred legend above (only groups present).
-      const cats = allCats
-      const catColor = new Map(cats.map((c, i) => [c, CATEGORICAL[i % CATEGORICAL.length]]))
-      // y-tick label for a term given its hover state: the name in the plain text colour, then a
-      // square in its group's colour (by the axis) — the colour marks the group without making the
-      // name itself hard to read. Active → bold; when another term is active this one FADES, square
-      // and all (low opacity, like the STRING legend).
-      const tickLabel = (i: number, active: boolean, anyActive: boolean): string => {
-        const row = rows[i]
-        const fade = (c: string): string => (anyActive && !active ? hexA(c, 0.3) : c)
-        const inner = active ? `<b>${row.label}</b>` : row.label
-        const group = row.category ? catColor.get(row.category) : undefined
-        const square = group ? ` <span style="color:${fade(group)}">■</span>` : ''
-        return `<span style="color:${fade(p.text)}">${inner}</span>${square}`
-      }
-      const ticktext = rows.map((_, i) => tickLabel(i, false, false))
-      // One annotation PER category, at a FIXED pixel offset (xshift) from the figure's left edge, so
-      // bolding one entry on hover can't shift the others. Each slot is sized for the BOLD width + a
-      // padding gap, so a bolded entry grows within its own slot instead of into the next.
-      const LEGEND_FS = PLOT_TEXT.legend
-      const LEGEND_PAD = 12 // px gap between items
-      // Legend item text per hover state: active → bold + full colour; muted (something else active)
-      // → grey; otherwise full colour. Measured at BOLD width so slots don't overflow.
-      // A group left out by the chip filter stays faint whatever is hovered.
-      const legendItemText = (c: string, active: boolean, anyActive: boolean): string => {
-        const base = catColor.get(c) ?? p.text
-        const off = (only.length > 0 && !only.includes(c)) || (anyActive && !active)
-        const col = off ? hexA(base, 0.3) : base
-        // Bold for the hover and for a chosen group — the slots are sized for bold, so neither moves
-        // a chip.
-        const bold = active || only.includes(c)
-        return `<span style="color:${col}">■ ${bold ? `<b>${c}</b>` : c}</span>`
-      }
-      // Items flow left to right and wrap onto further rows (stacked upward from the plot) when the
-      // next would pass the tile's edge.
-      const ROW_H = LEGEND_FS + 5
-      const flow = flowChips(
-        cats.map((c) => ({
-          c,
-          width:
-            Math.ceil(measureText(`■ ${c}`, `bold ${LEGEND_FS}px ${plotFontCss()}`)) + LEGEND_PAD
-        })),
-        legendBudget
-      )
-      const legend = flow.at.map(({ c, x, line }) => {
-        const ann = {
-          // Align each item's left edge to the figure's left edge (the pathway-label margin) via the
-          // shared container-left recompute in PlotlyChart; __oeLegendCat tags it for hover re-texting.
-          __oeAlignContainerLeft: true,
-          __oeLegendCat: c,
-          x: 0,
-          xref: 'paper',
-          xanchor: 'left',
-          xshift: x,
-          y: 1.0,
-          yref: 'paper',
-          yanchor: 'bottom',
-          // The first line on top (clear of the modebar), the rest below it down to the plot.
-          yshift: (flow.lines - 1 - line) * ROW_H,
-          showarrow: false,
-          text: legendItemText(c, false, false),
-          font: { size: LEGEND_FS },
-          // A chip: click to show only this group's sets (see onAnnotationClick).
-          name: `${CHIP}${c}`,
-          captureevents: true
-        }
-        return ann
-      })
-      // Rows ABOVE the first, so the plot's top margin grows to hold them.
-      const legendRows = flow.lines
-      // The left margin, sized for every label at its WIDEST — bold, with its group square — and
-      // fixed. Hovering a leading-edge gene bolds its pathways' labels (boldTicks); with an
-      // auto-sized margin that widened the margin and slid the whole plot right under the cursor,
-      // so the dot being clicked moved away (and, unhovered, un-bolded and slid back).
-      // Over every set too (not only the chosen groups'), so choosing one keeps the plot in place.
-      const TICK_FS = PLOT_TEXT.tick
-      const tickFont = `bold ${TICK_FS}px ${plotFontCss()}`
-      const labelW = Math.max(
-        0,
-        ...terms.map((t) =>
-          measureText(
-            `${fitText(`${t.term} (${t.setSize})`, termBudget, tickFont)}${t.category ? ' ■' : ''}`,
-            tickFont
-          )
-        ),
-        ...(globalDist ? [measureText(`all genes (${globalDist.length})`, tickFont)] : [])
+      const legend = categoryLegend(g, legendOff, legendBudget, p)
+      const tickLabel = (i: number, active: boolean, anyActive: boolean): string =>
+        L.tick(rows[i].label, rows[i].category, active, anyActive)
+      // The left margin over every set (not only the chosen groups'), so choosing one keeps the
+      // plot in place; the reference's label too.
+      const margin = margins(
+        L.marginLeft([
+          ...terms.map((t) => ({ fitted: setLabel(t), category: t.category })),
+          ...(globalDist ? [{ fitted: L.fit(`all genes (${globalDist.length})`) }] : [])
+        ]),
+        legend
       )
       const lay: Record<string, unknown> = {
-        ...plotBase(p),
-        showlegend: false,
-        title: title ? { text: title, font: { size: PLOT_TEXT.heading } } : undefined,
-        // + the tick labels' gap from the axis, and a little slack for font metrics.
-        margin: {
-          l: Math.ceil(labelW) + 16,
-          r: 12,
-          t: cats.length ? 40 + (legendRows - 1) * ROW_H : 24,
-          b: 40
-        },
-        annotations: legend,
+        ...frame(p, title),
+        margin,
+        annotations: [
+          // the measure and the comparison it's of ("interaction log₂FC · KO|WT × Amk|H2O"); the
+          // measure alone when the facet holds several comparisons
+          axisTitle(comparison ? `${measure} · ${comparison}` : measure, legendBudget, margin, p),
+          ...legend.annotations
+        ],
         xaxis: {
           ...axisBase(p),
-          // The measure and the comparison it's of ("interaction log₂FC · KO|WT × Amk|H2O"), cut to
-          // the tile's width; the measure alone when the facet holds several comparisons.
-          title: {
-            text: fitText(
-              comparison ? `${measure} · ${comparison}` : measure,
-              legendBudget,
-              `${PLOT_TEXT.axisTitle}px ${plotFontCss()}`
-            ),
-            font: { size: PLOT_TEXT.axisTitle }
-          },
           zeroline: true,
           zerolinecolor: p.axis,
           showgrid: true,
@@ -379,23 +339,12 @@ export function EnrichView({
           // nudged the whole plot.
           range: [lo, hi]
         },
-        yaxis: {
-          ...axisBase(p),
-          tickmode: 'array',
+        yaxis: termAxis(p, {
           tickvals: rows.map((_, r) => r * step),
-          ticktext,
-          // Not automargin: the margin above already fits the widest (bold) label, and must not
-          // move as labels bold and un-bold.
-          automargin: false,
-          tickfont: { size: TICK_FS },
-          // No tick marks (the shared axis style's tick colour would turn them on) — see dot/bar.
-          ticks: '',
-          range: [-0.6, (rows.length - 1) * step + overlap * step + 0.3],
-          // Horizontal gridline at each pathway's baseline, to track a ridge back to its label.
-          showgrid: true,
-          gridcolor: p.grid,
-          gridwidth: AXIS_LINE_WIDTH
-        }
+          ticktext: rows.map((_, i) => tickLabel(i, false, false)),
+          // up to the highest ridge, with the top row's label clear of the edge
+          range: [-0.6, Math.max((rows.length - 1) * step + 0.6, ridgeTop + 0.15)]
+        })
       }
       // Bold a pathway's label (and its category legend entry) when a hovered/pinned gene is one of
       // its leading-edge genes.
@@ -406,14 +355,22 @@ export function EnrichView({
         genesByTick: rows.map((r) => (r.id ? [r.id] : [])),
         tickLabel,
         categoryByTick: rows.map((r) => r.category),
-        legendItemText: cats.length ? legendItemText : undefined,
+        legendItemText: legend.itemText,
         // a label hovers / selects its term, as its ridge does
         idByTick: rows.map((r) => r.id)
       }
       // A ridge's (or label's) term id → its genes, which a click selects; a gene dot pins itself.
       const genesById = new Map<string, string[]>()
       for (const r of rows) if (r.id) genesById.set(r.id, r.lead.ids)
-      return { data, layout: lay, labels, labelColor: p.text, boldTicks, genesById }
+      return {
+        data,
+        layout: lay,
+        labels,
+        labelColor: p.text,
+        boldTicks,
+        genesById,
+        minWidth: minFigureWidth(PLAIN_RIGHT)
+      }
     }
 
     const negLog = (v: number): number => -Math.log10(Math.max(v, 1e-300))
@@ -449,28 +406,28 @@ export function EnrichView({
 
     // Shared y order: union of both directions' terms, most significant at TOP. A category axis
     // stacks index 0 at the bottom, so sort ascending by best −log₁₀ FDR (least significant first).
+    // By category first: the categories top → bottom in the fixed order (the last one first, at
+    // the bottom), each's terms by significance.
     const yOrder = (terms: EnrichTerm[]): string[] => {
       const best = new Map<string, number>()
-      for (const t of terms) best.set(t.term, Math.max(best.get(t.term) ?? 0, negLog(t.pAdjust)))
-      return [...best.entries()].sort((a, b) => a[1] - b[1]).map((e) => e[0])
+      const rank = new Map<string, number>()
+      for (const t of terms) {
+        best.set(t.term, Math.max(best.get(t.term) ?? 0, negLog(t.pAdjust)))
+        if (!rank.has(t.term) || t.category) rank.set(t.term, catRank(t.category))
+      }
+      return [...best.entries()]
+        .sort((a, b) => (byCategory ? rank.get(b[0])! - rank.get(a[0])! : 0) || a[1] - b[1])
+        .map((e) => e[0])
     }
 
-    // Term group → colour (a KEGG pathway's category, a Reactome term's top-level pathway, a
-    // COG/KOG category's area), as the ridge style shows it: a square in the group's colour right of
-    // each term's label, and the groups present listed above. Ordered top→bottom by first appearance,
-    // over EVERY term — the chips stay put (and keep their colours) whichever are chosen.
+    // Term group (a KEGG pathway's category, a Reactome term's top-level pathway, a COG/KOG
+    // category's area): its square by each term's label, and the groups present listed above.
     const all = [...enrich.up, ...enrich.down]
+    if (all.length === 0) return nothing
     const catOf = new Map<string, string>()
     for (const t of all) if (t.category && !catOf.has(t.term)) catOf.set(t.term, t.category)
-    const groups: string[] = []
-    for (const term of [...yOrder(all)].reverse()) {
-      const c = catOf.get(term)
-      if (c && !groups.includes(c)) groups.push(c)
-    }
-    // Only the chosen groups' terms (a choice the data no longer has is ignored).
-    const only = (legendOff ? [] : onlyCats).filter((c) => groups.includes(c))
-    const keep = (t: EnrichTerm): boolean =>
-      !only.length || (!!t.category && only.includes(t.category))
+    const g = termGroups(all, groupOpts)
+    const keep = g.keep
     const up = enrich.up.filter(keep)
     const down = enrich.down.filter(keep)
     const both = [...up, ...down]
@@ -488,57 +445,7 @@ export function EnrichView({
         idsByTerm.set(term, [...(idsByTerm.get(term) ?? []), id])
         genesById.set(id, terms[k].geneIds ?? [])
       })
-    const groupColor = new Map(groups.map((c, i) => [c, CATEGORICAL[i % CATEGORICAL.length]]))
-    // A term's tick in its hover state (as the ridge's): active → bold; something else active →
-    // faded; at rest → plain.
-    const termTick = (term: string, active = false, anyActive = false): string => {
-      const c = catOf.get(term)
-      const fade = (col: string): string => (anyActive && !active ? hexA(col, 0.3) : col)
-      // The shown name is capped; the category values (tickvals) stay the full term names.
-      const name = fitText(term, termBudget, `${PLOT_TEXT.tick}px ${plotFontCss()}`)
-      const square = c ? ` <span style="color:${fade(groupColor.get(c)!)}">■</span>` : ''
-      if (!active && !anyActive) return `${name}${square}`
-      return `<span style="color:${fade(p.text)}">${active ? `<b>${name}</b>` : name}</span>${square}`
-    }
-    // The group legend: one clickable chip per group (click to show only its terms), flowing left
-    // to right and wrapping onto lines that fit the tile. A chosen group is bold, one left out faint.
-    // Each chip has a fixed slot sized for its BOLD width in the plot's own font, so choosing one
-    // never moves the others.
-    const LEGEND_FS = PLOT_TEXT.legend
-    const LEGEND_ROW = LEGEND_FS + 4
-    const { at: chipAt, lines: legendLineCount } = flowChips(
-      (legendOff ? [] : groups).map((c) => ({
-        c,
-        width: Math.ceil(measureText(`■ ${c}`, `bold ${LEGEND_FS}px ${plotFontCss()}`)) + 14
-      })),
-      legendBudget
-    )
-    const legendH = legendLineCount * LEGEND_ROW
-    // The group legend sits a fixed gap above the plot area — clear of the top row's dots, which
-    // draw past it (up to half the largest dot, 12px).
-    const LEGEND_GAP = 14
-    const chips = chipAt.map(({ c, x, line }) => {
-      const base = groupColor.get(c) ?? p.text
-      const off = only.length > 0 && !only.includes(c)
-      const on = only.includes(c)
-      return {
-        ...note(
-          `<span style="color:${off ? hexA(base, 0.3) : base}">■ ${on ? `<b>${c}</b>` : c}</span>`,
-          0,
-          1,
-          p.text,
-          LEGEND_FS,
-          'left'
-        ),
-        __oeAlignContainerLeft: true,
-        xshift: x,
-        yanchor: 'bottom',
-        // The first line on top, as the block of text it replaces read.
-        yshift: LEGEND_GAP + (legendLineCount - 1 - line) * LEGEND_ROW,
-        name: `${CHIP}${c}`,
-        captureevents: true
-      }
-    })
+    const legend = categoryLegend(g, legendOff, legendBudget, p)
 
     // Size and colour scales over EVERY term, so filtering to a group doesn't re-scale them.
     const maxCount = Math.max(1, ...all.map((t) => t.count))
@@ -677,10 +584,11 @@ export function EnrichView({
     const KEY_X = 14 // px right of the plot edge to the circles' centre line
     const KEY_GAP = 5
     const KEY_HEAD = 13 // the heading's line
+    const KEY_HEADING = gsea ? 'lead genes' : 'genes'
     // A key row: its circle, or its count label's line when the circle is smaller than the text.
     const keyRow = (v: number): number => Math.max(dotPx(v), AXIS_TICK_FS + 2)
     // The plot's height in px (0 before the tile is measured), for fitting the key to its band.
-    const plotH = heightBudget - (LEGEND_GAP + 30 + legendH) - 44
+    const plotH = heightBudget - legend.top - MARGIN_BOTTOM
     // The key's two levels — or only the lower one when both circles (at their true dot size)
     // wouldn't fit the key's band.
     const twoCounts = [...new Set([upTo(q3, keyStep), downTo(q1, keyStep)])]
@@ -695,7 +603,7 @@ export function EnrichView({
       const shapes: Record<string, unknown>[] = []
       const notes: Record<string, unknown>[] = [
         {
-          ...note(gsea ? 'lead genes' : 'genes', 1, 1, p.textMuted, AXIS_TITLE_FS, 'left'),
+          ...note(KEY_HEADING, 1, 1, p.textMuted, AXIS_TITLE_FS, 'left'),
           xshift: KEY_X - 10,
           yanchor: 'top'
         }
@@ -758,61 +666,40 @@ export function EnrichView({
     for (let k = -kmax; k <= kmax; k++) tickvals.push(k * step)
     const bound = kmax * step
     const xTitle = style === 'bar' ? '−log p.adj' : gsea ? 'NES' : 'gene ratio'
-    const heading = title ?? ''
-
-    const empty = enrich.up.length === 0 && enrich.down.length === 0
-    // Under the tick labels, the axis title — the measure, with the facet's comparison — centred.
-    const AXIS_TITLE_SHIFT = -24
-    // The title is cut to the PLOT's width — the tile less the term labels on the left and the
-    // right margin — not the tile's: annotations are placed on the plot.
+    // The right margin: the dot style's key and colourbars, wide enough for the key's heading
+    // ("lead genes" overran a fixed 66px) and its counts, as measured.
     const TITLE_FONT = `${PLOT_TEXT.axisTitle}px ${plotFontCss()}`
     const TICK_FONT = `${PLOT_TEXT.tick}px ${plotFontCss()}`
-    // The term labels' width at their widest (bold, as a hovered one draws) over EVERY term, and the
-    // left margin fixed to it: an auto-sized margin followed the chosen groups' labels (and a
-    // label's bolding), sliding the plot sideways.
-    const BOLD_TICK = `bold ${TICK_FONT}`
-    const labelW =
-      Math.max(
-        0,
-        ...yOrder(all).map((t) => measureText(fitText(t, termBudget, TICK_FONT), BOLD_TICK))
-      ) +
-      (groups.length ? 14 : 0) +
-      8
-    const plotW = Math.max(
-      120,
-      legendBudget + 40 - (Math.ceil(labelW) + 6) - (style === 'dot' && !legendOff ? 66 : 12)
+    const keyed = style === 'dot' && !legendOff
+    const marginR = keyed
+      ? Math.ceil(
+          Math.max(
+            66,
+            KEY_X - 10 + measureText(KEY_HEADING, TITLE_FONT) + 6,
+            KEY_X + 16 + Math.max(0, ...keyCounts.map((v) => measureText(String(v), TICK_FONT))) + 6
+          )
+        )
+      : PLAIN_RIGHT
+    // The labels get what the plot can spare, past the right margin (chrome.ts labelTextBudget).
+    const L = termLabels(g, labelTextBudget(figW, marginR), p)
+    // A term's tick in its hover state. The category values (tickvals) stay the full term names.
+    const termTick = (term: string, active = false, anyActive = false): string =>
+      L.tick(L.fit(term), catOf.get(term), active, anyActive)
+    // The left margin over every term (not only the chosen groups'), so choosing one keeps the
+    // plot in place.
+    const margin = margins(
+      L.marginLeft(yOrder(all).map((t) => ({ fitted: L.fit(t), category: catOf.get(t) }))),
+      legend,
+      marginR
     )
-    const axisLine = [
-      {
-        ...note(
-          fitText(comparison ? `${xTitle} · ${comparison}` : xTitle, plotW, TITLE_FONT),
-          0.5,
-          0,
-          p.textMuted,
-          AXIS_TITLE_FS,
-          'center'
-        ),
-        yanchor: 'top',
-        yshift: AXIS_TITLE_SHIFT
-      }
-    ]
     const lay: Record<string, unknown> = {
-      ...plotBase(p),
-      showlegend: false,
+      ...frame(p, title),
       barmode: 'overlay',
       bargap: 0.35,
-      title: heading ? { text: heading, font: { size: PLOT_TEXT.heading } } : undefined,
-      margin: {
-        // fixed to every term's widest label (labelW: its group square and gap included)
-        l: Math.ceil(labelW) + 6,
-        r: style === 'dot' && !legendOff ? 66 : 12,
-        t: LEGEND_GAP + 30 + legendH,
-        b: 44
-      },
-      shapes: style === 'dot' && !empty && !legendOff ? sizeKey.shapes : [],
+      margin,
+      shapes: keyed ? sizeKey.shapes : [],
       xaxis: {
         ...axisBase(p),
-        // The title is drawn as an annotation (see axisLine), cut to the plot's width.
         zeroline: true,
         zerolinecolor: p.axis,
         range: [-bound * 1.04, bound * 1.04],
@@ -821,42 +708,22 @@ export function EnrichView({
         showgrid: true
       },
       yaxis: {
-        ...axisBase(p),
+        ...termAxis(p, {
+          tickvals: order,
+          ticktext: order.map((t) => termTick(t)),
+          // Fixed to the rows: a hovered (enlarged) dot on the top or bottom term grew an autorange
+          // and pushed every row. The dots draw past it (cliponaxis).
+          range: [-0.6, order.length - 0.4]
+        }),
         type: 'category',
         categoryorder: 'array',
-        categoryarray: order,
-        // Fixed to the rows: autorange pads for marker size, so a hovered (enlarged) dot on the top
-        // or bottom term grew the range and pushed every row. The dots draw past it (cliponaxis).
-        range: [-0.6, order.length - 0.4],
-        // Each term's label with its group's square (the values stay the term names).
-        tickmode: 'array',
-        tickvals: order,
-        ticktext: order.map((t) => termTick(t)),
-        // Not automargin: the margin above already fits every term's widest label, and must not
-        // follow the chosen groups' (or a hovered label's bolding) and slide the plot.
-        automargin: false,
-        tickfont: { size: PLOT_TEXT.tick },
-        // No tick marks: the shared axis style's tick colour would turn Plotly's outside ticks on,
-        // and they read as stray marks after each term's group square.
-        ticks: '',
-        // A faint gridline along each term, to track a bar / dot back to its label (as the ridge).
-        showgrid: true,
-        gridcolor: p.grid,
-        gridwidth: AXIS_LINE_WIDTH
+        categoryarray: order
       },
-      annotations: empty
-        ? [note('No enriched terms', 0.5, 0.5, p.textMuted, 12)]
-        : [
-            ...axisLine,
-            ...(style === 'dot' && !legendOff ? sizeKey.notes : []),
-            // The groups, from the figure's left edge (the shared container-left alignment, as the
-            // ridge's legend).
-            ...chips
-          ]
-    }
-    if (empty) {
-      lay.xaxis = { ...axisBase(p), visible: false }
-      lay.yaxis = { ...axisBase(p), visible: false }
+      annotations: [
+        axisTitle(comparison ? `${xTitle} · ${comparison}` : xTitle, legendBudget, margin, p),
+        ...(keyed ? sizeKey.notes : []),
+        ...legend.annotations
+      ]
     }
     return {
       data,
@@ -865,19 +732,21 @@ export function EnrichView({
       labelColor: p.text,
       // Bold a term's label while its bar / dot is hovered or pinned (their ids are the hover
       // texts), or — where the result names them (GSEA) — one of its genes is.
-      boldTicks: empty
-        ? undefined
-        : {
-            // the term itself, hovered or selected (all its genes are) — not any one of its genes,
-            // which many terms share
-            genesByTick: order.map((term) => idsByTerm.get(term) ?? []),
-            tickLabel: (i: number, active: boolean, anyActive: boolean) =>
-              termTick(order[i], active, anyActive),
-            // a label hovers / selects its term, as its dot or bar does (a term on both sides
-            // answers as its first)
-            idByTick: order.map((term) => idsByTerm.get(term)?.[0] ?? null)
-          },
-      genesById
+      boldTicks: {
+        // the term itself, hovered or selected (all its genes are) — not any one of its genes,
+        // which many terms share
+        genesByTick: order.map((term) => idsByTerm.get(term) ?? []),
+        tickLabel: (i: number, active: boolean, anyActive: boolean) =>
+          termTick(order[i], active, anyActive),
+        // its group's chip bolds with it, as the ridge's
+        categoryByTick: order.map((term) => catOf.get(term)),
+        legendItemText: legend.itemText,
+        // a label hovers / selects its term, as its dot or bar does (a term on both sides
+        // answers as its first)
+        idByTick: order.map((term) => idsByTerm.get(term)?.[0] ?? null)
+      },
+      genesById,
+      minWidth: minFigureWidth(marginR)
     }
   }, [
     enrich,
@@ -886,21 +755,28 @@ export function EnrichView({
     mode,
     legendBudget,
     heightBudget,
-    termBudget,
+    figW,
     onlyCats,
     legendOff,
     measure,
     comparison,
     upColor,
     downColor,
-    noneColor
+    noneColor,
+    groupIndex,
+    inGroupOrder,
+    categorical,
+    byCategory,
+    catRank
   ])
 
   const pinIdsOf = useCallback((id: string) => genesById?.get(id) ?? null, [genesById])
 
   return (
     // Measured (for the legend's wrap width) and otherwise invisible — the chart fills it as before.
-    <div ref={boxRef} style={{ width: '100%', height: '100%' }}>
+    // Never narrower than the labels' and the plot's minimums: a narrower tile scrolls sideways
+    // (its body already does) rather than squeezing the plot to nothing.
+    <div ref={boxRef} style={{ width: '100%', height: '100%', minWidth }}>
       <PlotlyChart
         data={data}
         layout={layout}
@@ -908,7 +784,7 @@ export function EnrichView({
         labelColor={labelColor}
         labelsAbove
         boldTicks={boldTicks}
-        // its own note when nothing is enriched ("No enriched terms")
+        // its own note when nothing is enriched (chrome.ts emptyLayout)
         emptyNote={false}
         onAnnotationClick={onAnnotationClick}
         // a click on a term's dot or bar selects its genes, in every plot
@@ -919,27 +795,6 @@ export function EnrichView({
       />
     </div>
   )
-}
-
-/** A paper-anchored text annotation. */
-function note(
-  text: string,
-  x: number,
-  y: number,
-  color: string,
-  size: number,
-  align: 'left' | 'right' | 'center' = 'center'
-): Record<string, unknown> {
-  return {
-    text,
-    showarrow: false,
-    xref: 'paper',
-    yref: 'paper',
-    x,
-    y,
-    xanchor: align,
-    font: { color, size }
-  }
 }
 
 /** A "nice" tick step (~4 ticks) for a max magnitude. */
@@ -981,13 +836,4 @@ function med(values: number[]): number {
   const s = [...values].sort((a, b) => a - b)
   const m = s.length >> 1
   return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2
-}
-
-/** `#rrggbb` → `rgba(r,g,b,a)`. */
-function hexA(hex: string, a: number): string {
-  const m = hex.replace('#', '')
-  const r = parseInt(m.slice(0, 2), 16)
-  const g = parseInt(m.slice(2, 4), 16)
-  const b = parseInt(m.slice(4, 6), 16)
-  return `rgba(${r}, ${g}, ${b}, ${a})`
 }

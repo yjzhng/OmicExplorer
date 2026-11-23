@@ -95,6 +95,8 @@ export interface AppSettings {
   palettes: Record<PaletteRole, PaletteRef>
   /** the categorical palette groups and conditions are coloured from */
   categorical: CategoricalId
+  /** whether `categorical` was chosen in Settings (else it's the default it was stored at) */
+  categoricalPicked?: boolean
   /** the user's custom spectrum (palette id 'custom'), when defined */
   customSpectrum?: CustomSpectrum
   /** the user's custom categorical palette (id 'custom'), when defined */
@@ -170,6 +172,13 @@ function load(): AppSettings {
     const customCategorical = readCategorical(v.customCategorical)
     setCustomSpectrum(customSpectrum)
     setCustomCategorical(customCategorical)
+    // Settings are stored whole, so a never-chosen categorical palette was stored too: one not
+    // picked in Settings follows the default, whatever it was stored as. Stored before this was
+    // marked, tab10 was the default (iWantHue took over); Set2, iWantHue or custom were chosen.
+    const picked =
+      typeof v.categoricalPicked === 'boolean'
+        ? v.categoricalPicked
+        : isCategoricalId(v.categorical) && v.categorical !== 'tab10'
     return {
       uiStyle: v.uiStyle === 'form' ? 'form' : 'flow',
       navWidth: clampWidth(v.navWidth, NAV_WIDTH),
@@ -202,7 +211,8 @@ function load(): AppSettings {
             ROLE_DEFAULTS[r]
         ])
       ) as Record<PaletteRole, PaletteRef>,
-      categorical: isCategoricalId(v.categorical) ? v.categorical : DEFAULT_CATEGORICAL,
+      categorical: picked && isCategoricalId(v.categorical) ? v.categorical : DEFAULT_CATEGORICAL,
+      categoricalPicked: picked,
       customSpectrum,
       customCategorical
     }
@@ -255,6 +265,7 @@ export const useAppSettings = create<AppSettingsState>((set, get) => ({
       plotOrder,
       palettes,
       categorical,
+      categoricalPicked,
       customSpectrum,
       customCategorical
     } = get()
@@ -277,12 +288,13 @@ export const useAppSettings = create<AppSettingsState>((set, get) => ({
       plotOrder,
       palettes,
       categorical,
+      categoricalPicked,
       customSpectrum,
       customCategorical,
       ...patch
     }
     // A custom palette changed: register it — and, dropped, send whatever used it back to its
-    // default (a role → its built-in default; the categorical setting → tab10).
+    // default (a role → its built-in default; the categorical setting → DEFAULT_CATEGORICAL).
     if ('customSpectrum' in patch) {
       setCustomSpectrum(next.customSpectrum)
       if (!next.customSpectrum)
@@ -295,9 +307,13 @@ export const useAppSettings = create<AppSettingsState>((set, get) => ({
     }
     if ('customCategorical' in patch) {
       setCustomCategorical(next.customCategorical)
-      if (!next.customCategorical?.length && next.categorical === 'custom')
+      if (!next.customCategorical?.length && next.categorical === 'custom') {
         next.categorical = DEFAULT_CATEGORICAL
+        next.categoricalPicked = false
+      }
     }
+    // chosen in Settings: kept as chosen, even should the default change again
+    if ('categorical' in patch) next.categoricalPicked = true
     persist(next)
     if (next.categorical !== categorical || 'customCategorical' in patch)
       setCategorical(next.categorical)

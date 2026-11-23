@@ -13,17 +13,20 @@ export function measureText(text: string, font: string): number {
 }
 
 /** Flow legend chips left to right into lines that fit `budget` px, first line on top. Each chip's
- *  slot is `width` px — sized by the caller for its widest (bold) text. (The plot hides Plotly's
- *  control bar, which would otherwise sit over the top line's right end.) */
+ *  slot is `width` px — sized by the caller for its widest (bold) text — of which the last `gap` is
+ *  the space before the next chip: a line's last chip needs only the rest, so it isn't sent to the
+ *  next line for room it doesn't draw in. (The plot hides Plotly's control bar, which would
+ *  otherwise sit over the top line's right end.) */
 export function flowChips(
   chips: { c: string; width: number }[],
-  budget: number
+  budget: number,
+  gap = 0
 ): { at: { c: string; x: number; line: number }[]; lines: number } {
   const at: { c: string; x: number; line: number }[] = []
   let x = 0
   let line = 0
   for (const { c, width } of chips) {
-    if (x > 0 && x + width > budget) {
+    if (x > 0 && x + width - gap > budget) {
       x = 0
       line++
     }

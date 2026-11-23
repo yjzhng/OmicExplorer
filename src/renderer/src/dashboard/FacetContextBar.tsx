@@ -47,6 +47,7 @@ export function FacetContextBar({
               through). */}
             <ChoiceSwitch
               cap={isNumericFacet(dim, numeric) ? Infinity : PILL_CAP}
+              fit
               counter
               label={facetBarLabel(bar)}
               value={String(value)}
@@ -75,7 +76,15 @@ const styles: Record<string, CSSProperties> = {
     flex: 1,
     minWidth: 0
   },
-  facetGroup: { display: 'inline-flex', alignItems: 'center', gap: 7, flex: '0 0 auto' },
+  // Never wider than the bar: it shrinks to the room and the pills wrap (as SwitchBar's).
+  facetGroup: {
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: 7,
+    flex: '0 1 auto',
+    minWidth: 0,
+    maxWidth: '100%'
+  },
   facetLabel: {
     fontSize: 10,
     textTransform: 'uppercase',

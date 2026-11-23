@@ -160,7 +160,7 @@ export const CATEGORICAL_SCHEMES: Record<CategoricalId, readonly string[]> = {
   // the user's own (Settings → Customisation → Custom palettes), filled in by setCustomCategorical
   custom: []
 }
-export const DEFAULT_CATEGORICAL: CategoricalId = 'tab10'
+export const DEFAULT_CATEGORICAL: CategoricalId = 'iWantHue'
 /** The categorical palettes on offer: the built-in ones, and the custom one once defined. */
 export const categoricalIds = (): CategoricalId[] =>
   CATEGORICAL_SCHEMES.custom.length

@@ -193,6 +193,24 @@ describe('architecture', () => {
     expect(bad).toEqual([])
   })
 
+  it("an enrichment plot's chrome is built once, in nodes/enrich/chrome.ts, for every style", () => {
+    // The legend, its spacing, the term labels, the term axis, the margins, the axis title and the
+    // empty note: built by chrome.ts, so the dot, bar and ridge styles can't drift apart (each
+    // building its own let their spacing, label colours and legend switch disagree).
+    const view = readFileSync(join(ROOT, 'nodes/enrich/EnrichView.tsx'), 'utf8')
+    const own = [
+      'flowChips',
+      'fitText',
+      '__oeLegendCat',
+      '__oeAlignContainerLeft',
+      'margin: {',
+      'automargin',
+      'plotBase(',
+      'No enriched'
+    ].filter((t) => view.includes(t))
+    expect(own).toEqual([])
+  })
+
   it("each spec's kind is its key", () => {
     for (const k of ALL_OPS) expect(NODE_SPECS[k].kind).toBe(k)
   })

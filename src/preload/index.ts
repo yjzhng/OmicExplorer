@@ -56,6 +56,8 @@ export interface UpdateState {
   percent?: number
   message?: string
   unsupported?: string
+  /** the app's folder, when this account can't write it: installing asks for an admin password */
+  admin?: string
 }
 
 export interface WorkflowEntry {

@@ -2,9 +2,19 @@
  * Pick one of several options: the pill switch (ToggleSwitch) while there are few, a searchable
  * dropdown — the one-gene picker's look (PagerTrigger), with its ‹ › stepping — once there are more than
  * `PILL_CAP`, so a condition with many levels (compounds, cell lines, a custom axis) doesn't run
- * the pills across the tile.
+ * the pills across the tile. In a tile's switch row (`fit`), also whenever the pills don't fit on
+ * one line beside their label: a few long options ("NK192, NK250, NK266") would otherwise wrap the
+ * pills onto a second row.
  */
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
+import {
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type ReactNode
+} from 'react'
 import { createPortal } from 'react-dom'
 
 import { IconSearch } from './GeneSelectMenu'
@@ -26,7 +36,9 @@ export function ChoiceSwitch<V extends string>({
   label,
   size = 'md',
   cap = PILL_CAP,
-  counter = false
+  counter = false,
+  pager = true,
+  fit = false
 }: {
   value: V
   options: readonly ToggleOption<V>[]
@@ -38,7 +50,25 @@ export function ChoiceSwitch<V extends string>({
   cap?: number
   /** the dropdown shows the "n/m" position readout (a condition's levels, as the gene pager) */
   counter?: boolean
+  /** the dropdown's ‹ › stepping: for options of one kind (a condition's levels, compounds), where
+   *  "next" means something; false for a plot's own settings (log₂FC, Q-value, F…), which are
+   *  different things with no order to step through */
+  pager?: boolean
+  /** in a tile's switch row: the dropdown, too, whenever the pills don't fit on one line */
+  fit?: boolean
 }): ReactNode {
+  if (fit && options.length <= cap)
+    return (
+      <FitChoice
+        value={value}
+        options={options}
+        onChange={onChange}
+        label={label}
+        size={size}
+        counter={counter}
+        pager={pager}
+      />
+    )
   if (options.length <= cap)
     return (
       <ToggleSwitch size={size} label={label} value={value} options={options} onChange={onChange} />
@@ -51,8 +81,113 @@ export function ChoiceSwitch<V extends string>({
       label={label}
       size={size}
       counter={counter}
+      pager={pager}
     />
   )
+}
+
+/** The pills while they fit on one line, else the dropdown.
+ *
+ *  - The pills' width: an invisible copy at its natural one-line width (`max-content`, in a
+ *    zero-size clipped box so it can't widen what scrolls around it).
+ *  - The room: from where this switch's line starts — the outermost wrapping row it sits in — to the
+ *    tile's visible right edge (the nearest box that scrolls or clips sideways), less that row's
+ *    right padding and what the row's item holds beside this (label, gaps, padding). So it's the
+ *    room the switch has on a line of its own, whichever of the two is showing — it can't flip
+ *    back and forth. */
+function FitChoice<V extends string>(props: {
+  value: V
+  options: readonly ToggleOption<V>[]
+  onChange: (value: V) => void
+  label: string
+  size: 'sm' | 'md'
+  counter: boolean
+  pager: boolean
+}): ReactNode {
+  const { value, options, onChange, label, size } = props
+  const slotRef = useRef<HTMLSpanElement>(null)
+  const pillsRef = useRef<HTMLSpanElement>(null)
+  const [fits, setFits] = useState(true)
+  useLayoutEffect(() => {
+    const slot = slotRef.current
+    const pills = pillsRef.current
+    if (!slot || !pills) return
+    // the row this switch wraps in, and its child holding the switch
+    let item: HTMLElement = slot
+    let line = slot.parentElement
+    while (line && getComputedStyle(line).flexWrap !== 'wrap') {
+      item = line
+      line = line.parentElement
+    }
+    // a strip wrapping inside another (a SwitchBar in a tile's switch row): the outer one, whose
+    // line starts at the row's edge — the room this switch has on a line of its own
+    while (line?.parentElement && getComputedStyle(line.parentElement).flexWrap === 'wrap') {
+      item = line
+      line = line.parentElement
+    }
+    // the box that bounds what the tile shows
+    let port = line?.parentElement ?? null
+    while (port && !/auto|scroll|hidden|clip/.test(getComputedStyle(port).overflowX))
+      port = port.parentElement
+    if (!line || !port) return
+    const check = (): void => {
+      const lcs = getComputedStyle(line)
+      const pcs = getComputedStyle(port)
+      const portBox = port.getBoundingClientRect()
+      const right =
+        portBox.left + port.clientLeft + port.clientWidth - (parseFloat(pcs.paddingRight) || 0)
+      const start = line.getBoundingClientRect().left + (parseFloat(lcs.paddingLeft) || 0)
+      const room = right - (parseFloat(lcs.paddingRight) || 0) - start
+      const beside = item.offsetWidth - slot.offsetWidth
+      setFits(pills.offsetWidth <= room - beside)
+    }
+    check()
+    const ro = new ResizeObserver(check)
+    ro.observe(port)
+    ro.observe(pills)
+    return () => ro.disconnect()
+  }, [])
+  return (
+    <span ref={slotRef} style={fitStyles.slot}>
+      <span style={fitStyles.clip} aria-hidden>
+        <span ref={pillsRef} style={fitStyles.measure}>
+          <ToggleSwitch
+            size={size}
+            label={label}
+            value={value}
+            options={options}
+            onChange={() => {}}
+          />
+        </span>
+      </span>
+      {fits ? (
+        <ToggleSwitch
+          size={size}
+          label={label}
+          value={value}
+          options={options}
+          onChange={onChange}
+        />
+      ) : (
+        <ChoicePicker {...props} />
+      )}
+    </span>
+  )
+}
+const fitStyles: Record<string, CSSProperties> = {
+  slot: { position: 'relative', display: 'inline-flex', minWidth: 0 },
+  clip: {
+    position: 'absolute',
+    left: 0,
+    top: 0,
+    width: 0,
+    height: 0,
+    overflow: 'hidden',
+    visibility: 'hidden',
+    pointerEvents: 'none'
+  },
+  // its natural one-line width: max-content, so the track's maxWidth / wrap can't squeeze it
+  measure: { position: 'absolute', left: 0, top: 0, width: 'max-content', display: 'flex' }
 }
 
 /** An option's text, for the button, the search and the list (labels are text in practice). */
@@ -65,7 +200,8 @@ function ChoicePicker<V extends string>({
   onChange,
   label,
   size,
-  counter
+  counter,
+  pager
 }: {
   value: V
   options: readonly ToggleOption<V>[]
@@ -73,6 +209,7 @@ function ChoicePicker<V extends string>({
   label: string
   size: 'sm' | 'md'
   counter: boolean
+  pager: boolean
 }): ReactNode {
   const p = PALETTES[useUiTheme((s) => s.mode)]
   const [open, setOpen] = useState(false)
@@ -138,6 +275,7 @@ function ChoicePicker<V extends string>({
         btnRef={btnRef}
         onStep={go}
         canStep={many}
+        arrows={pager}
         noun={label}
         title={`Pick a ${label} (${options.length})`}
         fontSize={fontSize}

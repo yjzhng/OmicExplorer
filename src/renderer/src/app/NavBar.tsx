@@ -94,7 +94,11 @@ export function UpdateStatus({ update }: { update: UpdateInfo }) {
       <span style={styles.aboutUpdate}>
         <span style={styles.aboutDot} /> v{update.latest} is available
         {install.unsupported ? (
-          <>— {link('download')}</>
+          // the dash its own item, so the row's gap spaces it from both neighbours
+          <>
+            <span>—</span>
+            {link('download')}
+          </>
         ) : (
           <button style={styles.updatePrimary} onClick={update.download}>
             Update now

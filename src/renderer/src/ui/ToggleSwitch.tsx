@@ -341,7 +341,10 @@ const styles: Record<string, CSSProperties> = {
     border: `1px solid ${UI.border}`,
     padding: 2,
     background: UI.panel,
-    flex: '0 0 auto',
+    // Shrinks to what its row leaves beside the label (and wraps its pills there); maxWidth alone
+    // is 100% of the whole group, label included, so it still overran by the label's width.
+    flex: '0 1 auto',
+    minWidth: 0,
     maxWidth: '100%',
     transition: `opacity ${MOTION}`
   },

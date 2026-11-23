@@ -14,6 +14,7 @@ import './dashboard.css'
 import { DOT_GRID, PALETTES } from '../ui/theme'
 import { useUiTheme } from '../ui/useUiTheme'
 import { gravityCompactor } from './gridCompactor'
+import { GridPitchContext } from './gridPitch'
 import { useElementSize } from './useElementSize'
 import { GRID_COLS, GRID_MARGIN, GRID_PADDING, ROW_HEIGHT, type PanelLayout } from './panels'
 
@@ -134,37 +135,40 @@ export function DashboardGrid({ ids, layout, onLayoutChange, children }: Props):
       {/* (before the grid, so its tiles are drawn over their own dots) */}
       {dots}
       {gridWidth > 0 && (
-        <GridLayout
-          width={gridWidth}
-          layout={layout}
-          onLayoutChange={onLayoutChange}
-          compactor={flow.compactor}
-          onDragStart={dragStart}
-          onDrag={drag}
-          onDragStop={end}
-          onResizeStart={resizeStart}
-          onResize={() => flow.step()}
-          onResizeStop={end}
-          gridConfig={{
-            cols: GRID_COLS,
-            rowHeight: ROW_HEIGHT,
-            margin: GRID_MARGIN,
-            containerPadding: GRID_PADDING
-          }}
-          dragConfig={{
-            enabled: true,
-            handle: '.panel-drag',
-            // Controls inside a header stay clickable rather than starting a drag.
-            cancel: 'button,select,input,a'
-          }}
-          resizeConfig={{ enabled: true, handles: HANDLES }}
-        >
-          {ids.map((id) => (
-            <div key={id} className="oe-grid-item">
-              {children(id)}
-            </div>
-          ))}
-        </GridLayout>
+        // the column pitch, for plots that step their layout with the grid (gridPitch.ts)
+        <GridPitchContext.Provider value={colPitch()}>
+          <GridLayout
+            width={gridWidth}
+            layout={layout}
+            onLayoutChange={onLayoutChange}
+            compactor={flow.compactor}
+            onDragStart={dragStart}
+            onDrag={drag}
+            onDragStop={end}
+            onResizeStart={resizeStart}
+            onResize={() => flow.step()}
+            onResizeStop={end}
+            gridConfig={{
+              cols: GRID_COLS,
+              rowHeight: ROW_HEIGHT,
+              margin: GRID_MARGIN,
+              containerPadding: GRID_PADDING
+            }}
+            dragConfig={{
+              enabled: true,
+              handle: '.panel-drag',
+              // Controls inside a header stay clickable rather than starting a drag.
+              cancel: 'button,select,input,a'
+            }}
+            resizeConfig={{ enabled: true, handles: HANDLES }}
+          >
+            {ids.map((id) => (
+              <div key={id} className="oe-grid-item">
+                {children(id)}
+              </div>
+            ))}
+          </GridLayout>
+        </GridPitchContext.Provider>
       )}
     </div>
   )

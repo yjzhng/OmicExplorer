@@ -17,7 +17,8 @@ export function PagerTrigger({
   canStep,
   noun,
   title,
-  fontSize = 12
+  fontSize = 12,
+  arrows = true
 }: {
   /** the current item's text */
   name: ReactNode
@@ -36,6 +37,8 @@ export function PagerTrigger({
   /** the button's tooltip */
   title: string
   fontSize?: number
+  /** the ‹ › stepping either side (false: the button alone) */
+  arrows?: boolean
 }): ReactNode {
   const arrow = (d: -1 | 1): ReactNode => {
     const t = `${d < 0 ? 'Previous' : 'Next'} ${noun}`
@@ -55,24 +58,31 @@ export function PagerTrigger({
       </button>
     )
   }
+  const button = (
+    <button
+      ref={btnRef}
+      onClick={onToggle}
+      title={title}
+      aria-label={noun}
+      aria-expanded={open}
+      style={{
+        ...styles.btn,
+        fontSize,
+        borderColor: open ? UI.accent : UI.border
+      }}
+    >
+      {pos && (
+        <span style={styles.pos}>{`${pos.index >= 0 ? pos.index + 1 : '–'}/${pos.total}`}</span>
+      )}
+      <span style={styles.name}>{name}</span>
+      <Chevron deg={open ? -90 : 90} />
+    </button>
+  )
   return (
     <span style={styles.root}>
-      {arrow(-1)}
-      <button
-        ref={btnRef}
-        onClick={onToggle}
-        title={title}
-        aria-label={noun}
-        aria-expanded={open}
-        style={{ ...styles.btn, fontSize, borderColor: open ? UI.accent : UI.border }}
-      >
-        {pos && (
-          <span style={styles.pos}>{`${pos.index >= 0 ? pos.index + 1 : '–'}/${pos.total}`}</span>
-        )}
-        <span style={styles.name}>{name}</span>
-        <Chevron deg={open ? -90 : 90} />
-      </button>
-      {arrow(1)}
+      {arrows && arrow(-1)}
+      {button}
+      {arrows && arrow(1)}
     </span>
   )
 }

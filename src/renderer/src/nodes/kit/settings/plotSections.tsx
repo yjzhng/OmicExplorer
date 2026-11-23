@@ -759,12 +759,23 @@ export function ColourRows({
   groups = false,
   hint,
   role = 'fcObject',
+  paletteLabel = 'FC palette',
+  groupsLabel = 'groups',
+  noneDrawn = true,
   children
 }: PlotPanelProps<{ effectColors?: PlotEffectColors; fcPalette?: PaletteRef }> & {
-  /** the plot's other colour settings, under the palette (a heatmap's module palettes) */
+  /** the plot's other colour settings, under the palette and any group colours (a heatmap's
+   *  module palettes, enrichment's categories) */
   children?: ReactNode
   /** offer the up / down / none colours too */
   groups?: boolean
+  /** the palette row's name, where it isn't a fold-change scale (enrichment: an effect palette —
+   *  its up / down can be an NES's sign) */
+  paletteLabel?: string
+  /** the up / down / none row's name */
+  groupsLabel?: string
+  /** false: the plot as set draws no "none" colour — its chip is greyed */
+  noneDrawn?: boolean
   /** the palette role Automatic follows (default: fold change on objects) */
   role?: PaletteRole
   /** a line under the palette, when it needs saying what it colours */
@@ -796,7 +807,7 @@ export function ColourRows({
   }
   return (
     <>
-      <Field label="FC palette">
+      <Field label={paletteLabel}>
         <PanelPaletteSelect
           value={toPaletteRef(config.fcPalette)}
           onChange={(v) => update({ fcPalette: v })}
@@ -804,19 +815,28 @@ export function ColourRows({
         />
       </Field>
       {hint && <div style={styles.hint}>{hint}</div>}
-      {children}
       {groups && (
-        <Field label="groups">
+        <Field label={groupsLabel}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
             <span style={styles.inlineTag}>{names.up}</span>
             {chip('up')}
             <span style={{ ...styles.inlineTag, marginLeft: 6 }}>{names.down}</span>
             {chip('down')}
-            <span style={{ ...styles.inlineTag, marginLeft: 6 }}>{names.none}</span>
-            {chip('none')}
+            <span
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 6,
+                ...(noneDrawn ? null : { opacity: 0.4, pointerEvents: 'none' })
+              }}
+            >
+              <span style={{ ...styles.inlineTag, marginLeft: 6 }}>{names.none}</span>
+              {chip('none')}
+            </span>
           </div>
         </Field>
       )}
+      {children}
     </>
   )
 }

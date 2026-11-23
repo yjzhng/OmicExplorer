@@ -8,7 +8,12 @@ import {
 import { useGraph } from '../../graph/store'
 import type { EnrichConfig } from '../../graph/types'
 import { Field, NumberInput, QuickToggle, Select } from '../kit/settings/controls'
-import { ColourRows, type PlotPanelProps, PlotSections } from '../kit/settings/plotSections'
+import {
+  CategoricalSelect,
+  ColourRows,
+  type PlotPanelProps,
+  PlotSections
+} from '../kit/settings/plotSections'
 import { styles } from '../kit/settings/styles'
 import { type PlotSettingsProps } from '../settings'
 
@@ -86,6 +91,19 @@ export function EnrichPanel({ config, update, edgeNodeId }: PlotPanelProps<Enric
           options={styleOpts.map((o) => ({ value: o, label: o }))}
         />
       </Field>
+      <Field
+        label="order"
+        info="Stack the terms by significance alone, or by category first — the categories in the legend's order, each's terms by significance (by NES in the ridge style)."
+      >
+        <Select
+          value={config.termOrder ?? 'significance'}
+          onChange={(v) => update({ termOrder: v as EnrichConfig['termOrder'] })}
+          options={[
+            { value: 'significance', label: 'significance' },
+            { value: 'category', label: 'category, then significance' }
+          ]}
+        />
+      </Field>
     </>
   )
 }
@@ -116,8 +134,25 @@ export function Settings({ config, ...props }: PlotSettingsProps): ReactNode {
           config={config as EnrichConfig}
           {...props}
           groups
+          // up / down is an effect, not a fold change: the up or down genes a term is enriched in
+          // (ORA), or its NES's sign (GSEA)
+          paletteLabel="effect palette"
+          groupsLabel="effect group"
+          // "none" draws only the ridge style's all-genes reference
+          noneDrawn={
+            (config as EnrichConfig).method === 'gsea' && (config as EnrichConfig).style === 'ridge'
+          }
           hint="The up / down colours draw the bars, stems and dots — a dot faint to full by significance, on a scale reaching at least FDR 0.05."
-        />
+        >
+          {/* the term groups' colours (the category legend), a term's group the same colour in
+              every enrichment plot — Automatic = the global categorical palette */}
+          <Field label="categories">
+            <CategoricalSelect
+              config={config as unknown as Record<string, unknown>}
+              update={props.update}
+            />
+          </Field>
+        </ColourRows>
       }
     />
   )

@@ -15,15 +15,17 @@
  *   • macOS — the release's .dmg for this arch is mounted and its app copied next to the installed
  *     one (`.OmicExplorer-update.app`, same folder so the swap is a rename); on the restart, at
  *     will-quit, the installed bundle is moved aside, the new one renamed in, and the app relaunched.
- *     The old bundle is removed on the next launch. Needs the app in a folder it can write
- *     (Applications, for an admin user) — not run from the disk image or translocated.
+ *     The old bundle is removed on the next launch. Not run from the disk image or translocated.
+ *     In a folder this account can't write (/Applications, for a standard user on a managed Mac),
+ *     the new app waits in the temp folder instead, and the swap — the same moves, plus removing
+ *     the old bundle — runs with administrator rights: macOS asks for an admin's password then.
  *   • Windows — the release's setup .exe, run silently at will-quit (`--updated /S --force-run`,
  *     as electron-updater does), which replaces the install and starts the new version.
  * The download is checked against the release's SHA-256 (when the API gives one), and the Mac app
  * against this app's bundle id and the release's version, before anything is replaced.
  */
 import { createHash } from 'node:crypto'
-import { execFile, spawn } from 'node:child_process'
+import { execFile, execFileSync, spawn } from 'node:child_process'
 import {
   accessSync,
   constants,
@@ -54,6 +56,9 @@ export interface UpdateState {
   message?: string
   /** why this copy can't update itself (then the release page is the way) */
   unsupported?: string
+  /** the folder the app is in, when this account can't write it: installing asks for an
+   *  administrator's password */
+  admin?: string
 }
 
 let state: UpdateState = { phase: 'idle' }
@@ -63,7 +68,7 @@ let staged: { version: string; path: string } | null = null
 let installing = false
 
 function setState(next: UpdateState): void {
-  state = { ...next, unsupported: unsupportedReason() ?? undefined }
+  state = { ...next, unsupported: unsupportedReason() ?? undefined, admin: adminFolder() }
   for (const w of BrowserWindow.getAllWindows()) w.webContents.send('update:state', state)
 }
 
@@ -84,13 +89,21 @@ function unsupportedReason(): string | null {
   if (!bundle.endsWith('.app')) return 'Couldn’t find the app bundle to update.'
   if (bundle.includes('/AppTranslocation/') || bundle.startsWith('/Volumes/'))
     return `Move ${NAME} to the Applications folder, open it from there, then update here.`
+  return null
+}
+
+/** The installed app's folder when this account can't write it (or the bundle itself) — the swap
+ *  then needs an administrator — else undefined. macOS only. */
+function adminFolder(): string | undefined {
+  if (process.platform !== 'darwin' || !app.isPackaged) return undefined
+  const bundle = macBundle()
   try {
     accessSync(dirname(bundle), constants.W_OK)
     accessSync(bundle, constants.W_OK)
+    return undefined
   } catch {
-    return `${NAME} is in a folder this account can’t change (${dirname(bundle)}).`
+    return dirname(bundle)
   }
-  return null
 }
 
 /** Compare dotted versions numerically (as the renderer's useUpdateCheck does). */
@@ -161,8 +174,10 @@ async function assetDigest(tag: string, name: string): Promise<string | null> {
 /** The update folder in temp (the download, the Mac disk image's mount point). */
 const workDir = (): string => join(app.getPath('temp'), `${NAME}-update`)
 /** Where the new Mac app waits for the restart — beside the installed one, so the swap is a
- *  rename on the same volume. */
-const macStaging = (): string => join(dirname(macBundle()), `.${NAME}-update.app`)
+ *  rename on the same volume; in the temp folder when that folder needs an administrator (the
+ *  swap, run as one, copies it in). */
+const macStaging = (): string =>
+  adminFolder() ? join(workDir(), `${NAME}.app`) : join(dirname(macBundle()), `.${NAME}-update.app`)
 
 async function download(): Promise<void> {
   if (state.phase === 'downloading') return
@@ -269,11 +284,14 @@ async function stageMac(dmg: string, dir: string, version: string): Promise<void
 /** At will-quit: put the staged update in place (and, on a Mac, relaunch it). */
 function applyUpdate(): void {
   if (!staged || !installing) return
-  const { path } = staged
+  const { path, version } = staged
   staged = null
   installing = false
   try {
-    if (process.platform === 'darwin') {
+    if (process.platform === 'darwin' && adminFolder()) {
+      swapAsAdmin(path, version)
+      app.relaunch()
+    } else if (process.platform === 'darwin') {
       const bundle = macBundle()
       const old = join(dirname(bundle), `.${NAME}-old-${Date.now()}.app`)
       renameSync(bundle, old)
@@ -292,6 +310,36 @@ function applyUpdate(): void {
     dialog.showErrorBox(
       'Update not installed',
       `${NAME} couldn’t put the update in place (${(e as Error).message}). It stays on v${app.getVersion()}.`
+    )
+  }
+}
+
+/** The Mac swap in a folder this account can't write: the installed bundle moved aside, the
+ *  staged app copied in (put back as it was if that fails), the old one removed — one shell
+ *  script, run through macOS's administrator prompt. Throws when it's cancelled or fails. */
+function swapAsAdmin(staged: string, version: string): void {
+  const bundle = macBundle()
+  const old = join(dirname(bundle), `.${NAME}-old-${Date.now()}.app`)
+  const q = (p: string): string => `'${p.replace(/'/g, `'\\''`)}'`
+  const script = [
+    `mv ${q(bundle)} ${q(old)} &&`,
+    `if /usr/bin/ditto ${q(staged)} ${q(bundle)}; then rm -rf ${q(old)};`,
+    `else rm -rf ${q(bundle)}; mv ${q(old)} ${q(bundle)}; exit 1; fi`
+  ].join(' ')
+  // an AppleScript string: backslashes and double quotes escaped
+  const as = (t: string): string => `"${t.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`
+  try {
+    execFileSync('osascript', [
+      '-e',
+      `do shell script ${as(script)} with administrator privileges with prompt ${as(
+        `${NAME} needs an administrator’s password to install v${version}.`
+      )}`
+    ])
+  } catch (e) {
+    const err = String((e as { stderr?: unknown }).stderr ?? (e as Error).message)
+    throw new Error(
+      /-128|cancel/i.test(err) ? 'the administrator’s password was cancelled' : err.trim(),
+      { cause: e }
     )
   }
 }
@@ -331,7 +379,8 @@ export function initAutoUpdate(): void {
   })
   ipcMain.handle('update:state', (): UpdateState => ({
     ...state,
-    unsupported: unsupportedReason() ?? undefined
+    unsupported: unsupportedReason() ?? undefined,
+    admin: adminFolder()
   }))
   ipcMain.handle('update:download', async (): Promise<void> => {
     try {

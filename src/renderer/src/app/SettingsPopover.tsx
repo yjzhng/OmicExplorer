@@ -647,6 +647,11 @@ export function SettingsPopover({
                     {update.install.unsupported}
                   </div>
                 )}
+                {update.updateAvailable && !update.install.unsupported && update.install.admin && (
+                  <div style={{ ...styles.aboutMuted, marginTop: 8 }}>
+                    {`${update.install.admin} needs an administrator’s password to change: macOS asks for one when the update is put in place.`}
+                  </div>
+                )}
                 <label style={{ ...styles.silenceRow, marginTop: 14 }}>
                   <span>Silence update dot</span>
                   <input type="checkbox" checked={silenced} onChange={onToggleSilence} />

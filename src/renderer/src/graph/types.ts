@@ -2047,6 +2047,11 @@ export interface EnrichConfig extends FcPaletteConfig {
   style: 'dot' | 'bar' | 'ridge'
   /** how many top terms to show */
   topTerms: number
+  /** how terms are stacked: by significance alone (unset), or by category first — the
+   *  categories in their fixed order (the legend's), each's terms by significance */
+  termOrder?: 'significance' | 'category'
+  /** the term groups' (categories') palette, this plot's own; unset = the global one */
+  categorical?: import('../ui/palettes').CategoricalId
   /** which of this plot's settings the tile surfaces as quick-access switch bars (unset = all;
    *  the gear always carries every setting). Keyed by config field. */
   quick?: QuickAccess
