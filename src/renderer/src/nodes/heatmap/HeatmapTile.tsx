@@ -31,8 +31,11 @@ export function HeatmapTile({
   orient,
   condBar,
   palette,
-  sampleOrder = 'natural'
+  sampleOrder = 'natural',
+  plainScale
 }: {
+  /** its values shown plain on a log colour scale (ui/quantityAxis): `scale`, when they are */
+  plainScale?: ValueScale
   /** on its presented scale (see presentStd) */
   std: StandardizeResult
   /** that scale — for the labels */
@@ -83,7 +86,8 @@ export function HeatmapTile({
       heatmap={heatmap}
       title={`${heatmap.samples.length} samples · ${scope}, clustered`}
       orient={orient}
-      valueLabel={quantityLabel(scale, valueUnitOf(std))}
+      valueLabel={quantityLabel(scale, valueUnitOf(std), !!plainScale)}
+      plainScale={plainScale}
       condBar={condBar}
       palette={palette}
       numeric={numericOf(std)}

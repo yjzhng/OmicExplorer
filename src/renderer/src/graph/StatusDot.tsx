@@ -151,11 +151,10 @@ export function usePlotGate(id: string, data: NodeData): string | null {
   const isPlot = NODE_SPECS[data.kind].category === 'plotting'
   const upId = useGraph((s) => (isPlot ? s.upstreamId(id) : undefined))
   const facts = useUpstreamFacts(upId)
-  const upRunning = useUpstreamRunning(upId)
   if (!isPlot) return null
-  // The step it reads still running: its run can start now — it waits for that step (the store's
-  // waitForInputs), then draws from its result.
-  if (!upId || (!facts.result && !upRunning)) return 'Run the step it reads from first'
+  if (!upId) return 'Connect it to a step first'
+  // The step it reads not run yet, or still running: its run can start now — it runs that step
+  // first (runTargets) or waits for it (waitForInputs), then draws from its result.
   if (!facts.result) return null
   const kinds =
     data.kind === 'plotGroup'

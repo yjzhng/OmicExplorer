@@ -4,7 +4,7 @@ import { STEP_RUNS } from '../../nodes/runs'
 import { reportError } from '../../shared/diagnostics'
 import { runPlot } from '../plotRun'
 import { axisAvailFor, categoryOf, runsIn } from '../registry'
-import { downstreamOf, runOrder } from '../runOrder'
+import { downstreamOf, runPlan } from '../runOrder'
 import { type Getter, type GraphState, type StoreSet } from '../store'
 import {
   isStep,
@@ -58,6 +58,14 @@ export const plotRunSeq = new Map<string, number>()
 /** The steps whose downstream is being refreshed (refreshDownstream), each flagged when another
  *  refresh was asked for meanwhile. */
 export const refreshing = new Map<string, { again: boolean }>()
+/** The target runs in progress (runTargets): what each still runs for, the step it's on, and
+ *  whether it was stopped. */
+interface TargetRun {
+  targets: Set<string>
+  current?: string
+  stopped: boolean
+}
+const targetRuns = new Set<TargetRun>()
 export const nextPlotRun = (key: string): number => {
   const n = (plotRunSeq.get(key) ?? 0) + 1
   plotRunSeq.set(key, n)
@@ -100,6 +108,8 @@ export function runSlice(
   | 'runPlotChild'
   | 'rerunFrom'
   | 'refreshDownstream'
+  | 'runTargets'
+  | 'stopTargets'
   | 'runAll'
   | 'stopAll'
   | 'invalidateDownstream'
@@ -108,6 +118,16 @@ export function runSlice(
   | 'upstreamIds'
   | 'nodeKind'
 > {
+  /** Set these steps' status (clearing any error), in one update. */
+  const setStatuses = (ids: string[], status: StepStatus): void => {
+    if (!ids.length) return
+    const on = new Set(ids)
+    set((s) => ({
+      nodes: s.nodes.map((n) =>
+        on.has(n.id) && isStep(n) ? { ...n, data: { ...n.data, status, error: undefined } } : n
+      )
+    }))
+  }
   return {
     runNode: async (id) => {
       // An input still running: wait for it (a group's plots each wait in runPlotChild).
@@ -245,6 +265,21 @@ export function runSlice(
     },
 
     runPlotChild: async (groupId, childId) => {
+      // The step it reads not run yet (or out of date): run it first — as runTargets does for a
+      // tile; a group's own run has already.
+      const inId = get().upstreamId(groupId)
+      const up = inId ? get().nodes.find((n) => n.id === inId) : undefined
+      if (
+        up &&
+        isStep(up) &&
+        up.data.status !== 'done' &&
+        up.data.status !== 'running' &&
+        runsIn(get(), up.id)
+      ) {
+        await get().runTargets([up.id])
+        const now = get().nodes.find((n) => n.id === up.id)
+        if (!now || !isStep(now) || now.data.status !== 'done') return
+      }
       // An input still running: wait for it, the plot showing as running meanwhile.
       const childStatus = (): StepStatus | undefined => {
         const g = get().nodes.find((n) => n.id === groupId)
@@ -380,36 +415,112 @@ export function runSlice(
       }
     },
 
+    runTargets: async (ids) => {
+      const g = get()
+      const steps = g.nodes.filter(isStep)
+      const status = (id: string): StepStatus | undefined => {
+        const n = get().nodes.find((x) => x.id === id)
+        return n && isStep(n) ? n.data.status : undefined
+      }
+      const order = runPlan(
+        steps.map((n) => n.id),
+        g.edges,
+        ids,
+        (id) => status(id) !== 'done' && status(id) !== 'running',
+        (id) => runsIn(get(), id)
+      )
+      const run: TargetRun = { targets: new Set(ids), stopped: false }
+      targetRuns.add(run)
+      // A target waiting on a step pulled in for it shows as queued (running, waiting) meanwhile — so
+      // it reads as part of the run, and its Stop takes it out (stopTargets) rather than cancelling
+      // that step. (Targets with nothing pulled in above them run as Run all always did.)
+      const pulled = order.filter((id) => !run.targets.has(id))
+      const below = new Set(pulled.flatMap((u) => [...downstreamOf(u, g.edges)]))
+      const queued = order.filter(
+        (id) =>
+          run.targets.has(id) &&
+          below.has(id) &&
+          runsIn(get(), id) &&
+          get().nodeKind(id) !== 'plotGroup' &&
+          status(id) !== 'running'
+      )
+      for (const id of queued) waitingRuns.add(id)
+      setStatuses(queued, 'running')
+      // Steps below a failed one: they'd only fail too, so they're skipped — but a failed plot
+      // skips nothing (nothing reads from it), and the other branches still run.
+      const skipped = new Set<string>()
+      try {
+        for (const id of order) {
+          if (run.stopped) break
+          const target = run.targets.has(id)
+          // (only its own queue mark: another run's wait on this id isn't this run's to clear)
+          const wasQueued = queued.includes(id) && waitingRuns.delete(id)
+          if (skipped.has(id)) continue
+          const kind = get().nodeKind(id)
+          if (!kind || !runsIn(get(), id)) continue
+          // a target taken out of the run (its Stop) is skipped; a needed step another run has
+          // finished or is running meanwhile isn't run again (a run below it waits for it)
+          if (wasQueued && status(id) !== 'running') continue
+          if (!target && (status(id) === 'done' || status(id) === 'running')) continue
+          if (!target && ![...run.targets].some((t) => downstreamOf(id, get().edges).has(t)))
+            continue // what needed it has left the run
+          run.current = id
+          await get().runNode(id)
+          run.current = undefined
+          if (
+            categoryOf(kind) !== 'plotting' &&
+            get().nodes.find((n) => n.id === id)?.data.status === 'error'
+          )
+            for (const d of downstreamOf(id, get().edges)) skipped.add(d)
+        }
+      } finally {
+        targetRuns.delete(run)
+        // targets never reached (stopped, or below a failure): no longer queued
+        const left = queued.filter((id) => waitingRuns.delete(id) || skipped.has(id))
+        setStatuses(
+          left.filter((id) => status(id) === 'running'),
+          'idle'
+        )
+      }
+    },
+
+    stopTargets: (ids) => {
+      const out = new Set(ids)
+      for (const run of targetRuns) {
+        if (![...run.targets].some((t) => out.has(t))) continue
+        for (const t of out) run.targets.delete(t)
+        if (run.targets.size) continue
+        run.stopped = true
+        // the step it was on, run only for these targets
+        if (run.current && !out.has(run.current)) get().cancelNode(run.current)
+      }
+      for (const id of ids) {
+        const n = get().nodes.find((x) => x.id === id)
+        if (!n || !isStep(n)) continue
+        const running =
+          n.data.status === 'running' ||
+          (n.data.kind === 'plotGroup' &&
+            (n.data.config as PlotGroupConfig).children.some((c) => c.status === 'running'))
+        if (running) get().cancelNode(id)
+      }
+    },
+
     runAll: async () => {
       if (get().runningAll) return
-      const { nodes, edges } = get()
-      // Branch by branch: a finished branch can be viewed while the others still run (runOrder).
-      const order = runOrder(
-        nodes.filter(isStep).map((n) => n.id),
-        edges
-      )
-
       set({ runningAll: true })
-      // Steps below a failed one: they'd only fail too, so they're skipped — but the other branches
-      // still run.
-      const skipped = new Set<string>()
-      for (const id of order) {
-        if (!get().runningAll) break // stopped by the user
-        if (skipped.has(id)) continue
-        const kind = get().nodeKind(id)
-        if (!kind || !runsIn(get(), id)) continue
-        await get().runNode(id)
-        // A plot's failure skips nothing — nothing reads from it.
-        if (
-          categoryOf(kind) !== 'plotting' &&
-          get().nodes.find((n) => n.id === id)?.data.status === 'error'
+      try {
+        await get().runTargets(
+          get()
+            .nodes.filter(isStep)
+            .map((n) => n.id)
         )
-          for (const d of downstreamOf(id, get().edges)) skipped.add(d)
+      } finally {
+        set({ runningAll: false })
       }
-      set({ runningAll: false })
     },
 
     stopAll: () => {
+      for (const run of targetRuns) run.stopped = true
       engine.cancel()
       set((s) => ({
         runningAll: false,

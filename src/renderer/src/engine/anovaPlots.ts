@@ -91,8 +91,8 @@ export interface InteractionGene {
 }
 
 /** The interaction plot's factors (by index into the model's): x — `xFactor`, else the first — and
- *  the lines — `lineFactor` when it isn't x, else the first other factor; none for a one-way model.
- *  Any further factors are averaged. */
+ *  the lines — `lineFactor` when it isn't x, else the first other factor; none for a one-way model
+ *  or `lineFactor` 'none' (x alone). Any further factors are averaged. */
 export function interactionAxes(
   a: Pick<AnovaResult, 'factors'>,
   xFactor?: string,
@@ -100,6 +100,7 @@ export function interactionAxes(
 ): { x: number; line: number | null } {
   const idx = (c?: string): number => a.factors.findIndex((f) => f.condition === c)
   const x = Math.max(0, idx(xFactor))
+  if (lineFactor === 'none') return { x, line: null }
   const l = idx(lineFactor)
   const line = l >= 0 && l !== x ? l : a.factors.findIndex((_, i) => i !== x)
   return { x, line: line >= 0 ? line : null }

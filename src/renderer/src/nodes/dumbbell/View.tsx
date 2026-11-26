@@ -9,7 +9,7 @@ import {
   dumbbellOrderLabel
 } from '../../engine'
 import { quickOn } from '../../graph/registry'
-import { type DumbbellConfig, geneCapOn } from '../../graph/types'
+import { type DumbbellConfig, geneCapOn, topCountOf } from '../../graph/types'
 import { Empty } from '../kit/views/common'
 import { type ViewContext } from '../kit/views/context'
 import { styles } from '../kit/views/styles'
@@ -27,7 +27,8 @@ export function dumbbellView(v: ViewContext): ReactNode {
     facetSel,
     focus,
     quantityScale,
-    quantityUnit
+    quantityUnit,
+    plainScale
   } = v
   if (upstream?.kind !== 'contrast') return <Empty text="Connect a Contrast tile and run it." />
   const cfg = cfgSource as DumbbellConfig
@@ -51,7 +52,10 @@ export function dumbbellView(v: ViewContext): ReactNode {
             {(rows) => (
               <DumbbellView
                 rows={rows}
-                topGenes={geneCapOn(cfg) ? cfg.topGenes : 0}
+                topGenes={geneCapOn(cfg) ? topCountOf(cfg, cfg.topGenes) : 0}
+                topSplit={cfg.topSplit}
+                topUp={cfg.topUp}
+                topDown={cfg.topDown}
                 displayMap={dm}
                 focus={focus}
                 key={cfg.orient ?? 'auto'}
@@ -60,7 +64,14 @@ export function dumbbellView(v: ViewContext): ReactNode {
                 // the feature on the switcher, when it's not the sides' own value
                 valueKind={contrastFeatureLabel(rows) ? 'other' : upstream.ctr.valueKind}
                 valueLabel={
-                  contrastFeatureLabel(rows) ?? quantityLabel(quantityScale, quantityUnit)
+                  contrastFeatureLabel(rows) ??
+                  quantityLabel(quantityScale, quantityUnit, !!plainScale)
+                }
+                // an abundance contrast's own values (not another feature) shown plain
+                plainScale={
+                  upstream.ctr.valueKind === 'quantity' && !contrastFeatureLabel(rows)
+                    ? plainScale
+                    : undefined
                 }
               />
             )}

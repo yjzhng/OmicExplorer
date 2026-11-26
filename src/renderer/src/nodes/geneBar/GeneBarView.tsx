@@ -1,6 +1,12 @@
 import { useMemo } from 'react'
 
-import { condLabel, metaValue, type ConditionKey, type GeneBarData } from '../../engine'
+import {
+  condLabel,
+  metaValue,
+  type ConditionKey,
+  type GeneBarData,
+  type ValueScale
+} from '../../engine'
 import { condsOf } from '../../ui/clusterPlan'
 import { condTooltip, geneLine, valueLine } from '../../ui/condTooltip'
 import { bindSampleLink, sampleKey, sampleMeta } from '../../ui/sampleLink'
@@ -8,6 +14,7 @@ import { groupMeta } from '../../ui/traceFocus'
 import { valueColor, type ValueRange } from '../../ui/colormap'
 import { conditionColorer } from '../../ui/condColor'
 import { PlotlyChart } from '../../ui/PlotlyChart'
+import { fmtQuantity, plainTicks, rangeOf } from '../../ui/quantityAxis'
 import { ROLE_DEFAULTS, type PaletteRef } from '../../ui/palettes'
 import { sectionKey, SECTIONED_LEGEND } from '../../ui/legendSections'
 import { axisBase, CATEGORICAL, PALETTES, PLOT_TEXT, plotBase } from '../../ui/theme'
@@ -45,8 +52,11 @@ export function GeneBarView({
   valueRangeFixed,
   categorical = CATEGORICAL,
   valuePalette = ROLE_DEFAULTS.data,
-  condTitle = condLabel
+  condTitle = condLabel,
+  plainScale
 }: {
+  /** the values shown plain on a log value axis (ui/quantityAxis): the logged scale they're on */
+  plainScale?: ValueScale
   /** a condition's legend heading — with its unit for dose / time (default: its name) */
   condTitle?: (c: ConditionKey) => string
   bar: GeneBarData
@@ -128,7 +138,12 @@ export function GeneBarView({
       (bar.condMeta[cond] &&
         condTooltip(bar.condMeta[cond], tipConds, p.textMuted, { rep: false })) ||
       cond
-    const valueAt = horizontal ? '%{x:.4~g}' : '%{y:.4~g}'
+    // shown plain, each value rides formatted in its hovertext (Plotly can't exponentiate)
+    const valueAt = plainScale ? '%{hovertext}' : horizontal ? '%{x:.4~g}' : '%{y:.4~g}'
+    const plainText = (vs: Array<number | null>) =>
+      plainScale
+        ? { hovertext: vs.map((v) => (v == null ? '' : fmtQuantity(v, plainScale, true))) }
+        : null
     // A condition slot's link key (see sampleLink): a whole condition, so it answers every
     // replicate of it.
     // A condition slot's groups — the legend swatches it falls under (`cond=value`), so selecting a
@@ -145,6 +160,25 @@ export function GeneBarView({
         : []
     const keyOf = (cond: string): string | null =>
       bar.condMeta[cond] ? sampleKey(bar.condMeta[cond], null) : null
+    // Per gene: this gene's own min to max — bar tops, error bar ends and replicates — rather than
+    // Plotly's autorange, which always reaches down to the bars' base at 0.
+    let gLo = Infinity
+    let gHi = -Infinity
+    for (const b of bar.bars) {
+      if (b.mean == null) continue
+      // the replicates count only while they're drawn
+      const reps = replicates?.show ? b.values : []
+      gLo = Math.min(gLo, b.mean - b.errDown, ...reps)
+      gHi = Math.max(gHi, b.mean + b.errUp, ...reps)
+    }
+    const gPad = (gHi - gLo) * 0.08 || Math.abs(gHi) * 0.08 || 1
+    const geneRange: [number, number] | undefined =
+      Number.isFinite(gLo) && Number.isFinite(gHi) ? [gLo - gPad, gHi + gPad] : undefined
+    // Shown plain on a log axis, a bar rises from the axis floor: its own 0 is a value of 1 (log 0),
+    // off the axis for fractions — the bars would hang from the top.
+    const floor = plainScale && !logVal ? (valueRangeFixed ?? geneRange)?.[0] : undefined
+    const barLen = (vs: Array<number | null>) =>
+      floor == null ? vs : vs.map((v) => (v == null ? null : v - floor))
     const traces = bar.genes.map((g, i) => {
       const gb = bar.bars.filter((b) => b.uniqID === g.uniqID)
       const conds = gb.map((b) => b.cond)
@@ -153,10 +187,12 @@ export function GeneBarView({
         type: 'bar',
         name: g.label,
         orientation: horizontal ? 'h' : 'v',
-        x: horizontal ? means : conds,
-        y: horizontal ? conds : means,
+        x: horizontal ? barLen(means) : conds,
+        y: horizontal ? conds : barLen(means),
+        ...(floor != null ? { base: floor } : null),
         // the tooltip's text only — never drawn on the bar
         text: conds.map(identOf),
+        ...plainText(means),
         textposition: 'none',
         meta: {
           ...sampleMeta(conds.map(keyOf)),
@@ -207,31 +243,31 @@ export function GeneBarView({
         range: [eLo, eHi]
       })
     }
-    // Per gene: this gene's own min to max — bar tops, error bar ends and replicates — rather than
-    // Plotly's autorange, which always reaches down to the bars' base at 0.
-    let gLo = Infinity
-    let gHi = -Infinity
-    for (const b of bar.bars) {
-      if (b.mean == null) continue
-      // the replicates count only while they're drawn
-      const reps = replicates?.show ? b.values : []
-      gLo = Math.min(gLo, b.mean - b.errDown, ...reps)
-      gHi = Math.max(gHi, b.mean + b.errUp, ...reps)
-    }
-    const gPad = (gHi - gLo) * 0.08 || Math.abs(gHi) * 0.08 || 1
-    const geneRange: [number, number] | undefined =
-      Number.isFinite(gLo) && Number.isFinite(gHi) ? [gLo - gPad, gHi + gPad] : undefined
     const valAxis = {
       ...axisBase(p),
       title: valueLabel,
       ...logTicks,
+      ...(plainScale && !logVal
+        ? plainTicks(
+            plainScale,
+            valueRangeFixed ??
+              geneRange ??
+              rangeOf(
+                bar.bars.flatMap((b) => [
+                  b.mean,
+                  b.mean != null ? b.mean + b.errUp : null,
+                  b.mean != null ? b.mean - b.errDown : null
+                ])
+              )
+          )
+        : null),
       ...(!logVal && (valueRangeFixed ?? geneRange)
         ? { range: valueRangeFixed ?? geneRange, autorange: false }
         : {})
     }
     // Baseline where "NaN" labels sit. On a log axis Plotly wants annotation coords as log10 of
     // the value, so anchor at log10(min) (the bottom of the data); linear sits at 0.
-    const valBase = logVal && range && range.min > 0 ? Math.log10(range.min) : 0
+    const valBase = logVal && range && range.min > 0 ? Math.log10(range.min) : (floor ?? 0)
     // Missing conditions (mean null) draw no bar; label the empty slot "NaN" at the baseline.
     const annotations = bar.bars
       .filter((b) => b.mean == null)
@@ -297,6 +333,7 @@ export function GeneBarView({
             line: auto ? { color: p.text, width: 0.8 } : { width: 0 }
           },
           text: tips,
+          ...plainText(vals),
           meta: {
             ...(keyOf(cond) ? sampleMeta(keyOf(cond)!) : {}),
             ...groupMeta({ groups: condGroups(cond) })
@@ -381,7 +418,8 @@ export function GeneBarView({
     valueRangeFixed,
     categorical,
     valuePalette,
-    condTitle
+    condTitle,
+    plainScale
   ])
 
   return <PlotlyChart data={data} layout={layout} onGraphMount={bindSampleLink} />

@@ -1,8 +1,11 @@
 import { useMemo } from 'react'
 
 import { buildDumbbell, type ContrastResultRow, type DumbbellOrder } from '../../engine'
+import { topSplitOf } from '../../graph/types'
+import type { TopSplit, ValueScale } from '../../engine'
 import { tooltip } from '../../ui/condTooltip'
 import { PlotlyChart } from '../../ui/PlotlyChart'
+import { fmtQuantity, plainTicks, rangeOf } from '../../ui/quantityAxis'
 import { axisBase, CATEGORICAL, PALETTES, PLOT_TEXT, plotBase } from '../../ui/theme'
 import { useSelection } from '../../ui/useSelection'
 import { useUiTheme } from '../../ui/useUiTheme'
@@ -13,16 +16,26 @@ import { useUiTheme } from '../../ui/useUiTheme'
 export function DumbbellView({
   rows,
   topGenes,
+  topSplit,
+  topUp,
+  topDown,
   displayMap,
   focus,
   title,
   orient = 'portrait',
   order,
   valueKind = 'fc',
-  valueLabel
+  valueLabel,
+  plainScale
 }: {
   rows: ContrastResultRow[]
+  /** abundance sides shown plain on a log axis (ui/quantityAxis): the logged scale they're on */
+  plainScale?: ValueScale
   topGenes: number
+  /** how the top-N splits between up and down (TopSplitConfig) */
+  topSplit?: TopSplit
+  topUp?: number
+  topDown?: number
   displayMap?: Record<string, string>
   focus?: string[]
   title?: string
@@ -49,7 +62,14 @@ export function DumbbellView({
     }
     const extra = new Set(pinnedIds)
     if (hoverId) extra.add(hoverId)
-    const dumbbell = buildDumbbell(rows, { topGenes, displayMap, focus, extra: [...extra], order })
+    const dumbbell = buildDumbbell(rows, {
+      topGenes,
+      split: topSplitOf({ topSplit, topUp, topDown }),
+      displayMap,
+      focus,
+      extra: [...extra],
+      order
+    })
     const genes = dumbbell.rows.map((r) => r.label)
     // uniqIDs parallel to `genes` — what the selection store keys on, so the bold restyle can
     // match a hovered/pinned gene to its tick.
@@ -87,10 +107,14 @@ export function DumbbellView({
       x: landscape ? genes : dumbbell.rows.map((r) => r[key]),
       y: landscape ? dumbbell.rows.map((r) => r[key]) : genes,
       customdata: dumbbell.rows.map((r) => r.uniqID),
+      // shown plain, each value rides formatted in its hovertext (Plotly can't exponentiate)
+      ...(plainScale
+        ? { hovertext: dumbbell.rows.map((r) => fmtQuantity(r[key], plainScale, true)) }
+        : null),
       hovertemplate: tooltip(
         {
           title: landscape ? '%{x}' : '%{y}',
-          values: [[name, landscape ? '%{y:.3f}' : '%{x:.3f}']]
+          values: [[name, plainScale ? '%{hovertext}' : landscape ? '%{y:.3f}' : '%{x:.3f}']]
         },
         p.textMuted,
         { template: true }
@@ -105,7 +129,10 @@ export function DumbbellView({
         valueKind === 'fc'
           ? 'log₂FC'
           : (valueLabel ?? (valueKind === 'quantity' ? 'log abundance' : '')),
-      zeroline: false
+      zeroline: false,
+      ...(plainScale
+        ? plainTicks(plainScale, rangeOf(dumbbell.rows.flatMap((r) => [r.fc1, r.fc2])))
+        : null)
     }
     const geneAxis = {
       ...axisBase(p),
@@ -150,6 +177,9 @@ export function DumbbellView({
   }, [
     rows,
     topGenes,
+    topSplit,
+    topUp,
+    topDown,
     displayMap,
     focus,
     orient,
@@ -159,7 +189,8 @@ export function DumbbellView({
     hoverId,
     pinnedIds,
     title,
-    mode
+    mode,
+    plainScale
   ])
 
   return <PlotlyChart data={data} layout={layout} boldTicks={boldTicks} />

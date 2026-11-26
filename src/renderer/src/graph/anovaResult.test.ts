@@ -104,7 +104,7 @@ describe('the show pick (overall / factors)', () => {
       resolveFacets(res.rows, dims, sel, numeric)
         .bars.find((b) => b.dim === 'comparison')!
         .options.map((o) => String(o.value))
-    expect(cmp({})).toEqual(['A|DMSO × M|W', 'B|DMSO × M|W'])
+    expect(cmp({})).toEqual(['cmpd (A|DMSO)', 'cmpd (B|DMSO)'])
     // the model's order: the main effects in factor order, the interaction last
     expect(cmp({ show: 'factors' })).toEqual(['cmpd', 'cell', 'cmpd × cell'])
     // overall first (the default), whatever the alphabet says

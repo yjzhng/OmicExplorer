@@ -3,7 +3,16 @@ import { describe, expect, it } from 'vitest'
 import { standardize } from './ingest'
 import { MIN_SHARED_GENES, normalizeSamples } from './normalize'
 import { buildMA, buildQc } from './plotData'
-import { analysisScaleOf, presentScaleOf, presentStd, quantityLabel, valueUnitOf } from './scale'
+import {
+  analysisScaleOf,
+  plainLogOf,
+  presentScaleOf,
+  presentStd,
+  quantityLabel,
+  tableScaleOf,
+  valueUnitOf,
+  withLogDisplay
+} from './scale'
 import type { StandardRow } from './types'
 
 const row = (uniqID: string, rep: number, value: number | null): StandardRow => ({
@@ -156,26 +165,46 @@ describe('Clean data with a reference protein', () => {
       ...(logTransform ? { logTransform } : null)
     })
 
-  it('shows the reference at 1 and every value as its fraction, unlogged whatever the log-transform', () => {
+  it('holds the reference at 1 and every value as its fraction; logged, they show plain on a log axis', () => {
     const std = run(DATA, 'log2')
     for (const r of std.rows.filter((r) => r.uniqID === 'R')) expect(r.value).toBeCloseTo(1, 9)
     // g1 over R: 0.1, 0.1 (A) and 0.4, 0.4 (B)
     const g1 = std.rows.filter((r) => r.uniqID === 'g1').map((r) => r.value!)
     expect(g1.map((v) => Number(v.toFixed(6))).sort()).toEqual([0.1, 0.1, 0.4, 0.4])
-    // shown unlogged; the log-transform still sets the scale analyses (a Compare's test) run on
-    expect(presentScaleOf(std)).toBe('linear')
+    // plotted on the log-transform's scale (as tested), the values shown plain (LogDisplay)
+    expect(presentScaleOf(std)).toBe('log2')
     expect(analysisScaleOf(std)).toBe('log2')
-    const shown = presentStd(std, presentScaleOf(std))
+    expect(plainLogOf(std)).toBe(true)
+    // the tables: the plain fractions
+    expect(tableScaleOf(std)).toBe('linear')
+    const shown = presentStd(std, tableScaleOf(std))
     for (const r of shown.rows.filter((r) => r.uniqID === 'R')) expect(r.value).toBeCloseTo(1, 9)
+    // chosen as logs: log₂ fractions, the reference at 0
+    const asLogs = withLogDisplay(std, 'log')
+    expect(plainLogOf(asLogs)).toBe(false)
+    const logged = presentStd(asLogs, tableScaleOf(asLogs))
+    for (const r of logged.rows.filter((r) => r.uniqID === 'R')) expect(r.value).toBeCloseTo(0, 9)
   })
 
   it('names its values fractions on every quantity axis', () => {
     const std = run(DATA, 'log10')
     expect(valueUnitOf(std)).toBe('fraction')
-    expect(quantityLabel(presentScaleOf(std), valueUnitOf(std))).toBe('fraction')
-    expect(buildQc(std, 'intensity', presentScaleOf(std)).yLabel).toBe('fraction')
-    const ma = buildMA([], { fcLow: -1, fcHigh: 1, scale: 'linear', unit: 'fraction' })
+    // shown plain on a log axis (the default for fractions), or as their logs
+    expect(quantityLabel(presentScaleOf(std), valueUnitOf(std), plainLogOf(std))).toBe('fraction')
+    expect(quantityLabel(presentScaleOf(std), valueUnitOf(std))).toBe('log fraction')
+    expect(buildQc(std, 'intensity', presentScaleOf(std), undefined, true).yLabel).toBe('fraction')
+    const ma = buildMA([], {
+      fcLow: -1,
+      fcHigh: 1,
+      scale: 'log10',
+      unit: 'fraction',
+      plain: true
+    })
     expect(ma.xLabel).toBe('mean fraction')
+    // unlogged: plain values on a plain axis, whatever the display choice
+    const linear = run(DATA, 'none' as never)
+    expect(plainLogOf(linear)).toBe(false)
+    expect(quantityLabel(presentScaleOf(linear), valueUnitOf(linear))).toBe('fraction')
     // without a reference protein: abundances, on the log-transform's scale, as before
     const plain = standardize({
       dataText: DATA,
@@ -185,10 +214,32 @@ describe('Clean data with a reference protein', () => {
     })
     expect(valueUnitOf(plain)).toBe('abundance')
     expect(quantityLabel(presentScaleOf(plain), valueUnitOf(plain))).toBe('log abundance')
+    // abundances read as logs by default; plain when chosen
+    expect(plainLogOf(plain)).toBe(false)
+    expect(plainLogOf(withLogDisplay(plain, 'plain'))).toBe(true)
   })
 
   it('stops, naming the samples, when one lacks the reference', () => {
     const data = DATA.replace('R,1000,2000,500,1500', 'R,1000,,500,1500')
     expect(() => run(data)).toThrow(/wasn't measured in 1 sample \(A · r2\)/)
+  })
+})
+
+describe('how logged values show (LogDisplay)', () => {
+  const DATA = ['id,a1,a2', 'g1,100,200', 'g2,10,30'].join('\n')
+  const SS = ['sample,cmpd', 'a1,A', 'a2,A'].join('\n')
+  it('is stamped from Clean data and carried by a re-clean', () => {
+    const std = standardize({
+      dataText: DATA,
+      dataFilename: 'd.csv',
+      samplesheetText: SS,
+      logTransform: 'log10',
+      logDisplay: 'plain'
+    })
+    expect(std.logDisplay).toBe('plain')
+    expect(plainLogOf(std)).toBe(true)
+    // the same positions either way: only the labels differ
+    expect(presentScaleOf(std)).toBe('log10')
+    expect(presentScaleOf(withLogDisplay(std, 'log'))).toBe('log10')
   })
 })

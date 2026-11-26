@@ -227,13 +227,17 @@ describe('previewFactorAnova — a design not fully crossed', () => {
     ] as [AnovaFactorPick, AnovaFactorPick],
     activeConditions: ['cmpd', 'dose'] as ConditionKey[]
   }
-  it('names the missing combination, in a note (not a blocking warning)', () => {
+  it('names the missing combination (not a blocking warning)', () => {
     expect(missingCombinations(input)).toEqual(['DMSO · 10'])
     const pv = previewFactorAnova(input)
-    expect(pv.notes[0]).toBe('Full condition matrix not complete — no samples at DMSO · 10')
+    expect(pv.missing).toEqual(['DMSO · 10'])
+    expect(pv.warnings).toEqual([])
   })
   it('says nothing when every combination is measured', () => {
     const crossed = [...rows, r('g1', 'M', 'DMSO', 10, null, 1, 4)]
-    expect(previewFactorAnova({ ...input, rows: crossed }).notes).toEqual([])
+    const pv = previewFactorAnova({ ...input, rows: crossed })
+    expect(pv.missing).toEqual([])
+    expect(pv.fewer).toEqual([])
+    expect(pv.notes).toEqual([])
   })
 })

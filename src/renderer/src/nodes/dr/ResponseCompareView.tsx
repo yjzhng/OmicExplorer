@@ -5,12 +5,14 @@ import {
   contrastYRange,
   ctxNum,
   type ConditionKey,
-  type ContrastResultRow
+  type ContrastResultRow,
+  type ValueScale
 } from '../../engine'
 import { drLook, type DRLook } from '../../graph/types'
 import { AUTO } from '../../ui/ColorPicker'
 import { tooltip } from '../../ui/condTooltip'
 import { PlotlyChart } from '../../ui/PlotlyChart'
+import { fmtQuantity, plainTicks, rangeOf } from '../../ui/quantityAxis'
 import { axisBase, CATEGORICAL, PALETTES, PLOT_TEXT, plotBase, withAlpha } from '../../ui/theme'
 import { useUiTheme } from '../../ui/useUiTheme'
 
@@ -33,9 +35,12 @@ export function ResponseCompareView({
   scaleRows,
   yRange: givenRange,
   look = DEFAULT_LOOK,
-  categorical = CATEGORICAL
+  categorical = CATEGORICAL,
+  plainScale
 }: {
   rows: ContrastResultRow[]
+  /** abundance sides shown plain on a log axis (ui/quantityAxis): the logged scale they're on */
+  plainScale?: ValueScale
   displayMap: Record<string, string>
   axis: ConditionKey
   /** the dose/time axis's title, with its unit (absent = the bare axis name) */
@@ -145,7 +150,14 @@ export function ResponseCompareView({
       yaxis: {
         ...axisBase(p),
         title: { text: yLabel },
-        zeroline: true,
+        zeroline: !plainScale,
+        ...(plainScale
+          ? plainTicks(
+              plainScale,
+              yRange ??
+                rangeOf(rows.filter((r) => r.uniqID === gene).flatMap((r) => [r.FC1, r.FC2]))
+            )
+          : null),
         ...(yRange ? { range: yRange, autorange: false } : null)
       },
       // Right of the plot, vertically centred.
@@ -186,6 +198,12 @@ export function ResponseCompareView({
       look.lineColor !== AUTO ? look.lineColor : categorical[(i === 0 ? 0 : 3) % categorical.length]
     const pointColor = (c: string): string => (look.pointColor !== AUTO ? look.pointColor : c)
     const errorColor = (c: string): string => (look.errorColor !== AUTO ? look.errorColor : c)
+    // shown plain, each value rides formatted in its hovertext (Plotly can't exponentiate)
+    const valueAt = plainScale ? '%{hovertext}' : '%{y:.3f}'
+    const plainText = (vs: Array<number | null>) =>
+      plainScale
+        ? { hovertext: vs.map((v) => (v == null ? '' : fmtQuantity(v, plainScale, true))) }
+        : null
     const line = (y: (number | null)[], color: string, name: string): Record<string, unknown> => ({
       type: 'scatter',
       mode: 'lines',
@@ -196,8 +214,9 @@ export function ResponseCompareView({
       connectgaps: true,
       line: { color, width: look.lineWidth },
       opacity: look.lineOpacity,
+      ...plainText(y),
       hovertemplate: tooltip(
-        { title: name, conds: [[condLabel(axis), '%{x}']], values: [[yLabel, '%{y:.3f}']] },
+        { title: name, conds: [[condLabel(axis), '%{x}']], values: [[yLabel, valueAt]] },
         p.textMuted,
         { template: true }
       )
@@ -215,6 +234,7 @@ export function ResponseCompareView({
       y: pts.y,
       name: `${name} (replicates)`,
       showlegend: false,
+      ...plainText(pts.y),
       marker: {
         color: pointColor(color),
         size: look.pointSize,
@@ -225,7 +245,7 @@ export function ResponseCompareView({
         {
           title: name,
           conds: [[condLabel(axis), '%{x}']],
-          values: [[`replicate ${yLabel}`, '%{y:.3f}']]
+          values: [[`replicate ${yLabel}`, valueAt]]
         },
         p.textMuted,
         { template: true }
@@ -332,7 +352,20 @@ export function ResponseCompareView({
       ],
       layout: lay
     }
-  }, [series, mode, axis, axisLabel, title, yLabel, yRange, look, rows, categorical])
+  }, [
+    series,
+    mode,
+    axis,
+    axisLabel,
+    title,
+    yLabel,
+    yRange,
+    look,
+    rows,
+    categorical,
+    plainScale,
+    gene
+  ])
 
   if (!series)
     return (

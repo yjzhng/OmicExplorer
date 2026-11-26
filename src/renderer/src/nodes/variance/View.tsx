@@ -13,14 +13,29 @@ import {
   interactionAxes,
   interactionGene,
   rankByQ,
-  stdLookupOf
+  stdLookupOf,
+  isNumericCond,
+  type AnovaFactor
 } from '../../engine'
 import { quickOn } from '../../graph/registry'
-import { type InteractionConfig, type VarianceConfig, drLook } from '../../graph/types'
+import {
+  interactionDim,
+  interactionDimWhy,
+  interactionShow,
+  interactionShowWhy,
+  type InteractionShape,
+  type InteractionConfig,
+  type TdrConfig,
+  type VarianceConfig,
+  drLook,
+  responseLook
+} from '../../graph/types'
 import { Empty } from '../kit/views/common'
 import { type ViewContext } from '../kit/views/context'
 import { pagerGenes } from '../kit/views/helpers'
 import { styles } from '../kit/views/styles'
+import { InteractionHeatmap } from './InteractionHeatmap'
+import { InteractionSurface } from './InteractionSurface'
 import { InteractionView } from './InteractionView'
 import { VarianceView } from './VarianceView'
 
@@ -37,7 +52,9 @@ export function varianceView(v: ViewContext): ReactNode {
     facetSel,
     repStd,
     quantityScale,
-    quantityUnit
+    quantityUnit,
+    plainScale,
+    responseRoles
   } = v
   if (rawUp?.kind !== 'compare')
     return <Empty text="Connect a Compare running an ANOVA, and run it." />
@@ -133,6 +150,18 @@ export function varianceView(v: ViewContext): ReactNode {
   // x and the lines as picked (the model's first two by default); further factors averaged
   const { x, line } = interactionAxes(anova, cfg.xFactor, cfg.lineFactor)
   const std = repStd ? stdLookupOf(repStd) : undefined
+  // what the view can draw: 3D needs factor 2, a surface both factors numeric
+  const isNum = (f: AnovaFactor): boolean => !!f.x || isNumericCond(f.condition, numeric)
+  const shape: InteractionShape = {
+    two: line != null,
+    numeric: line != null && isNum(anova.factors[x]) && isNum(anova.factors[line])
+  }
+  const dim = interactionDim(cfg, shape)
+  const show = interactionShow(cfg, shape)
+  const asGrid = show === 'heatmap'
+  const as3d = dim === '3d' && line != null
+  // factor 2's options: the factors, or none (factor 1 alone, the rest averaged; 2D only)
+  const f2Options = [...anova.factors.map((f) => f.condition as string), 'none']
   return (
     <div style={styles.chart}>
       <div style={styles.stack}>
@@ -142,15 +171,72 @@ export function varianceView(v: ViewContext): ReactNode {
             present={present}
             displayMap={dm}
             controls={
-              quickOn(cfg, 'xFactor') && (
-                <SwitchBar
-                  inline
-                  label="x axis"
-                  value={anova.factors[x].condition}
-                  options={anova.factors.map((f) => f.condition)}
-                  optionLabel={(o) => condLabel(o as ConditionKey)}
-                  onChange={(v) => patchConfig({ xFactor: v })}
-                />
+              // none on quick access: no controls (an empty fragment would draw an empty bar)
+              (quickOn(cfg, 'dim') ||
+                quickOn(cfg, 'show') ||
+                quickOn(cfg, 'xFactor') ||
+                quickOn(cfg, 'lineFactor')) && (
+                <>
+                  {quickOn(cfg, 'dim') && (
+                    <SwitchBar
+                      inline
+                      label="view"
+                      value={dim}
+                      options={['2d', '3d']}
+                      optionLabel={(o) => o.toUpperCase()}
+                      optionDisabled={(o) => interactionDimWhy(o, shape)}
+                      onChange={(v) => patchConfig({ dim: v })}
+                    />
+                  )}
+                  {quickOn(cfg, 'show') && (
+                    <SwitchBar
+                      inline
+                      label="show"
+                      value={show}
+                      options={['line', 'surface', 'heatmap']}
+                      optionDisabled={(o) => interactionShowWhy(dim, o, shape)}
+                      onChange={(v) => patchConfig({ show: v })}
+                    />
+                  )}
+                  {quickOn(cfg, 'xFactor') && (
+                    <SwitchBar
+                      inline
+                      label="factor 1"
+                      value={anova.factors[x].condition}
+                      options={anova.factors.map((f) => f.condition)}
+                      optionLabel={(o) => condLabel(o as ConditionKey)}
+                      // factor 2's for factor 1 swaps the two
+                      onChange={(v) =>
+                        patchConfig({
+                          xFactor: v,
+                          ...(line != null && v === anova.factors[line].condition
+                            ? { lineFactor: anova.factors[x].condition }
+                            : null)
+                        })
+                      }
+                    />
+                  )}
+                  {quickOn(cfg, 'lineFactor') && (
+                    <SwitchBar
+                      inline
+                      label="factor 2"
+                      value={line != null ? anova.factors[line].condition : 'none'}
+                      options={f2Options}
+                      optionLabel={(o) => (o === 'none' ? 'none' : condLabel(o as ConditionKey))}
+                      optionDisabled={(o) =>
+                        o === 'none' && dim === '3d' ? '3D needs a factor 2' : undefined
+                      }
+                      onChange={(v) =>
+                        patchConfig({
+                          lineFactor: v,
+                          ...(line != null && v === anova.factors[x].condition
+                            ? { xFactor: anova.factors[line].condition }
+                            : null)
+                        })
+                      }
+                    />
+                  )}
+                </>
               )
             }
           >
@@ -159,23 +245,51 @@ export function varianceView(v: ViewContext): ReactNode {
                 {(rows) => {
                   const slice = anovaSliceFor(anova, rows[0])
                   const g = slice?.genes.find((x0) => x0.uniqID === gene)
-                  return slice && g ? (
-                    <InteractionView
-                      gene={interactionGene(
-                        anova,
-                        slice,
-                        g,
-                        { x, line },
-                        quantityScale,
-                        std && (std.get(gene) ?? [])
-                      )}
+                  // the same cell means either way: as lines, or as a grid of tiles
+                  const ig =
+                    slice && g
+                      ? interactionGene(
+                          anova,
+                          slice,
+                          g,
+                          { x, line },
+                          // 3-D: log₂ against the control cell, whatever the abundance scale
+                          as3d ? 'log2' : quantityScale,
+                          std && (std.get(gene) ?? [])
+                        )
+                      : undefined
+                  return ig && as3d ? (
+                    <InteractionSurface
+                      gene={ig}
+                      xFactor={anova.factors[x]}
+                      lineFactor={anova.factors[line!]}
+                      numeric={numeric}
+                      show={show === 'surface' ? 'surface' : 'line'}
+                      look={responseLook(cfg as Partial<TdrConfig>)}
+                      rolePalettes={responseRoles}
+                    />
+                  ) : ig && asGrid ? (
+                    <InteractionHeatmap
+                      gene={ig}
                       xName={condLabel(anova.factors[x].condition)}
                       xLevels={anova.factors[x].levels}
                       lineName={line == null ? '' : condLabel(anova.factors[line].condition)}
                       lineLevels={line == null ? ['mean'] : anova.factors[line].levels}
-                      yLabel={quantityLabel(quantityScale, quantityUnit)}
+                      valueLabel={quantityLabel(quantityScale, quantityUnit, !!plainScale)}
+                      displayMap={dm}
+                      plainScale={plainScale}
+                    />
+                  ) : ig ? (
+                    <InteractionView
+                      gene={ig}
+                      xName={condLabel(anova.factors[x].condition)}
+                      xLevels={anova.factors[x].levels}
+                      lineName={line == null ? '' : condLabel(anova.factors[line].condition)}
+                      lineLevels={line == null ? ['mean'] : anova.factors[line].levels}
+                      yLabel={quantityLabel(quantityScale, quantityUnit, !!plainScale)}
                       displayMap={dm}
                       look={drLook(cfg)}
+                      plainScale={plainScale}
                     />
                   ) : (
                     <Empty text="This gene has no fit in this context." />

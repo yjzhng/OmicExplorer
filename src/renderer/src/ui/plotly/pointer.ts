@@ -96,10 +96,11 @@ export function bindPointer(el: PlotlyGraphDiv, ctx: PointerContext, guide: Guid
     useSelection.getState().clearHover()
     setDragCursor('')
   })
-  // Hovering a tick LABEL that stands for an id (boldTicks.idByTick — an enrichment term's)
-  // hovers that id, as hovering its mark does; the click fallback below then selects it.
-  // Plotly's SVG takes no pointer events, so the labels are hit-tested from the div's own
-  // mousemove: the tick under the cursor, mapped back to its index through its datum.
+  // Hovering a tick LABEL that stands for an id (boldTicks.idByTick — an enrichment term's), or a
+  // shape that does (its `__oeId` — an enrichment module's bar), hovers that id, as hovering its
+  // mark does; the click fallback below then selects it. Plotly's SVG takes no pointer events, so
+  // they're hit-tested from the div's own mousemove: the tick under the cursor, mapped back to its
+  // index through its datum; the shape by its box.
   let labelHover: string | null = null
   let labelRaf = 0
   const tickIdAt = (clientX: number, clientY: number): string | null => {
@@ -111,31 +112,111 @@ export function bindPointer(el: PlotlyGraphDiv, ctx: PointerContext, guide: Guid
       `${ax}axis`
     ] as { tickvals?: unknown[]; _categories?: unknown[]; type?: string } | undefined
     if (!axis?.tickvals) return null
-    for (const node of el.querySelectorAll(`.${ax}tick text`)) {
-      const r = node.getBoundingClientRect()
-      if (clientX < r.left - 2 || clientX > r.right + 2) continue
-      if (clientY < r.top - 1 || clientY > r.bottom + 1) continue
-      // the tick's linear position → its value (a category's name) → its index in tickvals
-      const x = (node as unknown as { __data__?: { x?: number } }).__data__?.x
-      if (x == null) return null
-      const v = axis.type === 'category' ? axis._categories?.[x] : x
-      const i = axis.tickvals.indexOf(v)
-      return i >= 0 ? (ids[i] ?? null) : null
+    // A label's whole row, not just its text: across from its start to the plot's edge (its square
+    // and the gap after it too — a y label's), and along its axis half-way to its neighbours' —
+    // the nearest label taking a point, as crowded labels overlap.
+    const nodes = [...el.querySelectorAll(`.${ax}tick text`)]
+    const rects = nodes.map((n) => n.getBoundingClientRect())
+    const mid = (r: DOMRect): number =>
+      ax === 'y' ? (r.top + r.bottom) / 2 : (r.left + r.right) / 2
+    const mids = rects.map(mid).sort((a, b) => a - b)
+    let pitch = Infinity
+    for (let k = 1; k < mids.length; k++) pitch = Math.min(pitch, mids[k] - mids[k - 1] || Infinity)
+    const xa = (el as unknown as { _fullLayout?: Record<string, unknown> })._fullLayout?.xaxis as
+      { _offset: number } | undefined
+    const plotLeft = xa
+      ? (el as unknown as HTMLElement).getBoundingClientRect().left + xa._offset
+      : 0
+    let best = -1
+    let bestD = Infinity
+    rects.forEach((r, k) => {
+      const [along, across] = ax === 'y' ? [clientY, clientX] : [clientX, clientY]
+      const [lo, hi] =
+        ax === 'y' ? [r.left - 2, xa ? plotLeft : r.right + 2] : [r.top - 2, r.bottom + 2]
+      if (across < lo || across > hi) return
+      const half = ax === 'y' ? r.height / 2 : r.width / 2
+      const reach = Math.max(half + 1, Number.isFinite(pitch) ? pitch / 2 : 0)
+      const d = Math.abs(along - mid(r))
+      if (d <= reach && d < bestD) {
+        bestD = d
+        best = k
+      }
+    })
+    if (best < 0) return null
+    // the tick's linear position → its value (a category's name) → its index in tickvals
+    const x = (nodes[best] as unknown as { __data__?: { x?: number } }).__data__?.x
+    if (x == null) return null
+    const v = axis.type === 'category' ? axis._categories?.[x] : x
+    const i = axis.tickvals.indexOf(v)
+    return i >= 0 ? (ids[i] ?? null) : null
+  }
+  // A shape standing for an id: one in pixels across from the paper's edge (xsizemode 'pixel'),
+  // in data along y, or in px about a y anchor (ysizemode 'pixel') — as the enrichment module bars are drawn (chrome.ts moduleBars).
+  type IdShape = {
+    __oeId?: unknown
+    xanchor?: number
+    x0?: number
+    x1?: number
+    y0?: number
+    y1?: number
+    ysizemode?: string
+    yanchor?: number
+  }
+  const idShapes = (): IdShape[] =>
+    (
+      ((el as unknown as { layout?: { shapes?: unknown[] } }).layout?.shapes ?? []) as IdShape[]
+    ).filter((s) => typeof s?.__oeId === 'string')
+  const shapeIdAt = (clientX: number, clientY: number): string | null => {
+    const shapes = idShapes()
+    if (!shapes.length) return null
+    const fl = (el as unknown as { _fullLayout?: Record<string, unknown> })._fullLayout
+    type Ax = { _offset: number; _length: number; l2p: (v: number) => number }
+    const xa = fl?.xaxis as Ax | undefined
+    const ya = fl?.yaxis as Ax | undefined
+    if (!xa || !ya) return null
+    const box = (el as unknown as HTMLElement).getBoundingClientRect()
+    const px = clientX - box.left
+    const py = clientY - box.top
+    for (const s of shapes) {
+      const ax = xa._offset + (s.xanchor ?? 0) * xa._length
+      // The bars are narrow: one takes the room around it — its gap on either side, and on to the
+      // plot's edge when it sits just off it (an enrichment module's bar, beside the labels) — and
+      // a few px past its ends.
+      const x0 = ax + Math.min(s.x0 ?? 0, s.x1 ?? 0)
+      const x1 = ax + Math.max(s.x0 ?? 0, s.x1 ?? 0)
+      const right = x1 <= ax && ax - x1 <= 8 ? ax : x1 + 4
+      if (px < x0 - 4 || px > right) continue
+      // in data along y, or (ysizemode 'pixel') in px about its yanchor, up positive
+      const pixel = s.ysizemode === 'pixel'
+      const base = pixel ? ya._offset + ya.l2p(s.yanchor ?? 0) : 0
+      const ya0 = pixel ? base - (s.y0 ?? 0) : ya._offset + ya.l2p(s.y0 ?? 0)
+      const ya1 = pixel ? base - (s.y1 ?? 0) : ya._offset + ya.l2p(s.y1 ?? 0)
+      if (py >= Math.min(ya0, ya1) - 2 && py <= Math.max(ya0, ya1) + 2) return s.__oeId as string
     }
     return null
   }
+  // A pointer over a label or bar that stands for an id. They sit over the axes' own drag handles
+  // (the margins' .drag rects, a resize cursor each, by class) — the inline style beats it there,
+  // as setPlotCursor does over the plot; the plot's own (.nsewdrag) is the point hover's.
+  const labelCursor = (on: boolean): void => {
+    ;(el as unknown as HTMLElement).style.cursor = on ? 'pointer' : ''
+    el.querySelectorAll('.drag:not(.nsewdrag)').forEach((d) => {
+      ;(d as SVGElement & { style: CSSStyleDeclaration }).style.cursor = on ? 'pointer' : ''
+    })
+  }
   el.addEventListener('mousemove', (ev) => {
-    if (!ctx.boldTicks()?.idByTick) return
+    if (!ctx.boldTicks()?.idByTick && !idShapes().length) return
     const { clientX, clientY } = ev
     cancelAnimationFrame(labelRaf)
     labelRaf = requestAnimationFrame(() => {
-      const id = tickIdAt(clientX, clientY)
+      // a bar first: a label's row reaches the plot's edge, past the bars
+      const id = shapeIdAt(clientX, clientY) ?? tickIdAt(clientX, clientY)
       if (id === labelHover) return
       const sel = useSelection.getState()
       if (labelHover && sel.hoverId === labelHover) sel.clearHover()
       labelHover = id
       if (id) sel.setHover(id, ctx.pinIdsOf()?.(id) ?? undefined)
-      ;(el as unknown as HTMLElement).style.cursor = id ? 'pointer' : ''
+      labelCursor(!!id)
     })
   })
   el.addEventListener('mouseleave', () => {
@@ -143,7 +224,7 @@ export function bindPointer(el: PlotlyGraphDiv, ctx: PointerContext, guide: Guid
     if (!labelHover) return
     if (useSelection.getState().hoverId === labelHover) useSelection.getState().clearHover()
     labelHover = null
-    ;(el as unknown as HTMLElement).style.cursor = ''
+    labelCursor(false)
   })
   // One selection toggle per click, whichever path finds the gene. plotly_click is exact, but
   // it only fires while Plotly still holds the hovered point — and the plots that change on
@@ -276,7 +357,14 @@ export function bindPointer(el: PlotlyGraphDiv, ctx: PointerContext, guide: Guid
       // Defer so a (bubble-phase) plotly_click, if any, is recorded first.
       setTimeout(() => {
         if (plotlyClickAt >= clickedAt - 500) return // plotly_click handled this click
-        const id = pointAt(clientX, clientY) ?? regionAt(clientX, clientY) ?? hoverAtClick
+        // a label or bar standing for an id (a term's, a module's) by position too: a press there
+        // clears the hover (Plotly's axis drag) before the click lands
+        const id =
+          pointAt(clientX, clientY) ??
+          regionAt(clientX, clientY) ??
+          shapeIdAt(clientX, clientY) ??
+          (ctx.boldTicks()?.idByTick ? tickIdAt(clientX, clientY) : null) ??
+          hoverAtClick
         if (id) pinPoint(id)
       }, 0)
     },

@@ -15,6 +15,7 @@ import {
   PlotSections
 } from '../kit/settings/plotSections'
 import { styles } from '../kit/settings/styles'
+import { OnOffSwitch } from '../../ui/ToggleSwitch'
 import { type PlotSettingsProps } from '../settings'
 
 /** Enrichment: test method, term source, plot style and the term cap. The same fields as the
@@ -92,8 +93,34 @@ export function EnrichPanel({ config, update, edgeNodeId }: PlotPanelProps<Enric
         />
       </Field>
       <Field
+        label="modules"
+        info="Gene modules: terms carried by largely the same genes (Jaccard ≥ 0.5 on their hit genes, on average) stacked together, module by module, with a bar beside each — as the heatmap's gene modules."
+        aside={<QuickToggle config={config} field="modules" update={update} />}
+      >
+        <OnOffSwitch
+          on={!!config.modules}
+          label="gene modules"
+          onChange={(v) => update({ modules: v })}
+        />
+      </Field>
+      {config.modules && (
+        <Field
+          label="show"
+          info="Every top term, or only each module's most significant one (terms in no module stay) — one term per finding."
+        >
+          <Select
+            value={config.show ?? 'all'}
+            onChange={(v) => update({ show: v as EnrichConfig['show'] })}
+            options={[
+              { value: 'all', label: 'all terms' },
+              { value: 'one', label: 'one per module' }
+            ]}
+          />
+        </Field>
+      )}
+      <Field
         label="order"
-        info="Stack the terms by significance alone, or by category first — the categories in the legend's order, each's terms by significance (by NES in the ridge style)."
+        info="Stack the terms by significance alone, or by category first — the categories in the legend's order, each's terms by significance (by NES in the ridge style). With modules on, it orders the terms within each module."
       >
         <Select
           value={config.termOrder ?? 'significance'}
@@ -110,7 +137,10 @@ export function EnrichPanel({ config, update, edgeNodeId }: PlotPanelProps<Enric
 /** How many terms are drawn — this plot's "how many" (General's genes rows). */
 function EnrichTerms({ config, update }: PlotPanelProps<EnrichConfig>): ReactNode {
   return (
-    <Field label="Max terms" info={`Show the ${config.topTerms ?? 15} most enriched terms.`}>
+    <Field
+      label="Max terms"
+      info={`Show the ${config.topTerms ?? 15} most enriched terms each way — a cap to keep the plot legible: choosing categories or modules in the legend shows their ${config.topTerms ?? 15} most enriched, from every term found.`}
+    >
       <div style={{ width: 90 }}>
         <NumberInput
           value={config.topTerms ?? 15}
@@ -128,7 +158,7 @@ export function Settings({ config, ...props }: PlotSettingsProps): ReactNode {
   return (
     <PlotSections
       general={<EnrichPanel config={config as EnrichConfig} {...props} />}
-      genes={<EnrichTerms config={config as EnrichConfig} {...props} />}
+      ranking={<EnrichTerms config={config as EnrichConfig} {...props} />}
       colours={
         <ColourRows
           config={config as EnrichConfig}
@@ -152,6 +182,20 @@ export function Settings({ config, ...props }: PlotSettingsProps): ReactNode {
               update={props.update}
             />
           </Field>
+          {/* the gene modules' colours (their bars and legend chips); on the categories' palette,
+              the colours after the categories' */}
+          {(config as EnrichConfig).modules && (
+            <Field
+              label="modules"
+              info="On the same palette as the categories, the modules take the colours after theirs, so no module shares a category's colour."
+            >
+              <CategoricalSelect
+                config={config as unknown as Record<string, unknown>}
+                update={props.update}
+                field="moduleCategorical"
+              />
+            </Field>
+          )}
         </ColourRows>
       }
     />

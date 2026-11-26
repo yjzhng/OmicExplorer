@@ -270,6 +270,7 @@ function HeatmapGenes({ config, update, edgeNodeId }: PlotPanelProps<HeatmapConf
       value={config.maxGenes}
       enabled={config.capEnabled}
       update={update}
+      split={config}
       defaultValue={50}
       rule={(n) => `Keep the top ${n} differential genes by largest |log₂FC|.`}
       step={10}
@@ -283,7 +284,7 @@ export function Settings({ config, ...props }: PlotSettingsProps): ReactNode {
     <PlotSections
       statistic={<HeatmapClustering config={config as HeatmapConfig} {...props} />}
       general={<HeatmapPanel config={config as HeatmapConfig} {...props} />}
-      genes={<HeatmapGenes config={config as HeatmapConfig} {...props} />}
+      ranking={<HeatmapGenes config={config as HeatmapConfig} {...props} />}
       colours={<HeatmapColourRows config={config as HeatmapConfig} {...props} />}
     />
   )

@@ -56,7 +56,7 @@ export function ScatterPanel({ config, update, edgeNodeId }: PlotPanelProps<Scat
           )}
         </>
       }
-      general={
+      ranking={
         <CapRow
           label="Label limit"
           info="Name only the most divergent genes."

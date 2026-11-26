@@ -32,6 +32,8 @@ export interface Palette {
   warn: string
   err: string
   ok: string
+  /** model-formula variables (ui/Formula) by their term: main effect, 2-way, 3-way, 4-way+ */
+  terms: readonly string[]
 }
 
 /** Minimal neutral-grey themes (no blue hues). */
@@ -52,7 +54,8 @@ export const PALETTES: Record<'dark' | 'light', Palette> = {
     info: '#6ea1d6',
     warn: '#e2b93b',
     err: '#e5484d',
-    ok: '#3fae5a'
+    ok: '#3fae5a',
+    terms: ['#8fb3d9', '#d9a878', '#bf9fd6', '#7fc0b8']
   },
   light: {
     mode: 'light',
@@ -70,7 +73,8 @@ export const PALETTES: Record<'dark' | 'light', Palette> = {
     info: '#2f6fb0',
     warn: '#9a6a00',
     err: '#c8373d',
-    ok: '#1f8a3f'
+    ok: '#1f8a3f',
+    terms: ['#36679a', '#9a5b20', '#77519a', '#2a7770']
   }
 }
 
@@ -92,8 +96,12 @@ export const UI = {
   info: 'var(--info)',
   warn: 'var(--warn)',
   err: 'var(--err)',
-  ok: 'var(--ok)'
+  ok: 'var(--ok)',
+  /** a model-formula term's colour by its order: 1 a main effect, 2 a two-way interaction, … (4+
+   *  share the last) */
+  term: (order: number): string => `var(--term-${Math.min(Math.max(order, 1), TERM_COUNT) - 1})`
 }
+const TERM_COUNT = 4
 
 /** The accent colour choices (Settings → Appearance): the palettes' own monochrome Graphite, the
  *  logo's blue and orange (sampled from build-resources/icon.png), or a custom colour. The blue is
@@ -166,7 +174,8 @@ export function cssVars(
     '--info': p.info,
     '--warn': p.warn,
     '--err': p.err,
-    '--ok': p.ok
+    '--ok': p.ok,
+    ...Object.fromEntries(p.terms.map((c, i) => [`--term-${i}`, c]))
   } as CSSProperties
 }
 
@@ -327,7 +336,12 @@ export function plotBase(p: Palette): Record<string, unknown> {
       font: { color: p.text, family: 'system-ui, sans-serif', size: 11 },
       align: 'left',
       namelength: -1
-    }
+    },
+    // The box / lasso being drawn (the mode bar's select tools) in the theme's text colour: Plotly
+    // picks white or dark grey from the paper colour, and the paper is transparent (read as dark),
+    // so on the light theme it drew white — an outline nobody could see.
+    newselection: { line: { color: p.text, width: 1, dash: 'dot' } },
+    activeselection: { fillcolor: p.text, opacity: 0.06 }
   }
 }
 

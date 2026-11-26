@@ -43,8 +43,10 @@ function GeneBarBody({
   categorical,
   valuePalette,
   condTitle,
-  sampleOrder
+  sampleOrder,
+  plainScale
 }: {
+  plainScale?: ValueScale
   condTitle?: (c: ConditionKey) => string
   sampleOrder: SampleOrder
   std: StandardizeResult
@@ -78,7 +80,8 @@ function GeneBarBody({
       orient={orient}
       title={std.displayMap[gene] ?? gene}
       range={range}
-      valueLabel={quantityLabel(scale, valueUnitOf(std))}
+      valueLabel={quantityLabel(scale, valueUnitOf(std), !!plainScale)}
+      plainScale={plainScale}
       replicates={replicates}
       colorCats={colorCats}
       colorNum={colorNum}
@@ -98,8 +101,11 @@ export function GeneBarTile({
   scale,
   config,
   controls,
-  condTitle
+  condTitle,
+  plainScale
 }: {
+  /** its values shown plain on a log axis (ui/quantityAxis): `scale`, when they are */
+  plainScale?: ValueScale
   /** a condition's legend heading, with its unit (see GeneBarView) */
   condTitle?: (c: ConditionKey) => string
   /** on its presented scale (see presentStd) */
@@ -175,6 +181,7 @@ export function GeneBarTile({
           valuePalette={valuePalette}
           condTitle={condTitle}
           sampleOrder={sampleOrderOf(config)}
+          plainScale={plainScale}
         />
       )}
     </GeneSwitch>

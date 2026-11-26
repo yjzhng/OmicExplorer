@@ -8,6 +8,7 @@ import {
   type ContrastResultRow,
   hasTermRows,
   holderWhere,
+  plainLogOf,
   presentScaleOf,
   rowsWhere,
   showKindOf,
@@ -197,6 +198,11 @@ export function usePlotContext({
   // the word every abundance axis and legend uses ("log fraction").
   const quantityUnit: ValueUnit =
     cleanResult?.kind === 'standardize' ? valueUnitOf(cleanResult.std) : 'abundance'
+  // …and whether its logged values are shown plain on a log axis (ui/quantityAxis): the positions
+  // stay on quantityScale, only the labels and hovers read as values
+  const quantityPlain = cleanResult?.kind === 'standardize' && plainLogOf(cleanResult.std)
+  /** the logged scale an abundance axis is relabelled from when shown plain; undefined as logs */
+  const plainScale: ValueScale | undefined = quantityPlain ? quantityScale : undefined
   /** A contrast as a faceted plot's source: its rows built a facet at a time (FacetSource), an
    *  abundance contrast's sides (stored as log₁₀) moved onto quantityScale (quantityOnScale) and
    *  fold-change contrasts as they are. */
@@ -266,6 +272,8 @@ export function usePlotContext({
     repStd,
     quantityScale,
     quantityUnit,
+    quantityPlain,
+    plainScale,
     contrastSource,
     drawsSelection,
     pinnedIds,

@@ -145,6 +145,9 @@ export interface GraphState {
    *  Compare downstream tests on (log or not). Its own rows stay linear and its result stays as it
    *  is; the Compares (and what follows them) go stale, to be re-run on the new scale. */
   setStdLogTransform: (id: string, logTransform: 'none' | 'log2' | 'log10') => void
+  /** Set how Clean data shows its logged values (logs, or plain on a log axis) — presentation only:
+   *  its result is re-stamped, nothing goes stale. */
+  setStdLogDisplay: (id: string, display: 'log' | 'plain') => void
   /** Clean data's data-scale preview, straight from its upstream Load step's data file — no run
    *  needed: the detected scale and a value sample. Null when there's no data file to read yet
    *  (no Load wired, or an interactive import not converted). Cached per file name. Fed by Clean
@@ -208,9 +211,16 @@ export interface GraphState {
   cancelNode: (id: string) => void
   /** Run ONE plot inside a group tile (each has its own status; the group is done when all are). */
   runPlotChild: (groupId: string, childId: string) => Promise<void>
+  /** Run a target set — one tile, a group's tiles, the selection, every step — and the steps above
+   *  it that it needs and that have no up-to-date result (runPlan), in Run all's order. Every Run
+   *  is this with its own targets. */
+  runTargets: (ids: string[]) => Promise<void>
+  /** Stop those targets: they leave the runs that hold them (a run left with none stops, the step
+   *  it was running for them included), and any of them running stops. */
+  stopTargets: (ids: string[]) => void
   /** True while `runAll` is executing the pipeline. */
   runningAll: boolean
-  /** Run every runnable step once, in dependency (topological) order. */
+  /** Run every runnable step once, in dependency (topological) order: every step as the target. */
   runAll: () => Promise<void>
   /** Abort an in-progress `runAll` and the step currently running. */
   stopAll: () => void

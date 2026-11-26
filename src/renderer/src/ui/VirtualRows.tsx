@@ -102,7 +102,10 @@ export function ProbeRow({
             paddingBottom: 0,
             borderBottom: 'none',
             lineHeight: 0,
-            height: 0
+            height: 0,
+            // the text still overhangs its 0-high line by half a glyph: clipped, or it adds ~6px
+            // of scroll to the table — a two-row table scrolled for it
+            overflow: 'hidden'
           }}
         >
           {t}

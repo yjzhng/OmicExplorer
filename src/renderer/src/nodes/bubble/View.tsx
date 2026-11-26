@@ -3,7 +3,13 @@ import { FacetedPlot } from '../../dashboard/FacetedPlot'
 import { SwitchBar, SwitchStrip } from '../../dashboard/SwitchBar'
 import { condLabel, contextOf, type ConditionKey } from '../../engine'
 import { quickOn, seriesAxes } from '../../graph/registry'
-import { axisTitle, geneCapOn, type BubbleConfig, type CompareConfig } from '../../graph/types'
+import {
+  axisTitle,
+  geneCapOn,
+  topCountOf,
+  type BubbleConfig,
+  type CompareConfig
+} from '../../graph/types'
 import { BUBBLE_SIG_PALETTE, toPaletteRef } from '../../ui/palettes'
 import { Empty } from '../kit/views/common'
 import { type ViewContext } from '../kit/views/context'
@@ -97,7 +103,10 @@ export function bubbleView(v: ViewContext): ReactNode {
                 rows={rows}
                 axis={axis}
                 axisLabel={axisTitle(axis, units)}
-                topGenes={geneCapOn(cfg) ? cfg.topGenes : 0}
+                topGenes={geneCapOn(cfg) ? topCountOf(cfg, cfg.topGenes) : 0}
+                topSplit={cfg.topSplit}
+                topUp={cfg.topUp}
+                topDown={cfg.topDown}
                 rank={rank === 'sig' ? statType : 'fc'}
                 over={over}
                 stat={statType}

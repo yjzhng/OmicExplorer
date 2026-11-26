@@ -35,6 +35,8 @@ export function scatterView(v: ViewContext): ReactNode {
     facetSel,
     quantityScale,
     quantityUnit,
+    quantityPlain,
+    plainScale,
     upStep,
     effectsOf,
     contrastSource
@@ -53,10 +55,11 @@ export function scatterView(v: ViewContext): ReactNode {
                 buildIntensityScatter(rows, {
                   displayMap: dm,
                   scale: quantityScale,
-                  unit: quantityUnit
+                  unit: quantityUnit,
+                  plain: quantityPlain
                 })
               }
-              deps={[rows, dm, quantityScale, quantityUnit]}
+              deps={[rows, dm, quantityScale, quantityUnit, quantityPlain]}
             >
               {(scatter) => (
                 <ScatterView
@@ -65,6 +68,7 @@ export function scatterView(v: ViewContext): ReactNode {
                   style={cfg.style}
                   effectLabels={effectLabelsOf(upStep?.data.config as CompareConfig | undefined)}
                   effectColors={effectsOf(cfg)}
+                  plainScale={plainScale}
                 />
               )}
             </Built>
@@ -111,10 +115,11 @@ export function scatterView(v: ViewContext): ReactNode {
                 valueKind: upstream.ctr.valueKind,
                 scale: quantityScale,
                 unit: quantityUnit,
-                valueLabel: contrastFeatureLabel(rows)
+                valueLabel: contrastFeatureLabel(rows),
+                plain: quantityPlain
               })
             }
-            deps={[rows, dm, upstream.ctr.valueKind, quantityScale, quantityUnit]}
+            deps={[rows, dm, upstream.ctr.valueKind, quantityScale, quantityUnit, quantityPlain]}
           >
             {(scatter) => (
               <ScatterView
@@ -122,6 +127,8 @@ export function scatterView(v: ViewContext): ReactNode {
                 labelTop={labelCapOn(cfg) ? cfg.labelTop : 0}
                 style={cfg.style}
                 onStatDrag={statDrag(featureOf(rows))}
+                // an abundance contrast's own values (not another feature of it) shown plain
+                plainScale={abundance && !contrastFeatureLabel(rows) ? plainScale : undefined}
                 asymmetric={ctrStat?.asymmetric ?? false}
                 cutText={
                   upperOnly(featureOf(rows))

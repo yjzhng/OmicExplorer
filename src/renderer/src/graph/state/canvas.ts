@@ -113,6 +113,15 @@ export function nextGroupName(frames: CanvasFrame[]): string {
   while (taken.has(`Group ${n}`)) n++
   return `Group ${n}`
 }
+/** A copied group's name: its own with `_copy` — then `_copy2`, `_copy3`, … — the first not taken
+ *  (a copy of a copy counts on from its original's name, not `_copy_copy`). */
+export function copyGroupName(label: string, taken: Iterable<string>): string {
+  const names = new Set(taken)
+  const base = label.replace(/_copy\d*$/, '')
+  let name = `${base}_copy`
+  for (let n = 2; names.has(name); n++) name = `${base}_copy${n}`
+  return name
+}
 /** The open workflow as a copy's origin: the project file (or this window's unsaved session) and
  *  the workflow in it. */
 export const SESSION = `session-${Date.now()}-${Math.random().toString(36).slice(2)}`
@@ -447,57 +456,51 @@ export function canvasSlice(
     duplicateNode: (id) => get().duplicateNodes([id]),
 
     duplicateNodes: (ids) => {
-      const sel = ids
-        .map((id) => get().nodes.find((n) => n.id === id))
-        .filter((n): n is StepNode => !!n && isStep(n))
-      if (sel.length === 0) return
+      // A copy pasted beside the originals: the tiles, the links between them and the groups whose
+      // every tile is copied (each with its nested groups), renamed _copy, _copy2, …
+      const s = get()
+      const clip = clipOf(s, ids, null, null)
+      if (!clip) return
       get().commit()
-      let nextId = get().nextId
-      const copies: StepNode[] = []
-      // A copied plot's results tab keeps the original's tile layout: its panels' ids moved onto the
-      // copy's (the tab is keyed by the plot's id, a subcard's panel by the group's and its own).
-      const layouts: Record<string, PanelLayoutItem[]> = {}
-      for (const node of sel) {
-        const newId = `${node.data.kind}-${nextId++}`
-        let config = structuredClone(node.data.config)
-        const panelIds = new Map<string, string>([[node.id, newId]])
-        // A group's subcards get fresh ids so no two groups ever share a child id.
-        if (node.data.kind === 'plotGroup') {
-          const src = (node.data.config as PlotGroupConfig).children
-          const children = toChildren(src, nextId)
-          config = { ...(config as PlotGroupConfig), children }
-          nextId += src.length
-          src.forEach((c, i) =>
-            panelIds.set(childPanelId(node.id, c.id), childPanelId(newId, children[i].id))
-          )
-        }
-        const layout = get().groupLayouts[node.id]
-        if (layout) layouts[newId] = layout.map((it) => ({ ...it, i: panelIds.get(it.i) ?? it.i }))
-        copies.push({
-          id: newId,
-          type: 'step',
-          position: { x: node.position.x + 40, y: node.position.y + 40 },
-          // `selected` moves React Flow's selection (and paint order) to the copies.
-          selected: true,
-          data: { kind: node.data.kind, config, status: 'idle' }
-        })
+      const taken = new Set([...s.nodes.map((n) => n.id), ...s.frames.map((f) => f.id)])
+      for (const n of s.nodes)
+        if (isStep(n) && n.data.kind === 'plotGroup')
+          for (const c of (n.data.config as PlotGroupConfig).children) taken.add(c.id)
+      const corner = {
+        x: Math.min(...clip.nodes.map((n) => n.position.x)) + 40,
+        y: Math.min(...clip.nodes.map((n) => n.position.y)) + 40
       }
-      const srcIds = new Set(ids)
-      set((s) => ({
-        // Copies appended last → drawn on top; originals get deselected so only the
-        // fresh tiles read as selected.
-        nodes: elevate(
-          [...s.nodes.map((n) => (srcIds.has(n.id) ? { ...n, selected: false } : n)), ...copies],
-          copies.length === 1 ? copies[0].id : null
-        ),
-        nextId,
-        ...(Object.keys(layouts).length
-          ? { groupLayouts: { ...s.groupLayouts, ...layouts } }
-          : null),
-        // Copies stay selected on the canvas but aren't opened (see addNode).
-        selectedId: null,
-        selectedSub: null
-      }))
+      const p = pastePlan(clip, { taken, nextId: s.nextId }, corner)
+      const frames = [...s.frames]
+      for (const f of p.frames)
+        frames.push({
+          ...f,
+          label: copyGroupName(
+            f.label,
+            frames.map((g) => g.label)
+          )
+        })
+      set((st) => {
+        const edges = [...st.edges, ...p.edges]
+        // Copies appended last → drawn on top; originals get deselected so only the fresh tiles
+        // read as selected.
+        const nodes = elevate(
+          [...st.nodes.map((n) => (n.selected ? { ...n, selected: false } : n)), ...p.nodes],
+          p.nodes.length === 1 ? p.nodes[0].id : null
+        )
+        return {
+          nodes: sortStepsByWiring(nodes, edges, frames),
+          edges,
+          frames,
+          nextId: p.nextId,
+          ...(Object.keys(p.layouts).length
+            ? { groupLayouts: { ...st.groupLayouts, ...p.layouts } }
+            : null),
+          // Copies stay selected on the canvas but aren't opened (see addNode).
+          selectedId: null,
+          selectedSub: null
+        }
+      })
     },
 
     copyTiles: (ids) => {
@@ -542,11 +545,19 @@ export function canvasSlice(
         if (isStep(n) && n.data.kind === 'plotGroup')
           for (const c of (n.data.config as PlotGroupConfig).children) taken.add(c.id)
       const p = pastePlan(src, { taken, nextId: s.nextId }, at)
-      // A pasted group keeps its name unless this workflow has one by it (then the next Group n).
+      // A pasted group keeps its name unless this workflow has one by it (then its _copy name).
       const frames = [...s.frames]
       for (const f of p.frames)
         frames.push(
-          frames.some((g) => g.label === f.label) ? { ...f, label: nextGroupName(frames) } : f
+          frames.some((g) => g.label === f.label)
+            ? {
+                ...f,
+                label: copyGroupName(
+                  f.label,
+                  frames.map((g) => g.label)
+                )
+              }
+            : f
         )
       get().commit()
       set((st) => {

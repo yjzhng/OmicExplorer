@@ -90,7 +90,8 @@ export function volcanoView(v: ViewContext): ReactNode {
                 fcLow: threshold.fcLow,
                 fcHigh: threshold.fcHigh,
                 statMin: threshold.statMin,
-                displayMap: dm
+                displayMap: dm,
+                untestedAtZero: !!cfg.untestedAtZero
               })
             }
             deps={[
@@ -99,7 +100,8 @@ export function volcanoView(v: ViewContext): ReactNode {
               threshold.fcLow,
               threshold.fcHigh,
               threshold.statMin,
-              dm
+              dm,
+              cfg.untestedAtZero
             ]}
           >
             {(volcano) =>

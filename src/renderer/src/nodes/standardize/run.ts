@@ -7,7 +7,7 @@ import { patchLoadStamps, putCheck, scalePreviews, statFiles } from '../../graph
 import { loadAbove, wiredKindOf } from '../../graph/registry'
 import {
   batchSpecOf,
-  cleanupOn,
+  cleanupRuleOfConfig,
   imputeOn,
   isStep,
   type LoadConfig,
@@ -36,8 +36,7 @@ export async function run(ctx: StepRunContext): Promise<void> {
     const cfg = node.data.config as StandardizeConfig
     const std = await engine.reclean({
       std: upRes.std,
-      minSamplePct: cleanupOn(cfg) ? (cfg.minSamplePct ?? 0) : 0,
-      minSamplePctBy: cfg.minSamplePctBy ?? [],
+      cleanupRule: cleanupRuleOfConfig(cfg),
       normalize: cfg.normalizeEnabled
         ? {
             reference: cfg.normalizeReference ?? 'shared',
@@ -53,7 +52,8 @@ export async function run(ctx: StepRunContext): Promise<void> {
             width: cfg.imputeWidth
           }
         : undefined,
-      logTransform: cfg.logTransform
+      logTransform: cfg.logTransform,
+      logDisplay: cfg.logDisplay
     })
     if (get().nodes.find((n) => n.id === id)?.data.status !== 'running') return // cancelled
     set((s) => ({ results: { ...s.results, [id]: { kind: 'standardize', std } } }))
@@ -149,8 +149,7 @@ export async function run(ctx: StepRunContext): Promise<void> {
       // …and of those, the ones declared numeric: checked as numbers, and Clean data's schema
       // from then on (numericConditions)
       numericConditions: loadNumericConditions(load),
-      minSamplePct: cleanupOn(cfg) ? (cfg.minSamplePct ?? 0) : 0,
-      minSamplePctBy: cfg.minSamplePctBy ?? [],
+      cleanupRule: cleanupRuleOfConfig(cfg),
       normalize: cfg.normalizeEnabled
         ? {
             reference: cfg.normalizeReference ?? 'shared',
@@ -169,7 +168,8 @@ export async function run(ctx: StepRunContext): Promise<void> {
       // Global (non-per-row) map from the interactive import — passed straight through so
       // enrichment can group KEGG pathways by category.
       keggCategories: load.interactive?.annotations?.keggCategories,
-      logTransform: cfg.logTransform
+      logTransform: cfg.logTransform,
+      logDisplay: cfg.logDisplay
     })
     if (get().nodes.find((n) => n.id === id)?.data.status !== 'running') return // cancelled
     set((s) => ({ results: { ...s.results, [id]: { kind: 'standardize', std } } }))

@@ -33,7 +33,9 @@ const ALL = sources(ROOT).map((f) => ({ file: relative(ROOT, f), imports: import
 /** One kind may use another's panel or view where it is a variant of it. */
 const VARIANTS: Record<string, string[]> = {
   curveFit: ['compare'],
-  tdr: ['response']
+  tdr: ['response'],
+  // the interaction plot's 3-D view is the Response plot's surface view on its cell means
+  variance: ['response']
 }
 /** What the rest of the app may import from nodes/: the registries, the contract, the kit. */
 const NODES_PUBLIC = /^nodes\/(contract|specs|settings|views|tiles|runs|runContext|kit\/)/

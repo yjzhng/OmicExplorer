@@ -169,14 +169,39 @@ export function sampleValues(values: number[], cap = 50000): number[] {
  *  never looks for the step that chose it. No fallback of the plots' own: raw intensities left
  *  unlogged LOOK wrong on every plot, which is the cue to set the log-transform in Clean data. */
 export function presentScaleOf(std: StandardizeResult): ValueScale {
-  // Fractions of a reference protein are shown as they are — the reference 1, the rest its
-  // fractions — whatever the log-transform (it still sets the scale analyses run on).
-  return valueUnitOf(std) === 'fraction' ? 'linear' : analysisScaleOf(std)
+  return analysisScaleOf(std)
+}
+
+/** How logged values are shown: as their logs ('log' — "log abundance" 5, 6, 7), or as the values
+ *  themselves on a log axis ('plain' — 10⁵, 10⁶, 10⁷; fractions 0.01, 0.1, 1). The same positions
+ *  and shape either way, and the same analyses: only the axis and colour-bar labels, the tables
+ *  and the hovers read differently. Absent: 'plain' for fractions of a reference protein (their
+ *  logs are hard to read), 'log' for abundances. */
+export type LogDisplay = 'log' | 'plain'
+/** Whether `std`'s logged values are shown plain, on a log axis (LogDisplay) — never when linear. */
+export function plainLogOf(std: StandardizeResult | undefined): boolean {
+  if (!std || analysisScaleOf(std) === 'linear') return false
+  return (std.logDisplay ?? (valueUnitOf(std) === 'fraction' ? 'plain' : 'log')) === 'plain'
+}
+/** The scale a table (or an export) shows `std`'s values on: plain values when they're shown so,
+ *  else the scale it's presented on. */
+export function tableScaleOf(std: StandardizeResult): ValueScale {
+  return plainLogOf(std) ? 'linear' : presentScaleOf(std)
+}
+/** `std` showing its logged values as `display` — a flip needs no re-run (presentation only). */
+export function withLogDisplay(
+  std: StandardizeResult,
+  display: LogDisplay | undefined
+): StandardizeResult {
+  if (std.logDisplay === display) return std
+  const table = holderTable(std)
+  const patch = { logDisplay: display }
+  return (table && lazyCopy(std, patch, table)) ?? { ...std, logDisplay: display }
 }
 
 /** The scale analyses run on — a Compare's test (logged or not), the cluster's auto-log, the
- *  sample correlation: Clean data's log-transform, as the result carries it. The same as the shown
- *  scale except for fractions of a reference protein, which are shown unlogged (presentScaleOf). */
+ *  sample correlation: Clean data's log-transform, as the result carries it — the same scale every
+ *  plot positions its values on (presentScaleOf). */
 export function analysisScaleOf(std: StandardizeResult): ValueScale {
   return std.scale ?? 'linear'
 }
@@ -210,8 +235,23 @@ export function valueUnitOf(std: Pick<StandardizeResult, 'normalization'> | unde
 /** A quantity axis title on `scale`: "log abundance" (log₁₀ — the app's plain "log"), "log₂
  *  abundance", or just "abundance" when linear. `noun` is the values' unit — always given, so no
  *  axis can name fractions "abundance" (valueUnitOf: "log fraction" after a reference protein) —
- *  or a phrase built on it ("mean abundance"). */
-export function quantityLabel(scale: ValueScale, noun: string): string {
+ *  or a phrase built on it ("mean abundance"). `plain`: shown as plain values on a log axis — just
+ *  "fraction", the ticks showing the axis is logged. */
+/** A scale's name as the UI writes it, base subscripted: "log₂", "log₁₀", "linear". */
+export function scaleName(scale: ValueScale | LogTransform): string {
+  return scale === 'log2'
+    ? 'log₂'
+    : scale === 'log10'
+      ? 'log₁₀'
+      : scale === 'none'
+        ? 'none'
+        : 'linear'
+}
+
+export function quantityLabel(scale: ValueScale, noun: string, plain = false): string {
+  // shown plain on a log axis (LogDisplay 'plain'): the noun itself — the axis's labels (0.01,
+  // 0.1, 1) say it's logged
+  if (plain && scale !== 'linear') return noun
   return scale === 'log10' ? `log ${noun}` : scale === 'log2' ? `log₂ ${noun}` : noun
 }
 

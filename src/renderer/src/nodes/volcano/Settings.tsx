@@ -8,7 +8,9 @@ import {
   type VolcanoConfig
 } from '../../graph/types'
 import { CompareStatisticSection } from '../kit/settings/compareSections'
-import { CapRow } from '../kit/settings/controls'
+import { CapRow, Field } from '../kit/settings/controls'
+import { UI } from '../../ui/theme'
+import { OnOffSwitch } from '../../ui/ToggleSwitch'
 import {
   legendShown,
   useEffectColors,
@@ -31,6 +33,12 @@ export function VolcanoPanel({ config, update, edgeNodeId }: PlotPanelProps<Volc
   const colors = useEffectColors(config.fcPalette)
   const up = useUpstreamNode(edgeNodeId)
   const compare = up && isStep(up) && isComparisonKind(up.data.kind) ? up : undefined
+  const stat =
+    compare &&
+    normalizeCompareConfig(compare.data.config as CompareConfig).threshold.statType === 'pQ'
+      ? 'q-value'
+      : 'p-value'
+  const sym = stat === 'q-value' ? 'q' : 'p'
   return (
     <PlotSections
       statistic={
@@ -44,6 +52,23 @@ export function VolcanoPanel({ config, update, edgeNodeId }: PlotPanelProps<Volc
         )
       }
       general={
+        // genes with a fold change but no p-value (too few values, a reference protein): left out,
+        // or drawn on the x axis — −log₁₀ of the Compare's stat at 0, i.e. it read as 1. The words
+        // after the switch say which.
+        <Field label={`force ${stat}`}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <OnOffSwitch
+              on={!!config.untestedAtZero}
+              label={`Force ${stat}`}
+              onChange={(on) => update({ untestedAtZero: on || undefined })}
+            />
+            <span style={{ color: UI.textMuted, fontSize: 12, whiteSpace: 'nowrap' }}>
+              {config.untestedAtZero ? `n/a data at −log₁₀ ${sym} = 0` : 'n/a data hidden'}
+            </span>
+          </div>
+        </Field>
+      }
+      ranking={
         <CapRow
           label="Label limit"
           info="Name only the most significant genes."

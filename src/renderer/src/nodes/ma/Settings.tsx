@@ -21,16 +21,18 @@ export function MAPanel({ config, update, edgeNodeId }: PlotPanelProps<MAConfig>
           {/* The fold-change lines are driven by (and drag) the upstream Compare's threshold —
               shared with volcano — so there are no per-tile FC cutoffs to set here. */}
           <div style={styles.hint}>Fold-change lines follow the upstream Compare threshold.</div>
-          <CapRow
-            label="Label limit"
-            info="Name only the genes with the largest fold change."
-            field="labelTop"
-            value={config.labelTop ?? 0}
-            enabled={config.capEnabled}
-            update={update}
-            rule={(n) => `Label the top ${n} genes by |log₂FC|.`}
-          />
         </>
+      }
+      ranking={
+        <CapRow
+          label="Label limit"
+          info="Name only the genes with the largest fold change."
+          field="labelTop"
+          value={config.labelTop ?? 0}
+          enabled={config.capEnabled}
+          update={update}
+          rule={(n) => `Label the top ${n} genes by |log₂FC|.`}
+        />
       }
       marks={
         <PointStyleSections

@@ -157,6 +157,10 @@ export function BubblePanel({ config, update, edgeNodeId }: PlotPanelProps<Bubbl
               />
             </Field>
           )}
+        </>
+      }
+      ranking={
+        <>
           <Field
             label="rank"
             info="What picks and orders the top genes: their log₂FC, or their significance (the Compare's own P or Q value, in the fold change's direction)."
@@ -187,24 +191,23 @@ export function BubblePanel({ config, update, edgeNodeId }: PlotPanelProps<Bubbl
               onChange={(v) => update({ over: v })}
             />
           </Field>
+          <CapRow
+            label="Max genes"
+            info="Show only the strongest genes."
+            field="topGenes"
+            value={config.topGenes}
+            enabled={config.capEnabled}
+            update={update}
+            split={config}
+            defaultValue={20}
+            rule={(n) =>
+              byFc
+                ? `Keep the top ${n} genes by largest ${over} |log₂FC|.`
+                : `Keep the top ${n} genes by ${over === 'peak' ? 'smallest' : 'largest total −log₁₀'} ${statName}.`
+            }
+            step={10}
+          />
         </>
-      }
-      genes={
-        <CapRow
-          label="Max genes"
-          info="Show only the strongest genes."
-          field="topGenes"
-          value={config.topGenes}
-          enabled={config.capEnabled}
-          update={update}
-          defaultValue={20}
-          rule={(n) =>
-            byFc
-              ? `Keep the top ${n} genes by largest ${over} |log₂FC|.`
-              : `Keep the top ${n} genes by ${over === 'peak' ? 'smallest' : 'largest total −log₁₀'} ${statName}.`
-          }
-          step={10}
-        />
       }
       colours={<BubbleColourRows config={config} update={update} statName={statName} />}
       marks={<BubbleLookSection config={config} update={update} statName={statName} />}

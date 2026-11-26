@@ -68,12 +68,13 @@ import { styles } from './styles'
  * A plot's settings, in the one order every plot's settings window follows — upstream before
  * downstream, whole plot before its parts (nodes/README.md › A plot's settings):
  *   Statistic (what's computed: the upstream step's, written there, or the plot's own analysis)
- *   → General (the whole plot: what it shows, its label limit, how many genes it draws, its
- *   legend, its colours) → its Points / Lines / Bars (each group's look) → Axes and lines (per
- *   axis, then the whole plot's rows).
- * General is this component's one section: the plot hands it rows (`general`, `genes`, then
- * `colours` — palettes last) and the window adds the legend switch before them (PlotWindow, from the spec's `legend` fact) — plot-wide
- * settings each too small for a section of their own. Axes and lines is the window's too; the plot
+ *   → General (the whole plot: what it shows, its legend, its colours) → Ranking (the finite set
+ *   it focuses on — genes drawn, genes labelled, terms, features — and the metric ranking them)
+ *   → its Points / Lines / Bars (each group's look) → Axes and lines (per axis, then the whole
+ *   plot's rows).
+ * General and Ranking are this component's sections: the plot hands General rows (`general`, then
+ * `colours` — palettes last; the window adds the legend switch between them, PlotWindow, from the
+ * spec's `legend` fact) and Ranking its rows (`ranking`). Axes and lines is the window's too; the plot
  * hands its whole-plot axis rows (an axis scale, a reference line) to `axes`. Each plot's Settings
  * fills the slots it has; the order is this component's, not each file's (architecture.test.ts
  * checks every plot goes through it).
@@ -82,19 +83,20 @@ export function PlotSections({
   statistic,
   general,
   colours,
-  genes,
+  ranking,
   marks,
   axes
 }: {
   /** what's computed before it's drawn: the upstream step's statistic (written to that step), or
    *  the plot's own analysis (a PCA's data preparation, a heatmap's clustering) — sections */
   statistic?: ReactNode
-  /** General's first rows: what the plot draws (view, metric, ordering) and its label limit */
+  /** General's first rows: what the plot draws (view, metric, ordering) */
   general?: ReactNode
   /** General's colour rows: palettes and colours (ColourRows, CategoricalRows, …) */
   colours?: ReactNode
-  /** General's how-many rows: how many genes (terms, residuals) are drawn — a CapRow */
-  genes?: ReactNode
+  /** the Ranking section's rows: the finite set the plot focuses on and what ranks it — the metric
+   *  (a bubble's rank), then the cap (a CapRow: Max genes, Label limit, Max terms) */
+  ranking?: ReactNode
   /** how points / lines / bars are drawn: a Points / Lines / Bars section */
   marks?: ReactNode
   /** whole-plot rows for the Axes and lines section (an axis scale, a reference line) */
@@ -104,14 +106,14 @@ export function PlotSections({
   return (
     <>
       {statistic}
-      {(general || genes || colours || win.legend) && (
+      {(general || colours || win.legend) && (
         <Section title="General">
           {general}
-          {genes}
           {win.legend}
           {colours}
         </Section>
       )}
+      {ranking && <Section title="Ranking">{ranking}</Section>}
       {marks}
       {win.axes?.(axes)}
     </>

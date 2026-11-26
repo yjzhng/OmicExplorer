@@ -281,19 +281,27 @@ const levelsOf = (f: AnovaFactorPick): string[] => [
 /** The overall rows' contrasts: one factor, each pair (a test level against the control) — or a
  *  slope's own change per unit; two or more, the n-way interaction of every combination of the
  *  factors' pairs (a 2×2 at two factors, a 2×2×2 at three), a slope taking part through its
- *  per-unit change (so with a factor, the difference of its slopes). Labelled as the Compare window
- *  states them. */
+ *  per-unit change (so with a factor, the difference of its slopes).
+ *
+ *  Named twice: `full`, every factor with its pair ("cell (P|M) × cmpd (NK|DMSO) × time (24|6)"),
+ *  for the Compare window's preview; `label`, the results' name, only the factors whose pair differs
+ *  between the rows ("time (24|6)"), the rest — the same in every row — in `shared`, stated once.
+ *  With nothing differing (one row) the label is the compact whole ("P|M × NK|DMSO × 24|6"). */
 function overallContrasts(factors: AnovaFactorPick[]): Array<{
   contrast: AnovaContrast
   label: string
+  full: string
+  /** the factors every row shares, named with their pair (multi-factor rows that differ only) */
+  shared?: string
   /** each categorical factor's numerator level (the row's value of it) */
   at: Array<[ConditionKey, string]>
-  /** per factor, its part of the label ("A|DMSO", "dose slope") */
-  parts: string[]
   /** a slope takes part */
   slope: boolean
 }> {
   type Side = { side: ContrastSide; part: string; at?: [ConditionKey, string] }
+  // a factor with its side: "cmpd (A|DMSO)", "dose (slope)"
+  const named = (f: AnovaFactorPick, x: Side): string =>
+    `${condLabel(f.condition)} (${f.slope ? 'slope' : x.part})`
   const sidesOf = (f: AnovaFactorPick, factor: number): Side[] =>
     f.slope
       ? [{ side: { factor, slope: true }, part: `${condLabel(f.condition)} slope` }]
@@ -307,22 +315,27 @@ function overallContrasts(factors: AnovaFactorPick[]): Array<{
     return sidesOf(factors[0], 0).map((x) => ({
       contrast: { kind: 'main', a: x.side },
       label: factors[0].slope ? x.part : x.part.replace('|', ' | '),
+      full: named(factors[0], x),
       at: x.at ? [x.at] : [],
-      parts: [x.part],
       slope
     }))
   let combos: Side[][] = [[]]
   factors.forEach((f, i) => (combos = combos.flatMap((c) => sidesOf(f, i).map((x) => [...c, x]))))
+  const varies = factors.map((f, i) => sidesOf(f, i).length > 1)
+  const sharedParts = factors.flatMap((f, i) => (varies[i] ? [] : [named(f, sidesOf(f, i)[0])]))
   return combos.map((c) => ({
+    full: c.map((x, i) => named(factors[i], x)).join(' × '),
+    ...(varies.some(Boolean) && sharedParts.length ? { shared: sharedParts.join(' × ') } : null),
     contrast: {
       kind: 'interaction',
       a: c[0].side,
       b: c[1].side,
       rest: c.slice(2).map((x) => x.side)
     },
-    label: c.map((x) => x.part).join(' × '),
+    label: varies.some(Boolean)
+      ? c.flatMap((x, i) => (varies[i] ? [named(factors[i], x)] : [])).join(' × ')
+      : c.map((x) => x.part).join(' × '),
     at: c.flatMap((x) => (x.at ? [x.at] : [])),
-    parts: c.map((x) => x.part),
     slope
   }))
 }
@@ -505,7 +518,7 @@ export interface FactorAnovaPreview {
   tested: string[]
   /** conditions faceting the run (matched like-for-like) */
   context: ConditionKey[]
-  /** table headers: comparison, each factor's pair (two or more factors), the context dims */
+  /** table headers: comparison (every factor with its pair), the context dims */
   columns: string[]
   /** table body, one row per overall comparison × context it runs in (aligned to `columns`) */
   rows: string[][]
@@ -517,8 +530,12 @@ export interface FactorAnovaPreview {
   warnings: string[]
   /** not blocking, but worth a warning: terms the design can't estimate (nested) */
   cautions: string[]
-  /** information: combinations not measured, and what they cost */
+  /** information: the vehicle design, no overall rows */
   notes: string[]
+  /** the factor-level combinations with no samples ("DMSO · 10"): the matrix isn't fully crossed */
+  missing: string[]
+  /** what they cost: the terms left fewer df ("cmpd × dose 1 of 2") */
+  fewer: string[]
 }
 
 /** The factor-level combinations with no samples, as "level₁ · level₂ · …" — the cells a not
@@ -554,11 +571,7 @@ export function previewFactorAnova(input: FactorAnovaInput): FactorAnovaPreview 
   for (const o of overall)
     for (const s of lay.slices)
       if (contrastRuns(af, terms, o.contrast, s.cells, shared))
-        tableRows.push([
-          o.label,
-          ...(many ? o.parts : []),
-          ...s.context.map(([, v]) => String(v ?? ''))
-        ])
+        tableRows.push([o.full, ...s.context.map(([, v]) => String(v ?? ''))])
   // each term's df: the most any context gives it, against its df in a fully crossed design
   const dfs = lay.slices.map((s) => termDf(af, terms, s.cells, shared))
   const best = terms.map((_, ti) => Math.max(0, ...dfs.map((d) => d[ti])))
@@ -581,15 +594,15 @@ export function previewFactorAnova(input: FactorAnovaInput): FactorAnovaPreview 
     )
   }
   const missing = missingCombinations(input)
-  if (missing.length)
-    notes.push(
-      `Full condition matrix not complete — no samples at ${missing.slice(0, 4).join(', ')}${missing.length > 4 ? ` +${missing.length - 4} more` : ''}`
-    )
   const fewer = terms
     .map((t, ti) => ({ t, ti }))
     .filter(({ ti }) => best[ti] > 0 && best[ti] < full[ti])
-    .map(({ t, ti }) => `${t.label} ${best[ti]} of ${full[ti]}`)
-  if (fewer.length) notes.push(`The missing combinations leave fewer df: ${fewer.join(', ')}.`)
+    .map(({ t, ti }) => `${t.label} (${best[ti]} of ${full[ti]})`)
+  const sharedBy = overall[0]?.shared
+  if (sharedBy && tableRows.length)
+    notes.push(
+      `Results name each comparison by what differs between them (${[...new Set(overall.map((o) => o.label))].slice(0, 3).join(', ')}${overall.length > 3 ? ', …' : ''}); all share ${sharedBy}.`
+    )
   if (!tableRows.length && best.some((d) => d > 0))
     notes.push(
       many
@@ -602,16 +615,14 @@ export function previewFactorAnova(input: FactorAnovaInput): FactorAnovaPreview 
     sharedBaseline: shared,
     tested: terms.filter((_, ti) => best[ti] > 0).map((t) => t.label),
     context: lay.context,
-    columns: [
-      'comparison',
-      ...(many ? factors.map((f) => condLabel(f.condition)) : []),
-      ...lay.context.map(condLabel)
-    ],
+    columns: ['comparison', ...lay.context.map(condLabel)],
     rows: tableRows,
     groups: tableRows.length,
     fixed: lay.fixed,
     warnings,
     cautions,
-    notes
+    notes,
+    missing,
+    fewer
   }
 }

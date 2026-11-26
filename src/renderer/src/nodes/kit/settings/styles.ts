@@ -178,6 +178,8 @@ export const styles: Record<string, CSSProperties> = {
   inlineTag: { color: UI.textMuted, fontSize: 11, whiteSpace: 'nowrap' },
   /** one cutoff line: tag, number box (fixed width), optional class-name box */
   cutoffRow: { display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 },
+  // a top-N's per-side count label (up / down), before its box
+  sideLabel: { fontSize: 11, color: UI.textMuted },
   /** a side's name above its cutoff line (uppercase, like the selector's side labels) */
   sideTag: {
     fontSize: 10,

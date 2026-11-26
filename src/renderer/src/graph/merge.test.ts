@@ -252,4 +252,25 @@ describe("a Merge's scale, on a workflow opened from before results carried it",
     const results = { std1: clean('log10'), std2: clean('linear'), merge: clean('log10') }
     expect(restampScales(nodes, edges, results)).toBe(results)
   })
+
+  it("carries Clean data's display choice down a Merge and a Subset too", () => {
+    const shown = nodes.map((n) =>
+      n.id === 'std1'
+        ? ({
+            ...n,
+            data: { ...n.data, config: { logTransform: 'log10', logDisplay: 'plain' } }
+          } as GraphNode)
+        : n
+    )
+    const results = {
+      sub: clean('log10'),
+      merge: clean('log10'),
+      std1: clean('log10'),
+      std2: clean('linear')
+    }
+    const out = restampScales(shown, edges, results)
+    const display = (k: string): unknown => (out[k] as { std: StandardizeResult }).std.logDisplay
+    expect(['std1', 'merge', 'sub'].map(display)).toEqual(['plain', 'plain', 'plain'])
+    expect(display('std2')).toBeUndefined()
+  })
 })

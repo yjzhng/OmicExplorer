@@ -26,6 +26,10 @@ import type {
   Pair,
   StandardizeResult,
   ThresholdConfig,
+  CleanupMode,
+  CleanupRule,
+  TopSplit,
+  TopSplitSpec,
   VehNormResult
 } from '../engine'
 import { holderTable, rowCount } from '../engine/lazyRows'
@@ -45,6 +49,7 @@ import {
   VALID_CONDITIONS,
   numericConds,
   numericOf,
+  cleanupRuleOf,
   type LeafOrder,
   type Linkage,
   type NumericConds
@@ -305,14 +310,23 @@ export interface StandardizeConfig {
   /** clean-up: drop genes identified (non-null) in fewer than this % of samples (applied only
    *  while `cleanupEnabled`). */
   minSamplePct: number
+  /** clean-up threshold as a percentage of samples (default) or a declared count of them */
+  minSampleUnit?: 'pct' | 'count'
+  /** the count, while `minSampleUnit` is 'count' (within each group, grouped) */
+  minSampleCount?: number
   /** conditions to measure the % threshold within (e.g. ['cell'] = per cell, ['cell', 'dose'] =
-   *  per cell × dose); a gene is dropped only if it falls short in every group. Empty/absent = all
-   *  samples pooled. */
+   *  per cell × dose); what goes follows `cleanupMode`. Empty/absent = all samples pooled (the
+   *  threshold global). */
   minSamplePctBy?: ConditionKey[]
+  /** the removal mode (engine cleanup.ts CleanupMode); absent = cleanupModeOfConfig's default */
+  cleanupMode?: CleanupMode
   /** The scale Clean data presents its values on (its table, its written CSV): none = as the input
    *  arrived, or log₁₀ / log₂. Analyses always work from exact linear values (see engine scale.ts).
    *  Absent = none, whatever the input scale (engine scale.ts). */
   logTransform?: 'none' | 'log2' | 'log10'
+  /** with a log-transform: show the values as their logs, or plain on a log axis (engine scale.ts
+   *  LogDisplay); unset = the unit's default (plain for fractions of a reference protein) */
+  logDisplay?: 'log' | 'plain'
   /** median normalisation on/off (absent = off) */
   normalizeEnabled?: boolean
   /** the genes each sample's median is taken over (absent = 'shared': genes in every sample), or
@@ -348,6 +362,22 @@ export interface StandardizeConfig {
  *  without one) a non-zero threshold. */
 export const cleanupOn = (c: StandardizeConfig): boolean =>
   c.cleanupEnabled ?? (c.minSamplePct ?? 0) > 0
+
+/** A Clean data step's removal mode: as chosen, or (older configs) within its groups when it has
+ *  any — a gene kept if it clears in at least one, as it always was — else overall. */
+export const cleanupModeOfConfig = (c: StandardizeConfig): CleanupMode =>
+  c.cleanupMode ?? ((c.minSamplePctBy ?? []).length ? 'anyGroup' : 'overall')
+/** Its clean-up as the engine takes it (cleanup.ts CleanupRule); undefined while it's off. */
+export function cleanupRuleOfConfig(c: StandardizeConfig): CleanupRule | undefined {
+  if (!cleanupOn(c)) return undefined
+  return cleanupRuleOf(
+    cleanupModeOfConfig(c),
+    c.minSamplePctBy ?? [],
+    c.minSampleUnit === 'count'
+      ? { unit: 'count', value: c.minSampleCount ?? 2 }
+      : { unit: 'pct', value: c.minSamplePct ?? 0 }
+  )
+}
 
 /** The batches a Clean data step corrects for, as the engine takes them (batch.ts BatchSpec) — none
  *  while it's off or fewer than two batches hold samples. */
@@ -898,6 +928,23 @@ export function isContrastConfigured(c: ContrastConfig): boolean {
 export const capOn = (enabled: boolean | undefined, n: number | undefined): boolean =>
   enabled ?? (n ?? 0) > 0
 
+/** How a capped plot's top-N splits between up and down genes (engine/topPick): by size alone,
+ *  in proportion to each side (default), or a declared count per side. */
+export interface TopSplitConfig {
+  topSplit?: TopSplit
+  /** fixed: how many up / down */
+  topUp?: number
+  topDown?: number
+}
+export const TOP_SIDE_DEFAULT = 10
+export const topSplitOf = (c: TopSplitConfig): TopSplitSpec =>
+  c.topSplit === 'fixed'
+    ? { by: 'fixed', up: c.topUp ?? TOP_SIDE_DEFAULT, down: c.topDown ?? TOP_SIDE_DEFAULT }
+    : { by: c.topSplit ?? 'proportional' }
+/** The top-N's total: the N set, or — fixed per side — the two counts together. */
+export const topCountOf = (c: TopSplitConfig, n: number): number =>
+  c.topSplit === 'fixed' ? (c.topUp ?? TOP_SIDE_DEFAULT) + (c.topDown ?? TOP_SIDE_DEFAULT) : n
+
 /** How a line is stroked, for the axis decorations that offer a choice. */
 export type LineStyle = 'solid' | 'dash' | 'dot'
 
@@ -967,6 +1014,9 @@ export interface VolcanoConfig extends FcPaletteConfig {
   /** cap labels: label only the top-N most significant genes (applied only while `capEnabled`);
    *  otherwise the placement layer labels as many significant genes as fit. */
   labelTop: number
+  /** draw genes with a fold change but no p-value (a reference protein, one too thin to test) at 0
+   *  on the significance axis, rather than leave them out */
+  untestedAtZero?: boolean
   /** marker/legend/highlight look; unset fields fall back to the plot's defaults */
   style?: PointStyle
   /** x / y axis overrides (title, fonts, range, ticks, grid, line); unset = the view's layout */
@@ -1041,7 +1091,7 @@ export interface PointStyle {
 
 /** Heatmap: genes × samples log10 intensity (from Standardize) OR genes × comparisons log2FC
  *  (from Compare) — the tile picks the rendering from its upstream. */
-export interface HeatmapConfig extends FcPaletteConfig {
+export interface HeatmapConfig extends FcPaletteConfig, TopSplitConfig {
   /** from a two-way ANOVA, outside a group (in one, it follows the group's `show` pick): its
    *  overall rows — the signed 2×2 interaction fold changes (default, the diverging palette) — or
    *  its factors rows (unsigned effect sizes, the palette's upper half from 0) — one at a time, as
@@ -1443,15 +1493,21 @@ export interface InteractionConfig extends Pick<
 > {
   /** the factor along x (a condition key); unset = the model's first factor */
   xFactor?: ConditionKey
-  /** the factor drawn as lines (three or more factors; the rest are averaged); unset, or x = the
-   *  first factor other than x */
-  lineFactor?: ConditionKey
+  /** factor 2, drawn as lines (the rest are averaged); 'none' — factor 1 alone, every other
+   *  factor averaged; unset, or factor 1 = the first factor other than factor 1 */
+  lineFactor?: ConditionKey | 'none'
+  /** 2-D (the default) or 3-D (needs factor 2) — see interactionDim */
+  dim?: '2d' | '3d'
+  /** what the view draws (interactionShow): lines (both views); a heatmap (2-D: factor 1 across,
+   *  factor 2 down, each tile its cell mean); a surface (3-D, both factors numeric). In 3-D each
+   *  cell is log₂ against the control cell. */
+  show?: 'line' | 'heatmap' | 'surface'
   quick?: QuickAccess
   /** x / y axis overrides (title, fonts, range, ticks, grid, line); unset = the view's layout */
   axes?: PlotAxes
 }
 
-export interface DRConfig extends FcPaletteConfig {
+export interface DRConfig extends FcPaletteConfig, TopSplitConfig {
   /** the numeric condition along x — the tile's own (one Response plot per numeric condition) */
   axis: ConditionKey
   /** a response surface method curve fit: draw its description 4PL ('curve', default) or the
@@ -1740,6 +1796,40 @@ export const responseShowWhy = (dim: '2d' | '3d', show: string): string | undefi
     : dim === '2d' && show === 'surface'
       ? 'A surface is 3-D — switch the view to 3D'
       : undefined
+/** What an interaction plot can draw: whether factor 2 is picked (3-D needs it) and whether both
+ *  factors are numeric (a surface needs it — nothing lies between two categories). */
+export interface InteractionShape {
+  two: boolean
+  numeric: boolean
+}
+export const interactionDim = (c: Partial<InteractionConfig>, s: InteractionShape): '2d' | '3d' =>
+  c.dim === '3d' && s.two ? '3d' : '2d'
+/** The show the view draws: the picked one where the view can draw it, else lines. */
+export function interactionShow(
+  c: Partial<InteractionConfig>,
+  s: InteractionShape
+): 'line' | 'heatmap' | 'surface' {
+  const dim = interactionDim(c, s)
+  const show = c.show ?? 'line'
+  if (dim === '2d') return show === 'heatmap' ? 'heatmap' : 'line'
+  return show === 'surface' && s.numeric ? 'surface' : 'line'
+}
+/** Why a view or a show can't be picked (its tooltip), else undefined. */
+export const interactionDimWhy = (dim: string, s: InteractionShape): string | undefined =>
+  dim === '3d' && !s.two ? '3D needs a factor 2' : undefined
+export const interactionShowWhy = (
+  dim: '2d' | '3d',
+  show: string,
+  s: InteractionShape
+): string | undefined =>
+  dim === '3d' && show === 'heatmap'
+    ? 'A heatmap is 2-D — switch the view to 2D'
+    : show === 'surface' && dim === '2d'
+      ? 'A surface is 3-D — switch the view to 3D'
+      : show === 'surface' && !s.numeric
+        ? 'Both factors numeric only — nothing lies between two categories'
+        : undefined
+
 /** A Response plot's look with every default filled in ('auto' colours stay 'auto'). */
 export interface ResponseLook {
   lineWidth: number
@@ -1909,7 +1999,7 @@ export interface CurveMadConfig {
   axes?: PlotAxes
 }
 /** Bubble grid (compare) over dose or time, one gene per row. */
-export interface BubbleConfig extends FcPaletteConfig {
+export interface BubbleConfig extends FcPaletteConfig, TopSplitConfig {
   axis: ConditionKey
   /** the up / down / none colours, this plot's own; unset (or 'auto') = from its FC palette */
   effectColors?: PlotEffectColors
@@ -1945,7 +2035,7 @@ export interface BubbleConfig extends FcPaletteConfig {
 }
 
 /** Dumbbell (contrast): FC1↔FC2 per gene, top-N by |FCdiff|. */
-export interface DumbbellConfig {
+export interface DumbbellConfig extends TopSplitConfig {
   /** cap genes: explicit switch (undefined on older configs → inferred from topGenes > 0) */
   capEnabled?: boolean
   /** cap genes: top-N significant genes by |FCdiff| (applied only while `capEnabled`; otherwise
@@ -2048,10 +2138,19 @@ export interface EnrichConfig extends FcPaletteConfig {
   /** how many top terms to show */
   topTerms: number
   /** how terms are stacked: by significance alone (unset), or by category first — the
-   *  categories in their fixed order (the legend's), each's terms by significance */
+   *  categories in their fixed order (the legend's), each's terms by significance (within a module,
+   *  with modules on) */
   termOrder?: 'significance' | 'category'
+  /** gene modules: terms carried by largely the same genes (engine/enrichModules) stacked together,
+   *  module by module, a bar beside each — as the fold-change heatmap's gene modules */
+  modules?: boolean
+  /** with modules on: every top term (unset), or only each module's most significant */
+  show?: 'all' | 'one'
   /** the term groups' (categories') palette, this plot's own; unset = the global one */
   categorical?: import('../ui/palettes').CategoricalId
+  /** the gene modules' palette, this plot's own; unset = the global one — and while it's the
+   *  categories' palette too, the modules take its colours after theirs, so none repeats */
+  moduleCategorical?: import('../ui/palettes').CategoricalId
   /** which of this plot's settings the tile surfaces as quick-access switch bars (unset = all;
    *  the gear always carries every setting). Keyed by config field. */
   quick?: QuickAccess

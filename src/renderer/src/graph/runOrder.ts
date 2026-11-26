@@ -42,3 +42,37 @@ export function downstreamOf(id: string, edges: { source: string; target: string
   }
   return out
 }
+
+/** What running a target set runs, in Run all's order: the targets, and the steps above them they
+ *  need — those with no up-to-date result (`stale`: not done, not already running), walked up
+ *  through such steps (a done one's inputs were done when it ran) and through steps with no run of
+ *  their own (`runs` false: a Subset off Load data passes its input on). One tile, a group's tiles
+ *  or every step: the same run. `ids` is every step, in node order. */
+export function runPlan(
+  ids: string[],
+  edges: { source: string; target: string }[],
+  targets: Iterable<string>,
+  stale: (id: string) => boolean,
+  runs: (id: string) => boolean
+): string[] {
+  const known = new Set(ids)
+  const plan = new Set([...targets].filter((t) => known.has(t)))
+  const seen = new Set(plan)
+  const todo = [...plan]
+  while (todo.length) {
+    const cur = todo.pop()!
+    for (const e of edges) {
+      if (e.target !== cur || seen.has(e.source) || !known.has(e.source)) continue
+      seen.add(e.source)
+      if (!runs(e.source)) todo.push(e.source)
+      else if (stale(e.source)) {
+        plan.add(e.source)
+        todo.push(e.source)
+      }
+    }
+  }
+  return runOrder(
+    ids.filter((id) => plan.has(id)),
+    edges
+  )
+}

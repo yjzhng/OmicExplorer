@@ -34,6 +34,8 @@ import {
   type ThresholdConfig
 } from '../../engine'
 import { Field } from '../../ui/Field'
+import { Formula } from '../../ui/Formula'
+import { SURFACE_FNS } from '../../ui/formulaModel'
 import { StatusNote } from '../../ui/StatusNote'
 import { OnOffSwitch, ToggleSwitch } from '../../ui/ToggleSwitch'
 import { ValueMultiSelect } from '../../ui/ValueMultiSelect'
@@ -805,7 +807,11 @@ export function CurveDialog({
         {!pooledOrNone && (
           <div style={styles.formula}>
             {/* one scale throughout: log₂ ratio to the baseline (4PL fits it as the ratio, CurveCurator's way) */}
-            {formula}
+            <Formula
+              text={formula}
+              vars={(m.surface ? m.axisConds : [m.refAx]).map(condLabel)}
+              fns={m.surface && detects.includes('4pl') ? SURFACE_FNS : undefined}
+            />
             <div style={styles.formulaNote}>
               {!detects.includes('4pl')
                 ? 'vs flat, moderated F'

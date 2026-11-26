@@ -14,7 +14,8 @@ import {
   type NumericConds
 } from '../../engine'
 import { engineUi } from '../../engine/client'
-import type { HeatmapLinkage } from '../../graph/types'
+import { topSplitOf, type HeatmapLinkage } from '../../graph/types'
+import type { TopSplit } from '../../engine'
 import { FcHeatmapView, type ClusterSide } from './FcHeatmapView'
 import type { PaletteRef } from '../../ui/palettes'
 import { Spinner } from '../../ui/Spinner'
@@ -43,6 +44,9 @@ export function FcHeatmapTile({
   rows,
   displayMap,
   maxGenes,
+  topSplit,
+  topUp,
+  topDown,
   focus = [],
   orient,
   palette,
@@ -66,6 +70,10 @@ export function FcHeatmapTile({
   unsigned?: boolean
   displayMap: Record<string, string>
   maxGenes: number
+  /** how the top-N splits between up and down (TopSplitConfig) */
+  topSplit?: TopSplit
+  topUp?: number
+  topDown?: number
   /** selected genes (uniqIDs); when non-empty, show exactly these rows */
   focus?: string[]
   orient?: 'landscape' | 'portrait'
@@ -100,7 +108,7 @@ export function FcHeatmapTile({
     [dosePalette, timePalette, numeric]
   )
   const focusKey = focus.join(',')
-  const key = `${maxGenes}\u0000${focusKey}\u0000${linkage ?? ''}\u0000${leafOrder ?? ''}\u0000${colPattern}`
+  const key = `${maxGenes}\u0000${topSplit ?? ''}:${topUp ?? ''}:${topDown ?? ''}\u0000${focusKey}\u0000${linkage ?? ''}\u0000${leafOrder ?? ''}\u0000${colPattern}`
   const cached = cacheFor(rows, displayMap).get(key)
   // the last one built here — shown, while a new one clusters, until it's in
   const [last, setLast] = useState<FcHeatmapData | null>(null)
@@ -114,6 +122,7 @@ export function FcHeatmapTile({
     const gen = buildFcHeatmapSteps(rows, {
       displayMap,
       maxGenes,
+      split: topSplitOf({ topSplit, topUp, topDown }),
       focus,
       differentialOnly: true,
       linkage,
@@ -139,7 +148,7 @@ export function FcHeatmapTile({
     return () => {
       live = false
     }
-    // key stands in for maxGenes, focus's contents, linkage, leafOrder and colPattern
+    // key stands in for maxGenes, the split, focus's contents, linkage, leafOrder and colPattern
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rows, displayMap, key])
   // Each side's look, kept while its settings hold (so the view's layout isn't redone per render).

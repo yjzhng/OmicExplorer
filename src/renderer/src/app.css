@@ -34,30 +34,19 @@
   }
 }
 
-/* A one-off attention cue (NOTICE_MS.cue): a control's tint, in, held, then out, so the eye finds
-   it — the gene selector's button when a plot click selects genes. Drawn by a layer over the
-   control with `--oe-cue-bg` set; nothing is drawn outside it. */
+/* A one-off attention cue (NOTICE_MS.cue): a layer over a control, in, held, then out, so the eye
+   finds it — the gene selector's button when a plot click selects genes, a Results tab chip jumped
+   to, the tile of the Results tab you just came back from. The layer carries its look (a tint, a
+   halo) at rest at opacity 0, and only its opacity moves: that runs on the compositor, so a busy
+   main thread (Results unmounting its charts, a plot redrawing) can't skip the fade-in. */
 @keyframes oe-cue {
   0%,
   100% {
-    background: transparent;
+    opacity: 0;
   }
   20%,
   55% {
-    background: var(--oe-cue-bg);
-  }
-}
-
-/* A tile's one-off cue (NOTICE_MS.cue): a halo around it, in, held, then out — the tile of the
-   Results tab you just came back from. `--oe-halo` is the halo's box-shadow. */
-@keyframes oe-halo {
-  0%,
-  100% {
-    box-shadow: none;
-  }
-  20%,
-  55% {
-    box-shadow: var(--oe-halo);
+    opacity: 1;
   }
 }
 
@@ -526,6 +515,65 @@ button.oe-palette-builder:focus-visible {
    has no SVG to fall back to. */
 .oe-plot-2d .no-webgl {
   display: none;
+}
+
+/* Plotly's mode bar (every plot's zoom / pan / download buttons) in the app's theme: one raised
+   strip with a hairline border, muted icons that firm up on hover, the chosen tool in the accent,
+   and its tooltips as the app's own. Plotly writes its colours per graph (an id selector, and an
+   inline background on each group), hence !important; the theme variables follow the theme and
+   accent with no redraw. The groups carry the strip, not the bar: in hover mode Plotly fades the
+   groups, so anything on the bar itself would stay up. */
+.js-plotly-plot .plotly .modebar-group {
+  background-color: var(--panel-raised) !important;
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+}
+/* one run of buttons: no gap between Plotly's groups (reset sits in a group of its own) */
+.js-plotly-plot .plotly .modebar-group + .modebar-group {
+  padding-left: 0 !important;
+}
+.js-plotly-plot .plotly .modebar-group:first-child {
+  border-left: 1px solid var(--border);
+  border-radius: 5px 0 0 5px;
+}
+.js-plotly-plot .plotly .modebar-group:last-child {
+  border-right: 1px solid var(--border);
+  border-radius: 0 5px 5px 0;
+  padding-right: 3px;
+}
+.js-plotly-plot .plotly .modebar-group:only-child {
+  border-radius: 5px;
+}
+/* The tools not in use stay faint (muted, part-transparent), so the one in use — full strength, in
+   the accent — stands out from them. */
+.js-plotly-plot .plotly .modebar-btn .icon path {
+  fill: var(--text-muted) !important;
+  fill-opacity: 0.55;
+  transition:
+    fill var(--motion-hover) var(--ease-move),
+    fill-opacity var(--motion-hover) var(--ease-move);
+}
+.js-plotly-plot .plotly .modebar-btn:hover .icon path {
+  fill: var(--text) !important;
+  fill-opacity: 1;
+}
+.js-plotly-plot .plotly .modebar-btn.active .icon path {
+  fill: var(--accent) !important;
+  fill-opacity: 1;
+}
+.js-plotly-plot .plotly .modebar-btn[data-title]::before {
+  display: none !important;
+}
+.js-plotly-plot .plotly .modebar-btn[data-title]::after {
+  background: var(--panel-raised);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.25);
+  padding: 5px 8px;
+  font-family: system-ui, sans-serif;
+  font-size: 11.5px;
+  line-height: 1.3;
 }
 
 /* The User guide's search matches, marked in its text (UserGuide.tsx, CSS Custom Highlight API). */

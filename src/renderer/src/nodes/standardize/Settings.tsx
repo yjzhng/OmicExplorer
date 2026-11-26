@@ -21,14 +21,17 @@ import {
   sampleIndex,
   sampleLabel,
   sampleName,
+  scaleName,
   toLinear
 } from '../../engine'
 import type { SampleConds } from '../../engine/types'
+import type { CleanupMode } from '../../engine'
 import { loadAbove, wiredKindOf } from '../../graph/registry'
 import { useGraph } from '../../graph/store'
 import {
   type LoadConfig,
   type StandardizeConfig,
+  cleanupModeOfConfig,
   cleanupOn,
   imputeOn,
   isStep
@@ -59,6 +62,7 @@ export function DataScaleSection({
   std: StandardizeResult | null
 }) {
   const setLogTransform = useGraph((s) => s.setStdLogTransform)
+  const setLogDisplay = useGraph((s) => s.setStdLogDisplay)
   const previewStdScale = useGraph((s) => s.previewStdScale)
   // The upstream data file's name, so the preview re-reads when the Load step points elsewhere.
   const dataFile = useGraph(
@@ -138,21 +142,14 @@ export function DataScaleSection({
           value={value}
           options={[
             { value: 'none' as const, label: 'none' },
-            { value: 'log10' as const, label: 'log10' },
-            { value: 'log2' as const, label: 'log2' }
+            { value: 'log10' as const, label: scaleName('log10') },
+            { value: 'log2' as const, label: scaleName('log2') }
           ]}
           // Display-only (analyses read linear rows) — so no re-run, the table just re-presents.
           onChange={(v) => setLogTransform(id, v as LogTransform)}
         />
       }
     >
-      {/* Fractions of a reference protein are shown as they are (presentScaleOf). */}
-      {config.normalizeEnabled && config.normalizeReference === 'protein' && (
-        <div style={styles.hint}>
-          Divided by a reference protein, values are shown as fractions of it, unlogged. The
-          log-transform still sets the scale a Compare tests on.
-        </div>
-      )}
       {preview === 'loading' && !histIn ? (
         <div style={styles.hint}>Reading the data…</div>
       ) : histIn && histIn.counts.length > 0 ? (
@@ -175,10 +172,29 @@ export function DataScaleSection({
           <ValueHistogramView
             hist={histOut}
             fmt={fmt}
-            caption={`after ${out}`}
+            caption={`after ${out ? scaleName(out) : ''}`}
             note={shapeNote(histogramShape(histOut))}
           />
         </>
+      )}
+      {/* Logged: how the values read — as their logs, or as themselves on a log axis (scale.ts
+          LogDisplay). Presentation only: the positions, the shape and the tests stay the same.
+          Unset: plain for fractions of a reference protein, logs otherwise. */}
+      {out && out !== 'linear' && (
+        <Field label="show">
+          {/* a dropdown: the second option is too long to sit beside the first in a switch */}
+          <Select
+            value={
+              config.logDisplay ??
+              (config.normalizeEnabled && config.normalizeReference === 'protein' ? 'plain' : 'log')
+            }
+            options={[
+              { value: 'log', label: `${scaleName(out)} values` },
+              { value: 'plain', label: `original values on ${scaleName(out)} axis` }
+            ]}
+            onChange={(v) => setLogDisplay(id, v as 'log' | 'plain')}
+          />
+        </Field>
       )}
     </Section>
   )
@@ -347,11 +363,23 @@ export function StandardizePanel({ id, config }: { id: string; config: Standardi
   const r2 = (v: number): number => Math.round(v * 100) / 100
   // The clean-up rule as chosen, shown under its controls. Only the conditions on offer: one the
   // data doesn't carry groups nothing.
+  const cleanupBy = (config.minSamplePctBy ?? []).filter((c) => conds.includes(c))
+  const cleanupMode = cleanupModeOfConfig(config)
+  const grouped = cleanupMode !== 'overall'
+  const byCount = config.minSampleUnit === 'count'
   const cleanupRule = (() => {
-    const pct = config.minSamplePct ?? 0
-    const by = (config.minSamplePctBy ?? []).filter((c) => conds.includes(c))
-    const where = by.length === 0 ? '' : ` in every ${by.map(condLabel).join(' × ')} group`
-    return `Dropping genes detected in fewer than ${pct}% of samples${where}.`
+    const n = config.minSampleCount ?? 2
+    const min = byCount
+      ? `${n} sample${n === 1 ? '' : 's'}`
+      : `${config.minSamplePct ?? 0}% of samples`
+    if (!grouped) return `Removing proteins detected in fewer than ${min} overall.`
+    if (cleanupBy.length === 0) return 'Pick the conditions that make the groups.'
+    const group = `${cleanupBy.map(condLabel).join(' × ')} group`
+    if (cleanupMode === 'withinGroup')
+      return `Removing a protein's values in each ${group} where it's detected in fewer than ${min}.`
+    if (cleanupMode === 'everyGroup')
+      return `Keeping proteins detected in at least ${min} in every ${group}.`
+    return `Keeping proteins detected in at least ${min} in at least one ${group}.`
   })()
   return (
     <>
@@ -375,55 +403,108 @@ export function StandardizePanel({ id, config }: { id: string; config: Standardi
       >
         {cleanupOn(config) && (
           <>
-            <Field label="Min. coverage">
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6, width: 90 }}>
-                <NumberInput
-                  value={config.minSamplePct ?? 0}
-                  step={5}
-                  min={0}
-                  max={100}
-                  onChange={(v) =>
-                    update(id, { minSamplePct: Math.min(100, Math.max(0, Math.round(v))) })
-                  }
-                />
-                <span style={{ color: UI.textMuted, fontSize: 12 }}>%</span>
-              </div>
+            {/* the removal mode first, then the groups it's judged in, then the bar */}
+            <Field label="mode">
+              <Select
+                value={cleanupMode}
+                onChange={(v) => update(id, { cleanupMode: v as CleanupMode })}
+                options={[
+                  { value: 'overall', label: 'remove proteins below threshold overall' },
+                  {
+                    value: 'withinGroup',
+                    label: 'remove proteins below threshold within each condition group'
+                  },
+                  {
+                    value: 'anyGroup',
+                    label: 'keep proteins above threshold in at least one group'
+                  },
+                  { value: 'everyGroup', label: 'keep proteins above threshold in every group' }
+                ]}
+              />
             </Field>
-            {/* Which conditions the coverage is judged within. The note below restates the rule
-                for the current choice, which reads far more plainly than describing "groups". */}
-            <Field label="Coverage per">
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0 12px' }}>
-                {conds.map((c) => {
-                  const by = config.minSamplePctBy ?? []
-                  const on = by.includes(c)
-                  return (
-                    <label key={c} style={{ ...styles.checkRow, marginBottom: 0 }}>
-                      <input
-                        type="checkbox"
-                        checked={on}
-                        onChange={(e) =>
-                          update(id, {
-                            minSamplePctBy: e.target.checked
-                              ? conds.filter((k) => k === c || by.includes(k))
-                              : by.filter((k) => k !== c)
-                          })
-                        }
-                      />
-                      {condLabel(c)}
-                    </label>
-                  )
-                })}
+            {grouped && (
+              <>
+                <Field label="groups by">
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0 12px' }}>
+                    {conds.map((c) => {
+                      const by = config.minSamplePctBy ?? []
+                      const on = by.includes(c)
+                      return (
+                        <label key={c} style={{ ...styles.checkRow, marginBottom: 0 }}>
+                          <input
+                            type="checkbox"
+                            checked={on}
+                            onChange={(e) =>
+                              update(id, {
+                                minSamplePctBy: e.target.checked
+                                  ? conds.filter((k) => k === c || by.includes(k))
+                                  : by.filter((k) => k !== c)
+                              })
+                            }
+                          />
+                          {condLabel(c)}
+                        </label>
+                      )
+                    })}
+                  </div>
+                </Field>
+              </>
+            )}
+            <Field label="threshold">
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+                <div style={{ width: 60, flex: '0 0 auto' }}>
+                  {byCount ? (
+                    <NumberInput
+                      value={config.minSampleCount ?? 2}
+                      step={1}
+                      min={1}
+                      onChange={(v) => update(id, { minSampleCount: Math.max(1, Math.round(v)) })}
+                    />
+                  ) : (
+                    <NumberInput
+                      value={config.minSamplePct ?? 0}
+                      step={5}
+                      min={0}
+                      max={100}
+                      onChange={(v) =>
+                        update(id, { minSamplePct: Math.min(100, Math.max(0, Math.round(v))) })
+                      }
+                    />
+                  )}
+                </div>
+                {/* the unit, then what it counts: "50 · % · of samples", "2 · # · samples" — within
+                    group in the grouped modes. The switch never shrinks (its pills would stack);
+                    the words wrap instead. */}
+                <div style={{ flex: '0 0 auto' }}>
+                  <ToggleSwitch
+                    label="Threshold unit"
+                    value={byCount ? 'count' : 'pct'}
+                    options={[
+                      { value: 'pct', label: '%' },
+                      { value: 'count', label: '#' }
+                    ]}
+                    onChange={(v) => update(id, { minSampleUnit: v })}
+                  />
+                </div>
+                <span style={{ color: UI.textMuted, fontSize: 12, minWidth: 0, lineHeight: 1.3 }}>
+                  {byCount ? 'samples' : 'of samples'}
+                  {grouped ? ' within group' : ''}
+                </span>
               </div>
             </Field>
             <StatusNote kind="warn">{cleanupRule}</StatusNote>
           </>
         )}
-        {cleanupOn(config) && std && (std.cleanup?.droppedGenes ?? 0) > 0 && (
-          <StatusNote kind="ok" style={styles.doneNote}>
-            Dropped {std.cleanup.droppedGenes.toLocaleString()} of{' '}
-            {(std.cleanup.droppedGenes + geneTotal).toLocaleString()} genes
-          </StatusNote>
-        )}
+        {cleanupOn(config) &&
+          std &&
+          ((std.cleanup?.droppedGenes ?? 0) > 0 || (std.cleanup?.removedValues ?? 0) > 0) && (
+            <StatusNote kind="ok" style={styles.doneNote}>
+              Dropped {std.cleanup.droppedGenes.toLocaleString()} of{' '}
+              {(std.cleanup.droppedGenes + geneTotal).toLocaleString()} genes
+              {(std.cleanup.removedValues ?? 0) > 0 &&
+                `; removed ${std.cleanup.removedValues!.toLocaleString()} values`}
+            </StatusNote>
+          )}
       </Section>
       {/* Normalisation runs after clean-up and before imputation, whose draws follow each
                 sample's own distribution — so they're drawn from the normalised one. */}

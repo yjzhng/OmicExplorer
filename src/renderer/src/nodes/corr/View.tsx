@@ -36,7 +36,7 @@ export function corrView(v: ViewContext): ReactNode {
         status="idle"
         onRun={() => {
           const g = useGraph.getState()
-          void (child ? g.runPlotChild(node.id, child.id) : g.runNode(node.id))
+          void (child ? g.runPlotChild(node.id, child.id) : g.runTargets([node.id]))
         }}
       />
     )

@@ -5,7 +5,8 @@ import {
   bandEdgePath,
   type AxisTail,
   type ScatterData,
-  type ScatterPoint
+  type ScatterPoint,
+  type ValueScale
 } from '../../engine'
 import {
   DEFAULT_EFFECT_LABELS,
@@ -15,6 +16,7 @@ import {
 } from '../../graph/types'
 import { useGraph } from '../../graph/store'
 import { tooltip } from '../../ui/condTooltip'
+import { plainRows, plainTicks } from '../../ui/quantityAxis'
 import { PlotlyChart, type GuideDrag } from '../../ui/PlotlyChart'
 import {
   labelColorOf,
@@ -58,9 +60,13 @@ export function ScatterView({
   style,
   onStatDrag,
   asymmetric = false,
-  cutText = twoDecimals
+  cutText = twoDecimals,
+  plainScale
 }: {
   scatter: ScatterData
+  /** both abundance axes shown as plain values on a log axis (ui/quantityAxis): the logged scale
+   *  their positions are on */
+  plainScale?: ValueScale
   title?: string
   labelTop?: number
   /** per-tile marker / highlight / legend look (unset fields use the scatter defaults) */
@@ -119,17 +125,34 @@ export function ScatterView({
   const { data, layout, labels, guides } = useMemo(() => {
     const p = PALETTES[mode]
 
-    const hover = tooltip(
-      {
-        title: '%{text}',
-        values: [
-          [scatter.xLabel, '%{x:.3f}'],
-          [scatter.yLabel, '%{y:.3f}']
-        ]
-      },
-      p.textMuted,
-      { template: true }
-    )
+    // Shown plain, each point's two values ride formatted in its hovertext (plainRows).
+    const hover = plainScale
+      ? `${tooltip({ title: '%{text}' }, p.textMuted)}<br>%{hovertext}<extra></extra>`
+      : tooltip(
+          {
+            title: '%{text}',
+            values: [
+              [scatter.xLabel, '%{x:.3f}'],
+              [scatter.yLabel, '%{y:.3f}']
+            ]
+          },
+          p.textMuted,
+          { template: true }
+        )
+    const hovertext = (pts: ScatterPoint[]) =>
+      plainScale
+        ? {
+            hovertext: pts.map((pt) =>
+              plainRows(
+                [
+                  [scatter.xLabel, pt.x],
+                  [scatter.yLabel, pt.y]
+                ],
+                plainScale
+              )
+            )
+          }
+        : null
     const trace = (pts: ScatterPoint[], g: ResolvedGroup) => ({
       type: 'scatter',
       mode: 'markers',
@@ -142,6 +165,7 @@ export function ScatterView({
       x: pts.map((pt) => pt.x),
       y: pts.map((pt) => pt.y),
       text: pts.map((pt) => pt.label),
+      ...hovertext(pts),
       customdata: pts.map((pt) => pt.uniqID),
       hovertemplate: hover,
       marker: {
@@ -376,11 +400,18 @@ export function ScatterView({
       // a value scatter "log₁₀ <level>".
       // Both axes share one range (spanning the origin for fold changes), so the square is
       // symmetric and the line of identity runs corner-to-corner.
-      xaxis: { ...axisBase(p), title: scatter.xLabel, zeroline: false, range: [lo, hi] },
+      xaxis: {
+        ...axisBase(p),
+        title: scatter.xLabel,
+        zeroline: false,
+        ...(plainScale ? plainTicks(plainScale, [lo, hi]) : null),
+        range: [lo, hi]
+      },
       yaxis: {
         ...axisBase(p),
         title: scatter.yLabel,
         zeroline: false,
+        ...(plainScale ? plainTicks(plainScale, [lo, hi]) : null),
         scaleanchor: 'x',
         range: [lo, hi]
       },
@@ -404,6 +435,7 @@ export function ScatterView({
           x: sel.map((pt) => pt.x),
           y: sel.map((pt) => pt.y),
           text: sel.map((pt) => pt.label),
+          ...hovertext(sel),
           customdata: sel.map((pt) => pt.uniqID),
           hovertemplate: hover,
           marker: {
@@ -439,7 +471,8 @@ export function ScatterView({
     cutText,
     gw,
     gDash,
-    gShow
+    gShow,
+    plainScale
   ])
 
   // A released guide → its cutoff: a band edge reports its solved confidence; an axis line, the

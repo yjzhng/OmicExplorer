@@ -27,6 +27,7 @@ import {
 import { UI } from '../ui/theme'
 import { ChoiceSwitch, PILL_CAP } from '../ui/ChoiceSwitch'
 import { facetBarLabel, facetChoice, isNumericFacet, pickFacet, resolveFacets } from './facet'
+import { PlotScopeContext } from '../ui/plotly/selectRegion'
 
 /** A result to facet without building all of its rows: the facets resolve over its context tuples
  *  (contextIndex.ts) and only the facet on show is built. The options narrow it as the readers of
@@ -106,11 +107,17 @@ export function FacetedPlot<T extends ContextRow>({
     [of, ix, scale, rows, groupCtx, dims.length]
   )
 
-  if (dims.length === 0) return <div style={styles.single}>{children(groupRows, '')}</div>
+  // The facet on show scopes the plot's box / lasso regions: a new pick clears them.
+  const scoped = (
+    <PlotScopeContext.Provider value={facetKey}>
+      {children(groupRows, dims.length === 0 ? '' : facetKey)}
+    </PlotScopeContext.Provider>
+  )
+  if (dims.length === 0) return <div style={styles.single}>{scoped}</div>
 
   // Shared/forced selection: a global control (or export) owns it, so just render the
   // resolved facet — no tabs here.
-  if (facetSel) return <div style={styles.single}>{children(groupRows, facetKey)}</div>
+  if (facetSel) return <div style={styles.single}>{scoped}</div>
 
   return (
     <div style={styles.root}>
@@ -138,7 +145,7 @@ export function FacetedPlot<T extends ContextRow>({
           )
         })}
       </div>
-      <div style={styles.body}>{children(groupRows, facetKey)}</div>
+      <div style={styles.body}>{scoped}</div>
     </div>
   )
 }

@@ -17,7 +17,16 @@ import { QcTile } from './QcTile'
 /** The qc result body (nodes/views.ts). Plain render function: it runs inside
  *  PanelBody, so it must not call hooks — derive what needs a hook in usePlotContext. */
 export function qcView(v: ViewContext): ReactNode {
-  const { upstream, cfgSource, patchConfig, condTitle, categoricalOf, quantityScale, numeric } = v
+  const {
+    upstream,
+    cfgSource,
+    patchConfig,
+    condTitle,
+    categoricalOf,
+    quantityScale,
+    plainScale,
+    numeric
+  } = v
   if (upstream?.kind !== 'standardize')
     return <Empty text="Connect a Clean data tile and run it." />
   const cfg = cfgSource as QcConfig
@@ -78,6 +87,7 @@ export function qcView(v: ViewContext): ReactNode {
             metric={metric}
             plot={plot}
             scale={quantityScale}
+            plainScale={plainScale}
             color={cfg.color}
             coloring={qcColoring(
               cfg,

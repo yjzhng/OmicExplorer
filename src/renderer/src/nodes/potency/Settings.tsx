@@ -34,16 +34,18 @@ export function PotencyPanel({
               ]}
             />
           </Field>
-          <CapRow
-            label="Label limit"
-            info="Name only the curves with the largest fold change."
-            field="labelTop"
-            value={config.labelTop}
-            enabled={config.capEnabled}
-            update={update}
-            rule={(n) => `Label the top ${n} curves by |fold change|.`}
-          />
         </>
+      }
+      ranking={
+        <CapRow
+          label="Label limit"
+          info="Name only the curves with the largest fold change."
+          field="labelTop"
+          value={config.labelTop}
+          enabled={config.capEnabled}
+          update={update}
+          rule={(n) => `Label the top ${n} curves by |fold change|.`}
+        />
       }
       marks={
         <PointStyleSections

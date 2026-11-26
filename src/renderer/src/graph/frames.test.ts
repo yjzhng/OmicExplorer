@@ -5,6 +5,7 @@ import {
   editMembers,
   frameHolds,
   frameDepths,
+  frameLayers,
   frameTiles,
   groupInto,
   outermostFrame,
@@ -111,5 +112,26 @@ describe('editing a group', () => {
     expect(editMembers([g1, g2], 'f1', ['a'], ['c'])).toEqual([g1, g2])
     const frames = [g1]
     expect(editMembers(frames, 'nope', ['c'], [])).toBe(frames)
+  })
+})
+
+describe('frameLayers', () => {
+  it('stacks each group, frame then tiles, a later group over an earlier, all under loose tiles', () => {
+    const frames = [
+      { id: 'f1', label: 'A', members: ['a', 'f2'] },
+      { id: 'f2', label: 'A2', members: ['b'] },
+      { id: 'f3', label: 'A_copy', members: ['c'] }
+    ]
+    const { frameZ, tileZ } = frameLayers(frames)
+    const z = (m: Map<string, number>, id: string): number => m.get(id)!
+    // within a group: frame < nested frame < its tiles
+    expect(z(frameZ, 'f1')).toBeLessThan(z(frameZ, 'f2'))
+    expect(z(frameZ, 'f2')).toBeLessThan(z(tileZ, 'a'))
+    expect(z(tileZ, 'a')).toBe(z(tileZ, 'b'))
+    // the later group's frame over the earlier group's tiles
+    expect(z(frameZ, 'f3')).toBeGreaterThan(z(tileZ, 'b'))
+    expect(z(tileZ, 'c')).toBeGreaterThan(z(frameZ, 'f3'))
+    // every group under an ungrouped tile (0)
+    expect(z(tileZ, 'c')).toBeLessThan(0)
   })
 })

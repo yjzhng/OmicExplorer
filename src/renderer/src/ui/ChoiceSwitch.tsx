@@ -125,10 +125,15 @@ function FitChoice<V extends string>(props: {
       item = line
       line = line.parentElement
     }
-    // the box that bounds what the tile shows
+    // the box that bounds what the tile shows — or, nearer, a moved one (a transform: the results
+    // page sliding in): measured against a box outside it, the switch would read as off to the
+    // side, and as nothing resizes when the slide ends, it would stay the dropdown
     let port = line?.parentElement ?? null
-    while (port && !/auto|scroll|hidden|clip/.test(getComputedStyle(port).overflowX))
+    while (port) {
+      const cs = getComputedStyle(port)
+      if (/auto|scroll|hidden|clip/.test(cs.overflowX) || cs.transform !== 'none') break
       port = port.parentElement
+    }
     if (!line || !port) return
     const check = (): void => {
       const lcs = getComputedStyle(line)

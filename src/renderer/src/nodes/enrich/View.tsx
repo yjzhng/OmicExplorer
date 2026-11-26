@@ -1,15 +1,17 @@
 import type { ReactNode } from 'react'
 import { FacetedPlot } from '../../dashboard/FacetedPlot'
-import { SwitchBar } from '../../dashboard/SwitchBar'
+import { SwitchBar, SwitchBarToggle } from '../../dashboard/SwitchBar'
 import {
   comparisonOf,
+  type EnrichData,
   ENRICH_SOURCE_LABEL,
   type EnrichSource,
   enrichSourcesPresent,
   fcMeasure,
   isInteractionRow,
   isSlopeRow,
-  resolveEnrichSource
+  resolveEnrichSource,
+  termModules
 } from '../../engine'
 import { quickOn } from '../../graph/registry'
 import { factsOf, unmetRequirement } from '../../graph/requirements'
@@ -21,6 +23,20 @@ import { EnrichView } from './EnrichView'
 import { groupOrderOf } from './groupOrder'
 
 export const NO_CATS: Record<string, string> = {}
+
+/** With modules on, each term's gene module (engine/enrichModules), over every term computed — so
+ *  a module is the same whatever the plot draws of it. */
+function moduleView(all: EnrichData, modules: boolean): ReadonlyMap<string, string> | undefined {
+  if (!modules) return undefined
+  return termModules(
+    [...all.up, ...all.down].map((t) => ({
+      term: t.term,
+      genes: t.geneIds ?? t.genes,
+      pAdjust: t.pAdjust
+    }))
+  ).of
+}
+
 /** The enrich result body (nodes/views.ts). Plain render function: it runs inside
  *  PanelBody, so it must not call hooks — derive what needs a hook in usePlotContext. */
 export function enrichView(v: ViewContext): ReactNode {
@@ -52,6 +68,8 @@ export function enrichView(v: ViewContext): ReactNode {
   const saved = cfg.source ?? 'go'
   const source = resolveEnrichSource(saved, sources) ?? saved
   const unmet = unmetRequirement('enrich', { ...cfg, source }, factsOf(upstream))
+  const modules = !!cfg.modules
+  const show = cfg.show ?? 'all'
   const withBar = (body: ReactNode): ReactNode => (
     <div style={styles.chart}>
       <div style={styles.stack}>
@@ -84,6 +102,13 @@ export function enrichView(v: ViewContext): ReactNode {
               onChange={(v) => patchConfig({ style: v })}
             />
           )}
+          {quickOn(cfg, 'modules') && (
+            <SwitchBarToggle
+              label="modules"
+              on={modules}
+              onChange={(on) => patchConfig({ modules: on })}
+            />
+          )}
         </div>
         <div style={styles.stackBody}>{body}</div>
       </div>
@@ -100,13 +125,14 @@ export function enrichView(v: ViewContext): ReactNode {
         if (!all) return <Empty text="No enrichment for these terms here — re-run the plot." />
         const top = cfg.topTerms > 0 ? cfg.topTerms : 15
         return (
-          <Built
-            build={() => ({ ...all, up: all.up.slice(0, top), down: all.down.slice(0, top) })}
-            deps={[all, top]}
-          >
-            {(enrich) => (
+          <Built build={() => ({ moduleOf: moduleView(all, modules) })} deps={[all, modules]}>
+            {({ moduleOf }) => (
               <EnrichView
-                enrich={enrich}
+                // every term computed: the plot draws the top ones — or, with categories or modules
+                // chosen in its legend, theirs
+                enrich={all}
+                top={top}
+                onePerModule={modules && show === 'one'}
                 style={style}
                 measure={fcMeasure(
                   upCompareCfg && normalizeCompareConfig(upCompareCfg).analysis,
@@ -118,7 +144,9 @@ export function enrichView(v: ViewContext): ReactNode {
                 comparison={comparisonOf(facetRows)}
                 effectColors={effectsOf(cfg, cfg.effectColors)}
                 groupOrder={groupOrderOf(source as EnrichSource, ann, cats)}
+                modules={moduleOf}
                 categorical={categoricalOf(cfg)}
+                moduleCategorical={categoricalOf({ categorical: cfg.moduleCategorical })}
                 termOrder={cfg.termOrder}
               />
             )}

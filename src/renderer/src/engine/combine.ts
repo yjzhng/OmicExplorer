@@ -133,6 +133,7 @@ export function combineStandardize(stds: StandardizeResult[], names?: string[]):
     compounds,
     cleanup,
     ...(stds[0]?.scale ? { scale: stds[0].scale } : {}),
+    ...(stds[0]?.logDisplay ? { logDisplay: stds[0].logDisplay } : {}),
     ...(stds[0]?.inputScale ? { inputScale: stds[0].inputScale } : {}),
     ...(names ? { sources } : {})
   }

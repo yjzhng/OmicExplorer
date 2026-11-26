@@ -161,7 +161,7 @@ export function Settings({ config, ...props }: PlotSettingsProps): ReactNode {
   return (
     <PlotSections
       general={<StringPanel config={config as StringConfig} {...props} />}
-      genes={<StringGenes config={config as StringConfig} {...props} />}
+      ranking={<StringGenes config={config as StringConfig} {...props} />}
       colours={<ColourRows config={config as StringConfig} {...props} />}
       marks={<StringNodes config={config as StringConfig} {...props} />}
     />

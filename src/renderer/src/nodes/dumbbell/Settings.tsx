@@ -32,7 +32,7 @@ export function Settings({ config, ...props }: PlotSettingsProps): ReactNode {
   return (
     <PlotSections
       general={<DumbbellPanel config={c} {...props} />}
-      genes={
+      ranking={
         <CapRow
           label="Max genes"
           info="Show only the most divergent significant genes."
@@ -40,6 +40,7 @@ export function Settings({ config, ...props }: PlotSettingsProps): ReactNode {
           value={c.topGenes}
           enabled={c.capEnabled}
           update={props.update}
+          split={c}
           rule={(n) => `Keep the top ${n} significant genes by |FC difference|.`}
           step={10}
         />

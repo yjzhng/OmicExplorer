@@ -1185,8 +1185,8 @@ export function GeneSelectMenu({ tabs }: { tabs: GeneGroupTab[] }): ReactNode {
                 ...styles.triggerNudge,
                 // the trigger's editing / open tint (accent at 22), deepened: that faint a tint
                 // passing in a moment went unseen
-                '--oe-cue-bg': `${p.accent}59`,
-                animation: `oe-cue ${NOTICE_MS.cue}ms ${EASE.move} forwards`
+                background: `${p.accent}59`,
+                animation: `oe-cue ${NOTICE_MS.cue}ms ${EASE.move} both`
               } as CSSProperties
             }
           />
@@ -1762,7 +1762,14 @@ const styles: Record<string, CSSProperties> = {
     position: 'relative'
   },
   // the nudge: the pill's own shape, laid over it (inside its border)
-  triggerNudge: { position: 'absolute', inset: 0, borderRadius: 999, pointerEvents: 'none' },
+  // (at rest unseen; the nudge fades it in — app.css oe-cue)
+  triggerNudge: {
+    position: 'absolute',
+    inset: 0,
+    borderRadius: 999,
+    pointerEvents: 'none',
+    opacity: 0
+  },
   menu: GENE_LIST_STYLES.menu,
   searchWrap: GENE_LIST_STYLES.searchWrap,
   searchIcon: GENE_LIST_STYLES.searchIcon,

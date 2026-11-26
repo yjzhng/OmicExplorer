@@ -6,11 +6,13 @@ import {
   metaValue,
   type ConditionKey,
   type HeatmapData,
-  type NumericConds
+  type NumericConds,
+  type ValueScale
 } from '../../engine'
 import { ROLE_DEFAULTS, paletteScale, type PaletteRef } from '../../ui/palettes'
 import { condTooltip, geneLine, valueLine } from '../../ui/condTooltip'
 import { PlotlyChart } from '../../ui/PlotlyChart'
+import { fmtQuantity, plainTicks, rangeOf } from '../../ui/quantityAxis'
 import { truncatedTicks } from '../../ui/plotAxes'
 import { bindHeatmapFocus, GENE_TICK_PX, LINK_DELAY } from '../../ui/heatmapFocus'
 import { sampleKey } from '../../ui/sampleLink'
@@ -198,9 +200,12 @@ export function HeatmapView({
   valueLabel = 'log abundance',
   condBar = true,
   palette = ROLE_DEFAULTS.data,
-  numeric
+  numeric,
+  plainScale
 }: {
   heatmap: HeatmapData
+  /** the values shown plain on a log colour scale (ui/quantityAxis): the logged scale `z` is on */
+  plainScale?: ValueScale
   /** the dataset's numeric conditions (numericOf its Clean data): their tracks are ordered */
   numeric: NumericConds
   title?: string
@@ -261,8 +266,17 @@ export function HeatmapView({
         colorscale: paletteScale(palette),
         colorbar: {
           title: { text: valueLabel, side: 'right' },
-          thickness: 12
+          thickness: 12,
+          ...(plainScale ? plainTicks(plainScale, rangeOf(heatmap.z.flat())) : null)
         },
+        // shown plain: each cell's value, formatted (Plotly can't exponentiate in a template)
+        ...(plainScale
+          ? {
+              hovertext: (landscape ? transpose(heatmap.z) : heatmap.z).map((row) =>
+                row.map((v) => (v == null ? '' : fmtQuantity(v, plainScale, true)))
+              )
+            }
+          : null),
         // The gene, the sample's identity, the value — as every Clean data plot's tooltip. One
         // shared identity row per gene (portrait) costs nothing; landscape needs a row per sample.
         text: landscape ? idents.map((id) => heatmap.y.map(() => id)) : heatmap.y.map(() => idents),
@@ -270,12 +284,23 @@ export function HeatmapView({
         customdata: landscape
           ? heatmap.x.map(() => heatmap.geneIds)
           : heatmap.geneIds.map((id) => heatmap.x.map(() => id)),
-        hovertemplate: `${geneLine(landscape ? '%{x}' : '%{y}')}<br>%{text}<br>${valueLine(valueKey, `%{z:.${zDigits}}`)}<extra></extra>`
+        hovertemplate: `${geneLine(landscape ? '%{x}' : '%{y}')}<br>%{text}<br>${valueLine(valueKey, plainScale ? '%{hovertext}' : `%{z:.${zDigits}}`)}<extra></extra>`
       }
     ]
     if (tracks) traces.push(tracks.trace)
     return { traces, tracks }
-  }, [heatmap, orient, mode, valueLabel, condBar, palette, dosePalette, timePalette, numeric])
+  }, [
+    heatmap,
+    orient,
+    mode,
+    valueLabel,
+    condBar,
+    palette,
+    dosePalette,
+    timePalette,
+    numeric,
+    plainScale
+  ])
 
   const layout = useMemo(() => {
     const p = PALETTES[mode]

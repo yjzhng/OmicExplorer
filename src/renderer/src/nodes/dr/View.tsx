@@ -28,7 +28,9 @@ import {
   type DRConfig,
   drLook,
   drYScale,
-  geneCapOn
+  geneCapOn,
+  topCountOf,
+  topSplitOf
 } from '../../graph/types'
 import { Built, Empty } from '../kit/views/common'
 import { type ViewContext } from '../kit/views/context'
@@ -74,6 +76,7 @@ export function drView(v: ViewContext): ReactNode {
     results,
     quantityScale,
     quantityUnit,
+    plainScale,
     contrastSource,
     repStd,
     paletteOf,
@@ -189,7 +192,9 @@ export function drView(v: ViewContext): ReactNode {
     // FC1/FC2 are abundance when the contrast is fed by Clean data inputs (on the plots'
     // abundance scale — see contrastRows), log2 fold-change when fed by Compare inputs.
     const yLabel =
-      upstream.ctr.valueKind === 'quantity' ? quantityLabel(quantityScale, quantityUnit) : 'log₂FC'
+      upstream.ctr.valueKind === 'quantity'
+        ? quantityLabel(quantityScale, quantityUnit, !!plainScale)
+        : 'log₂FC'
     return (
       <div style={styles.chart}>
         <div style={styles.stack}>
@@ -245,6 +250,12 @@ export function drView(v: ViewContext): ReactNode {
                       }
                       look={drLook(cfg)}
                       categorical={categoricalOf(cfg)}
+                      // an abundance contrast's own values (not another feature) shown plain
+                      plainScale={
+                        upstream.ctr.valueKind === 'quantity' && !contrastFeatureLabel(rows)
+                          ? plainScale
+                          : undefined
+                      }
                     />
                   )}
                 </FacetedPlot>
@@ -286,7 +297,13 @@ export function drView(v: ViewContext): ReactNode {
       />
     ) : null
   // How many genes the detailed view draws: the top-N, at most DR_DETAIL_CAP.
-  const detailN = Math.min(geneCapOn(cfg) ? cfg.topGenes : DR_DETAIL_CAP, DR_DETAIL_CAP)
+  const detailN = Math.min(
+    geneCapOn(cfg) ? topCountOf(cfg, cfg.topGenes) : DR_DETAIL_CAP,
+    DR_DETAIL_CAP
+  )
+  // how the top-N splits between up and down, and its key for the builds' deps
+  const split = topSplitOf(cfg)
+  const splitKey = `${split.by}:${split.up ?? ''}:${split.down ?? ''}`
   // The axis scale of the gene-by-gene views (detailed, focused).
   const scaleSwitch = (): ReactNode =>
     quickOn(cfg, 'yScale') ? (
@@ -388,11 +405,12 @@ export function drView(v: ViewContext): ReactNode {
                       axis,
                       model,
                       topGenes: detailN,
+                      split,
                       displayMap: dm,
                       within: genes
                     })
                   }
-                  deps={[rows, axis, model, detailN, dm, genes]}
+                  deps={[rows, axis, model, detailN, splitKey, dm, genes]}
                 >
                   {(dr) => {
                     const shown = dr.series.slice(0, dr.highlight).map((sr) => sr.uniqID)
@@ -432,12 +450,21 @@ export function drView(v: ViewContext): ReactNode {
                     buildDR(rows, {
                       axis,
                       model,
-                      topGenes: geneCapOn(cfg) ? cfg.topGenes : 0,
+                      topGenes: geneCapOn(cfg) ? topCountOf(cfg, cfg.topGenes) : 0,
+                      split,
                       displayMap: dm,
                       focus: genes
                     })
                   }
-                  deps={[rows, axis, model, geneCapOn(cfg) ? cfg.topGenes : 0, dm, genes]}
+                  deps={[
+                    rows,
+                    axis,
+                    model,
+                    geneCapOn(cfg) ? topCountOf(cfg, cfg.topGenes) : 0,
+                    splitKey,
+                    dm,
+                    genes
+                  ]}
                 >
                   {(dr) => (
                     <DRView

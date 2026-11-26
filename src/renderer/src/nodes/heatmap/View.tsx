@@ -11,6 +11,7 @@ import {
   type HeatmapConfig,
   SAMPLE_ORDERS,
   heatmapCapOn,
+  topCountOf,
   heatmapCondBar,
   primaryColorLevels,
   sampleOrderOf
@@ -37,6 +38,7 @@ export function heatmapView(v: ViewContext): ReactNode {
     focus,
     paletteOf,
     quantityScale,
+    plainScale,
     numeric
   } = v
   const cfg = cfgSource as HeatmapConfig
@@ -143,7 +145,10 @@ export function heatmapView(v: ViewContext): ReactNode {
               rows={heatRows}
               unsigned={fcRows === 'factors'}
               displayMap={upstream.displayMap}
-              maxGenes={heatmapCapOn(cfg) ? cfg.maxGenes : 0}
+              maxGenes={heatmapCapOn(cfg) ? topCountOf(cfg, cfg.maxGenes) : 0}
+              topSplit={cfg.topSplit}
+              topUp={cfg.topUp}
+              topDown={cfg.topDown}
               focus={focus}
               // Remount on a flip: it swaps which screen axis carries which data, and Plotly's
               // key-by-key react diff can leave the previous orientation's own keys behind (a
@@ -206,6 +211,7 @@ export function heatmapView(v: ViewContext): ReactNode {
             condBar={condBar}
             palette={paletteOf(cfg, 'data', 'valuePalette')}
             sampleOrder={sampleOrderOf(cfg)}
+            plainScale={plainScale}
           />
         </div>
       </div>

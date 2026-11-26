@@ -7,6 +7,7 @@
  */
 import Papa from 'papaparse'
 
+import { applyCleanup, cleanupRuleFromInput, type CleanupRule } from './cleanup'
 import type { SampleConds, StandardizeInput, StandardizeResult, StandardRow } from './types'
 import {
   condsIn,
@@ -432,57 +433,20 @@ function arrivedValues(
 /**
  * Full standardization pipeline. Produces the tidy long table and a display map.
  */
-/** Clean-up: drop genes identified (a non-null value) in fewer than `minSamplePct` of the samples.
- *  Pooled (`grouped` off), coverage is over every sample. Grouped, it's measured WITHIN each group
- *  (`sampleGroup`: sample → its group) and a gene goes only when it falls short in EVERY group —
- *  one clearing the bar in any group is kept whole, values in the other groups included (absent
- *  there may just be below the detection limit, a real difference, not a bad identification).
- *  `presence`: gene → the samples it has a value in. */
-function dropLowCoverage(
-  rows: StandardRow[],
-  presence: Map<string, Set<string>>,
-  sampleGroup: Map<string, string>,
-  sampleCount: number,
-  minSamplePct: number,
-  grouped: boolean
-): { rows: StandardRow[]; droppedGenes: number } {
-  if (!(minSamplePct > 0) || sampleCount === 0) return { rows, droppedGenes: 0 }
-  const dropped = new Set<string>()
-  if (grouped) {
-    // Distinct samples per group (the denominators), and per-(gene, group) hit counts.
-    const groupTotal = new Map<string, number>()
-    for (const g of sampleGroup.values()) groupTotal.set(g, (groupTotal.get(g) ?? 0) + 1)
-    const hitsByGene = new Map<string, Map<string, number>>()
-    for (const [uniqID, samples] of presence) {
-      const perGroupHits = new Map<string, number>()
-      for (const s of samples) {
-        const g = sampleGroup.get(s) ?? ''
-        perGroupHits.set(g, (perGroupHits.get(g) ?? 0) + 1)
-      }
-      hitsByGene.set(uniqID, perGroupHits)
-    }
-    // A (gene, group) clears when its coverage within that group reaches the threshold.
-    const clears = (uniqID: string, g: string): boolean => {
-      const total = groupTotal.get(g) ?? 0
-      const hits = hitsByGene.get(uniqID)?.get(g) ?? 0
-      return total > 0 && (hits / total) * 100 >= minSamplePct
-    }
-    // Kept iff it clears in at least one group; a gene with no value anywhere isn't in
-    // `presence` and so is dropped.
-    const groups = [...groupTotal.keys()]
-    const geneIds = new Set(rows.map((r) => r.uniqID))
-    for (const uniqID of geneIds) {
-      if (!groups.some((g) => clears(uniqID, g))) dropped.add(uniqID)
-    }
-  } else {
-    for (const [uniqID, samples] of presence) {
-      if ((samples.size / sampleCount) * 100 < minSamplePct) dropped.add(uniqID)
-    }
-    // A uniqID with no non-null value anywhere never enters `presence`; treat it as 0%.
-    for (const r of rows) if (!presence.has(r.uniqID)) dropped.add(r.uniqID)
+/** The result's clean-up summary: the rule as applied (its groups those the data carries), what it
+ *  removed, and — for older readers — its percentage (0 when it's a count) and groups. */
+function cleanupSummary(
+  rule: CleanupRule | undefined,
+  by: ConditionKey[],
+  kept: { droppedGenes: number; removedValues: number }
+): Omit<StandardizeResult['cleanup'], 'sampleCount'> {
+  return {
+    droppedGenes: kept.droppedGenes,
+    minSamplePct: rule?.threshold.unit === 'pct' ? rule.threshold.value : 0,
+    ...(by.length ? { by } : {}),
+    ...(rule ? { rule: { ...rule, by } } : {}),
+    ...(kept.removedValues ? { removedValues: kept.removedValues } : {})
   }
-  if (dropped.size === 0) return { rows, droppedGenes: 0 }
-  return { rows: rows.filter((r) => !dropped.has(r.uniqID)), droppedGenes: dropped.size }
 }
 
 /** A reference protein a sample didn't measure leaves nothing to divide that sample by: Clean data
@@ -672,10 +636,11 @@ export function standardize(input: StandardizeInput): StandardizeResult {
   // Used by the optional low-coverage clean-up below.
   const presence = new Map<string, Set<string>>()
   const allSamples = new Set<string>()
-  // sample → its clean-up group (the tuple of the `minSamplePctBy` conditions), so within-group
+  // sample → its clean-up group (the tuple of the rule's `by` conditions), so within-group
   // coverage can be computed from `presence` in the clean-up below. '' when pooling everything.
   const knownConds = new Set<ConditionKey>([...VALID_CONDITIONS, ...customConds.map(customCond)])
-  const groupBy = (input.minSamplePctBy ?? []).filter((c) => knownConds.has(c))
+  const rule = cleanupRuleFromInput(input)
+  const groupBy = (rule?.check === 'group' ? rule.by : []).filter((c) => knownConds.has(c))
   const groupOf = (m: Merged): string =>
     groupBy
       .map((c) =>
@@ -735,11 +700,14 @@ export function standardize(input: StandardizeInput): StandardizeResult {
   // values in the other groups included: absent there may just mean below the detection limit
   // (a real biological difference), not a bad identification.
   const sampleCount = allSamples.size
-  const minSamplePct = Math.min(100, Math.max(0, input.minSamplePct ?? 0))
-  const grouped = groupBy.length > 0
-  const kept = dropLowCoverage(rows, presence, sampleGroup, sampleCount, minSamplePct, grouped)
+  const kept = applyCleanup(
+    rows,
+    presence,
+    sampleGroup,
+    (r) => groupBy.map((c) => String(condValue(r, c) ?? '')).join('¦'),
+    rule && { ...rule, by: groupBy }
+  )
   rows = kept.rows
-  const droppedGenes = kept.droppedGenes
 
   // ── normalisation: median-centre the samples (and their spread), on the kept genes ──
   // Before imputation, which draws each gap from its sample's distribution — so that draws from
@@ -813,11 +781,15 @@ export function standardize(input: StandardizeInput): StandardizeResult {
     activeConditions,
     ...(numericConditions.length ? { numericConditions } : {}),
     compounds,
-    cleanup: { droppedGenes, sampleCount, minSamplePct, ...(grouped ? { by: groupBy } : {}) },
+    cleanup: {
+      ...cleanupSummary(rule, groupBy, kept),
+      sampleCount
+    },
     ...(normalization ? { normalization } : {}),
     ...(batch ? { batches: batch.of, batchCorrection } : {}),
     ...(imputation ? { imputation } : {}),
     scale: outputScale(input.logTransform, inputScale),
+    ...(input.logDisplay ? { logDisplay: input.logDisplay } : {}),
     inputScale,
     scaleEvidence,
     inputHistogram
@@ -828,7 +800,14 @@ export function standardize(input: StandardizeInput): StandardizeResult {
  *  normalisation, imputation and presented scale. */
 export type RecleanInput = Pick<
   StandardizeInput,
-  'minSamplePct' | 'minSamplePctBy' | 'normalize' | 'batch' | 'impute' | 'logTransform'
+  | 'minSamplePct'
+  | 'minSamplePctBy'
+  | 'cleanupRule'
+  | 'normalize'
+  | 'batch'
+  | 'impute'
+  | 'logTransform'
+  | 'logDisplay'
 > & { std: StandardizeResult }
 
 /**
@@ -842,9 +821,12 @@ export function recleanStandardized(input: RecleanInput): StandardizeResult {
   const prev = input.std
   const fed = prev.scale ?? prev.inputScale ?? 'linear'
   let rows = prev.rows
-  // Per-gene presence, and each sample's clean-up group (the tuple of the `minSamplePctBy`
+  // Per-gene presence, and each sample's clean-up group (the tuple of the rule's `by`
   // conditions; '' pooled), as standardize builds them from the import.
-  const groupBy = (input.minSamplePctBy ?? []).filter((c) => prev.activeConditions.includes(c))
+  const rule = cleanupRuleFromInput(input)
+  const groupBy = (rule?.check === 'group' ? rule.by : []).filter((c) =>
+    prev.activeConditions.includes(c)
+  )
   const presence = new Map<string, Set<string>>()
   const sampleGroup = new Map<string, string>()
   for (const r of rows) {
@@ -858,9 +840,13 @@ export function recleanStandardized(input: RecleanInput): StandardizeResult {
     }
   }
   const sampleCount = sampleGroup.size
-  const minSamplePct = Math.min(100, Math.max(0, input.minSamplePct ?? 0))
-  const grouped = groupBy.length > 0
-  const kept = dropLowCoverage(rows, presence, sampleGroup, sampleCount, minSamplePct, grouped)
+  const kept = applyCleanup(
+    rows,
+    presence,
+    sampleGroup,
+    (r) => groupBy.map((c) => String(condValue(r, c) ?? '')).join('¦'),
+    rule && { ...rule, by: groupBy }
+  )
   rows = kept.rows
 
   let normalization: StandardizeResult['normalization']
@@ -904,10 +890,8 @@ export function recleanStandardized(input: RecleanInput): StandardizeResult {
     displayMap: only(prev.displayMap),
     annotationMap: only(prev.annotationMap),
     cleanup: {
-      droppedGenes: kept.droppedGenes,
-      sampleCount,
-      minSamplePct,
-      ...(grouped ? { by: groupBy } : {})
+      ...cleanupSummary(rule, groupBy, kept),
+      sampleCount
     },
     ...(normalization ? { normalization } : {}),
     ...(batch
@@ -926,6 +910,7 @@ export function recleanStandardized(input: RecleanInput): StandardizeResult {
     // It arrives on the scale the step above presents it on: logged there, it's logged here
     // without being asked again ('none' keeps it so); a log choice here re-presents it.
     inputScale: fed,
-    scale: outputScale(input.logTransform, fed)
+    scale: outputScale(input.logTransform, fed),
+    ...(input.logDisplay ? { logDisplay: input.logDisplay } : {})
   }
 }

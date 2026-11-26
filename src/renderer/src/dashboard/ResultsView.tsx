@@ -27,7 +27,7 @@ import { useGraph } from '../graph/store'
 import { isStep, type NodeResult, type PlotGroupConfig, type StepNode } from '../graph/types'
 import type { PanelLayoutItem } from '../graph/types'
 import { Chevron } from '../ui/Chevron'
-import { EASE, MOTION_MS, NOTICE_MS, UI } from '../ui/theme'
+import { EASE, NOTICE_MS, UI } from '../ui/theme'
 import { useUiTheme } from '../ui/useUiTheme'
 import { useAppSettings } from '../ui/useAppSettings'
 import { useAppView } from '../ui/useAppView'
@@ -567,7 +567,7 @@ function GroupPane({
  *  or clears; and the scroll moves only the tab row — `scrollIntoView` also scrolls every ancestor,
  *  the sliding page among them, and shook it mid-slide. */
 function TabChipCue({ id }: { id: string }): ReactNode {
-  const key = useAppView((s) => (s.tabCue?.id === id ? s.tabCue.key : null))
+  const key = useAppView((s) => (s.tabCue?.id === id && !s.paging ? s.tabCue.key : null))
   const mode = useUiTheme((s) => s.mode)
   const ref = useRef<HTMLSpanElement>(null)
   useLayoutEffect(() => {
@@ -591,8 +591,8 @@ function TabChipCue({ id }: { id: string }): ReactNode {
           ...styles.tabCue,
           // toward white: more on the dark theme's light-grey chip, less on the light theme's dark
           // one, whose white text must stay readable
-          '--oe-cue-bg': `rgba(255, 255, 255, ${mode === 'dark' ? 0.75 : 0.3})`,
-          animation: `oe-cue ${NOTICE_MS.cue}ms ${EASE.move} ${MOTION_MS.page}ms forwards`
+          background: `rgba(255, 255, 255, ${mode === 'dark' ? 0.75 : 0.3})`,
+          animation: `oe-cue ${NOTICE_MS.cue}ms ${EASE.move} both`
         } as CSSProperties
       }
     />
@@ -722,7 +722,9 @@ const styles: Record<string, CSSProperties> = {
     inset: -1,
     borderRadius: 'inherit',
     pointerEvents: 'none',
-    zIndex: -1
+    zIndex: -1,
+    // at rest unseen; the cue fades it in (app.css oe-cue)
+    opacity: 0
   },
   // The whole `border`, not just its colour: React clears a longhand (borderColor) set over the
   // shorthand when the style drops it, which left the last active tab with a dark outline.

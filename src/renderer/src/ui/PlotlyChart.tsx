@@ -61,6 +61,7 @@ import {
 import { type GuideDrag } from './plotly/guides'
 import { bindGuides, type GuideState } from './plotly/guideDrag'
 import { bindPointer } from './plotly/pointer'
+import { bindSelectRegions, PlotScopeContext, type Regions } from './plotly/selectRegion'
 import { bindHoverParking } from './plotly/hoverTip'
 import {
   type Trace,
@@ -110,7 +111,8 @@ interface PlotlyChartProps {
     tickLabel: (index: number, active: boolean, anyActive: boolean) => string
     /** which axis carries the gene ticks (default 'y'; the bubble puts genes on 'x' in landscape). */
     axis?: 'x' | 'y'
-    categoryByTick?: (string | undefined)[]
+    /** tick i's legend entries (one, or several — an enrichment term's category and its module) */
+    categoryByTick?: (string | readonly string[] | undefined)[]
     /** one legend item's text for the same state, so the active category's entry stands out. */
     legendItemText?: (category: string, active: boolean, anyActive: boolean) => string
     /** the id a tick's LABEL stands for (an enrichment term's): hovering the label hovers it — the
@@ -131,6 +133,10 @@ interface PlotlyChartProps {
    *  stands for: a click pins (or unpins) them all, so the selection reaches every plot (an empty
    *  list pins nothing). Unset, or null for an id, = the id itself is pinned. */
   pinIdsOf?: (id: string) => string[] | null | undefined
+  /** For an own id that stands for a group of this chart's OWN marks (an enrichment term module —
+   *  its terms), those marks' ids: hovering it focuses them all, as hovering one of them does (the
+   *  rest fade, their labels bold). Its genes, for a click, are pinIdsOf's. */
+  memberIdsOf?: (id: string) => readonly string[] | null | undefined
   /** show Plotly's control bar (zoom/pan/download) on hover — default on; off where it would cover
    *  the view's own controls (the enrichment plot's category chips) */
   modeBar?: boolean
@@ -180,6 +186,44 @@ function strictCategoryAxes(layout: Record<string, unknown>): Record<string, unk
   return out
 }
 
+/**
+ * Point Plotly's reset (the mode bar's Reset axes, a double-click) at the range this draw asked
+ * for. Plotly keeps the range of a plot's FIRST draw as its reset target and never re-reads it, so
+ * once a view's pinned range moved — another comparison, a threshold, the tile's own axis range —
+ * reset went back to a stale range instead. Each axis the layout pins resets to that range; one
+ * left to autorange, to autorange. (`_rangeInitial*` are Plotly 2.35 internals, kept
+ * across draws with its other private axis keys.)
+ */
+function syncResetRanges(el: HTMLElement, layout: Record<string, unknown>): void {
+  const full = (el as unknown as { _fullLayout?: Record<string, unknown> })._fullLayout
+  if (!full) return
+  for (const key of Object.keys(layout)) {
+    if (!/^[xy]axis\d*$/.test(key)) continue
+    const asked = layout[key] as { range?: unknown; autorange?: unknown } | undefined
+    const ax = full[key] as
+      | {
+          range?: unknown[]
+          _rangeInitial0?: unknown
+          _rangeInitial1?: unknown
+          _autorangeInitial?: unknown
+        }
+      | undefined
+    if (!ax) continue
+    // (an autorange other than plain on — 'reversed', 'min', … — resets to what it drew, as
+    // Plotly's own first-draw save does)
+    const auto =
+      asked?.autorange === true || (asked?.autorange === undefined && !Array.isArray(asked?.range))
+    if (!auto && Array.isArray(ax.range)) {
+      ax._rangeInitial0 = ax.range[0]
+      ax._rangeInitial1 = ax.range[1]
+    } else {
+      ax._rangeInitial0 = undefined
+      ax._rangeInitial1 = undefined
+      ax._autorangeInitial = true
+    }
+  }
+}
+
 /** Thin React wrapper over plotly.js-strict-dist-min (bundled locally — CSP-safe, no CDN). */
 export function PlotlyChart({
   data,
@@ -196,6 +240,7 @@ export function PlotlyChart({
   onGuide,
   onAnnotationClick,
   pinIdsOf,
+  memberIdsOf,
   modeBar = true,
   autoscale = true,
   linkDelay,
@@ -310,12 +355,19 @@ export function PlotlyChart({
   const annotationClickRef = useRef(onAnnotationClick)
   // A clicked point's genes (pinIdsOf), read by the once-bound click listeners.
   const pinIdsOfRef = useRef(pinIdsOf)
+  // A group id's own marks (memberIdsOf), read by the highlight.
+  const memberIdsOfRef = useRef(memberIdsOf)
   // The shared-hover delay (linkDelay), read by the once-bound hover listener.
   const linkDelayRef = useRef(linkDelay)
   // Bespoke imperative interaction (network neighbour highlight): kept in a ref so re-mounts see the
   // latest; `mountCleanup` runs the previous mount's teardown before re-mounting / on unmount.
   const onGraphMountRef = useRef(onGraphMount)
   const mountCleanupRef = useRef<((unmounting?: boolean) => void) | null>(null)
+  // The box / lasso regions (bindSelectRegions), once bound.
+  const regionsRef = useRef<Regions | null>(null)
+  // Another context tab picked: the regions drawn on the last one's points go (selectRegion.ts).
+  const plotScope = useContext(PlotScopeContext)
+  useEffect(() => regionsRef.current?.reset(), [plotScope])
   // Guide-drag config + callback, kept in refs so the once-bound drag handlers always see the latest
   // (the guide `value` baselines update every render as the threshold changes).
   const guidesRef = useRef(guides)
@@ -651,11 +703,16 @@ export function PlotlyChart({
         responsive: true,
         displaylogo: false,
         ...(modeBar ? null : { displayModeBar: false }),
-        ...(autoscale ? null : { doubleClick: 'reset', modeBarButtonsToRemove: ['autoScale2d'] })
+        // The bar keeps zoom, pan, box and lasso select and reset (each where Plotly offers it — no
+        // select tools without points to select): the app has its own copy / export, and Reset
+        // covers zoom in / out and autoscale.
+        modeBarButtonsToRemove: MODEBAR_REMOVE,
+        ...(autoscale ? null : { doubleClick: 'reset' })
       })
     )
       .then(() => {
         if (cancelled) return
+        syncResetRanges(el, drawn.layout)
         // A WebGL context Chromium wouldn't create (past its per-page cap, or no usable GPU):
         // Plotly draws its "WebGL is not supported" notice instead of the plot, and no context is
         // ever lost to tell us. SVG from now on, as for a dropped one (a 3-D scene has no SVG to
@@ -692,6 +749,11 @@ export function PlotlyChart({
             },
             guide
           )
+          // box / lasso selections, kept as regions you can move and resize (selectRegion.ts)
+          regionsRef.current = bindSelectRegions(el, {
+            pinIdsOf: () => pinIdsOfRef.current,
+            track
+          })
           // Re-place labels whenever the VIEW RANGE changes (zoom / pan / autorange reset), so a
           // zoomed-in view surfaces labels that were crowded out at full extent. Match only range keys
           // ('xaxis.range[0]', 'yaxis.autorange', …) — NOT our own cosmetic writes (yaxis.ticktext,
@@ -836,7 +898,11 @@ export function PlotlyChart({
     const apply = (): void => {
       const { hoverId, hoverMembers, pinnedIds } = useSelection.getState()
       const active = new Set(pinnedIds)
-      if (hoverId) active.add(hoverId)
+      if (hoverId) {
+        active.add(hoverId)
+        // a group of this chart's own marks (a term module) focuses each of them
+        for (const m of memberIdsOfRef.current?.(hoverId) ?? []) active.add(m)
+      }
       // A hovered group (an enrichment term, a STRING cluster — in this view or another) lights
       // its member genes here as a hovered gene is lit. The bold labels keep to the group itself,
       // so other terms sharing a gene don't bold with it.
@@ -901,7 +967,7 @@ export function PlotlyChart({
               const activeCats = new Set<string>()
               boldRow.forEach((b, i) => {
                 const c = bt.categoryByTick![i]
-                if (b && c) activeCats.add(c)
+                if (b && c) for (const k of typeof c === 'string' ? [c] : c) activeCats.add(k)
               })
               baseAnnotsRef.current.forEach((a, idx) => {
                 const cat = (a as Record<string, unknown>)?.__oeLegendCat
@@ -1070,6 +1136,9 @@ export function PlotlyChart({
     pinIdsOfRef.current = pinIdsOf
   }, [pinIdsOf])
   useEffect(() => {
+    memberIdsOfRef.current = memberIdsOf
+  }, [memberIdsOf])
+  useEffect(() => {
     linkDelayRef.current = linkDelay
   }, [linkDelay])
   // Keep the (once-bound) selection handler's view of the bold-tick config current.
@@ -1099,6 +1168,7 @@ export function PlotlyChart({
       legendCleanupRef.current()
       hoverParkCleanupRef.current()
       mountCleanupRef.current?.(true)
+      regionsRef.current?.unbind()
       if (el) {
         el.removeAllListeners?.('plotly_hover')
         el.removeAllListeners?.('plotly_unhover')
@@ -1147,6 +1217,20 @@ export function PlotlyChart({
     </div>
   )
 }
+
+/** The control bar's buttons left out (PlotlyChart's config): all but zoom, pan, box / lasso select
+ *  and reset. A 3-D scene keeps its own camera tools. */
+const MODEBAR_REMOVE = [
+  'zoomIn2d',
+  'zoomOut2d',
+  'autoScale2d',
+  'toImage',
+  'toggleSpikelines',
+  'hoverClosestCartesian',
+  'hoverCompareCartesian',
+  'hoverClosest3d',
+  'resetCameraLastSave3d'
+]
 
 /** The chart's margin where a view sets none. */
 const BASE_MARGIN = { l: 55, r: 20, t: 30, b: 45 }

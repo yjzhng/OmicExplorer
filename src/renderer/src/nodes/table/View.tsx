@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react'
-import { presentScaleOf, presentStd } from '../../engine'
+import { presentStd, tableScaleOf } from '../../engine'
 import {
   type CompareConfig,
   type TableConfig,
@@ -39,7 +39,7 @@ export function tableView(v: ViewContext): ReactNode {
   if (upstream.kind === 'standardize')
     return (
       <StdTable
-        std={presentStd(upstream.std, presentScaleOf(upstream.std))}
+        std={presentStd(upstream.std, tableScaleOf(upstream.std))}
         units={units}
         showKey={plotResultKey(node.id, child?.id)}
         view={view ?? 'matrix'}

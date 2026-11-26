@@ -2,13 +2,21 @@ import { useMemo } from 'react'
 
 import { useElementSize } from '../../dashboard/useElementSize'
 
-import { condLabel, metaValue, type ConditionKey, type QcData, type QcGroup } from '../../engine'
+import {
+  condLabel,
+  metaValue,
+  type ConditionKey,
+  type QcData,
+  type QcGroup,
+  type ValueScale
+} from '../../engine'
 import { condsOf } from '../../ui/clusterPlan'
 import { condTooltip } from '../../ui/condTooltip'
 import { bindSampleLink, sampleKey, sampleMeta } from '../../ui/sampleLink'
 import { groupMeta } from '../../ui/traceFocus'
 import { conditionColorer } from '../../ui/condColor'
 import { PlotlyChart } from '../../ui/PlotlyChart'
+import { fmtQuantity, plainTicks, rangeOf } from '../../ui/quantityAxis'
 import { sectionKey, SECTIONED_LEGEND } from '../../ui/legendSections'
 import { axisBase, PALETTES, PLOT_TEXT, plotBase, QC_FILL, withAlpha } from '../../ui/theme'
 import { useUiTheme } from '../../ui/useUiTheme'
@@ -50,8 +58,11 @@ export function QcPlotView({
   colorNum,
   fit = false,
   categorical,
-  condTitle = condLabel
+  condTitle = condLabel,
+  plainScale
 }: {
+  /** intensity shown plain on a log axis (ui/quantityAxis): the logged scale it's on */
+  plainScale?: ValueScale
   /** a condition's legend heading — with its unit for dose / time (default: its name) */
   condTitle?: (c: ConditionKey) => string
   data: QcData
@@ -85,6 +96,8 @@ export function QcPlotView({
 
   // the colour conditions as one tag (the legend groups' prefix) and a stable memo key
   const catTag = colorCats.join('×')
+  // Only intensity is an abundance (counts and CV % are their own numbers)
+  const plain = data.metric === 'intensity' ? plainScale : undefined
   const { data: traces, layout } = useMemo(() => {
     const p = PALETTES[mode]
     const labels = data.groups.map((g) => g.label)
@@ -164,7 +177,13 @@ export function QcPlotView({
           : { color: fills, opacity: 0.85, ...(dense ? { line: edge } : null) },
         ...(stacked
           ? { customdata: stackData, hovertemplate: stackTip }
-          : { hovertemplate: `%{text}<br>${data.yLabel} %{y:.3~g}<extra></extra>` })
+          : plain
+            ? {
+                // shown plain: each value rides formatted in its hovertext
+                hovertext: measured.map((v) => fmtQuantity(v, plain, true)),
+                hovertemplate: `%{text}<br>${data.yLabel} %{hovertext}<extra></extra>`
+              }
+            : { hovertemplate: `%{text}<br>${data.yLabel} %{y:.3~g}<extra></extra>` })
       }
       if (stacked)
         extra = [
@@ -248,10 +267,22 @@ export function QcPlotView({
           y: stats.map((st) => st.max - st.min),
           text: idents,
           textposition: 'none',
-          customdata: stats.map((st) => [st.med, st.q1, st.q3, st.n]),
+          // shown plain: the statistics as formatted values (Plotly can't exponentiate)
+          customdata: stats.map((st) =>
+            plain
+              ? [
+                  fmtQuantity(st.med, plain, true),
+                  fmtQuantity(st.q1, plain, true),
+                  fmtQuantity(st.q3, plain, true),
+                  st.n
+                ]
+              : [st.med, st.q1, st.q3, st.n]
+          ),
           marker: { color: 'rgba(0,0,0,0)' },
           meta: sampleMeta(linkKeys),
-          hovertemplate: `%{text}<br>median %{customdata[0]:.3~g}<br>quartiles %{customdata[1]:.3~g} – %{customdata[2]:.3~g}<br>n %{customdata[3]:,}<extra></extra>`
+          hovertemplate: plain
+            ? `%{text}<br>median %{customdata[0]}<br>quartiles %{customdata[1]} – %{customdata[2]}<br>n %{customdata[3]:,}<extra></extra>`
+            : `%{text}<br>median %{customdata[0]:.3~g}<br>quartiles %{customdata[1]:.3~g} – %{customdata[2]:.3~g}<br>n %{customdata[3]:,}<extra></extra>`
         }
       ]
     }
@@ -354,6 +385,7 @@ export function QcPlotView({
         ...axisBase(p),
         title: data.yLabel,
         automargin: true,
+        ...(plain ? plainTicks(plain, rangeOf(data.groups.flatMap((g) => g.values))) : null),
         // Counts/CV/log-intensity are all ≥0; let intensity (non-log) autoscale normally.
         ...(fitRange
           ? { range: fitRange }
@@ -363,7 +395,7 @@ export function QcPlotView({
       }
     }
     return { data: [trace, ...traces, ...extra, ...keys], layout: lay }
-  }, [data, plot, title, mode, color, catTag, colorNum, fit, categorical, condTitle, dense])
+  }, [data, plot, title, mode, color, catTag, colorNum, fit, categorical, condTitle, dense, plain])
 
   return (
     // Measured for the bars' density only; the chart fills it as before.

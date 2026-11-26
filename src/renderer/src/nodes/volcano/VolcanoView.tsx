@@ -154,7 +154,8 @@ export function VolcanoView({
         ...(eff === 'none' ? { __oeBin: true } : {}),
         x: pts.map((pt) => pt.x),
         y: pts.map((pt) => pt.y),
-        text: pts.map((pt) => pt.label),
+        // (an untested gene's tooltip says so: its 0 isn't a p-value)
+        text: pts.map((pt) => (pt.untested ? `${pt.label} (not tested)` : pt.label)),
         customdata: pts.map((pt) => pt.uniqID),
         hovertemplate: hover,
         marker: {

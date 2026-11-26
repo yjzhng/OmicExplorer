@@ -11,6 +11,9 @@ import {
   SAMPLE_ORDER_HINT,
   capOn,
   sampleOrderOf,
+  TOP_SIDE_DEFAULT,
+  topCountOf,
+  type TopSplitConfig,
   type NodeKind,
   type QuickAccess
 } from '../../../graph/types'
@@ -29,7 +32,7 @@ import { Section } from '../../../ui/Section'
 import { PREVIEW_DOT } from './layout'
 import { styles } from './styles'
 
-/** A top-N cap as one row of General (its label limit, its max genes): the switch, then — while
+/** A top-N cap as a row of Ranking (its label limit, its max genes): the switch, then — while
  *  on — the N box beside it; while off, nothing (no cap, so no N). What it does, and the rule for
  *  the N chosen, are the row's (i) tip. `field` is the config key holding N; the switch itself is
  *  the shared `capEnabled` key (see `capOn` for how older configs without it are read). */
@@ -43,7 +46,8 @@ export function CapRow({
   defaultValue = 20,
   step = 5,
   max,
-  rule
+  rule,
+  split
 }: {
   label: string
   /** what the cap does — the row's (i) tip, with the rule for the N chosen after it */
@@ -56,10 +60,28 @@ export function CapRow({
   step?: number
   max?: number
   rule: (n: number) => string
+  /** a top-N gene pick: also how it splits between up and down (this config's topSplit / topUp /
+   *  topDown) — a row of its own while the cap is on */
+  split?: TopSplitConfig
 }): ReactNode {
   const n = value ?? 0
   const on = capOn(enabled, n)
-  return (
+  const fixed = on && split?.topSplit === 'fixed'
+  const side = (key: 'topUp' | 'topDown', name: string): ReactNode => (
+    <>
+      <span style={styles.sideLabel}>{name}</span>
+      <div style={{ width: 64 }}>
+        <NumberInput
+          value={split?.[key] ?? TOP_SIDE_DEFAULT}
+          step={step}
+          min={0}
+          max={max}
+          onChange={(v) => update({ [key]: Math.min(max ?? Infinity, Math.max(0, Math.round(v))) })}
+        />
+      </div>
+    </>
+  )
+  const row = (
     <Field
       label={label}
       info={
@@ -67,7 +89,7 @@ export function CapRow({
           <>
             {info}
             {info != null && on ? ' ' : null}
-            {on ? rule(n) : null}
+            {on ? rule(split ? topCountOf(split, n) : n) : null}
           </>
         ) : undefined
       }
@@ -80,7 +102,13 @@ export function CapRow({
             update({ capEnabled: next, ...(next && !(n > 0) ? { [field]: defaultValue } : null) })
           }
         />
-        {on && (
+        {fixed && (
+          <>
+            {side('topUp', 'up')}
+            {side('topDown', 'down')}
+          </>
+        )}
+        {on && !fixed && (
           <div style={{ width: 90 }}>
             <NumberInput
               value={n}
@@ -95,6 +123,23 @@ export function CapRow({
         )}
       </div>
     </Field>
+  )
+  if (!split || !on) return row
+  return (
+    <>
+      {row}
+      <Field label="split by">
+        <Select
+          value={split.topSplit ?? 'proportional'}
+          options={[
+            { value: 'proportional', label: 'proportional' },
+            { value: 'size', label: 'absolute size' },
+            { value: 'fixed', label: 'defined on both sides' }
+          ]}
+          onChange={(v) => update({ topSplit: v })}
+        />
+      </Field>
+    </>
   )
 }
 // ── small controls ──────────────────────────────────────────────────────────────

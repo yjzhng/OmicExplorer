@@ -1,6 +1,6 @@
 import { useMemo } from 'react'
 
-import type { MAData, MAPoint, ThresholdConfig } from '../../engine'
+import type { MAData, MAPoint, ThresholdConfig, ValueScale } from '../../engine'
 import {
   DEFAULT_EFFECT_LABELS,
   type EffectColors,
@@ -9,6 +9,7 @@ import {
 } from '../../graph/types'
 import { useGraph } from '../../graph/store'
 import { tooltip } from '../../ui/condTooltip'
+import { fmtQuantity, plainTicks } from '../../ui/quantityAxis'
 import { PlotlyChart, type GuideDrag } from '../../ui/PlotlyChart'
 import { labelColorOf, legendOn, resolveGroups, resolveHighlight } from '../../ui/pointStyle'
 import {
@@ -39,9 +40,13 @@ export function MAView({
   effectLabels = DEFAULT_EFFECT_LABELS,
   effectColors,
   style,
-  labelTop = 0
+  labelTop = 0,
+  plainScale
 }: {
   ma: MAData
+  /** the mean-abundance axis shown as plain values on a log axis (ui/quantityAxis): the logged
+   *  scale its positions are on */
+  plainScale?: ValueScale
   /** label only the top-N genes by |log₂FC|; 0 offers every labelled gene and lets the placement
    *  layer keep what fits */
   labelTop?: number
@@ -101,7 +106,8 @@ export function MAView({
       {
         title: '%{text}',
         values: [
-          [ma.xLabel, '%{x:.2f}'],
+          // shown plain: each point's value, formatted, rides in its hovertext
+          [ma.xLabel, plainScale ? '%{hovertext}' : '%{x:.2f}'],
           [fcLabel, '%{y:.3f}']
         ]
       },
@@ -130,6 +136,9 @@ export function MAView({
         x: pts.map((pt) => pt.x),
         y: pts.map((pt) => pt.y),
         text: pts.map((pt) => pt.label),
+        ...(plainScale
+          ? { hovertext: pts.map((pt) => fmtQuantity(pt.x, plainScale, true)) }
+          : null),
         customdata: pts.map((pt) => pt.uniqID),
         hovertemplate: hover,
         marker: {
@@ -154,6 +163,9 @@ export function MAView({
         x: sel.map((pt) => pt.x),
         y: sel.map((pt) => pt.y),
         text: sel.map((pt) => pt.label),
+        ...(plainScale
+          ? { hovertext: sel.map((pt) => fmtQuantity(pt.x, plainScale, true)) }
+          : null),
         customdata: sel.map((pt) => pt.uniqID),
         hovertemplate: hover,
         // Same size as the cloud's dots: this trace exists for its (geneset) legend entry and to keep
@@ -207,6 +219,7 @@ export function MAView({
       xaxis: {
         ...axisBase(p),
         title: ma.xLabel,
+        ...(plainScale ? plainTicks(plainScale, [lo - xPad, hi + xPad]) : null),
         range: [lo - xPad, hi + xPad],
         autorange: false
       },
@@ -285,7 +298,8 @@ export function MAView({
     gw,
     gDash,
     gShow,
-    labelTop
+    labelTop,
+    plainScale
   ])
 
   // Symmetric: whichever line moved, set both cutoffs to ±|value| about 0. Asymmetric: one side.

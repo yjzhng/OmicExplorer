@@ -16,7 +16,6 @@ export type PresetConditionKey = 'cell' | 'cmpd' | 'dose' | 'time'
  *  name and the display label. */
 export type CustomConditionKey = `@${string}`
 export type ConditionKey = PresetConditionKey | CustomConditionKey
-
 /** The built-in conditions, in hierarchy order (identity-like before covariate-like). Custom
  *  conditions are NOT here — they're data-dependent; use `condsIn`/`orderConds` for the full set. */
 export const VALID_CONDITIONS: PresetConditionKey[] = ['cell', 'cmpd', 'dose', 'time']
@@ -149,14 +148,15 @@ export interface StandardizeInput {
   /** of those, the ones declared numeric (the import's cat/num chip): their values must be numbers,
    *  and the result lists them (StandardizeResult.numericConditions) */
   numericConditions?: string[]
-  /** clean-up: drop genes identified (non-null value) in fewer than this % of
-   *  samples. 0 / undefined = keep everything. */
+  /** clean-up shorthand (when no `cleanupRule`): drop genes identified (non-null value) in fewer
+   *  than this % of samples. 0 / undefined = keep everything. */
   minSamplePct?: number
-  /** conditions the % threshold is measured WITHIN: samples are grouped by the tuple of these
-   *  conditions and a gene is dropped only when its within-group coverage is below the threshold
-   *  in EVERY group (clearing it in any one group keeps the gene whole — absence elsewhere may just
-   *  be below the detection limit). Empty / undefined pools all samples. */
+  /** with `minSamplePct`: measured within the groups of these conditions, a gene kept when it
+   *  clears in at least one. Empty / undefined pools all samples. */
   minSamplePctBy?: ConditionKey[]
+  /** clean-up as its parts (cleanup.ts) — in place of `minSamplePct` / `minSamplePctBy`, the
+   *  older shorthand (a % overall, or a % kept in at least one group) */
+  cleanupRule?: import('./cleanup').CleanupRule
   /** median-normalise the samples after clean-up, before imputation (see normalize.ts);
    *  undefined = leave them as they arrived */
   normalize?: NormalizeOptions
@@ -170,6 +170,8 @@ export interface StandardizeInput {
   /** the log-transform to present the values on (see scale.ts); unset = the default for the
    *  detected input scale (log₁₀ for linear input, none for logged) */
   logTransform?: LogTransform
+  /** how the logged values are shown (see scale.ts LogDisplay); unset = the unit's default */
+  logDisplay?: import('./scale').LogDisplay
 }
 
 /** One sample as the samplesheet gave it: its conditions and replicate. */
@@ -211,6 +213,10 @@ export interface StandardizeResult {
     sampleCount: number
     minSamplePct: number
     by?: ConditionKey[]
+    /** the rule applied (absent = none) */
+    rule?: import('./cleanup').CleanupRule
+    /** remove 'group': the values removed from the groups their gene fell short in */
+    removedValues?: number
   }
   /** normalisation summary when it ran (absent = not normalised) */
   normalization?: NormalizeSummary
@@ -228,6 +234,8 @@ export interface StandardizeResult {
   /** The scale the values are PRESENTED on (the table, the written CSV) — `rows` themselves are
    *  always linear (see scale.ts). Absent on results from before scales existed = linear. */
   scale?: ValueScale
+  /** how logged values are shown (see scale.ts LogDisplay); absent = the default for the unit */
+  logDisplay?: import('./scale').LogDisplay
   /** the scale the input arrived on, as detected (its rows were converted from it to linear) */
   inputScale?: ValueScale
   /** what that detection saw, for the message beside it */

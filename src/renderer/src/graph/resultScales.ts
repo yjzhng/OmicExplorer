@@ -9,7 +9,7 @@
  *  result already right is left the same object. */
 import type { Edge } from '@xyflow/react'
 
-import { withLogTransform, withScale, type ValueScale } from '../engine'
+import { withLogDisplay, withLogTransform, withScale, type ValueScale } from '../engine'
 import { isStep, type GraphNode, type NodeResult, type StandardizeConfig } from './types'
 
 export function restampScales(
@@ -30,12 +30,16 @@ export function restampScales(
     if (r?.kind !== 'standardize' || !n || !isStep(n) || seen.has(id)) return undefined
     seen.add(id)
     let std = r.std
-    if (n.data.kind === 'standardize')
-      std = withLogTransform(std, (n.data.config as StandardizeConfig).logTransform)
-    else if (n.data.kind === 'merge' || n.data.kind === 'subset') {
+    if (n.data.kind === 'standardize') {
+      const cfg = n.data.config as StandardizeConfig
+      std = withLogDisplay(withLogTransform(std, cfg.logTransform), cfg.logDisplay)
+    } else if (n.data.kind === 'merge' || n.data.kind === 'subset') {
       const up = firstInput(id)
       const s = up ? scaleOf(up, seen) : undefined
       if (s) std = withScale(std, s)
+      // …and how its input shows logged values
+      const upRes = up ? out[up] : undefined
+      if (upRes?.kind === 'standardize') std = withLogDisplay(std, upRes.std.logDisplay)
     }
     if (std !== r.std) {
       out[id] = { ...r, std }

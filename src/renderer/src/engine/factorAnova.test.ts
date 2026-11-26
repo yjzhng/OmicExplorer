@@ -163,7 +163,7 @@ describe('the preview', () => {
       activeConditions: ['cmpd', 'dose']
     })
     expect(pv.columns).toEqual(['comparison', 'cmpd'])
-    expect(pv.rows.map((r) => r[0])).toEqual(['1 | 0', '10 | 0'])
+    expect(pv.rows.map((r) => r[0])).toEqual(['dose (1|0)', 'dose (10|0)'])
     expect(pv.cautions).toEqual([])
     expect(pv.tested).toEqual(['dose'])
   })
@@ -301,7 +301,8 @@ describe('a numeric condition as a slope', () => {
     expect(res.anova!.sharedBaseline).toEqual({ factor: 0, slope: 1, control: 'DMSO' })
     expect(res.anova!.terms.map((t) => t.label)).toEqual(['dose', 'cmpd × dose'])
     const o = termless(res.rows)
-    expect(o.map((r) => r.comparison)).toEqual(['A|DMSO × dose slope', 'B|DMSO × dose slope'])
+    // the results name what differs between the rows (the compound); the slope, shared, once
+    expect(o.map((r) => r.comparison)).toEqual(['cmpd (A|DMSO)', 'cmpd (B|DMSO)'])
     expect(o[0].log2FC).toBeCloseTo(1, 9)
     expect(o[1].log2FC).toBeCloseTo(0.3, 9)
     // the compounds' slopes differ: one df
@@ -310,7 +311,14 @@ describe('a numeric condition as a slope', () => {
     const pv = previewFactorAnova(input)
     expect(pv.cautions).toEqual([])
     expect(pv.notes[0]).toMatch(/^Vehicle design: DMSO only at the lowest dose/)
-    expect(pv.rows.map((r) => r[0])).toEqual(['A|DMSO × dose slope', 'B|DMSO × dose slope'])
+    // the preview names every factor with its side
+    expect(pv.rows.map((r) => r[0])).toEqual([
+      'cmpd (A|DMSO) × dose (slope)',
+      'cmpd (B|DMSO) × dose (slope)'
+    ])
+    expect(pv.notes[1]).toBe(
+      'Results name each comparison by what differs between them (cmpd (A|DMSO), cmpd (B|DMSO)); all share dose (slope).'
+    )
   })
 })
 

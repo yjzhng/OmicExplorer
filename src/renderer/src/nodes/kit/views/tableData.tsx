@@ -22,7 +22,8 @@ import {
   nestedCol,
   nestedPresent,
   numericOf,
-  presentScaleOf,
+  plainLogOf,
+  tableScaleOf,
   responseMetrics,
   rowView,
   rowsAt,
@@ -47,6 +48,7 @@ import {
 } from '../../../graph/types'
 import { divergeStyle, heatStyle, valueRange } from '../../../ui/colormap'
 import { type Column, fixed, type HeaderLine, type TableSource } from '../../../ui/DataTableView'
+import { fmtPlain } from '../../../ui/quantityAxis'
 import { type PaletteRef, ROLE_DEFAULTS } from '../../../ui/palettes'
 import { type PivotSource } from './common'
 import {
@@ -98,6 +100,17 @@ export function condColumns(
       ...(isNumericCond(c, numeric) ? { align: 'right' as const } : null)
     }))
 }
+/** A plain value cell (a logged value shown as itself — tableScaleOf): three significant figures,
+ *  as the plots' hovers read, so a small fraction isn't 0.000. Missing reads "NaN" (as `fixed`). */
+const plainCell = (v: unknown): string => {
+  if (v == null || v === '') return 'NaN'
+  const n = typeof v === 'number' ? v : Number(v)
+  return Number.isFinite(n) ? fmtPlain(n) : 'NaN'
+}
+/** A Clean data table's value cells: plain when its logged values are shown so, else 3 decimals. */
+const valueCell = (std: StandardizeResult): ((v: unknown) => string) =>
+  plainLogOf(std) ? plainCell : fixed(3)
+
 /** stdColumns for a Clean data result, worked out from its context tuples and its rep column —
  *  no row built. */
 export function stdColumnsOf(
@@ -112,7 +125,7 @@ export function stdColumnsOf(
   ]
   if ([...distinctOf(std, 'rep')].some((v) => v != null))
     cols.push({ key: 'rep', label: 'rep', align: 'right' })
-  cols.push({ key: 'value', label: 'value', align: 'right', format: fixed(3) })
+  cols.push({ key: 'value', label: 'value', align: 'right', format: valueCell(std) })
   return cols
 }
 /** Pivot the tidy standardized rows into a gene × sample matrix: one row per uniqID, one column
@@ -137,7 +150,7 @@ export function standardizeMatrix(
       label: c.label,
       labelLines: c.lines,
       align: 'right',
-      format: fixed(3),
+      format: valueCell(std),
       cellStyle: heat
     }))
   ]
@@ -151,7 +164,8 @@ export function sampleQcTable(
   palette: PaletteRef,
   units?: CondUnits
 ): { columns: Column[]; rows: Record<string, unknown>[] } {
-  const scale = presentScaleOf(std)
+  // as the Clean data table shows its values: plain when they're shown plain (tableScaleOf)
+  const scale = tableScaleOf(std)
   const qc = sampleQc(std, scale)
   const rows: Record<string, unknown>[] = qc.map((q) => ({
     ...q.meta,
@@ -165,11 +179,11 @@ export function sampleQcTable(
     q3: q.q3,
     groupCv: q.groupCv
   }))
-  const num = (key: string, label: string, digits: number): Column => ({
+  const num = (key: string, label: string, digits: number, plain = false): Column => ({
     key,
     label,
     align: 'right',
-    format: fixed(digits),
+    format: plain ? plainCell : fixed(digits),
     cellStyle: heatStyle(valueRange(rows.map((r) => r[key] as number | null)), palette)
   })
   const unit = quantityLabel(scale, valueUnitOf(std))
@@ -184,9 +198,9 @@ export function sampleQcTable(
       ...(qc.some((q) => q.imputed) ? [num('imputed', 'imputed', 0)] : []),
       num('missing', 'missing', 0),
       num('missingPct', 'missing %', 1),
-      num('median', `median · ${unit}`, 3),
-      num('q1', `Q1 · ${unit}`, 3),
-      num('q3', `Q3 · ${unit}`, 3),
+      num('median', `median · ${unit}`, 3, plainLogOf(std)),
+      num('q1', `Q1 · ${unit}`, 3, plainLogOf(std)),
+      num('q3', `Q3 · ${unit}`, 3, plainLogOf(std)),
       num('groupCv', 'group CV %', 1)
     ],
     rows

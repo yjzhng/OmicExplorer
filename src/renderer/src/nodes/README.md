@@ -61,22 +61,26 @@ window's legend switch and Axes and lines section (`plot.legend` / `plot.axes`),
 ## A plot's settings and text
 
 - **Order — upstream before downstream, whole plot before its parts.** A plot's `Settings`
-  returns `<PlotSections statistic general colours genes marks axes />`
+  returns `<PlotSections statistic general colours ranking marks axes />`
   (kit/settings/plotSections.tsx), which lays out every plot's settings in one order:
   1. **Statistic** — what's computed before it's drawn: the upstream step's (written to that
      step), or the plot's own analysis (a PCA's Data, a heatmap's Clustering);
   2. **General** — one section for the whole plot, built by PlotSections from rows: what it shows
-     (view, metric, ordering) and its **Label limit** (`general`); how many genes — terms,
-     residuals — it draws (`genes`: a `CapRow`, Max genes); the window's **show legend** switch
-     (`plot.legend`); and last its colours (palettes, what colours by: `ColourRows` /
-     `CategoricalRows`) — plot-wide settings, each too small for a section. A row's explanation is
-     its (i) tip (a cap's tip restates its rule for the N chosen), not text under it;
-  3. **Points / Lines / Bars** — each group's look;
-  4. **Axes and lines** — the window's (`plot.axes`): per axis, then a Whole plot group with the
+     (view, metric, ordering) (`general`); the window's **show legend** switch (`plot.legend`);
+     and last its colours (palettes, what colours by: `ColourRows` / `CategoricalRows`) —
+     plot-wide settings, each too small for a section. A row's explanation is its (i) tip, not
+     text under it;
+  3. **Ranking** — the finite set the plot focuses on, ranked by a metric (`ranking`): the metric
+     first where the plot offers one (a bubble's rank, over levels), then the cap — a `CapRow`
+     (Max genes, Label limit, Max residuals, with its up / down split for a gene pick), Max terms,
+     a PCA's top-variable features. A cap's tip restates its rule for the N chosen. A plot with no
+     such set has no Ranking section;
+  4. **Points / Lines / Bars** — each group's look;
+  5. **Axes and lines** — the window's (`plot.axes`): per axis, then a Whole plot group with the
      plot's own `axes` rows (an axis scale, a 3-D projection, a reference line) and the threshold
      lines of a plot whose spec sets `guides`.
      The order is the component's, so a new plot can't drift from it (architecture.test.ts checks
-     every plot uses it). The `general`, `genes` and `colours` slots take rows, not sections.
+     every plot uses it). The `general`, `ranking` and `colours` slots take rows, not sections.
 - **One level per setting.** A setting sits once, at the level it applies to: the whole plot, a
   group, or a group in one state. In a group table (Points), the rows that hold in every state —
   name, colour, in legend — come first; the Plain / Selected / Not selected blocks hold only what

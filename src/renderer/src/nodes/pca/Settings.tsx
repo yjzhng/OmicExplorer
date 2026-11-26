@@ -178,7 +178,7 @@ export function ClusterPanel({ config, update, edgeNodeId }: PlotPanelProps<Clus
         </>
       }
       // how many features the embedding is built from (the most variable)
-      genes={
+      ranking={
         <Field
           label="features"
           info="Build the embedding from every feature, or only the most variable ones."

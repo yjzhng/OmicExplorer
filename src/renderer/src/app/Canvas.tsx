@@ -30,7 +30,7 @@ import { useFrameEdit } from '../graph/frameEdit'
 import { FRAME_LABEL_H, FRAME_PAD, type FrameData } from '../graph/FrameNode'
 import {
   editMembers,
-  frameDepths,
+  frameLayers,
   frameTiles,
   outermostFrame,
   topFullFrames
@@ -38,6 +38,7 @@ import {
 import { edgeTypes } from '../graph/GraphEdge'
 import { nodeTypes } from '../graph/GraphNode'
 import { accentOf, ALL_OPS, canConnect, categoryOf, wiredKindOf } from '../graph/registry'
+import { SELECTED_Z } from '../graph/state/canvas'
 import { useGraph } from '../graph/store'
 import { clipCorner, parseClip, type TileClip } from '../graph/tileClipboard'
 import {
@@ -48,7 +49,7 @@ import {
   type StepNode
 } from '../graph/types'
 import { DOT_GRID, EASE, MOTION_MS, NOTICE_MS, PALETTES, UI } from '../ui/theme'
-import type { AppView } from '../ui/useAppView'
+import { useAppView, type AppView } from '../ui/useAppView'
 import { setCanvasNav } from '../ui/tutorial/canvasNav'
 import { useUiTheme } from '../ui/useUiTheme'
 import {
@@ -128,6 +129,11 @@ export function FlowViews({ view }: { view: AppView }) {
     const t = window.setTimeout(settle, MOTION_MS.page * 1.5)
     return () => window.clearTimeout(t)
   }, [slide.run])
+  // Settled (or swapped with no slide): the cues waiting on it — the tile you came back to, the
+  // tab chip you jumped to — play now, on a page at rest.
+  useEffect(() => {
+    if (!slide.from) useAppView.getState().pageSettled()
+  }, [slide.from])
 
   // The pages' content, built once: the slide re-renders this component three times (start, run,
   // settle), and re-rendering the canvas or a full dashboard at the moment the slide starts is
@@ -262,9 +268,16 @@ export function SelectionActions({
   onDuplicate,
   onCopy,
   onDelete,
+  running,
+  onRun,
+  onStop,
   done
 }: {
   count: number
+  /** any selected tile running: Run turns to Stop */
+  running: boolean
+  onRun: () => void
+  onStop: () => void
   canGroup: boolean
   canUngroup: boolean
   onGroup: () => void
@@ -305,6 +318,14 @@ export function SelectionActions({
     <Panel position="bottom-center">
       <div style={styles.actBar}>
         <span style={styles.actCount}>{count} selected</span>
+        {running
+          ? btn('Stop', true, onStop, 'Stop running the selection')
+          : btn(
+              'Run',
+              true,
+              onRun,
+              'Run the selection — and any step above it that it needs and hasn’t run'
+            )}
         {btn(
           'Group',
           canGroup,
@@ -427,12 +448,14 @@ export function Canvas() {
     const next = editMembers(storeFrames, frameEdit.id, frameEdit.add, frameEdit.remove)
     return next.some((f) => f.id === frameEdit.id) ? next : storeFrames
   }, [storeFrames, frameEdit])
+  // the groups' stacking: a later group (a duplicate) over an earlier one, frame then tiles
+  const layers = useMemo(() => frameLayers(frames), [frames])
   const unframeNodes = useGraph((s) => s.unframeNodes)
   const selectTiles = useGraph((s) => s.selectTiles)
   const frameNodes = useMemo((): Node<FrameData>[] => {
     const byId = new Map(nodes.map((n) => [n.id, n]))
     const fById = new Map(frames.map((f) => [f.id, f]))
-    const depth = frameDepths(frames)
+    const { frameZ } = layers
     // Selection is kept on tiles: a frame shows as selected when all its tiles are (outermost only).
     // During a drag-select, a group lights up as soon as it — or any tile in it — is touched:
     // the outermost group is what the drag will select.
@@ -496,14 +519,14 @@ export function Canvas() {
           // until React Flow measures it again — and until then counts as inside every
           // drag-select, so each frame (rebuilt as the selection changes) was "touched" by all.
           measured: { width, height },
-          // behind every tile; an inner frame above the one holding it
-          zIndex: -100 + (depth.get(f.id) ?? 0),
+          // its group's layer (frameLayers): under its own tiles, a nested frame above its holder
+          zIndex: frameZ.get(f.id),
           selected: shownSel.has(f.id),
           deletable: false
         }
       ]
     })
-  }, [frames, nodes, touchedFrames, frameEdit])
+  }, [frames, nodes, touchedFrames, frameEdit, layers])
   // Editing stops when its group goes (undo, another workflow), and on Esc, dropping the marks.
   useEffect(() => {
     if (frameEdit && !storeFrames.some((f) => f.id === frameEdit.id))
@@ -517,9 +540,17 @@ export function Canvas() {
     document.addEventListener('keydown', onKey)
     return () => document.removeEventListener('keydown', onKey)
   }, [frameEdit])
+  // A grouped tile in its group's layer (the open tile's float stays above everything)
   const shown = useMemo(
-    () => [...(frameNodes as unknown as GraphNode[]), ...nodes],
-    [frameNodes, nodes]
+    () => [
+      ...(frameNodes as unknown as GraphNode[]),
+      ...nodes.map((n) => {
+        const base = layers.tileZ.get(n.id)
+        if (base == null || n.zIndex === SELECTED_Z) return n
+        return { ...n, zIndex: base + (n.zIndex ?? 0) }
+      })
+    ],
+    [frameNodes, nodes, layers]
   )
   // Mirror the store into local state whenever we're NOT mid-drag, so external changes (adds,
   // deletes, undo/redo, project load, selection) still show. During a drag the store isn't
@@ -603,6 +634,15 @@ export function Canvas() {
     selectTiles([...picked])
   }, [frames, selectTiles])
   const edges = useGraph((s) => s.edges)
+  // A link in the layer of the higher of its two tiles: over its group's frame, under its tiles
+  const shownEdges = useMemo(() => {
+    if (!layers.tileZ.size) return edges
+    const z = (id: string): number => layers.tileZ.get(id) ?? 0
+    return edges.map((e) => {
+      const at = Math.max(z(e.source), z(e.target))
+      return at === 0 && e.zIndex == null ? e : { ...e, zIndex: at }
+    })
+  }, [edges, layers])
   const onEdgesChange = useGraph((s) => s.onEdgesChange)
   const onConnect = useGraph((s) => s.onConnect)
   const onReconnect = useGraph((s) => s.onReconnect)
@@ -618,6 +658,8 @@ export function Canvas() {
   const tidyNodes = useGraph((s) => s.tidyNodes)
   const setGroupsCollapsed = useGraph((s) => s.setGroupsCollapsed)
   const duplicateNodes = useGraph((s) => s.duplicateNodes)
+  const runTargets = useGraph((s) => s.runTargets)
+  const stopTargets = useGraph((s) => s.stopTargets)
   const deleteNode = useGraph((s) => s.deleteNode)
   // No data folder yet ⇒ guide the user to set one (via the folder chip) before adding steps.
   const dataDir = useGraph((s) => s.dataDir)
@@ -678,6 +720,12 @@ export function Canvas() {
   const selGroupIds = topFullFrames(frames, (id) => selectedIds.includes(id))
   const inSelGroup = new Set(selGroupIds.flatMap((id) => frameTiles(frames, id)))
   const selCount = selGroupIds.length + selectedIds.filter((id) => !inSelGroup.has(id)).length
+  const selRunning = selStep.some(
+    (n) =>
+      n.data.status === 'running' ||
+      (n.data.kind === 'plotGroup' &&
+        (n.data.config as PlotGroupConfig).children.some((c) => c.status === 'running'))
+  )
   const canGroup = selStep.length > 0
   const canUngroup = frames.some((f) => f.members.some((m) => selectedIds.includes(m)))
   // Fold / unfold the selected plot groups' plot lists (see GroupBody); each offered when it'd change one.
@@ -911,7 +959,7 @@ export function Canvas() {
     >
       <ReactFlow
         nodes={shown}
-        edges={edges}
+        edges={shownEdges}
         nodeTypes={nodeTypes}
         edgeTypes={edgeTypes}
         // The line drawn while dragging out a connection: dashed (not made yet), in the grey and
@@ -1089,6 +1137,9 @@ export function Canvas() {
               selectedIds.forEach((id) => deleteNode(id))
               clearSelection()
             }}
+            running={selRunning}
+            onRun={() => void runTargets(selectedIds)}
+            onStop={() => stopTargets(selectedIds)}
             done={done?.label ?? null}
           />
         )}

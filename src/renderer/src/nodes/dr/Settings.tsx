@@ -54,7 +54,7 @@ export function DRPanel({ config, update, edgeNodeId }: PlotPanelProps<DRConfig>
       }
       // Top genes is a setting OF the global and detailed views (which of the every-gene curves
       // are coloured — or, detailed, drawn), so it's offered only there.
-      genes={
+      ranking={
         fromCompare &&
         config.view !== 'focus' && (
           <CapRow
@@ -68,6 +68,7 @@ export function DRPanel({ config, update, edgeNodeId }: PlotPanelProps<DRConfig>
             value={config.topGenes}
             enabled={config.capEnabled}
             update={update}
+            split={config}
             defaultValue={10}
             max={detailed ? DR_DETAIL_CAP : undefined}
             rule={(n) =>

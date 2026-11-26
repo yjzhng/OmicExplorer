@@ -82,7 +82,7 @@ export function CurveMadPanel({ config, update, edgeNodeId }: PlotPanelProps<Cur
         </>
       }
       // how many residuals the dot views draw (this plot's "how many are drawn")
-      genes={
+      ranking={
         <CapRow
           info="Dot views draw only this many residuals, so they stay quick. Every outlier is kept; boxes, medians and trend lines use them all."
           label="Max residuals"

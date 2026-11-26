@@ -22,6 +22,7 @@ import { curveSampleX, logistic } from './curveFit'
 import { embed2D, type ClusterMethod } from './embed'
 import { isSampleIndex, labelGroups, sampleIndex, type SampleIndex } from './sampleIndex'
 import { descValue } from './splineFit'
+import { pickTop, type TopSplitSpec } from './topPick'
 import {
   quantityLabel,
   fromLinear,
@@ -62,6 +63,8 @@ export interface VolcanoPoint {
   label: string
   effect: Effect
   uniqID: string
+  /** no p-value (a reference protein, a gene too thin to test), drawn at 0 (`untestedAtZero`) */
+  untested?: boolean
 }
 
 export interface VolcanoData {
@@ -85,6 +88,9 @@ export interface VolcanoOptions {
   fcHigh: number
   statMin: number
   displayMap?: Record<string, string>
+  /** a gene with a fold change but no p-value — a reference protein (constant after normalising
+   *  to it), one too thin to test — drawn at 0 on the significance axis instead of left out */
+  untestedAtZero?: boolean
 }
 
 /** What a Compare's `log2FC` measures, by analysis: a t-test's fold change, a curve fit's — a 4PL
@@ -162,13 +168,17 @@ export function buildVolcano(rows: CompareResultRow[], opts: VolcanoOptions): Vo
   const points: VolcanoPoint[] = []
   for (const r of rows) {
     const y = opts.statType === 'pP' ? r.pP : r.pQ
-    if (r.log2FC == null || y == null || !Number.isFinite(r.log2FC) || !Number.isFinite(y)) continue
+    if (r.log2FC == null || !Number.isFinite(r.log2FC)) continue
+    // no p-value (missing or NaN — not +∞, a p of 0, which is as significant as it gets)
+    const untested = y == null || Number.isNaN(y)
+    if (untested ? !opts.untestedAtZero : !Number.isFinite(y)) continue
     points.push({
       x: r.log2FC,
-      y,
+      y: untested ? 0 : y,
       label: opts.displayMap?.[r.uniqID] ?? r.uniqID,
-      effect: r.effect,
-      uniqID: r.uniqID
+      effect: untested ? 'none' : r.effect,
+      uniqID: r.uniqID,
+      ...(untested ? { untested } : null)
     })
   }
   const unsigned = rows.length > 0 && rows.every(isTermRow)
@@ -558,6 +568,8 @@ export interface ScatterOptions {
   /** what quantity sides are (valueUnitOf): abundances, or fractions of a reference protein —
    *  always given, so no axis names fractions "abundance" */
   unit: ValueUnit
+  /** abundances shown as plain values on a log axis (scale.ts LogDisplay): the titles say so */
+  plain?: boolean
 }
 
 /** A linear cutoff of an abundance contrast's own value (stored, and cut, in log₁₀) where the
@@ -693,7 +705,9 @@ export function buildScatter(rows: ContrastResultRow[], opts: ScatterOptions): S
   // Group A (FC1) on y, group B (FC2) on x.
   const unit =
     opts.valueLabel ??
-    (opts.valueKind === 'quantity' ? quantityLabel(opts.scale ?? 'log10', opts.unit) : 'log₂FC')
+    (opts.valueKind === 'quantity'
+      ? quantityLabel(opts.scale ?? 'log10', opts.unit, opts.plain)
+      : 'log₂FC')
   return {
     points,
     xLabel: `${unit} · ${rows[0]?.cmp2 ?? 'group B'}`,
@@ -743,8 +757,8 @@ export function buildIntensityScatter(rows: CompareResultRow[], opts: ScatterOpt
   return {
     points,
     // "abundance" (with its log base) — the same word the MA plot and contrast scatter use.
-    xLabel: `${quantityLabel(scale, opts.unit)} · ${den || 'denominator'}`,
-    yLabel: `${quantityLabel(scale, opts.unit)} · ${num || 'numerator'}`,
+    xLabel: `${quantityLabel(scale, opts.unit, opts.plain)} · ${den || 'denominator'}`,
+    yLabel: `${quantityLabel(scale, opts.unit, opts.plain)} · ${num || 'numerator'}`,
     valueKind: 'quantity'
   }
 }
@@ -775,6 +789,8 @@ export interface MAOptions {
   scale?: ValueScale
   /** what the values are (valueUnitOf): abundances, or fractions of a reference protein */
   unit: ValueUnit
+  /** abundance shown as plain values on a log axis (scale.ts LogDisplay): the title says so */
+  plain?: boolean
 }
 
 /** MA plot: mean abundance (A) vs log2 fold change (M). Abundance is on the scale every abundance
@@ -803,7 +819,10 @@ export function buildMA(rows: CompareResultRow[], opts: MAOptions): MAData {
     fcLow: opts.fcLow,
     fcHigh: opts.fcHigh,
     comparison: comparisonOf(rows),
-    xLabel: quantityLabel(scale, `mean ${opts.unit}`).replace(/^(log₂?) mean/, 'mean $1')
+    xLabel: quantityLabel(scale, `mean ${opts.unit}`, opts.plain).replace(
+      /^(log₂?) mean/,
+      'mean $1'
+    )
   }
 }
 
@@ -836,6 +855,8 @@ export interface DROptions {
   /** response surface method curves: the description 4PL ('curve', default) or the spline */
   model?: 'spline' | 'curve'
   topGenes: number
+  /** how the top-N splits between up and down (see topPick; default proportional) */
+  split?: TopSplitSpec
   displayMap?: Record<string, string>
   /** focus genes (uniqIDs): when non-empty, colour exactly these curves instead of top-N */
   focus?: string[]
@@ -859,32 +880,6 @@ const geneLimit = (topGenes: number, total: number): number =>
  *  this is used, so the last point is the top of the axis — genes most differential there rank first. */
 const topDoseMag = (pts: { y: number }[]): number =>
   pts.length ? Math.abs(pts[pts.length - 1].y) : 0
-
-/** Top-N split between the two directions IN PROPORTION to how many candidates each has — 70 up
- *  and 30 down picks 7:3 — so a strongly one-sided response doesn't crowd the other side out by
- *  magnitude alone (and a balanced one gets both). Each side gets at least a quarter (rounded up)
- *  while it has the genes for it; a side that runs out hands its unused slots to the other. Within a side, largest |log2FC| first; the result is ordered by |log2FC|. A gene's
- *  direction is the sign of its `signed` value (≥ 0 counts as up). */
-export function pickBalanced(cands: { id: string; signed: number }[], n: number): string[] {
-  if (n >= cands.length) return [...cands].sort(byMag).map((c) => c.id)
-  const up = cands.filter((c) => c.signed >= 0).sort(byMag)
-  const down = cands.filter((c) => c.signed < 0).sort(byMag)
-  let nUp = Math.round((n * up.length) / cands.length)
-  // Each side keeps at least a quarter of the picks (when it has that many), so a lopsided ratio
-  // can't round the smaller side down to nothing.
-  // (A single pick can't be shared: it goes by proportion alone.)
-  const floor = n >= 2 ? Math.ceil(n * MIN_SIDE_SHARE) : 0
-  if (up.length) nUp = Math.max(nUp, Math.min(floor, up.length))
-  if (down.length) nUp = Math.min(nUp, n - Math.min(floor, down.length))
-  let nDown = n - nUp
-  if (nUp > up.length) [nUp, nDown] = [up.length, n - up.length]
-  if (nDown > down.length) [nUp, nDown] = [n - down.length, down.length]
-  return [...up.slice(0, nUp), ...down.slice(0, nDown)].sort(byMag).map((c) => c.id)
-}
-/** The smallest share of the top-N either direction gets (see pickBalanced). */
-const MIN_SIDE_SHARE = 1 / 4
-const byMag = (a: { signed: number }, b: { signed: number }): number =>
-  Math.abs(b.signed) - Math.abs(a.signed)
 
 /**
  * A response surface method curve (a row's `rs`, one axis) as drawn, on the axis's own scale —
@@ -1001,14 +996,17 @@ export function buildDR(rows: CompareResultRow[], opts: DROptions): DRData {
     }
   }
   // Show every gene (as faint background lines); the coloured top-N on top is drawn from the
-  // significant genes, split between up and down in proportion (pickBalanced), and moved to the
+  // significant genes, split between up and down as set (pickTop), and moved to the
   // front. topGenes ≤ 0 (Cap genes off) colours every significant gene — DRView safety-caps the
   // coloured foreground. All genes stay in one merged view trace.
   const pool = opts.within?.length ? new Set(opts.within) : null
   const sigSeries = series
     .filter((sr) => (pool ? pool.has(sr.uniqID) : anySig.has(sr.uniqID)))
     .map((sr) => ({ id: sr.uniqID, signed: sr.points[sr.points.length - 1].y }))
-  const chosen = pickBalanced(sigSeries, opts.topGenes > 0 ? opts.topGenes : sigSeries.length)
+  const chosen =
+    opts.topGenes > 0
+      ? pickTop(sigSeries, opts.topGenes, opts.split)
+      : pickTop(sigSeries, sigSeries.length)
   const rank = new Map(chosen.map((id, i) => [id, i]))
   const front = series
     .filter((sr) => rank.has(sr.uniqID))
@@ -1050,6 +1048,8 @@ export interface BubbleData {
 export interface BubbleOptions {
   axis: ConditionKey
   topGenes: number
+  /** how the top-N splits between up and down (see topPick; default proportional) */
+  split?: TopSplitSpec
   /** what ranks the genes: their log₂FC (default), or the significance column that drives the
    *  Compare's calls (−log₁₀ P or Q), signed by the fold change's direction */
   rank?: 'fc' | 'pP' | 'pQ'
@@ -1108,8 +1108,10 @@ export function buildBubble(rows: CompareResultRow[], opts: BubbleOptions): Bubb
   const base =
     focus.length > 0
       ? focus.filter((id) => byGene.has(id))
-      : // up / down in proportion to the significant genes on each side; unset ⇒ all (safety-capped)
-        pickBalanced(sigGenes, geneLimit(opts.topGenes, sigGenes.length))
+      : // up / down as set (proportional by default); unset ⇒ all (safety-capped)
+        opts.topGenes > 0
+        ? pickTop(sigGenes, opts.topGenes, opts.split)
+        : pickTop(sigGenes, geneLimit(0, sigGenes.length))
   // Add the linked-selection genes not already shown, then order them all by their score
   // (descending) for the gene axis: a pinned gene takes its place in the order, between the genes
   // it ranks between, rather than going to the end.
@@ -1185,6 +1187,8 @@ export interface DumbbellData {
 }
 export interface DumbbellOptions {
   topGenes: number
+  /** how the top-N splits between FCdiff up and down (see topPick; default proportional) */
+  split?: TopSplitSpec
   displayMap?: Record<string, string>
   /** focus genes (uniqIDs): when non-empty, show exactly these genes instead of top-N */
   focus?: string[]
@@ -1213,12 +1217,19 @@ export function buildDumbbell(rows: ContrastResultRow[], opts: DumbbellOptions):
   const valid = rows.filter((r) => r.FC1 != null && r.FC2 != null)
   valid.sort((a, b) => Math.abs(b.FCdiff ?? 0) - Math.abs(a.FCdiff ?? 0))
   const sig = valid.filter((r) => r.signf)
+  // the top-N by |FCdiff|, split by its direction as set; kept in the |FCdiff| order
+  const pickRows = (list: ContrastResultRow[]): ContrastResultRow[] => {
+    const cands = list.map((r) => ({ id: r.uniqID, signed: r.FCdiff ?? 0 }))
+    const keep = new Set(
+      opts.topGenes > 0
+        ? pickTop(cands, opts.topGenes, opts.split)
+        : pickTop(cands, geneLimit(0, list.length))
+    )
+    return list.filter((r) => keep.has(r.uniqID))
+  }
   const focus = opts.focus ?? []
   const focusSet = new Set(focus)
-  const base =
-    focus.length > 0
-      ? valid.filter((r) => focusSet.has(r.uniqID))
-      : sig.slice(0, geneLimit(opts.topGenes, sig.length)) // significant only; unset ⇒ all (safety-capped)
+  const base = focus.length > 0 ? valid.filter((r) => focusSet.has(r.uniqID)) : pickRows(sig) // significant only; unset ⇒ all (safety-capped)
   // Append linked-selection genes not already shown (hover/pin highlight), preserving the
   // |FCdiff| order, so a selected gene appears at the end of the list instead of replacing.
   const baseIds = new Set(base.map((r) => r.uniqID))
@@ -2521,6 +2532,9 @@ export interface FcHeatmapOptions {
   displayMap?: Record<string, string>
   /** cap to the top-N genes by max |log2FC| (0 = all); ignored when `focus` is set */
   maxGenes?: number
+  /** how the top-N splits between up and down — a gene's direction is that of its largest
+   *  |log2FC| (see topPick; default proportional) */
+  split?: TopSplitSpec
   /** focus genes (uniqIDs) — show exactly these rows when non-empty */
   focus?: string[]
   /** bicluster gene rows AND comparison columns by log2FC profile (default true) */
@@ -2633,16 +2647,31 @@ export function* buildFcHeatmapSteps(
   if (focus.length > 0) {
     const present = new Set(geneOrder)
     genes = focus.filter((g) => present.has(g))
-  } else if (opts.maxGenes && opts.maxGenes > 0 && universe.length > opts.maxGenes) {
-    const score = (g: string): number => {
-      let mx = -1
+  } else if (
+    opts.maxGenes &&
+    opts.maxGenes > 0 &&
+    (universe.length > opts.maxGenes || opts.split?.by === 'fixed')
+  ) {
+    // each gene's largest |log2FC|, its sign kept: the direction it's picked on
+    const signedPeak = (g: string): number => {
+      let best = 0
       for (const c of activeCols) {
         const v = cellVal(g, c)
-        if (v != null) mx = Math.max(mx, Math.abs(v))
+        if (v != null && Math.abs(v) > Math.abs(best)) best = v
       }
-      return mx
+      return best
     }
-    genes = [...universe].sort((a, b) => score(b) - score(a)).slice(0, opts.maxGenes)
+    const keep = new Set(
+      pickTop(
+        universe.map((g) => ({ id: g, signed: signedPeak(g) })),
+        opts.maxGenes,
+        opts.split
+      )
+    )
+    // in the order the top-N ranks them (by size), as before
+    genes = [...universe]
+      .filter((g) => keep.has(g))
+      .sort((a, b) => Math.abs(signedPeak(b)) - Math.abs(signedPeak(a)))
   }
 
   let z = genes.map((g) => activeCols.map((c) => cellVal(g, c)))
@@ -2776,7 +2805,9 @@ export function buildQc(
    *  values look like raw intensity) */
   scale?: ValueScale,
   /** the samples' / groups' order along the axis (default natural) */
-  order: SampleOrdering = { by: 'natural' }
+  order: SampleOrdering = { by: 'natural' },
+  /** intensity shown as plain values on a log axis (scale.ts LogDisplay): the title says so */
+  plain = false
 ): QcData {
   const conds = std.activeConditions
   const parts = (r: StandardRow): string[] =>
@@ -2874,7 +2905,12 @@ export function buildQc(
       meta: metaOf(label)
     }))
     sortGroups(groups, true)
-    return { groups, yLabel: quantityLabel(sc, valueUnitOf(std)), metric, summary: 'median' }
+    return {
+      groups,
+      yLabel: quantityLabel(sc, valueUnitOf(std), plain),
+      metric,
+      summary: 'median'
+    }
   }
 
   // cv: per condition group, the %CV of each protein across its replicates.

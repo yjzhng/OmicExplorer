@@ -26,7 +26,7 @@ import { TILES } from '../nodes/tiles'
 import { Chevron } from '../ui/Chevron'
 import { IconJump } from '../ui/icons'
 import { StatusNote } from '../ui/StatusNote'
-import { EASE, MOTION_MS, NOTICE_MS, UI } from '../ui/theme'
+import { EASE, NOTICE_MS, UI } from '../ui/theme'
 import { useAppView } from '../ui/useAppView'
 import { useFrameEdit, useFrameEditMark } from './frameEdit'
 import { FrameNode } from './FrameNode'
@@ -53,8 +53,7 @@ import {
   RunControl,
   StatusDot,
   usePlotGate,
-  useStepStatus,
-  useUpstreamRunning
+  useStepStatus
 } from './StatusDot'
 import { useGraph } from './store'
 import { nameChip, nameInput, tileNameText } from './tileNameStyles'
@@ -110,7 +109,6 @@ function GroupBody({
   // What the upstream data carries (stale-aware): gates the menu and flags unsupported subcards.
   const upId = useGraph((s) => s.edges.find((e) => e.target === id)?.source)
   const facts = useUpstreamFacts(upId)
-  const upRunning = useUpstreamRunning(upId)
   // id of the subcard being dragged, and the gap it's over (target card + which side).
   const [dragId, setDragId] = useState<string | null>(null)
   // The plot card under the pointer — its own Run chip shows on hover (and while selected / running).
@@ -169,10 +167,9 @@ function GroupBody({
             // clearly sits *between* two subcards, marking exactly where the drop lands.
             const lineBefore = gap?.id === c.id && gap.place === 'before'
             const lineAfter = gap?.id === c.id && gap.place === 'after'
-            // Why this plot can't run yet (its requirement, or the step it reads hasn't run).
-            // (A step still running doesn't block: the plot's run waits for it.)
-            const runGate =
-              unmet ?? (facts.result || upRunning ? null : 'Run the step it reads from first')
+            // Why this plot can't run yet: its requirement. (The step it reads not run yet doesn't
+            // block: the plot's run runs it first, or waits for it while it runs.)
+            const runGate = unmet ?? null
             // A done plot that computes nothing of its own has nothing to re-run (plotComputes).
             const showRun =
               (hoverChild === c.id || active || c.status === 'running' || c.status === 'error') &&
@@ -264,8 +261,8 @@ export function GraphNode({ id, data, selected: rfSelected }: NodeProps<Node<Nod
   const category = categoryOf(data.kind)
   const accent = accentOf(category)
   const selectedId = useGraph((s) => s.selectedId)
-  const runNode = useGraph((s) => s.runNode)
-  const cancelNode = useGraph((s) => s.cancelNode)
+  const runTargets = useGraph((s) => s.runTargets)
+  const stopTargets = useGraph((s) => s.stopTargets)
   // Gate: a Standardize whose upstream is an Interactive Load that hasn't been converted yet is
   // blocked until the user completes the sample setup (which materializes the input files) — as
   // is a Subset filtering that import before Clean data.
@@ -318,8 +315,8 @@ export function GraphNode({ id, data, selected: rfSelected }: NodeProps<Node<Nod
   )
 
   // Back from Results: this tile is the tab you were on, so it takes a cue once the slide back
-  // settles (useAppView.backToWorkflow) — keyed, so each return plays it again.
-  const cueKey = useAppView((s) => (s.tileCue?.id === id ? s.tileCue.key : null))
+  // settles (useAppView.backToWorkflow, paging) — keyed, so each return plays it again.
+  const cueKey = useAppView((s) => (s.tileCue?.id === id && !s.paging ? s.tileCue.key : null))
 
   const statusInfo = useStepStatus(id, data)
   // A done plot tile whose plots compute nothing offers no Re-run (registry.nothingToRerun).
@@ -570,7 +567,7 @@ export function GraphNode({ id, data, selected: rfSelected }: NodeProps<Node<Nod
         boxShadow: selected ? `0 0 0 1px ${accent}, 0 3px 14px rgba(0,0,0,0.4)` : card.boxShadow
       }}
     >
-      {/* the cue: a halo in the tile's accent, in and out once (app.css oe-halo) */}
+      {/* the cue: a halo in the tile's accent, faded in and out once (app.css oe-cue) */}
       {cueKey !== null && (
         <span
           key={cueKey}
@@ -579,8 +576,8 @@ export function GraphNode({ id, data, selected: rfSelected }: NodeProps<Node<Nod
           style={
             {
               ...tileCue,
-              '--oe-halo': `0 0 10px 2px ${accent}99, 0 0 30px 8px ${accent}4d`,
-              animation: `oe-halo ${NOTICE_MS.cue}ms ${EASE.move} ${MOTION_MS.page}ms forwards`
+              boxShadow: `0 0 10px 2px ${accent}99, 0 0 30px 8px ${accent}4d`,
+              animation: `oe-cue ${NOTICE_MS.cue}ms ${EASE.move} both`
             } as CSSProperties
           }
         />
@@ -674,8 +671,8 @@ export function GraphNode({ id, data, selected: rfSelected }: NodeProps<Node<Nod
             <RunControl
               status={data.status}
               accent={accent}
-              onRun={() => void runNode(id)}
-              onStop={() => cancelNode(id)}
+              onRun={() => void runTargets([id])}
+              onStop={() => stopTargets([id])}
               gate={gate}
               gateLabel={plotGate && gate === plotGate ? 'Not ready' : undefined}
             />
@@ -1202,7 +1199,9 @@ const tileCue: CSSProperties = {
   // the card's outer edge (its border, and the thicker accent strip on top), so the halo rings it
   inset: `-${TILE_STRIP}px -1px -1px -1px`,
   borderRadius: 8,
-  pointerEvents: 'none'
+  pointerEvents: 'none',
+  // at rest unseen; the cue fades it in (app.css oe-cue)
+  opacity: 0
 }
 const header: CSSProperties = {
   display: 'flex',

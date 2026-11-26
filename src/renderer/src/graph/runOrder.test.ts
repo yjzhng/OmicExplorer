@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { downstreamOf, runOrder } from './runOrder'
+import { downstreamOf, runOrder, runPlan } from './runOrder'
 
 const e = (pairs: string): { source: string; target: string }[] =>
   pairs.split(' ').map((p) => {
@@ -42,5 +42,39 @@ describe('downstreamOf', () => {
     const edges = e('clean>cmpA clean>cmpB cmpA>plotA')
     expect([...downstreamOf('cmpA', edges)]).toEqual(['plotA'])
     expect(new Set(downstreamOf('clean', edges))).toEqual(new Set(['cmpA', 'cmpB', 'plotA']))
+  })
+})
+
+describe('runPlan', () => {
+  // load → std → cmp → {volcano, bubble}; std → pca
+  const ids = ['load', 'std', 'cmp', 'volcano', 'bubble', 'pca']
+  const edges = [
+    { source: 'load', target: 'std' },
+    { source: 'std', target: 'cmp' },
+    { source: 'cmp', target: 'volcano' },
+    { source: 'cmp', target: 'bubble' },
+    { source: 'std', target: 'pca' }
+  ]
+  const runs = (): boolean => true
+  it('runs only the target when everything above it is done', () => {
+    expect(runPlan(ids, edges, ['volcano'], () => false, runs)).toEqual(['volcano'])
+  })
+  it('pulls in the stale steps above, in order, and stops at a done one', () => {
+    const stale = (id: string): boolean => id === 'cmp'
+    expect(runPlan(ids, edges, ['volcano', 'bubble'], stale, runs)).toEqual([
+      'cmp',
+      'volcano',
+      'bubble'
+    ])
+    const all = (id: string): boolean => id !== 'load'
+    expect(runPlan(ids, edges, ['volcano'], all, runs)).toEqual(['std', 'cmp', 'volcano'])
+  })
+  it('walks through a step with no run of its own', () => {
+    const stale = (id: string): boolean => id === 'load'
+    const noRun = (id: string): boolean => id !== 'std'
+    expect(runPlan(ids, edges, ['pca'], stale, noRun)).toEqual(['load', 'pca'])
+  })
+  it('every step as the target is Run all', () => {
+    expect(runPlan(ids, edges, ids, () => false, runs)).toEqual(runOrder(ids, edges))
   })
 })

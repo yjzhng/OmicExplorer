@@ -26,6 +26,7 @@ import {
   type ThresholdConfig
 } from '../../engine'
 import { StatusNote } from '../../ui/StatusNote'
+import { Formula } from '../../ui/Formula'
 import { OnOffSwitch, ToggleSwitch } from '../../ui/ToggleSwitch'
 import { UI } from '../../ui/theme'
 import {
@@ -120,19 +121,26 @@ export function CompareDialog({
   )
   // each condition's value box: set by its chevron; until then a compared one open, a context one folded
   const [fold, setFold] = useState<Partial<Record<ConditionKey, boolean>>>({})
-  // the analysis: a t-test per test group, or an ANOVA — the user's
-  // only where the comparison leaves a choice (analysisChoice); a t-test otherwise
+  // the analysis: a t-test per test group, or an ANOVA — the user's pick, before or after the
+  // conditions; a t-test only where the data can't hold an ANOVA (anovaWhy). An ANOVA picked before
+  // the comparison leaves it a choice (analysisChoice) stays picked, and Apply waits for one.
   const [goal, setGoal] = useState<Analysis>(initial.analysis === 'anova' ? 'anova' : 'compare')
+  const anovaWhy = shape ? analysisUnmet(shape, 'anova') : null
 
   // An ANOVA matches every context condition like-for-like (shared and pooled are the t-test's):
   // its model reads the picks without the context modes, which stay for the t-test.
   const m = useMemo(
     () =>
-      compareModel(goal === 'anova' ? { ...state, modes: {} } : state, samples, active, numeric),
-    [goal, state, samples, active, numeric]
+      compareModel(
+        goal === 'anova' && !anovaWhy ? { ...state, modes: {} } : state,
+        samples,
+        active,
+        numeric
+      ),
+    [goal, anovaWhy, state, samples, active, numeric]
   )
   const choice = analysisChoice(m.CMP, m.num)
-  const analysis: Analysis = choice ? goal : 'compare'
+  const analysis: Analysis = anovaWhy ? 'compare' : goal
   const anova = analysis === 'anova'
   const any = m.CMP.length > 0
   // The preview formula's response: the test runs in log space only when Clean data presents its
@@ -171,7 +179,7 @@ export function CompareDialog({
     [m, sel, asFactor, scales]
   )
   const anovaView = useMemo(() => {
-    if (!anova) return null
+    if (!anova || !choice) return null
     const factors = anovaFactorsOf(pick, numeric)
     if (!factors.length) return null
     return previewFactorAnova({
@@ -181,12 +189,17 @@ export function CompareDialog({
       num: sel.num,
       den: sel.den
     })
-  }, [anova, pick, numeric, sel, samples, active])
+  }, [anova, choice, pick, numeric, sel, samples, active])
   const conf = !anova ? confounded(m, samples) : null
 
   const warnings = [
     ...m.warnings,
-    ...(anova ? (anovaView?.warnings ?? []) : (preview?.warnings ?? []))
+    ...(anova ? (anovaView?.warnings ?? []) : (preview?.warnings ?? [])),
+    ...(anova && any && !choice
+      ? [
+          'ANOVA: one condition at two values. Compare a second condition or a third value — or use the t-test, which answers this one.'
+        ]
+      : [])
   ]
   const canApply = any && warnings.length === 0
 
@@ -517,7 +530,6 @@ export function CompareDialog({
   const slopes = anova ? anovaFactorsOf(pick, numeric).filter((f) => f.slope) : []
   const own = m.ctx.filter((x) => x.mode === 'match').map((x) => condLabel(x.c))
   const plural = (n: number, w: string): string => `${n} ${w}${n === 1 ? '' : 's'}`
-  const anovaWhy = shape ? analysisUnmet(shape, 'anova') : null
   return (
     <SelectorShell
       title="Configure comparison"
@@ -537,12 +549,10 @@ export function CompareDialog({
             {
               value: 'anova' as Analysis,
               label: 'ANOVA',
-              disabled: !!anovaWhy || (any && !choice),
+              disabled: !!anovaWhy,
               title:
                 anovaWhy ??
-                (any && !choice
-                  ? 'One condition at two values: the t-test answers both'
-                  : 'Whether the compared conditions change a gene at all, and which (with their interactions): an ANOVA, an F-test per factor')
+                'Whether the compared conditions change a gene at all, and which (with their interactions): an ANOVA, an F-test per factor'
             }
           ]}
           onChange={setGoal}
@@ -585,6 +595,15 @@ export function CompareDialog({
               effects of {m.CMP.map(condLabel).join(' and ')} can’t be told apart.
             </StatusNote>
           )}
+          {anova && anovaView && anovaView.missing.length > 0 && (
+            <StatusNote kind="warn">
+              <b>Incomplete:</b> the data have no samples at{' '}
+              {anovaView.missing.slice(0, 4).join(', ')}
+              {anovaView.missing.length > 4 ? ` and ${anovaView.missing.length - 4} more` : ''}, so
+              the conditions aren’t fully crossed. The model fits the combinations there are
+              {anovaView.fewer.length ? `, with fewer df for ${anovaView.fewer.join(', ')}` : ''}.
+            </StatusNote>
+          )}
         </div>
       </Section>
       <Section
@@ -603,16 +622,21 @@ export function CompareDialog({
       >
         {any && (
           <div style={styles.formula}>
-            {anova && anovaView
-              ? `${response} ~ ${anovaView.terms
-                  .map((t) =>
-                    t
-                      .split(' × ')
-                      .map((c) => condLabel(c as ConditionKey))
-                      .join(' × ')
-                  )
-                  .join(' + ')}`
-              : `${response} ~ ${m.CMP.length === 1 ? condLabel(m.CMP[0]) : `group(${m.CMP.map(condLabel).join(' × ')})`}`}
+            <Formula
+              text={
+                anova && anovaView
+                  ? `${response} ~ μ + ${anovaView.terms
+                      .map((t) =>
+                        t
+                          .split(' × ')
+                          .map((c) => condLabel(c as ConditionKey))
+                          .join(' × ')
+                      )
+                      .join(' + ')}`
+                  : `${response} ~ μ + ${m.CMP.length === 1 ? condLabel(m.CMP[0]) : `group(${m.CMP.map(condLabel).join(' × ')})`}`
+              }
+              vars={m.CMP.map(condLabel)}
+            />
             <div style={styles.formulaNote}>
               {anova
                 ? slopes.length
@@ -628,7 +652,7 @@ export function CompareDialog({
         {anova
           ? anovaView &&
             anovaView.rows.length > 0 && (
-              <PreviewTable columns={anovaView.columns} rows={anovaView.rows} />
+              <PreviewTable columns={anovaView.columns} rows={anovaView.rows} everyBracket={[0]} />
             )
           : slices.length > 0 && (
               <NodeTable

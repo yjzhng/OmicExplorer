@@ -1,11 +1,12 @@
 import { useMemo } from 'react'
 
-import type { InteractionGene } from '../../engine'
+import type { InteractionGene, ValueScale } from '../../engine'
 import type { DRLook } from '../../graph/types'
 import { AUTO } from '../../ui/ColorPicker'
 import { tooltip } from '../../ui/condTooltip'
 import { errorTraces } from '../../ui/errorTraces'
 import { PlotlyChart } from '../../ui/PlotlyChart'
+import { fmtQuantity, plainTicks, rangeOf } from '../../ui/quantityAxis'
 import { axisBase, CATEGORICAL, PALETTES, plotBase, withAlpha } from '../../ui/theme'
 import { useUiTheme } from '../../ui/useUiTheme'
 
@@ -28,9 +29,12 @@ export function InteractionView({
   lineLevels,
   yLabel,
   displayMap,
-  look
+  look,
+  plainScale
 }: {
   gene?: InteractionGene
+  /** the abundance shown plain on a log axis (ui/quantityAxis): the logged scale it's on */
+  plainScale?: ValueScale
   xName: string
   xLevels: string[]
   lineName: string
@@ -49,8 +53,10 @@ export function InteractionView({
     const pad = gene?.xPositions ? Math.max((hi - lo) * 0.06, 0.1) : 0.5
     const lay: Record<string, unknown> = {
       ...plotBase(p),
-      // the line factor's levels on the right (plotBase's legend), headed by the factor
+      // factor 2's levels on the right (plotBase's legend), headed by the factor
       legend: { ...(plotBase(p).legend as object), title: { text: lineName } },
+      // factor 2 none: one line, nothing to tell apart
+      showlegend: !!lineName,
       // the levels at positions 0 … n−1, named — or, a slope along x, at their places on its axis
       // (the fitted straight lines to scale)
       xaxis: {
@@ -64,10 +70,31 @@ export function InteractionView({
         zeroline: false,
         automargin: true
       },
-      yaxis: { ...axisBase(p), title: yLabel, zeroline: false, automargin: true }
+      yaxis: {
+        ...axisBase(p),
+        title: yLabel,
+        zeroline: false,
+        automargin: true,
+        ...(plainScale
+          ? plainTicks(
+              plainScale,
+              rangeOf([
+                ...(gene?.lo.flat() ?? []),
+                ...(gene?.hi.flat() ?? []),
+                ...(gene?.reps.flat(2) ?? [])
+              ])
+            )
+          : null)
+      }
     }
     if (!gene) return { data: [], layout: lay }
     const name = displayMap[gene.uniqID] || gene.uniqID
+    // shown plain, each value rides formatted in its hovertext (Plotly can't exponentiate)
+    const valueAt = plainScale ? '%{hovertext}' : '%{y:.3f}'
+    const plainText = (vs: number[]) =>
+      plainScale ? { hovertext: vs.map((v) => fmtQuantity(v, plainScale, true)) } : null
+    // factor 2's level, when there is a factor 2
+    const lineCond = (lv: string): Array<[string, string]> => (lineName ? [[lineName, lv]] : [])
     const xs = pos
     const behind: Array<Record<string, unknown>> = []
     const front: Array<Record<string, unknown>> = []
@@ -109,15 +136,13 @@ export function InteractionView({
             x: rx,
             y: ry,
             text: rl,
+            ...plainText(ry),
             marker: { color: ptCol, size: look.pointSize, opacity: look.pointOpacity },
             hovertemplate: tooltip(
               {
                 title: name,
-                conds: [
-                  [xName, '%{text}'],
-                  [lineName, lv]
-                ],
-                values: [['replicate', '%{y:.3f}']]
+                conds: [[xName, '%{text}'], ...lineCond(lv)],
+                values: [['replicate', valueAt]]
               },
               p.textMuted,
               { template: true }
@@ -132,17 +157,15 @@ export function InteractionView({
         x: xs,
         y: gene.means[li],
         text: xLevels,
+        ...plainText(gene.means[li]),
         line: { color: col, width: look.lineWidth },
         marker: { color: col, size: look.lineWidth * 3 + 2 },
         opacity: look.lineOpacity,
         hovertemplate: tooltip(
           {
             title: name,
-            conds: [
-              [xName, '%{text}'],
-              [lineName, lv]
-            ],
-            values: [['cell mean', '%{y:.3f}']]
+            conds: [[xName, '%{text}'], ...lineCond(lv)],
+            values: [['cell mean', valueAt]]
           },
           p.textMuted,
           { template: true }
@@ -150,6 +173,6 @@ export function InteractionView({
       })
     })
     return { data: [...behind, ...front], layout: lay }
-  }, [gene, xName, xLevels, lineName, lineLevels, yLabel, displayMap, look, mode])
+  }, [gene, xName, xLevels, lineName, lineLevels, yLabel, displayMap, look, mode, plainScale])
   return <PlotlyChart data={data} layout={layout} />
 }

@@ -1,6 +1,7 @@
 import {
   type ContrastStat,
   withLogTransform,
+  withLogDisplay,
   snapStatMin,
   reclassifyContrast,
   previewOfResult,
@@ -48,6 +49,7 @@ export function configSlice(
   | 'setLoadNumeric'
   | 'previewStdScale'
   | 'setStdLogTransform'
+  | 'setStdLogDisplay'
   | 'setCompareThreshold'
   | 'setContrastStat'
   | 'applyConfigToKind'
@@ -240,6 +242,30 @@ export function configSlice(
         }
       })
       if ((cfg.logTransform ?? 'none') !== logTransform) get().invalidateDownstream(id)
+    },
+    setStdLogDisplay: (id, display) => {
+      const node = get().nodes.find((n) => n.id === id)
+      if (!node || !isStep(node) || node.data.kind !== 'standardize') return
+      const cfg = node.data.config as StandardizeConfig
+      get().commit()
+      // Presentation only: the result is re-stamped (withLogDisplay) and every plot it feeds
+      // relabels; nothing computed changes, so nothing goes stale.
+      set((s) => {
+        const res = s.results[id]
+        return {
+          nodes: s.nodes.map((n) =>
+            n.id === id && isStep(n)
+              ? { ...n, data: { ...n.data, config: { ...cfg, logDisplay: display } as NodeConfig } }
+              : n
+          ),
+          ...(res?.kind === 'standardize'
+            ? {
+                results: { ...s.results, [id]: { ...res, std: withLogDisplay(res.std, display) } }
+              }
+            : null),
+          dirty: true
+        }
+      })
     },
     setCompareThreshold: (id, partial) => {
       const node = get().nodes.find((n) => n.id === id)

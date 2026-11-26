@@ -26,6 +26,8 @@ export function maView(v: ViewContext): ReactNode {
     facetSel,
     quantityScale,
     quantityUnit,
+    quantityPlain,
+    plainScale,
     effectsOf,
     upId
   } = v
@@ -51,10 +53,19 @@ export function maView(v: ViewContext): ReactNode {
                 fcHigh: threshold.fcHigh,
                 displayMap: dm,
                 scale: quantityScale,
-                unit: quantityUnit
+                unit: quantityUnit,
+                plain: quantityPlain
               })
             }
-            deps={[rows, threshold.fcLow, threshold.fcHigh, dm, quantityScale, quantityUnit]}
+            deps={[
+              rows,
+              threshold.fcLow,
+              threshold.fcHigh,
+              dm,
+              quantityScale,
+              quantityUnit,
+              quantityPlain
+            ]}
           >
             {(ma) => (
               <MAView
@@ -65,6 +76,7 @@ export function maView(v: ViewContext): ReactNode {
                 effectColors={effectsOf(cfg)}
                 style={cfg.style}
                 labelTop={labelCapOn(cfg) ? (cfg.labelTop ?? 0) : 0}
+                plainScale={plainScale}
                 onThresholdChange={
                   upId
                     ? (partial) => useGraph.getState().setCompareThreshold(upId, partial)

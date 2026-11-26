@@ -28,6 +28,19 @@ function renderCell(cell: string): ReactNode {
   )
 }
 
+/** Every parenthetical faint (see PreviewTable's `everyBracket`). */
+function renderBrackets(cell: string): ReactNode {
+  return cell.split(/(\([^()]*\))/).map((part, k) =>
+    k % 2 ? (
+      <span key={k} style={selectorStyles.tdFaint}>
+        {part}
+      </span>
+    ) : (
+      part
+    )
+  )
+}
+
 /** True when the element is scrolled to (or doesn't overflow past) its bottom. */
 const isAtEnd = (el: HTMLElement): boolean => el.scrollHeight - el.scrollTop - el.clientHeight < 2
 
@@ -36,10 +49,14 @@ const isAtEnd = (el: HTMLElement): boolean => el.scrollHeight - el.scrollTop - e
  *  Windowed (ui/VirtualRows): however many context groups, all scroll, only those in view draw. */
 export function PreviewTable({
   columns,
-  rows
+  rows,
+  everyBracket = []
 }: {
   columns: string[]
   rows: string[][]
+  /** columns whose every bracket is the faint detail, not only a trailing one — an ANOVA
+   *  comparison, "cell (P|M) × time (24|6)": the conditions read first, their pairs faint */
+  everyBracket?: number[]
 }): ReactNode {
   const ref = useRef<HTMLDivElement>(null)
   useStickyGutter(ref)
@@ -86,7 +103,7 @@ export function PreviewTable({
                       ...(columns[j] === '' ? selectorStyles.tdSep : null)
                     }}
                   >
-                    {renderCell(cell)}
+                    {everyBracket.includes(j) ? renderBrackets(cell) : renderCell(cell)}
                   </td>
                 ))}
               </tr>

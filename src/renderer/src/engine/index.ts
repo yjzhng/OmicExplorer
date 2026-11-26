@@ -160,7 +160,7 @@ export {
 export { samBoundary } from './sam'
 export { curvePointsFromStd, replicateLog2FCs, stdByGene, type CurvePoints } from './curvePoints'
 export type { ComparePreview } from './direct'
-export { runFactorAnova, previewFactorAnova, crossPairs } from './twoWay'
+export { runFactorAnova, previewFactorAnova, crossPairs, slopePositions } from './twoWay'
 export type { FactorAnovaPreview } from './twoWay'
 export {
   runContrast,
@@ -295,6 +295,14 @@ export {
   isSlopeRow,
   termless
 } from './types'
+export {
+  CLEANUP_MODES,
+  cleanupModeOf,
+  cleanupRuleOf,
+  type CleanupMode,
+  type CleanupRule,
+  type CleanupThreshold
+} from './cleanup'
 export type { CustomConditionKey, NumericConds, PresetConditionKey } from './types'
 export { condValue, condPresent, numValue } from './compare'
 export {
@@ -402,8 +410,13 @@ export {
   presentScaleOf,
   analysisScaleOf,
   withLogTransform,
+  withLogDisplay,
+  plainLogOf,
+  tableScaleOf,
+  type LogDisplay,
   withScale,
   quantityLabel,
+  scaleName,
   fromLog10,
   type LogTransform,
   type Shape,
@@ -425,4 +438,8 @@ export {
 export type { ResponseInput } from './responseSurface'
 export { anovaSliceFor, geneShares, interactionAxes, interactionGene, rankByQ } from './anovaPlots'
 export type { AnovaSliceResult, GeneShares, InteractionGene } from './anovaPlots'
-export type { AnovaResult } from './anova'
+export type { AnovaFactor, AnovaResult } from './anova'
+export { pickTop } from './topPick'
+export type { TopSplit, TopSplitSpec } from './topPick'
+export { MODULE_OVERLAP, moduleParts, termModules } from './enrichModules'
+export type { ModuleTerm, TermModules } from './enrichModules'

@@ -4,6 +4,7 @@
  */
 import { describe, expect, it } from 'vitest'
 
+import { cleanupRuleOf, type CleanupMode } from './cleanup'
 import { standardize } from './ingest'
 
 // 4 samples (s1..s4); g1 present in all 4, g2 in 2, g3 in 1.
@@ -122,5 +123,71 @@ describe('grouped clean-up (minSamplePctBy)', () => {
     expect(genes(r)).toEqual(new Set(['gA', 'gB', 'gC']))
     expect(valuesOf(r, 'gC')).toEqual(['WT@1'])
     expect(r.cleanup.by).toEqual(['cell', 'dose'])
+  })
+})
+
+describe('grouped clean-up modes (cleanupMode)', () => {
+  // 2 cells × 2 reps: WT s1 s2, KO s3 s4.
+  const SS = ['sample,cell', 's1,WT', 's2,WT', 's3,KO', 's4,KO'].join('\n')
+  // gA in all; gB in both WT, one KO; gC in both WT only; gD in one WT, one KO.
+  const DATA = ['id,s1,s2,s3,s4', 'gA,1,1,1,1', 'gB,1,1,1,', 'gC,1,1,,', 'gD,1,,1,'].join('\n')
+  const run = (mode: CleanupMode = 'anyGroup') =>
+    standardize({
+      dataText: DATA,
+      dataFilename: 'd_wide.csv',
+      samplesheetText: SS,
+      cleanupRule: cleanupRuleOf(mode, ['cell'], { unit: 'pct', value: 100 })
+    })
+  const cellsWithValues = (r: ReturnType<typeof run>, g: string) =>
+    [...new Set(r.rows.filter((x) => x.uniqID === g && x.value != null).map((x) => x.cell))].sort()
+
+  it('at least one group (default): a gene clearing in any group is kept whole', () => {
+    const r = run()
+    expect(genes(r)).toEqual(new Set(['gA', 'gB', 'gC']))
+    expect(cellsWithValues(r, 'gB')).toEqual(['KO', 'WT'])
+    expect(r.cleanup.rule?.required).toBe(1)
+  })
+
+  it('every group: a gene short in any group goes', () => {
+    const r = run('everyGroup')
+    expect(genes(r)).toEqual(new Set(['gA']))
+    expect(r.cleanup.droppedGenes).toBe(3)
+  })
+
+  it('within group: values go from the groups the gene is short in, the gene stays', () => {
+    const r = run('withinGroup')
+    expect(genes(r)).toEqual(new Set(['gA', 'gB', 'gC'])) // gD short in both: gone
+    // gB: its lone KO value removed (left missing), its WT ones kept
+    expect(cellsWithValues(r, 'gB')).toEqual(['WT'])
+    expect(r.rows.filter((x) => x.uniqID === 'gB')).toHaveLength(4)
+    expect(cellsWithValues(r, 'gC')).toEqual(['WT'])
+    expect(r.cleanup.removedValues).toBe(1)
+    expect(r.cleanup.droppedGenes).toBe(1)
+  })
+})
+
+describe('clean-up by a count of samples (minSampleCount)', () => {
+  it('pooled: a gene needs a value in at least N samples', () => {
+    const r = standardize({
+      dataText: DATA_WIDE,
+      dataFilename: 'data_wide.csv',
+      samplesheetText: SAMPLESHEET,
+      cleanupRule: cleanupRuleOf('overall', [], { unit: 'count', value: 2 })
+    })
+    // g1 in 4, g2 in 2, g3 in 1
+    expect(genes(r)).toEqual(new Set(['g1', 'g2']))
+    expect(r.cleanup.rule?.threshold).toEqual({ unit: 'count', value: 2 })
+  })
+  it('grouped: N within each group', () => {
+    const ss = ['sample,cell', 's1,WT', 's2,WT', 's3,KO', 's4,KO'].join('\n')
+    const data = ['id,s1,s2,s3,s4', 'gA,1,1,,', 'gB,1,,1,'].join('\n')
+    const r = standardize({
+      dataText: data,
+      dataFilename: 'd_wide.csv',
+      samplesheetText: ss,
+      cleanupRule: cleanupRuleOf('anyGroup', ['cell'], { unit: 'count', value: 2 })
+    })
+    // gA: 2 in WT → kept; gB: 1 in each → gone
+    expect(genes(r)).toEqual(new Set(['gA']))
   })
 })

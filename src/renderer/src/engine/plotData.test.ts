@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest'
 
 import { jacobiEigenSymmetric } from './stats'
 import {
+  buildVolcano,
   buildCluster,
   buildResponseCluster,
   buildMA,
@@ -17,7 +18,6 @@ import {
   buildDR,
   buildHeatmap,
   buildQc,
-  pickBalanced,
   metaValue,
   sampleHierarchy,
   sortSamples,
@@ -225,40 +225,6 @@ describe('bubble top genes', () => {
     const one = { ...opts, topGenes: 2 }
     expect(buildBubble(rows, one).genes).toContain('bigFc')
     expect(buildBubble(rows, { ...one, rank: 'pQ' }).genes).toContain('sure')
-  })
-})
-
-describe('pickBalanced', () => {
-  const side = (prefix: string, n: number, sign: number) =>
-    Array.from({ length: n }, (_, i) => ({ id: `${prefix}${i}`, signed: sign * (10 - i * 0.1) }))
-
-  it('splits the top N in proportion to each side', () => {
-    // 70 up / 30 down → 10 picks split 7:3, even though the down side has the larger magnitudes
-    const up = side('u', 70, 1)
-    const down = side('d', 30, -1).map((c) => ({ ...c, signed: c.signed * 3 }))
-    const got = pickBalanced([...up, ...down], 10)
-    expect(got.filter((id) => id.startsWith('u'))).toHaveLength(7)
-    expect(got.filter((id) => id.startsWith('d'))).toHaveLength(3)
-    // within a side, the largest first
-    expect(got).toContain('u0')
-    expect(got).toContain('d0')
-  })
-
-  it('hands a short side’s slots to the other, and returns everything when N covers it', () => {
-    const cands = [...side('u', 2, 1), ...side('d', 1, -1)]
-    expect(pickBalanced(cands, 10)).toHaveLength(3)
-    // a 1-gene side gives what it has; the rest go to the other side
-    const lopsided = [...side('u', 9, 1), ...side('d', 1, -1)]
-    const got = pickBalanced(lopsided, 4)
-    expect(got.filter((id) => id.startsWith('d'))).toEqual(['d0'])
-    expect(got).toHaveLength(4)
-  })
-
-  it('gives each side at least a quarter, rounded up', () => {
-    // 96:4 of 10 would round to 10:0; the floor keeps ceil(10 / 4) = 3 for down
-    const got = pickBalanced([...side('u', 96, 1), ...side('d', 4, -1)], 10)
-    expect(got.filter((id) => id.startsWith('d'))).toHaveLength(3)
-    expect(got.filter((id) => id.startsWith('u'))).toHaveLength(7)
   })
 })
 
@@ -725,5 +691,22 @@ describe('curve-fit labels in plots', () => {
     expect(comparisonOf([{ comparison: 'KO | WT', cmp_cond: 'cell' }])).toBe('KO | WT')
     expect(fcMeasure('curve_fit', '4pl')).toBe('curve log₂FC')
     expect(fcMeasure('curve_fit', '4pl', true)).toBe('peak log₂FC')
+  })
+})
+
+describe('volcano: untested genes at 0', () => {
+  const rows = [
+    { uniqID: 'g', log2FC: 1.5, pP: 3, pQ: 2, effect: 'up', signf: true },
+    { uniqID: 'ref', log2FC: 0, pP: NaN, pQ: NaN, effect: 'none', signf: false }
+  ] as unknown as CompareResultRow[]
+  const opts = { statType: 'pP' as const, fcLow: -1, fcHigh: 1, statMin: 1.3 }
+  it('leaves a gene without a p-value out by default', () => {
+    expect(buildVolcano(rows, opts).points.map((p) => p.uniqID)).toEqual(['g'])
+  })
+  it('draws it on the x axis when asked, flagged untested', () => {
+    const ref = buildVolcano(rows, { ...opts, untestedAtZero: true }).points.find(
+      (p) => p.uniqID === 'ref'
+    )!
+    expect([ref.x, ref.y, ref.untested]).toEqual([0, 0, true])
   })
 })

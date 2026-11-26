@@ -10,9 +10,11 @@ import type { NodeProps, Node } from '@xyflow/react'
 
 import { IconCheck, IconEdit } from '../ui/icons'
 import { UI } from '../ui/theme'
-import { safeTileName } from './registry'
+import { runsIn, safeTileName } from './registry'
 import { frameTiles } from './frames'
+import { RunControl } from './StatusDot'
 import { useGraph } from './store'
+import { isStep, type PlotGroupConfig, type StepStatus } from './types'
 import { useFrameEdit, useFrameEditMark } from './frameEdit'
 
 export interface FrameData extends Record<string, unknown> {
@@ -35,9 +37,29 @@ export function FrameNode({ id, data, selected }: NodeProps<Node<FrameData>>): R
   // While another group is edited, this one is marked by a click to join it whole (or, inside it,
   // to leave it).
   const mark = useFrameEditMark(id)
+  // The group's run state, from its tiles': running while any runs, failed while any failed, done
+  // when all are (each a tile's own, a plot group's from its plots).
+  const runState = useGraph((s): StepStatus | null => {
+    const tiles = frameTiles(s.frames, id)
+    const st = tiles.flatMap((t) => {
+      const n = s.nodes.find((x) => x.id === t)
+      if (!n || !isStep(n) || !runsIn(s, t)) return []
+      if (n.data.kind === 'plotGroup')
+        return (n.data.config as PlotGroupConfig).children.map((c) => c.status ?? 'idle')
+      return [n.data.status]
+    })
+    if (!st.length) return null
+    if (st.includes('running')) return 'running'
+    if (st.includes('error')) return 'error'
+    return st.every((x) => x === 'done') ? 'done' : 'idle'
+  })
+  const runTargets = useGraph((s) => s.runTargets)
+  const stopTargets = useGraph((s) => s.stopTargets)
   const markColor = mark === 'add' ? UI.ok : UI.err
   const [draft, setDraft] = useState<string | null>(null)
   const [nameHovered, setNameHovered] = useState(false)
+  // its Run and edit buttons show only under the pointer (and the ✓ while its tiles are edited)
+  const [hovered, setHovered] = useState(false)
   const commit = (): void => {
     if (draft != null) renameFrame(id, draft)
     setDraft(null)
@@ -54,6 +76,8 @@ export function FrameNode({ id, data, selected }: NodeProps<Node<FrameData>>): R
         const on = new Set(nodes.filter((n) => n.selected).map((n) => n.id))
         if (!tiles.every((t) => on.has(t))) selectTiles(tiles, e.metaKey || e.ctrlKey)
       }}
+      onPointerEnter={() => setHovered(true)}
+      onPointerLeave={() => setHovered(false)}
       onClick={(e) => {
         if (draft != null) return
         if (data.edit === 'idle') {
@@ -69,16 +93,38 @@ export function FrameNode({ id, data, selected }: NodeProps<Node<FrameData>>): R
         ...frame,
         width: data.width,
         height: data.height,
+        // (running keeps its border: the accent border is a selected group's — the run shows as
+        // the strip along its top)
         borderColor: mark ? markColor : selected || editing ? UI.accent : UI.border,
         borderStyle: editing || mark ? 'dashed' : 'solid',
         ...(mark ? { borderWidth: 2.5 } : null),
         cursor: data.edit === 'other' ? 'pointer' : undefined
       }}
     >
+      {/* running: a segment sweeping along its top edge, as a running tile's strip */}
+      {runState === 'running' && !mark && (
+        <div aria-hidden title="Running…" style={runStrip}>
+          <div
+            className="oe-strip-sweep"
+            style={{ width: '30%', height: '100%', background: UI.accent }}
+          />
+        </div>
+      )}
       {mark && (
         <span style={{ ...markBadge, background: markColor }}>{mark === 'add' ? '+' : '−'}</span>
       )}
-      {data.edit !== 'other' && (
+      {/* Run the group: its tiles as the target (and any step above them they need) */}
+      {data.edit === 'idle' && hovered && runState && (
+        <span className="nodrag" style={runSlot} onPointerDown={(e) => e.stopPropagation()}>
+          <RunControl
+            status={runState}
+            accent={UI.accent}
+            onRun={() => void runTargets(frameTiles(useGraph.getState().frames, id))}
+            onStop={() => stopTargets(frameTiles(useGraph.getState().frames, id))}
+          />
+        </span>
+      )}
+      {(editing || (data.edit === 'idle' && hovered)) && (
         <button
           className="nodrag"
           title={
@@ -166,6 +212,26 @@ const markBadge: CSSProperties = {
   textAlign: 'center'
 }
 /** The pencil / ✓, at the top right of the label strip. */
+/** A running group's strip: over its top border, inside the rounded corners. */
+const runStrip: CSSProperties = {
+  position: 'absolute',
+  top: -2,
+  left: 14,
+  right: 14,
+  height: 3,
+  borderRadius: 2,
+  overflow: 'hidden',
+  pointerEvents: 'none'
+}
+/** The group's Run chip: left of the pencil, centred on it. */
+const runSlot: CSSProperties = {
+  position: 'absolute',
+  top: 6,
+  right: 46,
+  height: 30,
+  display: 'flex',
+  alignItems: 'center'
+}
 const editBtn: CSSProperties = {
   position: 'absolute',
   top: 6,

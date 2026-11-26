@@ -46,6 +46,12 @@ import { useUiTheme } from '../../ui/useUiTheme'
 
 export type ResponseShow = 'line' | 'surface' | 'heatmap'
 
+/** An axis of named levels (ResponseSurfaceView's `levels`): each level's position and name. */
+export interface AxisLevels {
+  at: number[]
+  names: string[]
+}
+
 /** A fitted surface's cells with a log axis's base level at 0 (a cell against one position: dose 0
  *  at a higher temperature) moved to where the fit placed it — a step below the lowest level
  *  (SurfaceAxisMap.zeroX) — so a log axis can draw it. */
@@ -395,7 +401,9 @@ export function ResponseSurfaceView({
   xRole = 'dose',
   yRole = 'time',
   valueRange,
-  shiftRange
+  shiftRange,
+  levels,
+  valueTitle: valueTitleSet
 }: {
   /** the gene's surface row (rs.axis 'surface') in the facet on show */
   row?: CompareResultRow
@@ -428,6 +436,12 @@ export function ResponseSurfaceView({
   /** testing response changes: the shift colours fixed to ± this — so paging genes keeps one
    *  scale (scale: global); unset = fitted to this gene's own shifts */
   shiftRange?: number
+  /** measured values only: an axis of named levels at set positions (an ANOVA's factors — a
+   *  category, or a numeric level placed on its scale), linear: ticks at the levels, named; the
+   *  slices and hovers by the names. The cells' dose / time are those positions. */
+  levels?: { x?: AxisLevels; y?: AxisLevels }
+  /** the value axis's title, for values other than a Compare's log₂FC */
+  valueTitle?: string
 }) {
   const mode = useUiTheme((s) => s.mode)
   // A 3-D scene holds a WebGL context while mounted (Chromium keeps ~16 a page, and a hidden
@@ -489,8 +503,45 @@ export function ResponseSurfaceView({
     // A fitted surface's own axes (rs.maps: any pair, log or linear; absent — dose × time — log on
     // both); measured values' as set.
     const fm = measured ? undefined : row?.rs?.maps
-    const xLog = measured ? (scales?.x ?? 'log') === 'log' : fm?.[0].scale !== 'linear'
-    const yLog = measured ? (scales?.y ?? 'log') === 'log' : fm?.[1].scale !== 'linear'
+    const xLog = measured
+      ? !levels?.x && (scales?.x ?? 'log') === 'log'
+      : fm?.[0].scale !== 'linear'
+    const yLog = measured
+      ? !levels?.y && (scales?.y ?? 'log') === 'log'
+      : fm?.[1].scale !== 'linear'
+    // A position's level name on a named axis (null: none there — between levels, or unnamed).
+    const levelAt = (v: number, L?: AxisLevels): string | null => {
+      if (!L) return null
+      const i = L.at.findIndex((a) => Math.abs(a - v) <= 1e-9 * Math.max(1, Math.abs(a)))
+      return i >= 0 ? L.names[i] : null
+    }
+    // Named axes: each point's hover names its levels (a template can only format numbers) — in
+    // `text`, read by `xyConds`; between levels, nothing.
+    const named = !!(levels?.x || levels?.y)
+    const xyText = (x: number, y: number): string => {
+      const nx = levels?.x ? levelAt(x, levels.x) : `${Number(x.toPrecision(3))}`
+      const ny = levels?.y ? levelAt(y, levels.y) : `${Number(y.toPrecision(3))}`
+      return nx != null && ny != null
+        ? tooltip(
+            {
+              conds: [
+                [doseLabel, nx],
+                [timeLabel, ny]
+              ]
+            },
+            PALETTES[mode].textMuted
+          )
+        : ''
+    }
+    const xyConds = (xf = '%{x:.3g}', yf = '%{y:.3g}'): Array<[string, string] | string> =>
+      named
+        ? ['%{text}']
+        : [
+            [doseLabel, xf],
+            [timeLabel, yf]
+          ]
+    const textOf = (xs: number[], ys: number[]): { text?: string[] } =>
+      named ? { text: xs.map((x, i) => xyText(x, ys[i])) } : {}
     // Measured levels only: each is its own "fit", so the lines join the values themselves. A level
     // at 0 (or below) has no place on a log axis.
     const cells: Array<MeasuredCell & { fitted: number }> = measured
@@ -561,7 +612,8 @@ export function ResponseSurfaceView({
     // A level's name as the data has it — a log axis's placed 0 reads 0 (a slice's legend entry and
     // hover), not the place it's drawn at.
     const sliceName = (g: number, per: 'dose' | 'time'): string =>
-      (per === 'dose' ? xLog && g === xZero : yLog && g === yZero) ? '0' : `${g}`
+      (per === 'dose' ? levelAt(g, levels?.x) : levelAt(g, levels?.y)) ??
+      ((per === 'dose' ? xLog && g === xZero : yLog && g === yZero) ? '0' : `${g}`)
     // A line's colour: one per slice, low → high (early → late for times), along the palette.
     const sliceColor = (i: number, n: number, per: 'time' | 'dose'): string =>
       look.lineColor !== AUTO
@@ -587,11 +639,13 @@ export function ResponseSurfaceView({
         : lineCol
           ? { color: lineCol }
           : { color: ys, colorscale: pointScale, cmin: -range, cmax: range, showscale: false }
-    const valueTitle = measured
-      ? measured.comparison
-        ? `log₂FC · ${measured.comparison}`
-        : 'log₂FC'
-      : 'log₂ ratio to control'
+    const valueTitle = valueTitleSet
+      ? valueTitleSet
+      : measured
+        ? measured.comparison
+          ? `log₂FC · ${measured.comparison}`
+          : 'log₂FC'
+        : 'log₂ ratio to control'
     // The value's name in hovers and on the colour bar: the line's (a model's) and the points'.
     const valueName = measured ? 'log₂FC' : 'log₂'
     const pointLabel = measured
@@ -726,8 +780,23 @@ export function ResponseSurfaceView({
           log: true
         }
       }
-      // A linear axis at nice ticks, half a tick interval past the data at either end.
-      const linAxis = (title: string, vals: number[]): StrokeAxis => {
+      // A linear axis at nice ticks, half a tick interval past the data at either end — or, named
+      // levels, at the levels, half the narrowest gap past the ends.
+      const linAxis = (title: string, vals: number[], L?: AxisLevels): StrokeAxis => {
+        if (L) {
+          // the levels in axis order, each with its name
+          const order = L.at.map((_, i) => i).sort((i, j) => L.at[i] - L.at[j])
+          const at = order.map((i) => L.at[i])
+          const gap = Math.min(...at.slice(1).map((v, i) => v - at[i]), Infinity)
+          const half = Number.isFinite(gap) && gap > 0 ? gap / 2 : 0.5
+          return {
+            title,
+            ticks: at,
+            labels: order.map((i) => L.names[i]),
+            range: [at[0] - half, at[at.length - 1] + half],
+            log: false
+          }
+        }
         const lo = Math.min(...vals)
         const hi = Math.max(...vals)
         const t = niceTicks(lo, hi === lo ? lo + 1 : hi)
@@ -746,10 +815,10 @@ export function ResponseSurfaceView({
           {
             x: xLog
               ? logAxis(doseLabel, [...doses, ...controls.map((c) => placeX(c.dose))], xZero)
-              : linAxis(doseLabel, [...doses, ...controls.map((c) => c.dose)]),
+              : linAxis(doseLabel, [...doses, ...controls.map((c) => c.dose)], levels?.x),
             y: yLog
               ? logAxis(timeLabel, [...times, ...controls.map((c) => placeY(c.time))], yZero)
-              : linAxis(timeLabel, [...times, ...controls.map((c) => c.time)]),
+              : linAxis(timeLabel, [...times, ...controls.map((c) => c.time)], levels?.y),
             z: { title: valueTitle, ticks: zt.ticks, labels: zt.labels, range: zr, log: false }
           },
           { line: p.textMuted, grid: grid3, ink: p.textMuted }
@@ -930,10 +999,7 @@ export function ResponseSurfaceView({
         const hover = (label: string): string =>
           tooltip(
             {
-              conds: [
-                [doseLabel, '%{x:.3g}'],
-                [timeLabel, '%{y:.3g}']
-              ],
+              conds: xyConds(),
               values: [[label, '%{z:.3f}']]
             },
             p.textMuted,
@@ -947,6 +1013,7 @@ export function ResponseSurfaceView({
           x: line.x,
           y: line.y,
           z: line.z,
+          ...textOf(line.x, line.y),
           opacity: look.lineOpacity,
           line: { color: col, width: look.lineWidth },
           hovertemplate: hover(lineLabel)
@@ -967,6 +1034,10 @@ export function ResponseSurfaceView({
             x: lv.flatMap((c) => [c.dose, c.dose]),
             y: lv.flatMap((c) => [c.time, c.time]),
             z: lv.flatMap((c) => [c.y - (c.se ?? 0), c.y + (c.se ?? 0)]),
+            ...textOf(
+              lv.flatMap((c) => [c.dose, c.dose]),
+              lv.flatMap((c) => [c.time, c.time])
+            ),
             // two triangles per gap between levels k and k + 1 (vertices 2k: low, 2k + 1: high)
             i: lv.slice(1).flatMap((_, k) => [2 * k, 2 * k + 1]),
             j: lv.slice(1).flatMap((_, k) => [2 * k + 1, 2 * k + 3]),
@@ -988,6 +1059,10 @@ export function ResponseSurfaceView({
             x: lv.map((c) => c.dose),
             y: lv.map((c) => c.time),
             z: lv.map((c) => c.y),
+            ...textOf(
+              lv.map((c) => c.dose),
+              lv.map((c) => c.time)
+            ),
             marker: { size: 0.1, opacity: 0 },
             error_z: {
               type: 'data',
@@ -1000,10 +1075,7 @@ export function ResponseSurfaceView({
             customdata: lv.map((c) => c.se ?? 0),
             hovertemplate: tooltip(
               {
-                conds: [
-                  [doseLabel, '%{x:.3g}'],
-                  [timeLabel, '%{y:.3g}']
-                ],
+                conds: xyConds(),
                 values: [
                   ['log₂FC', '%{z:.3f}'],
                   ['SE', '%{customdata:.3f}']
@@ -1024,6 +1096,10 @@ export function ResponseSurfaceView({
             x: pts.map((c) => c.dose),
             y: pts.map((c) => c.time),
             z: pts.map((c) => c.y),
+            ...textOf(
+              pts.map((c) => c.dose),
+              pts.map((c) => c.time)
+            ),
             marker: {
               ...pointColor(
                 pts.map((c) => c.y),
@@ -1240,10 +1316,7 @@ export function ResponseSurfaceView({
       }
       const curveHover = tooltip(
         {
-          conds: [
-            [doseLabel, '%{x:.3g}'],
-            [timeLabel, '%{y:.3g}']
-          ],
+          conds: xyConds(),
           values: [[lineLabel, '%{z:.3f}']]
         },
         p.textMuted,
@@ -1258,6 +1331,7 @@ export function ResponseSurfaceView({
             type: 'scatter3d',
             mode: 'lines',
             ...xyz,
+            ...textOf(xyz.x, xyz.y),
             line: curveLine,
             opacity: look.curveOpacity,
             showlegend: false,
@@ -1270,6 +1344,7 @@ export function ResponseSurfaceView({
         y: surf.y,
         z: surf.z,
         ...(shiftGrid ? { surfacecolor: shiftGrid, customdata: shiftGrid } : null),
+        ...(named ? { text: surf.y.map((t) => surf.x.map((d) => xyText(d, t))) } : null),
         colorscale: scale,
         cmin: -sMax,
         cmax: sMax,
@@ -1292,10 +1367,7 @@ export function ResponseSurfaceView({
         },
         hovertemplate: tooltip(
           {
-            conds: [
-              [doseLabel, '%{x:.3g}'],
-              [timeLabel, '%{y:.3g}']
-            ],
+            conds: xyConds(),
             values: [
               [lineLabel, '%{z:.3f}'],
               ...(shift ? [[shiftName, '%{customdata:.3f}'] as [string, string]] : [])
@@ -1349,15 +1421,16 @@ export function ResponseSurfaceView({
         x: pts.map((c) => c.dose),
         y: pts.map((c) => c.time),
         z: pts.map((c) => c.y),
+        ...textOf(
+          pts.map((c) => c.dose),
+          pts.map((c) => c.time)
+        ),
         marker: { ...ptMarker, size: pointSize, opacity },
         ...(role === 'pointsDim' ? { visible: false } : null),
         showlegend: false,
         hovertemplate: tooltip(
           {
-            conds: [
-              [doseLabel, '%{x:.3g}'],
-              [timeLabel, '%{y}']
-            ],
+            conds: xyConds('%{x:.3g}', '%{y}'),
             values: [[pointLabel, '%{z:.3f}']]
           },
           p.textMuted,
@@ -1506,6 +1579,8 @@ export function ResponseSurfaceView({
     scales,
     valueRange,
     shiftRange,
+    levels,
+    valueTitleSet,
     mode
   ])
 

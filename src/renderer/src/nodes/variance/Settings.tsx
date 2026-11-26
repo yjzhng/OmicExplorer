@@ -58,7 +58,7 @@ export function Settings({ config, ...props }: PlotSettingsProps): ReactNode {
   return (
     <PlotSections
       general={<VariancePanel config={c} {...props} />}
-      genes={(c.view ?? 'overview') === 'detail' && <VarianceGenes config={c} {...props} />}
+      ranking={(c.view ?? 'overview') === 'detail' && <VarianceGenes config={c} {...props} />}
     />
   )
 }

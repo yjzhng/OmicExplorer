@@ -1,6 +1,8 @@
 import { useContext, useMemo } from 'react'
 
 import { buildBubble, condLabel, type CompareResultRow, type ConditionKey } from '../../engine'
+import { topSplitOf } from '../../graph/types'
+import type { TopSplit } from '../../engine'
 import { tooltip } from '../../ui/condTooltip'
 import { sizeKeyLevels } from '../../ui/sizeKey'
 import { PlotlyChart } from '../../ui/PlotlyChart'
@@ -163,6 +165,9 @@ export function BubbleView({
   axis,
   axisLabel,
   topGenes,
+  topSplit,
+  topUp,
+  topDown,
   rank = 'fc',
   over = 'peak',
   stat = 'pQ',
@@ -183,6 +188,10 @@ export function BubbleView({
   /** the dose/time axis's title, with its unit (absent = the bare axis name) */
   axisLabel?: string
   topGenes: number
+  /** how the top-N splits between up and down (TopSplitConfig) */
+  topSplit?: TopSplit
+  topUp?: number
+  topDown?: number
   /** what ranks the top genes (see BubbleOptions.rank) */
   rank?: 'fc' | 'pP' | 'pQ'
   /** that score's peak or total over the levels (see BubbleOptions.over) */
@@ -223,6 +232,7 @@ export function BubbleView({
     const bubble = buildBubble(rows, {
       axis,
       topGenes,
+      split: topSplitOf({ topSplit, topUp, topDown }),
       rank,
       over,
       stat,
@@ -429,6 +439,9 @@ export function BubbleView({
     axis,
     axisLabel,
     topGenes,
+    topSplit,
+    topUp,
+    topDown,
     rank,
     over,
     stat,

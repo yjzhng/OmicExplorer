@@ -193,3 +193,28 @@ export function editMembers(
     })
   )
 }
+
+/** The canvas's stacking for groups: each top-level group a layer — its frame (nested frames above
+ *  the one holding them), then its tiles above that — the later group in the list above the
+ *  earlier (a duplicate above its original), and every group below the ungrouped tiles (z 0).
+ *  `frameZ` per frame, `tileZ` per grouped tile; a tile's own lift (a just-expanded plot group)
+ *  adds to its layer's. */
+export const GROUP_LAYER = 1_000_000
+export const GROUP_TILE_Z = 1000
+export function frameLayers(frames: CanvasFrame[]): {
+  frameZ: Map<string, number>
+  tileZ: Map<string, number>
+} {
+  const depth = frameDepths(frames)
+  const tops = frames.filter((f) => (depth.get(f.id) ?? 0) === 0)
+  const frameZ = new Map<string, number>()
+  const tileZ = new Map<string, number>()
+  tops.forEach((top, k) => {
+    const base = -(tops.length - k) * GROUP_LAYER
+    for (const f of frames)
+      if (f.id === top.id || frameHolds(frames, top.id, f.id))
+        frameZ.set(f.id, base + (depth.get(f.id) ?? 0))
+    for (const t of frameTiles(frames, top.id)) tileZ.set(t, base + GROUP_TILE_Z)
+  })
+  return { frameZ, tileZ }
+}

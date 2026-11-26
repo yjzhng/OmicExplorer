@@ -25,8 +25,11 @@ export function QcTile({
   fit,
   categorical,
   condTitle,
-  sampleOrder = 'natural'
+  sampleOrder = 'natural',
+  plainScale
 }: {
+  /** intensity shown plain on a log axis (ui/quantityAxis): `scale`, when it is */
+  plainScale?: ValueScale
   /** a condition's legend heading, with its unit (see QcPlotView) */
   condTitle?: (c: ConditionKey) => string
   std: StandardizeResult
@@ -46,8 +49,8 @@ export function QcTile({
   sampleOrder?: SampleOrder
 }) {
   const data = useMemo(
-    () => buildQc(std, metric, scale, { by: sampleOrder, samples: std.samples }),
-    [std, metric, scale, sampleOrder]
+    () => buildQc(std, metric, scale, { by: sampleOrder, samples: std.samples }, !!plainScale),
+    [std, metric, scale, sampleOrder, plainScale]
   )
   return (
     <QcPlotView
@@ -58,6 +61,7 @@ export function QcTile({
       fit={fit}
       categorical={categorical}
       condTitle={condTitle}
+      plainScale={plainScale}
     />
   )
 }

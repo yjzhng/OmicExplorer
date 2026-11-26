@@ -42,6 +42,8 @@ import {
 } from '../../graph/curveSettings'
 import { cssVars, PALETTES, UI } from '../../ui/theme'
 import { OnOffSwitch, ToggleSwitch } from '../../ui/ToggleSwitch'
+import { Formula } from '../../ui/Formula'
+import { DOSE_TIME_4PL } from '../../ui/formulaModel'
 import { StatusNote } from '../../ui/StatusNote'
 import type { ChipItem } from '../../graph/ChipSet'
 import { SideRows, type RowRole, type SideRow } from '../../graph/SideRows'
@@ -1105,8 +1107,10 @@ export function ComparisonDialog({
                     {axis.length === 2 && (
                       <div style={styles.previewItem}>
                         <div>
-                          log₂ abundance ~ {condLabel(axis[0])} + {condLabel(axis[1])} +{' '}
-                          {condLabel(axis[0])} × {condLabel(axis[1])}
+                          <Formula
+                            text={`log₂ abundance ~ μ + ${condLabel(axis[0])} + ${condLabel(axis[1])} + ${condLabel(axis[0])} × ${condLabel(axis[1])}`}
+                            vars={axis.map(condLabel)}
+                          />
                         </div>
                         <div style={styles.previewItemNote}>
                           Welch t-test on the {condLabel(axis[0])} × {condLabel(axis[1])}{' '}
@@ -1136,7 +1140,12 @@ export function ComparisonDialog({
                     </div>
                     {curve && axis.length === 1 && curveAxis && detection === '4pl' && !surface && (
                       <div style={styles.previewItem}>
-                        <div>ratio to control ~ log-logistic(log₁₀ {condLabel(curveAxis)})</div>
+                        <div>
+                          <Formula
+                            text={`ratio to control ~ log-logistic(log₁₀ ${condLabel(curveAxis)})`}
+                            vars={[condLabel(curveAxis)]}
+                          />
+                        </div>
                         <div style={styles.previewItemNote}>
                           4-parameter curve vs a flat line, recalibrated F-test (CurveCurator), per
                           gene
@@ -1152,11 +1161,17 @@ export function ComparisonDialog({
                       (detection === 'spline' || surface) && (
                         <div style={styles.previewItem}>
                           <div>
-                            {!surface
-                              ? `log₂ effect vs control ~ spline(${condLabel(curveAxis)})`
-                              : detection === 'spline'
-                                ? 'log₂ effect vs control ~ spline surface(log₁₀ dose, log time)'
-                                : 'log₂ effect vs control ~ 4PL(log₁₀ dose), top and midpoint over log time'}
+                            <Formula
+                              text={
+                                !surface
+                                  ? `log₂ effect vs control ~ spline(${condLabel(curveAxis)})`
+                                  : detection === 'spline'
+                                    ? 'log₂ effect vs control ~ spline surface(log₁₀ dose, log time)'
+                                    : 'log₂ effect vs control ~ 4PL(log₁₀ dose), top and midpoint over log time'
+                              }
+                              vars={surface ? ['dose', 'time'] : [condLabel(curveAxis)]}
+                              fns={surface ? DOSE_TIME_4PL : undefined}
+                            />
                           </div>
                           <div style={styles.previewItemNote}>
                             {!surface
@@ -1185,7 +1200,12 @@ export function ComparisonDialog({
                       )}
                     {!contrast && !curve && axis.length === 1 && (
                       <div style={styles.previewItem}>
-                        <div>log₂ abundance ~ {condLabel(axis[0])}</div>
+                        <div>
+                          <Formula
+                            text={`log₂ abundance ~ μ + ${condLabel(axis[0])}`}
+                            vars={[condLabel(axis[0])]}
+                          />
+                        </div>
                         <div style={styles.previewItemNote}>
                           Welch t-test
                           {preview.matched.length
