@@ -13,7 +13,7 @@ import {
   stringQueryGenesAt,
   stringSendLimit
 } from '../../ui/stringModel'
-import { dominantTaxon } from '../kit/requirements'
+import { stringTaxon } from '../kit/requirements'
 import { NO_LOCAL_DATA } from '../kit/runConstants'
 import type { PlotRunContext } from '../runContext'
 import { NotReady } from '../../shared/diagnostics'
@@ -23,7 +23,7 @@ export async function run(ctx: PlotRunContext): Promise<NodeResult> {
   if (upstream.kind !== 'compare') throw new NotReady('Needs a Compare upstream.')
   const cfg = config as StringConfig
   const ann = upstream.annotationMap ?? {}
-  const species = cfg.species && cfg.species > 0 ? cfg.species : dominantTaxon(ann)
+  const species = cfg.species && cfg.species > 0 ? cfg.species : stringTaxon(ann)
   if (!species) throw new NotReady('No species detected — set one in the settings.')
   const caps = stringCapOptions(cfg.maxGenes > 0 ? cfg.maxGenes : 40)
   const facets: Record<string, StringAll> = {}

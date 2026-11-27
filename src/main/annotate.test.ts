@@ -39,7 +39,7 @@ vi.mock('./cache', () => ({
   writeJson: async (_p: string, v: unknown) => void (written = v as typeof written)
 }))
 
-const { registerAnnotate, RESOLVER_TOKEN } = await import('./annotate')
+const { registerAnnotate, RESOLVER_TOKEN, keggPathwayNames } = await import('./annotate')
 
 // Stand-in rows, one per case the resolver has to handle: a prokaryote with a COG, a eukaryote with
 // a KOG (what UniProt hands out there instead), and a protein whose only group is an eggNOG-native
@@ -154,7 +154,12 @@ beforeEach(() => {
       )
     if (url.includes('rest.kegg.jp/link/pathway')) return ok('eco:b3932\tpath:eco03050')
     if (url.includes('rest.kegg.jp/list/pathway'))
-      return ok('eco03050\tProteasome - Escherichia coli')
+      return ok(
+        [
+          'eco03050\tProteasome - Escherichia coli K-12 MG1655',
+          'eco00010\tGlycolysis / Gluconeogenesis - Escherichia coli K-12 MG1655'
+        ].join('\n')
+      )
     // BRITE br08901's htext: A = pathway category, B = pathway group, C = the pathway.
     if (url.includes('rest.kegg.jp/get/br:br08901'))
       return ok(
@@ -401,6 +406,32 @@ describe('annot:uniprot — KEGG', () => {
     expect(res.byId.P0A7B8.KEGG).toBe('Proteasome')
     expect(res.byId.P0A7B8.KEGG_cat).toBe('Genetic Information Processing')
     expect(res.byId.P0A7B8.KEGG_grp).toBe('Folding, sorting and degradation')
+  })
+})
+
+describe('keggPathwayNames', () => {
+  it("cuts the organism's name all the pathways share — a hyphen in it (K-12) too", () => {
+    const names = keggPathwayNames(
+      [
+        'eco00010\tGlycolysis / Gluconeogenesis - Escherichia coli K-12 MG1655',
+        'eco03050\tProteasome - Escherichia coli K-12 MG1655'
+      ].join('\n')
+    )
+    expect(names.get('eco00010')).toBe('Glycolysis / Gluconeogenesis')
+    expect(names.get('eco03050')).toBe('Proteasome')
+  })
+
+  it("keeps a pathway's own ' - '", () => {
+    const names = keggPathwayNames(
+      [
+        'hsa00532\tGlycosaminoglycan biosynthesis - chondroitin sulfate / dermatan sulfate - Homo sapiens (human)',
+        'hsa00010\tGlycolysis / Gluconeogenesis - Homo sapiens (human)'
+      ].join('\n')
+    )
+    expect(names.get('hsa00532')).toBe(
+      'Glycosaminoglycan biosynthesis - chondroitin sulfate / dermatan sulfate'
+    )
+    expect(names.get('hsa00010')).toBe('Glycolysis / Gluconeogenesis')
   })
 })
 

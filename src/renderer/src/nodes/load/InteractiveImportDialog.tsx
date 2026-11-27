@@ -76,6 +76,7 @@ import {
   setNameColumn,
   sheetMatches
 } from '../../graph/sheetMap'
+import { stringTaxon } from '../kit/requirements'
 
 /** The five built-in condition fields. A custom condition adds a sixth, seventh, … — so a Field is
  *  any name, and the preset list is only what's ALWAYS offered. */
@@ -2055,9 +2056,11 @@ export function InteractiveImportDialog({
       const idWarn = lowMatch
         ? `ID column likely not UniProt IDs: ${n} of ${accSet.size} match only (${pct > 0 && pct < 1 ? '<1' : Math.round(pct)}%). `
         : ''
-      // When STRING is selected, download the organism's interactome so the network builds offline.
-      if (wantsString && taxon) {
-        setAnnMsg(`2/3 Resolving species — taxon ${taxon}…`)
+      // When STRING is selected, download the organism's interactome so the network builds offline
+      // — STRING's organism, from its ids, which can differ from UniProt's taxon (stringTaxon)
+      const stringOrg = stringTaxon(byId) || taxon
+      if (wantsString && stringOrg) {
+        setAnnMsg(`2/3 Resolving species — STRING taxon ${stringOrg}…`)
         const stageLabel: Record<string, string> = {
           links: 'interactome',
           info: 'gene names',
@@ -2065,10 +2068,12 @@ export function InteractiveImportDialog({
         }
         const off = window.api.onStringProgress((p) => {
           const pct = p.total > 0 ? ` ${Math.round((p.loaded / p.total) * 100)}%` : ''
-          setAnnMsg(`3/3 STRING data — ${stageLabel[p.stage] ?? p.stage} for taxon ${taxon}…${pct}`)
+          setAnnMsg(
+            `3/3 STRING data — ${stageLabel[p.stage] ?? p.stage} for taxon ${stringOrg}…${pct}`
+          )
         })
         try {
-          const r = await window.api.ensureStringOrg(taxon)
+          const r = await window.api.ensureStringOrg(stringOrg)
           setAnnMsg(
             r.error
               ? `${idWarn}Annotated ${n} proteins${sp}${cat}. STRING download failed: ${r.error}`

@@ -589,9 +589,9 @@ function TabChipCue({ id }: { id: string }): ReactNode {
       style={
         {
           ...styles.tabCue,
-          // toward white: more on the dark theme's light-grey chip, less on the light theme's dark
-          // one, whose white text must stay readable
-          background: `rgba(255, 255, 255, ${mode === 'dark' ? 0.75 : 0.3})`,
+          // toward white: all the way on the dark theme's light-grey chip, less on the light
+          // theme's dark one, whose white text must stay readable
+          background: `rgba(255, 255, 255, ${mode === 'dark' ? 1 : 0.55})`,
           animation: `oe-cue ${NOTICE_MS.cue}ms ${EASE.move} both`
         } as CSSProperties
       }

@@ -1,7 +1,7 @@
 /** string: its node contract (see nodes/contract.ts). */
 import type { StringConfig } from '../../graph/types'
 import { defineSpec } from '../contract'
-import { dominantTaxon } from '../kit/requirements'
+import { stringTaxon } from '../kit/requirements'
 
 export const stringSpec = defineSpec<'string'>({
   kind: 'string',
@@ -28,7 +28,7 @@ export const stringSpec = defineSpec<'string'>({
     if (u.result?.kind !== 'compare') return null
     const species = (cfg as StringConfig)?.species
     if (species && species > 0) return null
-    return dominantTaxon(u.result.annotationMap ?? {}) > 0
+    return stringTaxon(u.result.annotationMap ?? {}) > 0
       ? null
       : 'No species detected — fetch annotations in the interactive import (Metadata step), which reads the organism, then re-run Standardize and the Compare / Curve fit.'
   },

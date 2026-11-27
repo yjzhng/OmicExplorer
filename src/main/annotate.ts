@@ -303,9 +303,36 @@ async function loadBrite(): Promise<Record<string, BriteLevels>> {
   return out
 }
 
-/** Clean KEGG's `list/pathway` name ("… - Homo sapiens (human)") to the bare pathway name. Must
- *  match the cleaning in addKeggPathways so category keys line up with the stored KEGG pathway names. */
+/** Clean one KEGG pathway name ("… - Homo sapiens (human)") to the bare name, alone: from its last
+ *  hyphen — wrong where the organism's name holds one ("E. coli K-12"); keggPathwayNames, which
+ *  sees the whole list, does better. */
 const cleanPathwayName = (name: string): string => name.replace(/\s*-\s*[^-]+$/, '').trim()
+
+/** KEGG's `list/pathway/<org>` reply → each pathway id's bare name. Every name there ends in the
+ *  organism's (" - Escherichia coli K-12 MG1655", " - Homo sapiens (human)"), so the suffix they
+ *  all share, from its " - ", is cut — not from the last hyphen, which an organism's name can hold
+ *  ("K-12"), nor the first, which a pathway's can ("… - chondroitin sulfate / dermatan sulfate").
+ *  A one-pathway list has nothing to compare: it falls back to cleanPathwayName. Both
+ *  addKeggPathways and buildKeggCategories name pathways through this, so their keys line up. */
+export function keggPathwayNames(text: string): Map<string, string> {
+  const rows: [string, string][] = []
+  for (const line of text.split('\n')) {
+    const [p, name] = line.split('\t')
+    if (p?.trim() && name?.trim()) rows.push([p.trim(), name.trim()])
+  }
+  let common = rows.length > 1 ? rows[0][1] : ''
+  for (const [, name] of rows) while (common && !name.endsWith(common)) common = common.slice(1)
+  const at = common.indexOf(' - ')
+  const suffix = at >= 0 ? common.slice(at) : ''
+  return new Map(
+    rows.map(([p, name]) => [
+      p,
+      suffix && name.length > suffix.length && name.endsWith(suffix)
+        ? name.slice(0, -suffix.length).trim()
+        : cleanPathwayName(name)
+    ])
+  )
+}
 
 /** KEGG pathway names for each accession's KEGG gene id: link genes→pathways, then name them —
  *  each with its pathway category and group from BRITE, in aligned columns. */
@@ -358,10 +385,7 @@ async function addKeggPathways(
     try {
       const res = await fetchT(`https://rest.kegg.jp/list/pathway/${org}`)
       if (!res.ok) continue
-      for (const line of (await res.text()).split('\n')) {
-        const [p, name] = line.split('\t')
-        if (p && name) nameByPath[norm(p)] = cleanPathwayName(name)
-      }
+      for (const [p, name] of keggPathwayNames(await res.text())) nameByPath[norm(p)] = name
     } catch {
       /* best-effort — unnamed pathways fall back to their id */
     }
@@ -400,12 +424,10 @@ async function buildKeggCategories(orgs: string[]): Promise<Record<string, strin
     try {
       const res = await fetchT(`https://rest.kegg.jp/list/pathway/${org}`)
       if (!res.ok) continue
-      for (const line of (await res.text()).split('\n')) {
-        const [p, name] = line.split('\t')
-        if (!p || !name) continue
+      for (const [p, name] of keggPathwayNames(await res.text())) {
         const mapNum = norm(p).match(/(\d{5})/)?.[1]
         const cat = mapNum ? brite[mapNum]?.cat : undefined
-        if (cat) out[cleanPathwayName(name)] = cat
+        if (cat) out[name] = cat
       }
     } catch {
       /* best-effort per org */

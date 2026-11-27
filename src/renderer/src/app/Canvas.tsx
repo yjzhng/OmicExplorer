@@ -365,7 +365,7 @@ export function SelectionActions({
   )
 }
 /** In the selection bar's place while a group's tiles are edited (its frame's pencil): what to
- *  click, how much is marked, and Cancel / Done (Done = the frame's ✓). */
+ *  click, how many went in or out, and Cancel / Done (Done = the frame's ✓). */
 export function EditGroupBar({
   label,
   adding,
@@ -375,14 +375,12 @@ export function EditGroupBar({
   adding: number
   removing: number
 }) {
-  const marked = [adding && `${adding} to add`, removing && `${removing} to take out`].filter(
-    Boolean
-  )
+  const marked = [adding && `${adding} added`, removing && `${removing} taken out`].filter(Boolean)
   return (
     <Panel position="bottom-center">
       <div style={styles.actBar}>
         <span style={styles.actCount}>
-          Editing {label}: click a tile or group outside to add it, inside to take it out
+          Editing {label}: click tiles or groups to select or deselect them
           {marked.length ? ` · ${marked.join(', ')}` : ''}
         </span>
         <button

@@ -11,7 +11,7 @@ import {
   stringCapOptions,
   stringLevelScore
 } from '../../ui/stringModel'
-import { dominantTaxon } from '../kit/requirements'
+import { stringTaxon } from '../kit/requirements'
 import { Empty } from '../kit/views/common'
 import { type ViewContext } from '../kit/views/context'
 import { styles } from '../kit/views/styles'
@@ -42,7 +42,7 @@ export function stringView(v: ViewContext): ReactNode {
   const confidence: StringLevel = cfg.confidence ?? (known ? autoStringLevel(known) : 'medium')
   // Species: a manual override, else the dominant taxon learned from the annotation fetch.
   const ann = upstream.annotationMap ?? {}
-  const species = cfg.species && cfg.species > 0 ? cfg.species : dominantTaxon(ann)
+  const species = cfg.species && cfg.species > 0 ? cfg.species : stringTaxon(ann)
   // A custom cap set in the gear shows as its own option so the bar never lies. One read covers
   // them all (and the export's), so switching between them only re-renders.
   const caps = stringCapOptions(maxGenes)

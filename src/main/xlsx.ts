@@ -52,7 +52,7 @@ function sheetXml(columns: string[], rows: Cell[][]): string {
   )
 }
 
-// ── CRC-32 (for ZIP entries) ────────────────────────────────────────────────────
+// ── CRC-32 (ZIP entries; PNG chunks in png-dpi.ts) ──────────────────────────────────
 const CRC_TABLE = (() => {
   const t = new Uint32Array(256)
   for (let n = 0; n < 256; n++) {
@@ -62,7 +62,7 @@ const CRC_TABLE = (() => {
   }
   return t
 })()
-function crc32(buf: Buffer): number {
+export function crc32(buf: Buffer): number {
   let c = 0xffffffff
   for (let i = 0; i < buf.length; i++) c = CRC_TABLE[(c ^ buf[i]) & 0xff] ^ (c >>> 8)
   return (c ^ 0xffffffff) >>> 0

@@ -86,9 +86,9 @@ export function IconCheck({ size = 13 }: { size?: number } = {}): ReactNode {
 }
 
 /** Cancel / close (a cross). */
-export function IconClose(): ReactNode {
+export function IconClose({ size = 13 }: { size?: number } = {}): ReactNode {
   return (
-    <svg {...base}>
+    <svg {...base} width={size} height={size}>
       <path d="M6 6l12 12M18 6L6 18" />
     </svg>
   )

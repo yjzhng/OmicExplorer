@@ -24,6 +24,17 @@ import { engineUi } from '../../engine/client'
 import { Spinner } from '../../ui/Spinner'
 import { HeatmapView } from './HeatmapView'
 
+/** Built heatmaps by result and options key, app-wide: a remount (Results opened again, a tab,
+ *  facet or orientation switch back) shows the heatmap at once rather than pivoting and
+ *  clustering again. `std` is presentStd's cached copy, so it's the same object each time. */
+const built = new WeakMap<StandardizeResult, Map<string, HeatmapData>>()
+
+function cacheFor(std: StandardizeResult): Map<string, HeatmapData> {
+  let m = built.get(std)
+  if (!m) built.set(std, (m = new Map()))
+  return m
+}
+
 export function HeatmapTile({
   std,
   scale,
@@ -52,8 +63,15 @@ export function HeatmapTile({
   sampleOrder?: SampleOrder
 }) {
   const focusKey = focus.join(',')
-  const [heatmap, setHeatmap] = useState<HeatmapData | null>(null)
+  const key = `${sampleOrder}\u0000${focusKey}`
+  const cached = cacheFor(std).get(key)
+  // the last one built here — shown, while a new one clusters, until it's in
+  const [last, setLast] = useState<HeatmapData | null>(null)
+  // a cached one counts as shown (so it stays up while a later change clusters)
+  if (cached && cached !== last) setLast(cached)
   useEffect(() => {
+    const cache = cacheFor(std)
+    if (cache.get(key)) return
     let live = true
     // off the result's shared sample index (sampleIndex): rows read as ids, no row built
     const gen = buildHeatmapSteps(sampleIndex(std), {
@@ -63,8 +81,13 @@ export function HeatmapTile({
       order: { by: sampleOrder, samples: std.samples }
     })
     const step = (r: ReturnType<typeof gen.next>): void => {
+      if (r.done) {
+        // kept even when no longer shown here — it's this key's heatmap all the same
+        cache.set(key, r.value)
+        if (live) setLast(r.value)
+        return
+      }
       if (!live) return
-      if (r.done) return setHeatmap(r.value)
       const { matrix, k } = r.value
       engineUi.clusterRowGroups(matrix, k).then(
         (groups) => step(gen.next(groups)),
@@ -76,9 +99,10 @@ export function HeatmapTile({
     return () => {
       live = false
     }
-    // focusKey stands in for the focus array's contents (stable across renders)
+    // key stands in for sampleOrder and the focus array's contents (stable across renders)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [std, focusKey, sampleOrder])
+  }, [std, key])
+  const heatmap = cached ?? last
   if (!heatmap) return <Spinner />
   const scope = focus.length > 0 ? `${heatmap.y.length} selected genes` : 'all genes'
   return (

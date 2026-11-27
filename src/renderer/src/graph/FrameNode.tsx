@@ -1,21 +1,24 @@
 /** A canvas frame (see CanvasFrame): a shaded rounded rectangle behind a set of tiles, with its
  *  label along the top. Pressing anywhere on it (its blank space included) selects its tiles — the
  *  frame itself is never selected, it shows as selected when all its tiles are — and dragging it
- *  moves them (Canvas turns its moves into theirs); double-clicking the label renames it. The pencil
- *  at its top right edits which tiles and groups it holds (see frameEdit), and turns into a ✓ to
- *  finish; while another group is edited, a click on this one marks it to join or leave that one.
+ *  moves them (Canvas turns its moves into theirs); clicking the name renames it, as a tile's. Run
+ *  and the pencil sit just after the name, under the pointer; the pencil edits which tiles and
+ *  groups it holds (see frameEdit), and turns into a ✓ to finish. While edited it reads as such (an
+ *  accent wash, a dashed outline, "editing" by its name); while another group is edited, this one
+ *  shows as selected (green, with a tick) when it's in that one, and a click takes it in or out
+ *  whole.
  *  Its size is the members' box plus padding — computed by the canvas, passed in as data. */
 import { useState, type CSSProperties, type ReactNode } from 'react'
 import type { NodeProps, Node } from '@xyflow/react'
 
-import { IconCheck, IconEdit } from '../ui/icons'
+import { IconCheck, IconClose, IconEdit } from '../ui/icons'
 import { UI } from '../ui/theme'
 import { runsIn, safeTileName } from './registry'
 import { frameTiles } from './frames'
 import { RunControl } from './StatusDot'
 import { useGraph } from './store'
 import { isStep, type PlotGroupConfig, type StepStatus } from './types'
-import { useFrameEdit, useFrameEditMark } from './frameEdit'
+import { useFrameEdit, useFrameEditHolds } from './frameEdit'
 
 export interface FrameData extends Record<string, unknown> {
   label: string
@@ -34,9 +37,10 @@ export function FrameNode({ id, data, selected }: NodeProps<Node<FrameData>>): R
   const selectTiles = useGraph((s) => s.selectTiles)
   const selectNode = useGraph((s) => s.selectNode)
   const editing = data.edit === 'editing'
-  // While another group is edited, this one is marked by a click to join it whole (or, inside it,
-  // to leave it).
-  const mark = useFrameEditMark(id)
+  // While another group is edited: whether this one is in it (it shows as selected), a click taking
+  // it in or out whole.
+  const holds = useFrameEditHolds(id)
+  const inEdited = data.edit === 'other' && !!holds
   // The group's run state, from its tiles': running while any runs, failed while any failed, done
   // when all are (each a tile's own, a plot group's from its plots).
   const runState = useGraph((s): StepStatus | null => {
@@ -55,7 +59,6 @@ export function FrameNode({ id, data, selected }: NodeProps<Node<FrameData>>): R
   })
   const runTargets = useGraph((s) => s.runTargets)
   const stopTargets = useGraph((s) => s.stopTargets)
-  const markColor = mark === 'add' ? UI.ok : UI.err
   const [draft, setDraft] = useState<string | null>(null)
   const [nameHovered, setNameHovered] = useState(false)
   // its Run and edit buttons show only under the pointer (and the ✓ while its tiles are edited)
@@ -95,14 +98,30 @@ export function FrameNode({ id, data, selected }: NodeProps<Node<FrameData>>): R
         height: data.height,
         // (running keeps its border: the accent border is a selected group's — the run shows as
         // the strip along its top)
-        borderColor: mark ? markColor : selected || editing ? UI.accent : UI.border,
-        borderStyle: editing || mark ? 'dashed' : 'solid',
-        ...(mark ? { borderWidth: 2.5 } : null),
+        // (in the group being edited: green, with a tick, as a tile in it)
+        borderColor: inEdited
+          ? UI.ok
+          : editing || (data.edit === 'idle' && selected)
+            ? UI.accent
+            : UI.border,
+        borderStyle: editing ? 'dashed' : 'solid',
+        ...(inEdited ? { borderWidth: 2 } : null),
+        ...(editing
+          ? {
+              borderWidth: 2,
+              background: `color-mix(in srgb, ${UI.accent} 9%, transparent)`
+            }
+          : null),
         cursor: data.edit === 'other' ? 'pointer' : undefined
       }}
     >
+      {inEdited && (
+        <span aria-hidden style={inBadge}>
+          <IconCheck size={16} />
+        </span>
+      )}
       {/* running: a segment sweeping along its top edge, as a running tile's strip */}
-      {runState === 'running' && !mark && (
+      {runState === 'running' && (
         <div aria-hidden title="Running…" style={runStrip}>
           <div
             className="oe-strip-sweep"
@@ -110,85 +129,130 @@ export function FrameNode({ id, data, selected }: NodeProps<Node<FrameData>>): R
           />
         </div>
       )}
-      {mark && (
-        <span style={{ ...markBadge, background: markColor }}>{mark === 'add' ? '+' : '−'}</span>
-      )}
-      {/* Run the group: its tiles as the target (and any step above them they need) */}
-      {data.edit === 'idle' && hovered && runState && (
-        <span className="nodrag" style={runSlot} onPointerDown={(e) => e.stopPropagation()}>
-          <RunControl
-            status={runState}
-            accent={UI.accent}
-            onRun={() => void runTargets(frameTiles(useGraph.getState().frames, id))}
-            onStop={() => stopTargets(frameTiles(useGraph.getState().frames, id))}
+      {/* The label row: the name, then (under the pointer) Run and the pencil — the ✓ and
+          "editing" while it's edited. */}
+      <div style={headRow}>
+        {draft != null ? (
+          <input
+            className="nodrag"
+            autoFocus
+            value={draft}
+            onChange={(e) => setDraft(safeTileName(e.target.value))}
+            onFocus={(e) => e.currentTarget.select()}
+            onBlur={commit}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') commit()
+              else if (e.key === 'Escape') setDraft(null)
+            }}
+            onPointerDown={(e) => e.stopPropagation()}
+            style={labelInput}
           />
-        </span>
-      )}
-      {(editing || (data.edit === 'idle' && hovered)) && (
-        <button
-          className="nodrag"
-          title={
-            editing
-              ? 'Done editing the group'
-              : 'Add tiles or groups to the group, or take them out'
-          }
-          onPointerDown={(e) => e.stopPropagation()}
-          onClick={(e) => {
-            e.stopPropagation()
-            if (editing) return useFrameEdit.getState().finish()
-            // Clicks now mark tiles and groups, so nothing stays selected or open meanwhile.
-            selectTiles([])
-            selectNode(null)
-            useFrameEdit.getState().start(id)
-          }}
-          style={{
-            ...editBtn,
-            color: editing ? UI.accentText : UI.textMuted,
-            background: editing ? UI.accent : 'transparent',
-            borderColor: editing ? UI.accent : 'transparent'
-          }}
-        >
-          {editing ? <IconCheck size={20} /> : <IconEdit size={20} />}
-        </button>
-      )}
-      {draft != null ? (
-        <input
-          className="nodrag"
-          autoFocus
-          value={draft}
-          onChange={(e) => setDraft(safeTileName(e.target.value))}
-          onFocus={(e) => e.currentTarget.select()}
-          onBlur={commit}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter') commit()
-            else if (e.key === 'Escape') setDraft(null)
-          }}
-          onPointerDown={(e) => e.stopPropagation()}
-          style={labelInput}
-        />
-      ) : (
-        // Double-click the name to rename. (Anywhere on the frame — name or blank space — a click
-        // selects it and a drag moves it with everything inside.)
-        <span
-          title="Double-click to rename"
-          onDoubleClick={(e) => {
-            e.stopPropagation()
-            setDraft(data.label)
-            // The span unmounts into the input without a mouseleave, so clear it here.
-            setNameHovered(false)
-          }}
-          onMouseEnter={() => setNameHovered(true)}
-          onMouseLeave={() => setNameHovered(false)}
-          // Outlined under the pointer, as the rename box's outline, so it reads as editable.
-          style={{ ...label, border: `1px solid ${nameHovered ? UI.border : 'transparent'}` }}
-        >
-          {data.label}
-        </span>
-      )}
+        ) : (
+          // Click the name to rename, as a tile's: a dashed outline under the pointer says so. (A
+          // drag from it still moves the group: a drag swallows its click.) While another group is
+          // edited, the click is the frame's — taking this group in or out.
+          <span
+            title={data.edit === 'other' ? undefined : 'Click to rename'}
+            onClick={(e) => {
+              if (data.edit === 'other') return
+              e.stopPropagation()
+              setDraft(data.label)
+              // The span unmounts into the input without a mouseleave, so clear it here.
+              setNameHovered(false)
+            }}
+            onMouseEnter={() => setNameHovered(true)}
+            onMouseLeave={() => setNameHovered(false)}
+            style={{
+              ...label,
+              cursor: data.edit === 'other' ? 'pointer' : 'text',
+              border: `1px dashed ${nameHovered && data.edit !== 'other' ? UI.accent : 'transparent'}`
+            }}
+          >
+            {data.label}
+          </span>
+        )}
+        {editing && <span style={editingTag}>editing</span>}
+        {/* Run the group: its tiles as the target (and any step above them they need) */}
+        {data.edit === 'idle' && hovered && runState && (
+          <span className="nodrag" style={runSlot} onPointerDown={(e) => e.stopPropagation()}>
+            <RunControl
+              status={runState}
+              accent={UI.accent}
+              onRun={() => void runTargets(frameTiles(useGraph.getState().frames, id))}
+              onStop={() => stopTargets(frameTiles(useGraph.getState().frames, id))}
+            />
+          </span>
+        )}
+        {(editing || (data.edit === 'idle' && hovered)) && (
+          <button
+            className="nodrag"
+            title={
+              editing
+                ? 'Done editing the group'
+                : 'Add tiles or groups to the group, or take them out'
+            }
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={(e) => {
+              e.stopPropagation()
+              if (editing) return useFrameEdit.getState().finish()
+              // Clicks now mark tiles and groups, so nothing stays selected or open meanwhile.
+              selectTiles([])
+              selectNode(null)
+              useFrameEdit.getState().start(id)
+            }}
+            style={{
+              ...editBtn,
+              color: editing ? UI.accentText : UI.textMuted,
+              background: editing ? UI.accent : 'transparent',
+              borderColor: editing ? UI.accent : 'transparent'
+            }}
+          >
+            {editing ? <IconCheck size={20} /> : <IconEdit size={20} />}
+          </button>
+        )}
+        {/* beside the ✓: leave the group as it was (as Esc, or the bar's Cancel) */}
+        {editing && (
+          <button
+            className="nodrag"
+            title="Cancel: leave the group as it was (Esc)"
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={(e) => {
+              e.stopPropagation()
+              useFrameEdit.getState().cancel()
+            }}
+            style={{
+              ...editBtn,
+              // a solid chip (the panel's fill, a full outline), so it holds against the edited
+              // group's wash beside the ✓
+              color: UI.text,
+              background: UI.panel,
+              borderColor: UI.textMuted
+            }}
+          >
+            <IconClose size={18} />
+          </button>
+        )}
+      </div>
     </div>
   )
 }
 
+/** A tile or group in the group being edited: a green tick at its top right (its outline green). */
+const inBadge: CSSProperties = {
+  position: 'absolute',
+  top: -12,
+  right: -12,
+  width: 24,
+  height: 24,
+  borderRadius: 12,
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  color: '#fff',
+  background: UI.ok,
+  pointerEvents: 'none',
+  zIndex: 3
+}
 const frame: CSSProperties = {
   position: 'relative',
   boxSizing: 'border-box',
@@ -197,21 +261,17 @@ const frame: CSSProperties = {
   background: `color-mix(in srgb, ${UI.text} 5%, transparent)`,
   padding: '6px 12px'
 }
-/** A group marked to join (green) or leave (red) the group being edited, at its top right. */
-const markBadge: CSSProperties = {
-  position: 'absolute',
-  top: -12,
-  right: -12,
-  width: 24,
-  height: 24,
-  borderRadius: 12,
-  color: '#fff',
-  fontSize: 18,
-  fontWeight: 700,
-  lineHeight: '24px',
-  textAlign: 'center'
+/** "editing", after the name of the group being edited. */
+const editingTag: CSSProperties = {
+  flex: 'none',
+  marginLeft: 4,
+  padding: '2px 8px',
+  borderRadius: 6,
+  fontSize: 13,
+  fontWeight: 600,
+  color: UI.accentText,
+  background: UI.accent
 }
-/** The pencil / ✓, at the top right of the label strip. */
 /** A running group's strip: over its top border, inside the rounded corners. */
 const runStrip: CSSProperties = {
   position: 'absolute',
@@ -223,19 +283,25 @@ const runStrip: CSSProperties = {
   overflow: 'hidden',
   pointerEvents: 'none'
 }
-/** The group's Run chip: left of the pencil, centred on it. */
+/** The label row: the name (cut short with an ellipsis when the group is narrow), then the
+ *  "editing" tag, Run and the pencil / ✓ just after it. */
+const headRow: CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: 8,
+  minWidth: 0,
+  height: 30
+}
+/** The group's Run chip, after its name. */
 const runSlot: CSSProperties = {
-  position: 'absolute',
-  top: 6,
-  right: 46,
+  flex: 'none',
   height: 30,
   display: 'flex',
   alignItems: 'center'
 }
+/** The pencil / ✓ (and the ✕ beside it while edited), after Run. */
 const editBtn: CSSProperties = {
-  position: 'absolute',
-  top: 6,
-  right: 8,
+  flex: 'none',
   width: 30,
   height: 30,
   display: 'flex',
@@ -248,13 +314,19 @@ const editBtn: CSSProperties = {
 }
 const label: CSSProperties = {
   display: 'inline-block',
+  minWidth: 0,
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+  whiteSpace: 'nowrap',
   fontSize: 20,
   fontWeight: 700,
   letterSpacing: 0.3,
   color: UI.textMuted,
   cursor: 'text',
   padding: '1px 4px',
-  margin: '0 -5px',
+  // pulled left only, so the text lines up with the frame's edge; the right keeps the row's gaps
+  // even (the outline's padding matching the pencil's inset)
+  margin: '0 0 0 -5px',
   borderRadius: 4
 }
 const labelInput: CSSProperties = {
@@ -266,7 +338,8 @@ const labelInput: CSSProperties = {
   border: `1px solid ${UI.accent}`,
   borderRadius: 4,
   padding: '1px 4px',
-  margin: '0 -5px',
+  margin: '0 0 0 -5px',
   outline: 'none',
-  width: 180
+  width: 180,
+  flex: 'none'
 }

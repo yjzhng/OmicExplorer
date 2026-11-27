@@ -24,11 +24,11 @@ import { rowView } from '../engine'
 import { muted } from '../nodes/kit/tile'
 import { TILES } from '../nodes/tiles'
 import { Chevron } from '../ui/Chevron'
-import { IconJump } from '../ui/icons'
+import { IconCheck, IconJump } from '../ui/icons'
 import { StatusNote } from '../ui/StatusNote'
 import { EASE, NOTICE_MS, UI } from '../ui/theme'
 import { useAppView } from '../ui/useAppView'
-import { useFrameEdit, useFrameEditMark } from './frameEdit'
+import { useFrameEdit, useFrameEditHolds } from './frameEdit'
 import { FrameNode } from './FrameNode'
 import { inFullFrame } from './frames'
 import { deriveTabs } from './groups'
@@ -304,7 +304,6 @@ export function GraphNode({ id, data, selected: rfSelected }: NodeProps<Node<Nod
   )
   const selected = configOpen || (!!rfSelected && !inSelectedGroup)
   const [hovered, setHovered] = useState(false)
-  const sideColor = selected ? accent : UI.border
   // A plot tile is a Results tab of its own: offered, under the pointer or selected, as a jump
   // straight to that tab (only looked up then, so idle tiles don't derive the tabs).
   const isTab = useGraph(
@@ -380,10 +379,14 @@ export function GraphNode({ id, data, selected: rfSelected }: NodeProps<Node<Nod
     setEditing(false)
   }
 
-  // While a group is edited, a click on the tile marks it to add to / take out of the group (see
-  // frameEdit) instead of selecting it or opening its panel.
+  // While a group is edited, the tile reads as selected when it's in the group, and a click on it
+  // takes it in or out (see frameEdit) instead of selecting it or opening its panel.
   const editingGroup = useFrameEdit((s) => !!s.edit)
-  const groupMark = useFrameEditMark(id)
+  const inEditedGroup = useFrameEditHolds(id)
+  // the selection's look: in the group being edited (green, with a tick), or (no group edited)
+  // selected (the accent)
+  const ringed = editingGroup ? !!inEditedGroup : selected
+  const ring = editingGroup ? UI.ok : accent
   const rf = useReactFlow()
   const flowStore = useStoreApi()
   const cardRef = useRef<HTMLDivElement>(null)
@@ -554,9 +557,9 @@ export function GraphNode({ id, data, selected: rfSelected }: NodeProps<Node<Nod
         // diffing writes the shorthand into the DOM and clobbers borderTopColor without
         // rewriting it, which made the accent top strip vanish on deselect.
         borderTopColor: incomplete ? `${accent}4d` : accent,
-        borderRightColor: sideColor,
-        borderBottomColor: sideColor,
-        borderLeftColor: sideColor,
+        borderRightColor: ringed ? ring : UI.border,
+        borderBottomColor: ringed ? ring : UI.border,
+        borderLeftColor: ringed ? ring : UI.border,
         // Incomplete (not run, out of date, waiting on its input, errored): a dashed outline and a
         // faded accent strip — the body keeps its normal fill — so it reads apart from a finished
         // tile at a glance rather than only by its status dot. Each side's style is its own
@@ -564,9 +567,17 @@ export function GraphNode({ id, data, selected: rfSelected }: NodeProps<Node<Nod
         borderRightStyle: incomplete ? 'dashed' : 'solid',
         borderBottomStyle: incomplete ? 'dashed' : 'solid',
         borderLeftStyle: incomplete ? 'dashed' : 'solid',
-        boxShadow: selected ? `0 0 0 1px ${accent}, 0 3px 14px rgba(0,0,0,0.4)` : card.boxShadow
+        boxShadow: ringed ? `0 0 0 1px ${ring}, 0 3px 14px rgba(0,0,0,0.4)` : card.boxShadow
       }}
     >
+      {/* in the group being edited: its frame's accent wash laid over the whole tile — its plot
+          cards and pickers too — so its tiles stand apart from the rest at a glance */}
+      {editingGroup && inEditedGroup && <span aria-hidden style={inWash} />}
+      {editingGroup && inEditedGroup && (
+        <span aria-hidden style={inBadge}>
+          <IconCheck size={14} />
+        </span>
+      )}
       {/* the cue: a halo in the tile's accent, faded in and out once (app.css oe-cue) */}
       {cueKey !== null && (
         <span
@@ -581,13 +592,6 @@ export function GraphNode({ id, data, selected: rfSelected }: NodeProps<Node<Nod
             } as CSSProperties
           }
         />
-      )}
-      {groupMark && (
-        <div style={{ ...markRing, borderColor: groupMark === 'add' ? UI.ok : UI.err }}>
-          <span style={{ ...markBadge, background: groupMark === 'add' ? UI.ok : UI.err }}>
-            {groupMark === 'add' ? '+' : '−'}
-          </span>
-        </div>
       )}
       {/* the accent strip fills with the run as it goes (faded before, full colour when done) */}
       <ProgressStrip
@@ -1158,27 +1162,31 @@ function ProgressStrip({
   )
 }
 
-/** A tile marked to add to (green) or take out of (red) the group being edited. */
-const markRing: CSSProperties = {
-  position: 'absolute',
-  inset: -7,
-  border: '2px dashed',
-  borderRadius: 12,
-  pointerEvents: 'none',
-  zIndex: 2
-}
-const markBadge: CSSProperties = {
+/** A tile or group in the group being edited: a green tick at its top right (its outline green). */
+const inBadge: CSSProperties = {
   position: 'absolute',
   top: -11,
   right: -11,
-  width: 20,
-  height: 20,
-  borderRadius: 10,
+  width: 22,
+  height: 22,
+  borderRadius: 11,
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'center',
   color: '#fff',
-  fontSize: 15,
-  fontWeight: 700,
-  lineHeight: '20px',
-  textAlign: 'center'
+  background: UI.ok,
+  pointerEvents: 'none',
+  zIndex: 3
+}
+/** Over a tile in the group being edited: the accent, see-through, as the edited group's frame is
+ *  washed (FrameNode) — over everything in the tile, under its tick. */
+const inWash: CSSProperties = {
+  position: 'absolute',
+  inset: 0,
+  borderRadius: 'inherit',
+  background: `color-mix(in srgb, ${UI.accent} 10%, transparent)`,
+  pointerEvents: 'none',
+  zIndex: 2
 }
 const card: CSSProperties = {
   width: 230,

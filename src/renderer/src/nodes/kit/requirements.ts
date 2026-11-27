@@ -26,6 +26,22 @@ export function dominantTaxon(ann: Record<string, Record<string, string>>): numb
   for (const [t, n] of tally) if (n > bestN) [best, bestN] = [t, n]
   return best
 }
+/** The organism STRING files the proteins under: the taxon their STRING ids carry
+ *  ("511145.b0001" → 511145), the most common — else the annotations' own (dominantTaxon); 0 =
+ *  none. STRING follows NCBI's reference genome, which can be a strain below the taxon UniProt
+ *  names: E. coli K-12's proteome is UniProt's 83333, its STRING organism MG1655, 511145. */
+export function stringTaxon(ann: Record<string, Record<string, string>>): number {
+  const tally = new Map<number, number>()
+  for (const rec of Object.values(ann))
+    for (const id of (rec.stringId ?? '').split(/[;,\s]+/)) {
+      const t = parseInt(id.slice(0, id.indexOf('.')), 10)
+      if (id.includes('.') && Number.isFinite(t) && t > 0) tally.set(t, (tally.get(t) ?? 0) + 1)
+    }
+  let best = 0
+  let bestN = 0
+  for (const [t, n] of tally) if (n > bestN) [best, bestN] = [t, n]
+  return best || dominantTaxon(ann)
+}
 // Which plots take a Curve fit is their `acceptsFrom` (a fitted curve has no per-dose rows or group
 // means, so MA, Scatter, Bubble and Time & Dose-response don't; Potency and the residual plots take
 // nothing else).

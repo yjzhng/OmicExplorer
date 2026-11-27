@@ -194,6 +194,51 @@ export function editMembers(
   )
 }
 
+/** A group's members being edited (graph/frameEdit): the group, and the tiles and groups clicked
+ *  to add (outside it) and to take out (inside it). */
+export interface FrameEdit {
+  /** the frame being edited */
+  id: string
+  add: string[]
+  remove: string[]
+}
+
+/** A tile or group, then the groups holding it, up to (not including) the edited group. */
+function chainOf(frames: CanvasFrame[], edit: FrameEdit, item: string): string[] {
+  const parent = parentMap(frames)
+  const chain: string[] = []
+  for (let p: string | undefined = item; p && p !== edit.id && chain.length <= frames.length;) {
+    chain.push(p)
+    p = parent.get(p)
+  }
+  return chain
+}
+
+/** Whether a tile or group is in the edited group with the clicks so far — it, or a group holding
+ *  it, taken out: out; held by it: in; it, or a group holding it, added: in. Null when no group is
+ *  edited, and for the edited group itself and the groups holding it (they can't be picked). */
+export function editHolds(frames: CanvasFrame[], edit: FrameEdit, item: string): boolean | null {
+  if (item === edit.id || frameHolds(frames, item, edit.id)) return null
+  const chain = chainOf(frames, edit, item)
+  if (frameHolds(frames, edit.id, item)) return !chain.some((c) => edit.remove.includes(c))
+  return chain.some((c) => edit.add.includes(c))
+}
+
+const flip = (list: string[], id: string): string[] =>
+  list.includes(id) ? list.filter((x) => x !== id) : [...list, id]
+
+/** A click on a tile or group while a group is edited: in it, marked to take out; outside, to add
+ *  — a second click unmarks it. Never the edited group or one holding it; and a tile or group
+ *  inside a group already marked goes with it, so a click on it changes nothing. */
+export function toggleMark(frames: CanvasFrame[], edit: FrameEdit, item: string): FrameEdit {
+  if (item === edit.id || frameHolds(frames, item, edit.id)) return edit
+  const above = chainOf(frames, edit, item).slice(1)
+  if (above.some((c) => edit.add.includes(c) || edit.remove.includes(c))) return edit
+  return frameHolds(frames, edit.id, item)
+    ? { ...edit, remove: flip(edit.remove, item) }
+    : { ...edit, add: flip(edit.add, item) }
+}
+
 /** The canvas's stacking for groups: each top-level group a layer — its frame (nested frames above
  *  the one holding them), then its tiles above that — the later group in the list above the
  *  earlier (a duplicate above its original), and every group below the ungrouped tiles (z 0).

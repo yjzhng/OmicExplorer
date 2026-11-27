@@ -6,6 +6,7 @@ import { promisify } from 'node:util'
 
 import { BrowserWindow, clipboard, ipcMain, nativeImage, shell } from 'electron'
 
+import { pngDpiFor, pngWithDpi } from './png-dpi'
 import { buildCsv, buildXlsx } from './xlsx'
 
 /** One plot to write: a base64 PNG (produced in the renderer via Plotly.toImage) — or, for
@@ -274,8 +275,14 @@ export function registerPlotExport(): void {
             if (!pdfWin) pdfWin = new BrowserWindow({ show: false })
             const pdf = await pngToPdf(pdfWin, it.base64, it.widthIn, it.heightIn)
             await writeFile(abs, pdf)
+          } else if (it.format === 'png') {
+            // The canvas encoder writes no resolution, so viewers assume 96 dpi; stamp the
+            // DPI the pixels were rendered at (pixels ÷ the plot's physical width).
+            const png = Buffer.from(it.base64, 'base64')
+            const dpi = pngDpiFor(png, it.widthIn)
+            await writeFile(abs, dpi ? pngWithDpi(png, dpi) : png)
           } else {
-            // PNG bytes, or the SVG markup — both arrive base64 and are written verbatim.
+            // SVG markup arrives base64 and is written verbatim.
             await writeFile(abs, Buffer.from(it.base64, 'base64'))
           }
           written++
