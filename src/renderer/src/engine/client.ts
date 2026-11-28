@@ -2,28 +2,34 @@
  * Promise-based client for the engine Web Worker. React nodes call `engine.*`
  * and await results; compute runs off the UI thread.
  */
+import type { ContrastStackPart } from './contrastStack'
+import type { ContrastSelectInput } from './contrastSelect'
 import type { ClusterOrderOptions, DendroLink } from './cluster'
 import { EngineError } from './engineError'
 import type { ContrastInput, ContrastPairInput, ContrastResult } from './contrast'
 import type { CompareTableResult, DirectInput } from './direct'
 import type { FactorAnovaInput } from './twoWay'
-import type { RecleanInput, ScalePreview } from './ingest'
+import type { ProteinList, RecleanInput, ScalePreview } from './ingest'
 import type {
   ClusterData,
   ClusterOptions,
   SampleCorrAll,
   EnrichData,
   enrichmentAll,
-  enrichmentTable
+  enrichmentTable,
+  FcHeatmapData,
+  FcHeatmapOptions
 } from './plotData'
 import type { EngineRequest, EngineResponse } from './worker'
 import type { Progress } from './progress'
 import type { ValueScale } from './scale'
 import type { ResponseInput } from './responseSurface'
+import type { MeasuredSets } from './sets'
 import type {
   CompareInput,
   CompareResultRow,
   ConditionKey,
+  CondSelector,
   StandardizeInput,
   StandardizeResult,
   StandardRow,
@@ -167,9 +173,18 @@ function call<T>(
   return new Promise<T>((resolve, reject) => {
     pending.set(id, { resolve: resolve as (v: unknown) => void, reject, op, onProgress })
     const message = withDataset(payload) // may post the table first (messages arrive in order)
-    getWorker().postMessage({ id, op, payload: message } as EngineRequest)
+    // Every other row table in it (a lazy result's own, or an array of rows — a Clean data result
+    // to re-clean, a contrast's sides) goes columnar too: none of a lazy one's rows built here, no
+    // row objects cloned (see wire.ts). The worker decodes the payload before the op sees it.
+    const transfer: Transferable[] = []
+    const packed = encodeValue(message, transfer)
+    getWorker().postMessage({ id, op, payload: packed } as EngineRequest, transfer)
   })
 }
+
+/** An engine input whose `rows` may go as a columnar table (rowsArg) — none of its rows built on
+ *  the UI thread. */
+type RowsIn<I extends { rows: unknown }> = Omit<I, 'rows'> & { rows: I['rows'] | Table }
 
 export const engine = {
   standardize: (input: StandardizeInput): Promise<StandardizeResult> =>
@@ -177,30 +192,53 @@ export const engine = {
   /** Clean data on another Clean data's table: its clean-up, normalisation and imputation only. */
   reclean: (input: RecleanInput): Promise<StandardizeResult> =>
     call<StandardizeResult>('reclean', input),
+  /** A Merge's pooling (combineStandardize) — the inputs go as their tables. */
+  combine: (stds: StandardizeResult[], names?: string[]): Promise<StandardizeResult> =>
+    call<StandardizeResult>('combine', { stds, names }),
+  /** A Subset's filter (subsetStandardize). */
+  subset: (
+    std: StandardizeResult,
+    keep: CondSelector,
+    more: { reps?: string[]; drop?: string[] }
+  ): Promise<StandardizeResult> => call<StandardizeResult>('subset', { std, keep, ...more }),
   /** A data file's scale and a value sample, for Clean data's preview — no run needed. */
   previewScale: (dataText: string, dataFilename: string): Promise<ScalePreview> =>
     call<ScalePreview>('previewScale', { dataText, dataFilename }),
-  vehNorm: (input: VehNormInput): Promise<VehNormResult> => call<VehNormResult>('vehNorm', input),
-  direct: (input: DirectInput): Promise<CompareTableResult> =>
+  /** An import's proteins (names, descriptions), as Clean data would read them — no run needed. */
+  previewProteins: (input: StandardizeInput): Promise<ProteinList> =>
+    call<ProteinList>('previewProteins', input),
+  vehNorm: (input: RowsIn<VehNormInput>): Promise<VehNormResult> =>
+    call<VehNormResult>('vehNorm', input),
+  direct: (input: RowsIn<DirectInput>): Promise<CompareTableResult> =>
     call<CompareTableResult>('direct', input),
-  compare: (input: CompareInput): Promise<CompareTableResult> =>
-    call<CompareTableResult>('compare', input),
-  factorAnova: (input: FactorAnovaInput): Promise<CompareTableResult> =>
+  compare: (
+    input: RowsIn<CompareInput> & {
+      /** per batch: each sample's batch, tagged on its rows in the worker (tagBatch) */
+      batchOf?: Record<string, string>
+    }
+  ): Promise<CompareTableResult> => call<CompareTableResult>('compare', input),
+  factorAnova: (input: RowsIn<FactorAnovaInput>): Promise<CompareTableResult> =>
     call<CompareTableResult>('factorAnova', input),
   /** Dose–response curve fit (CurveCurator's recalibrated F-test). */
   curveFit: (
-    input: CompareInput & { curveAxis: ConditionKey },
+    input: RowsIn<CompareInput> & { curveAxis: ConditionKey },
     onProgress?: (p: Progress) => void
   ): Promise<CompareTableResult> => call<CompareTableResult>('curveFit', input, onProgress),
   /** Curve fit by the response surface method (spline detection; see responseSurface.ts). */
   responseSurface: (
-    input: ResponseInput,
+    input: RowsIn<ResponseInput>,
     onProgress?: (p: Progress) => void
   ): Promise<CompareTableResult> => call<CompareTableResult>('responseSurface', input, onProgress),
   contrast: (input: ContrastInput): Promise<ContrastResult> =>
     call<ContrastResult>('contrast', input),
   contrastPair: (input: ContrastPairInput): Promise<ContrastResult> =>
     call<ContrastResult>('contrastPair', input),
+  /** Several features' pairs contrasted and stacked, each row tagged (contrastStack.ts). */
+  contrastStack: (parts: ContrastStackPart[]): Promise<ContrastResult> =>
+    call<ContrastResult>('contrastStack', { parts }),
+  /** A select-mode Contrast, its pooling and sides made in the engine (contrastSelect.ts). */
+  contrastSelect: (input: ContrastSelectInput): Promise<ContrastResult | { error: string }> =>
+    call<ContrastResult | { error: string }>('contrastSelect', input),
   /** An enrichment plot's run: every method × term source × facet (see enrichmentAll). */
   enrichmentAll: (
     rows: CompareResultRow[] | Table,
@@ -210,6 +248,9 @@ export const engine = {
   /** A cluster plot's run: the sample embedding (PCA / UMAP / t-SNE) of a Clean data table. */
   buildCluster: (rows: StandardRow[] | Table, opts: ClusterOptions): Promise<ClusterData> =>
     call<ClusterData>('buildCluster', { rows, opts }),
+  /** A set comparison's run over Clean data: the genes each sample measured (sets.ts). */
+  measuredSets: (rows: StandardRow[] | Table): Promise<MeasuredSets> =>
+    call<MeasuredSets>('measuredSets', { rows }),
   /** A correlation plot's run: the sample-pair matrix under every metric (buildSampleCorrAll). */
   sampleCorr: (
     rows: StandardRow[] | Table,
@@ -256,6 +297,10 @@ function lane(
   }
   return <T>(op: EngineRequest['op'], payload: unknown, transfer: Transferable[] = []) => {
     clearTimeout(idle)
+    // no worker to be had (a test, a failed start): the call fails as a rejected promise, so the
+    // caller's own fallback runs, not a throw out of the call
+    if (!w && typeof Worker === 'undefined')
+      return Promise.reject(new Error('no engine worker here'))
     if (!w) {
       const nw = new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' })
       nw.onmessage = (e: MessageEvent<EngineResponse>) => {
@@ -277,7 +322,9 @@ function lane(
     const id = ++n
     return new Promise<T>((resolve, reject) => {
       waiting.set(id, { resolve: resolve as (v: unknown) => void, reject, op })
-      w!.postMessage({ id, op, payload } as EngineRequest, transfer)
+      // row tables columnar, as the main lane's (see call)
+      const packed = encodeValue(payload, transfer)
+      w!.postMessage({ id, op, payload: packed } as EngineRequest, transfer)
     })
   }
 }
@@ -303,6 +350,20 @@ export const engineUi = {
     for (let i = 0; i < matrix.length; i++) flat.set(matrix[i], i * m)
     return uiCall<number[][]>('clusterRowGroups', { flat, m, k }, [flat.buffer])
   },
+  /** A Clean data heatmap's gene clustering (pivot and all) off the UI thread: the rows go as a
+   *  columnar table (a lazy result's own — holderTable — or encoded here), none built on this
+   *  side; each group comes back as its genes' uniqIDs. */
+  heatmapGroups: (
+    rows: Table | readonly StandardRow[],
+    scale: ValueScale
+  ): Promise<{ n: number; groups: string[][] }> =>
+    uiCall<{ n: number; groups: string[][] }>('heatmapGroups', { rows, scale }),
+  /** A fold-change heatmap built whole off the UI thread (buildFcHeatmap): the comparison rows go
+   *  as a columnar table, as heatmapGroups' do. */
+  fcHeatmap: (
+    rows: Table | readonly CompareResultRow[],
+    opts: FcHeatmapOptions
+  ): Promise<FcHeatmapData> => uiCall<FcHeatmapData>('fcHeatmap', { rows, opts }),
   /** clusterRowTree off the UI thread, its rows passed likewise (the options as they are). */
   clusterRowTree: (
     matrix: number[][],

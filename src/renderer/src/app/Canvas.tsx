@@ -25,6 +25,7 @@ import {
   useState,
   type ReactNode
 } from 'react'
+import { setBackgroundPaused } from '../dashboard/renderQueue'
 import { ResultsView } from '../dashboard/ResultsView'
 import { useFrameEdit } from '../graph/frameEdit'
 import { FRAME_LABEL_H, FRAME_PAD, type FrameData } from '../graph/FrameNode'
@@ -63,6 +64,9 @@ import {
 import { ResultsLink } from './NavBar'
 import { styles } from './styles'
 
+/** Room kept round what the tutorial brings into view (canvasNav's reveal), in screen pixels. */
+const REVEAL_MARGIN = 48
+
 /** Bottom-center "New step" button; toggles placement mode (becomes "Cancel" while placing). */
 export function NewStep({
   placing,
@@ -90,9 +94,11 @@ export const VIEW_SLIDE = `${MOTION_MS.page}ms ${EASE.enter}`
  *  a switch between them sliding the whole page across. Both ways of switching (the canvas's
  *  "Results →", the dashboard's "← Workflow") set the same view, so both slide.
  *
- *  Both pages exist only for the length of the slide; once it settles, the one left behind is
- *  unmounted, as before — Results' many Plotly charts mustn't sit in the DOM (and in memory) while
- *  you work on the canvas. Re-opening Results rebuilds its tiles, paced by the reveal queue. */
+ *  The canvas exists while on show (and for the length of a slide). Results, once opened, stays
+ *  mounted behind the canvas, hidden (`display:none`, as a dashboard tab not on view): rebuilding
+ *  every tile on each return held the UI thread for seconds, and going back and forth is the
+ *  common way to check a step. Its charts stay in memory meanwhile; its tiles brought up to date
+ *  by a run wait (the reveal queue's background lane, held) until it's back on show. */
 export function FlowViews({ view }: { view: AppView }) {
   // The page on show, the one sliding out (null when settled), and the slide's phase: `start`
   // places the incoming page off-screen with no transition; `run` lets it glide in.
@@ -122,6 +128,11 @@ export function FlowViews({ view }: { view: AppView }) {
       cancelAnimationFrame(second)
     }
   }, [slide])
+  // Results is kept once opened (see above); not mounted before then.
+  const [resultsKept, setResultsKept] = useState(view === 'results')
+  if (view === 'results' && !resultsKept) setResultsKept(true)
+  // Its tiles' background rebuilds wait while it's hidden.
+  useEffect(() => setBackgroundPaused(slide.to !== 'results'), [slide.to])
   const settle = (): void => setSlide((s) => (s.from ? { to: s.to, from: null, run: false } : s))
   // Settle even if transitionend never comes (a tab hidden mid-slide).
   useEffect(() => {
@@ -170,6 +181,8 @@ export function FlowViews({ view }: { view: AppView }) {
       key={p}
       style={{
         ...styles.viewPage,
+        // kept but not on show (Results behind the canvas)
+        ...(p === slide.to || p === slide.from ? null : { display: 'none' }),
         transform: offset(p),
         transition: slide.run ? `transform ${VIEW_SLIDE}` : 'none',
         // Its own compositor layer while sliding, so the move doesn't repaint the page each frame.
@@ -182,6 +195,8 @@ export function FlowViews({ view }: { view: AppView }) {
       // The outgoing page: inert, not aria-hidden — the button that started the slide still holds
       // focus, and aria-hidden over a focused element is blocked; inert also drops that focus.
       inert={p !== slide.to}
+      // kept but not on show: its plots wait to be drawn until it is (PlotlyChart)
+      data-offscreen={p === slide.to || p === slide.from ? undefined : true}
     >
       {p === 'canvas' ? canvasPage : resultsPage}
     </div>
@@ -189,7 +204,9 @@ export function FlowViews({ view }: { view: AppView }) {
   return (
     <div style={styles.viewStage}>
       {/* Fixed order, so a page keeps its element (and its state) as the other comes and goes. */}
-      {(['canvas', 'results'] as const).filter((p) => p === slide.to || p === slide.from).map(page)}
+      {(['canvas', 'results'] as const)
+        .filter((p) => p === slide.to || p === slide.from || (p === 'results' && resultsKept))
+        .map(page)}
     </div>
   )
 }
@@ -418,18 +435,41 @@ export function Canvas() {
   useEffect(() => {
     nodesRef.current = nodes
   }, [nodes])
-  const { screenToFlowPosition, getViewport, setViewport, fitView } = useReactFlow()
+  const { screenToFlowPosition, getViewport, setViewport } = useReactFlow()
   // The tutorial moves the view while its dimming covers the canvas (ui/tutorial/canvasNav).
   useEffect(() => {
     setCanvasNav({
-      fit: () => void fitView({ padding: 0.25, maxZoom: 1, duration: MOTION_MS.page }),
+      setView: (v) => void setViewport(v),
+      zoom: () => getViewport().zoom,
+      reveal: (b, pane) => {
+        const v = getViewport()
+        const z = Math.max(v.zoom, 1)
+        const k = z / v.zoom
+        // the box at the new zoom, its centre kept where it is on screen, then moved just enough
+        // to be inside the pane (centred, if it's bigger than the pane)
+        const w = b.w * k
+        const h = b.h * k
+        const into = (start: number, size: number, room: number): number =>
+          size + 2 * REVEAL_MARGIN > room
+            ? (room - size) / 2
+            : Math.min(Math.max(start, REVEAL_MARGIN), room - REVEAL_MARGIN - size)
+        const left = into(b.x + b.w / 2 - pane.x - w / 2, w, pane.w)
+        const top = into(b.y + b.h / 2 - pane.y - h / 2, h, pane.h)
+        // the box's top-left in flow coordinates stays the same point
+        const fx = (b.x - pane.x - v.x) / v.zoom
+        const fy = (b.y - pane.y - v.y) / v.zoom
+        void setViewport(
+          { x: left - fx * z, y: top - fy * z, zoom: z },
+          { duration: MOTION_MS.page }
+        )
+      },
       panBy: (dx, dy) => {
         const v = getViewport()
         void setViewport({ x: v.x - dx, y: v.y - dy, zoom: v.zoom })
       }
     })
     return () => setCanvasNav(null)
-  }, [fitView, getViewport, setViewport])
+  }, [getViewport, setViewport])
   // Frames React Flow's drag-select is touching, while one is under way (null otherwise). Frames
   // aren't selected themselves (see onNodesChange) — at the drag's end each stands for its tiles.
   const marqueeFrames = useRef<Set<string> | null>(null)

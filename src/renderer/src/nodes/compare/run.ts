@@ -9,12 +9,12 @@ import {
 } from '../../graph/types'
 import { hiddenGeneIds, maskSignf } from '../../graph/geneMask'
 import { engine } from '../../engine/client'
+import { rowsArg } from '../../engine/lazyRows'
 import {
   combineStandardize,
   analysisScaleOf,
   type CompareTableResult,
   batchesOf,
-  withBatchCond,
   BATCH_COND,
   numericConds
 } from '../../engine'
@@ -73,7 +73,7 @@ export async function run(ctx: StepRunContext): Promise<void> {
     if (cfg.detection === 'spline' || surface)
       cmp = await engine.responseSurface(
         {
-          rows: std.rows,
+          rows: rowsArg(std),
           num: cfg.num,
           den: cfg.den,
           match: cfg.match,
@@ -105,7 +105,7 @@ export async function run(ctx: StepRunContext): Promise<void> {
     else
       cmp = await engine.curveFit(
         {
-          rows: std.rows,
+          rows: rowsArg(std),
           num: cfg.num,
           den: cfg.den,
           match: cfg.match,
@@ -132,9 +132,10 @@ export async function run(ctx: StepRunContext): Promise<void> {
     // Per batch: the batch a condition matched like-for-like, so each batch is its own
     // comparison (and its own fold change, for a Contrast to pair) — nothing to block on then.
     const split = !!cfg.splitBatch && !!batchesOf(std)
-    const data = split ? withBatchCond(std) : std
     cmp = await engine.compare({
-      rows: data.rows,
+      // the table as it is; per batch, the worker tags each row with its sample's batch (tagBatch)
+      rows: rowsArg(std),
+      ...(split ? { batchOf: batchesOf(std) } : null),
       num: cfg.num,
       den: cfg.den,
       match: split ? [...cfg.match, BATCH_COND] : cfg.match,
@@ -165,7 +166,7 @@ export async function run(ctx: StepRunContext): Promise<void> {
     }
     setStatus('running')
     cmp = await engine.factorAnova({
-      rows: std.rows,
+      rows: rowsArg(std),
       factors,
       activeConditions: std.activeConditions,
       threshold: cfg.threshold,
@@ -177,8 +178,10 @@ export async function run(ctx: StepRunContext): Promise<void> {
     })
   }
   if (get().nodes.find((n) => n.id === id)?.data.status !== 'running') return // cancelled
-  // Apply the project-wide geneset mask so hidden genes are non-significant from the start.
-  cmp = { ...cmp, rows: maskSignf(cmp.rows, hiddenGeneIds(get())) }
+  // Apply the project-wide geneset mask so hidden genes are non-significant from the start — only
+  // when there are any: the result's rows stay columnar (unbuilt) otherwise.
+  const hidden = hiddenGeneIds(get())
+  if (hidden.size) cmp = { ...cmp, rows: maskSignf(cmp.rows, hidden) }
   set((s) => ({
     results: {
       ...s.results,

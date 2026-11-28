@@ -51,6 +51,7 @@ export function scatterView(v: ViewContext): ReactNode {
         <FacetedPlot numeric={numeric} rows={{ of: upstream.cmp }} facetSel={facetSel}>
           {(rows) => (
             <Built
+              name="intensityScatter"
               build={() =>
                 buildIntensityScatter(rows, {
                   displayMap: dm,
@@ -109,6 +110,7 @@ export function scatterView(v: ViewContext): ReactNode {
       <FacetedPlot numeric={numeric} rows={contrastSource(upstream)} facetSel={facetSel}>
         {(rows) => (
           <Built
+            name="scatter"
             build={() =>
               buildScatter(rows, {
                 displayMap: dm,

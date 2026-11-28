@@ -134,6 +134,8 @@ type LabelRow = {
   cmpd?: string | null
   curve?: unknown
   rs?: unknown
+  /** a context row's curve axis (contextIndex: only a curve fit's rows have one) */
+  along?: unknown
 }
 
 /** A curve fit's comparison as it reads in a plot: "dose curve | 0" (the stored key) as
@@ -141,7 +143,7 @@ type LabelRow = {
  *  Just "baseline": which one (dose 0, a time, a top dose…) isn't spelled out. Display only: the
  *  stored label stays the key it is. */
 function curveComparisonText(label: string, rows: LabelRow[]): string {
-  if (!rows.some((r) => r.curve || r.rs)) return label
+  if (!rows.some((r) => r.curve || r.rs || r.along)) return label
   const [left, right] = label.split(' | ')
   if (right == null) return label
   const cmpds = [...new Set(rows.map((r) => r.cmpd).filter((c): c is string => !!c))]
@@ -849,6 +851,9 @@ export interface DRData {
   continuous?: boolean
   /** fitted curves on a linear axis (see axisModel.ts): the continuous axis is linear, not log */
   linear?: boolean
+  /** every gene, in the base's order (drBase): the same array whichever are picked, so the view's
+   *  faint background of all of them is built once per data, not again on a pin */
+  all?: readonly DRSeries[]
 }
 export interface DROptions {
   axis: ConditionKey
@@ -905,6 +910,9 @@ export function responseCurve(
   const hi = rs.x[rs.x.length - 1]
   const points = rs.x.slice(1).map((lx, i) => ({ x: toAxis(lx), y: rs.y![i + 1] }))
   const d = rs.desc
+  // The descriptor without a description (not a responder, or none could be fitted): no line — NA,
+  // its level means only (the spline is the detector's, drawn under that model).
+  if (model === 'curve' && !d) return { x: [], y: [], points, drawn: 'curve' }
   if (model === 'curve' && d) {
     const lx = Array.from({ length: 61 }, (_, i) => lo + ((hi - lo) * i) / 60)
     const mid = d.mid >= toAxis(lo) && d.mid <= toAxis(hi) ? d.mid : undefined
@@ -920,8 +928,22 @@ export function responseCurve(
   return { x: line.x.map(toAxis), y: line.y, points, drawn: 'spline' }
 }
 
-/** Response curves: log2FC vs dose (or time), one line per gene, top-N by |log2FC| at the top dose. */
-export function buildDR(rows: CompareResultRow[], opts: DROptions): DRData {
+/** buildDR's part that reads every row — each gene's line (a fitted curve evaluated along the
+ *  axis), in |log₂FC|-at-the-top-dose order — kept apart, so a pin or a top-N change (which only
+ *  picks which lines are coloured) doesn't evaluate every curve again (drPick). */
+export interface DRBase {
+  series: DRSeries[]
+  anySig: Set<string>
+  axis: ConditionKey
+  comparison: string | undefined
+  continuous: boolean
+  linear: boolean
+}
+
+export function drBase(
+  rows: CompareResultRow[],
+  opts: Pick<DROptions, 'axis' | 'model' | 'displayMap'>
+): DRBase {
   const byGene = new Map<string, { x: number; y: number }[]>()
   // Genes significant at one level or more: the only ones the top-N colours (as in the bubble).
   const anySig = new Set<string>()
@@ -977,6 +999,22 @@ export function buildDR(rows: CompareResultRow[], opts: DROptions): DRData {
     series.push({ uniqID, label: opts.displayMap?.[uniqID] ?? uniqID, points: pts })
   }
   series.sort((a, b) => topDoseMag(b.points) - topDoseMag(a.points))
+  return {
+    series,
+    anySig,
+    axis: opts.axis,
+    comparison: comparisonOf(rows),
+    continuous,
+    linear
+  }
+}
+
+/** A response-curve plot from its base: which lines are coloured, and in front. */
+export function drPick(
+  b: DRBase,
+  opts: Pick<DROptions, 'topGenes' | 'split' | 'focus' | 'within'>
+): DRData {
+  const { series, anySig, continuous, linear } = b
   // Focus genes (when set) override top-N: pull them to the front (in focus order) and
   // colour exactly them; the rest stay as faint background lines.
   const focus = opts.focus ?? []
@@ -987,12 +1025,13 @@ export function buildDR(rows: CompareResultRow[], opts: DROptions): DRData {
     const rest = series.filter((s) => !order.has(s.uniqID))
     return {
       series: [...inFocus, ...rest],
-      axis: opts.axis,
+      axis: b.axis,
       highlight: inFocus.length,
       total: series.length,
-      comparison: comparisonOf(rows),
+      comparison: b.comparison,
       continuous,
-      ...(linear ? { linear } : null)
+      ...(linear ? { linear } : null),
+      all: series
     }
   }
   // Show every gene (as faint background lines); the coloured top-N on top is drawn from the
@@ -1014,13 +1053,19 @@ export function buildDR(rows: CompareResultRow[], opts: DROptions): DRData {
   const back = series.filter((sr) => !rank.has(sr.uniqID))
   return {
     series: [...front, ...back],
-    axis: opts.axis,
+    axis: b.axis,
     highlight: front.length,
     total: series.length,
-    comparison: comparisonOf(rows),
+    comparison: b.comparison,
     continuous,
-    ...(linear ? { linear } : null)
+    ...(linear ? { linear } : null),
+    all: series
   }
+}
+
+/** Response curves: log2FC vs dose (or time), one line per gene, top-N by |log2FC| at the top dose. */
+export function buildDR(rows: CompareResultRow[], opts: DROptions): DRData {
+  return drPick(drBase(rows, opts), opts)
 }
 
 /** Evenly spaced points along each fitted curve in the DR view (more are added at its turns). */
@@ -1070,7 +1115,20 @@ export interface BubbleOptions {
  *  are those significant at one level or more, picked (and ordered) by a signed score over their
  *  dose/time levels: per level their log2FC (`rank` 'fc') or significance (−log₁₀ P or Q, signed by
  *  the fold change there, so up and down still split), taken at its peak or summed (`over`). */
-export function buildBubble(rows: CompareResultRow[], opts: BubbleOptions): BubbleData {
+/** buildBubble's part that reads every row — each gene's rows and score, and the genes shown
+ *  before any linked selection is added — kept apart, so a pin (which only adds genes) doesn't
+ *  scan every row again (bubbleWith). */
+export interface BubbleBase {
+  byGene: Map<string, CompareResultRow[]>
+  topSigned: Map<string, number>
+  base: string[]
+  total: number
+}
+
+export function bubbleBase(
+  rows: CompareResultRow[],
+  opts: Omit<BubbleOptions, 'extra' | 'stat' | 'displayMap'>
+): BubbleBase {
   const topSigned = new Map<string, number>() // signed rank score over the levels: picks + order
   const rank = opts.rank ?? 'fc'
   const total = opts.over === 'total'
@@ -1112,6 +1170,15 @@ export function buildBubble(rows: CompareResultRow[], opts: BubbleOptions): Bubb
         opts.topGenes > 0
         ? pickTop(sigGenes, opts.topGenes, opts.split)
         : pickTop(sigGenes, geneLimit(0, sigGenes.length))
+  return { byGene, topSigned, base, total: sigGenes.length }
+}
+
+/** A bubble plot from its base, with the linked selection's genes (`extra`) added. */
+export function bubbleWith(
+  b: BubbleBase,
+  opts: Pick<BubbleOptions, 'axis' | 'extra' | 'stat' | 'displayMap'>
+): BubbleData {
+  const { byGene, topSigned, base } = b
   // Add the linked-selection genes not already shown, then order them all by their score
   // (descending) for the gene axis: a pinned gene takes its place in the order, between the genes
   // it ranks between, rather than going to the end.
@@ -1140,8 +1207,12 @@ export function buildBubble(rows: CompareResultRow[], opts: BubbleOptions): Bubb
     genes: top, // uniqIDs — the axis category keys (unique per feature)
     geneLabels: top.map((g) => opts.displayMap?.[g] ?? g),
     axis: opts.axis,
-    total: sigGenes.length
+    total: b.total
   }
+}
+
+export function buildBubble(rows: CompareResultRow[], opts: BubbleOptions): BubbleData {
+  return bubbleWith(bubbleBase(rows, opts), opts)
 }
 
 // ── point thinning ───────────────────────────────────────────────────────────────
@@ -1213,7 +1284,24 @@ export function dumbbellOrderLabel(
 
 /** Dumbbell: FC1 vs FC2 per gene as connected dots. Only SIGNIFICANT genes are shown (top-N by
  *  |FCdiff|); an explicit focus/GOI pick or a linked selection still surfaces any gene. */
-export function buildDumbbell(rows: ContrastResultRow[], opts: DumbbellOptions): DumbbellData {
+/** buildDumbbell's part that reads every row — the valid rows in |FCdiff| order and the genes
+ *  shown before any linked selection is added — kept apart, so a hover or a pin (which only
+ *  appends genes) doesn't sort every row again (dumbbellWith). */
+export interface DumbbellBase {
+  valid: ContrastResultRow[]
+  /** each valid row's position in `valid` */
+  at: Map<string, number>
+  base: ContrastResultRow[]
+  baseIds: Set<string>
+  sigCount: number
+  xLabel1: string
+  xLabel2: string
+}
+
+export function dumbbellBase(
+  rows: ContrastResultRow[],
+  opts: Omit<DumbbellOptions, 'extra'>
+): DumbbellBase {
   const valid = rows.filter((r) => r.FC1 != null && r.FC2 != null)
   valid.sort((a, b) => Math.abs(b.FCdiff ?? 0) - Math.abs(a.FCdiff ?? 0))
   const sig = valid.filter((r) => r.signf)
@@ -1230,16 +1318,37 @@ export function buildDumbbell(rows: ContrastResultRow[], opts: DumbbellOptions):
   const focus = opts.focus ?? []
   const focusSet = new Set(focus)
   const base = focus.length > 0 ? valid.filter((r) => focusSet.has(r.uniqID)) : pickRows(sig) // significant only; unset ⇒ all (safety-capped)
+  const at = new Map<string, number>()
+  valid.forEach((r, i) => at.set(r.uniqID, i))
+  return {
+    valid,
+    at,
+    base,
+    baseIds: new Set(base.map((r) => r.uniqID)),
+    sigCount: sig.length,
+    xLabel1: rows[0]?.cmp1 ?? 'FC1',
+    xLabel2: rows[0]?.cmp2 ?? 'FC2'
+  }
+}
+
+/** A dumbbell from its base, with the linked selection's genes (`extra`) appended. */
+export function dumbbellWith(
+  b: DumbbellBase,
+  opts: Pick<DumbbellOptions, 'extra' | 'order' | 'displayMap'>
+): DumbbellData {
   // Append linked-selection genes not already shown (hover/pin highlight), preserving the
   // |FCdiff| order, so a selected gene appears at the end of the list instead of replacing.
-  const baseIds = new Set(base.map((r) => r.uniqID))
-  const extraIds = new Set((opts.extra ?? []).filter((id) => !baseIds.has(id)))
+  const extraAt = [
+    ...new Set((opts.extra ?? []).filter((id) => !b.baseIds.has(id) && b.at.has(id)))
+  ]
+    .map((id) => b.at.get(id)!)
+    .sort((x, y) => x - y)
   // Order each part by the chosen side, high → low (stable, so ties keep the |FCdiff| order);
   // linked-selection genes stay at the end either way.
   const key = opts.order === 'fc1' ? 'FC1' : opts.order === 'fc2' ? 'FC2' : undefined
   const ordered = (list: ContrastResultRow[]): ContrastResultRow[] =>
     key ? [...list].sort((a, b) => (b[key] as number) - (a[key] as number)) : list
-  const top = [...ordered(base), ...ordered(valid.filter((r) => extraIds.has(r.uniqID)))]
+  const top = [...ordered(b.base), ...ordered(extraAt.map((i) => b.valid[i]))]
   return {
     rows: top.map((r) => ({
       label: opts.displayMap?.[r.uniqID] ?? r.uniqID,
@@ -1249,10 +1358,14 @@ export function buildDumbbell(rows: ContrastResultRow[], opts: DumbbellOptions):
       signf: r.signf,
       effect: r.effect
     })),
-    xLabel1: rows[0]?.cmp1 ?? 'FC1',
-    xLabel2: rows[0]?.cmp2 ?? 'FC2',
-    total: sig.length
+    xLabel1: b.xLabel1,
+    xLabel2: b.xLabel2,
+    total: b.sigCount
   }
+}
+
+export function buildDumbbell(rows: ContrastResultRow[], opts: DumbbellOptions): DumbbellData {
+  return dumbbellWith(dumbbellBase(rows, opts), opts)
 }
 
 // ── TDR: time-series dose-response for one gene (compare) ────────────────────────
@@ -2321,6 +2434,8 @@ export function buildHeatmap(rows: Iterable<StandardRow>, opts: HeatmapOptions =
 export interface HeatmapClusterJob {
   matrix: number[][]
   k: number
+  /** each matrix row's gene (uniqID) — so groups clustered elsewhere (a run's) can be matched */
+  genes: string[]
 }
 
 /** buildHeatmap as steps: the pivot and layout here, the row clustering (O(n²) in time and
@@ -2383,7 +2498,7 @@ export function* buildHeatmapSteps(
         }
       return cnt > 0 ? sum / cnt : -Infinity // all-missing genes sink to the bottom
     }
-    const groups: number[][] = yield { matrix: imputed, k: opts.clusterGroups ?? 8 }
+    const groups: number[][] = yield { matrix: imputed, k: opts.clusterGroups ?? 8, genes }
     groups.sort((ga, gb) => {
       const va = ga.reduce((s, i) => s + geneVal(z[i]), 0) / ga.length
       const vb = gb.reduce((s, i) => s + geneVal(z[i]), 0) / gb.length
@@ -2504,8 +2619,12 @@ export interface FcHeatmapData {
   genes: string[]
   /** gene uniqIDs, aligned to `genes` (for linked selection) */
   geneIds: string[]
-  /** column labels — one per comparison × context */
+  /** column labels — one per comparison × context, naming only what varies across the columns
+   *  (the comparison, the context conditions); what every column shares is `columnsTitle` */
   columns: string[]
+  /** the comparison every column shares (a curve fit's as "dose curve | baseline"), for the
+   *  columns' axis title — absent when they're of several comparisons */
+  columnsTitle?: string
   /** z[geneRow][col] = log2FC (null = missing) */
   z: Array<Array<number | null>>
   /** max |log2FC| across the matrix (≥ tiny) */
@@ -2747,18 +2866,37 @@ export function* buildFcHeatmapSteps(
     }
   }
 
+  // A column is named by what tells it apart from the others: the comparison and the context
+  // conditions that vary across the columns — one shared by every column (a curve fit's "dose
+  // curve | 0") said once, as the axis title, not on every tick.
+  const colValues = activeCols.map((c) => colValueOf.get(c) ?? [])
+  const varies = (t: number): boolean => new Set(colValues.map((v) => v[t])).size > 1
+  const many = colValues.length > 1
+  const cmpVaries = varies(0)
+  const ctxVaries = ctxDims.map((_, i) => varies(i + 1))
+  const columns = activeCols.map((c, k) => {
+    if (!many) return c
+    const v = colValues[k]
+    const parts = [
+      ...(cmpVaries ? [v[0]] : []),
+      ...ctxDims.flatMap((d, i) => (ctxVaries[i] && v[i + 1] !== '' ? [ctxLabel(d, v[i + 1])] : []))
+    ]
+    return parts.length ? parts.join(' · ') : c
+  })
+  const shared = many && !cmpVaries ? colValues[0]?.[0] : undefined
   const dm = opts.displayMap ?? {}
   return {
     genes: genes.map((g) => dm[g] ?? g),
     geneIds: genes,
-    columns: activeCols,
+    columns,
+    ...(shared ? { columnsTitle: curveComparisonText(shared, rows) } : null),
     z,
     absMax: absMax || 1,
     colorMax: colorMax || absMax || 1,
     ...(rowTree?.length ? { rowTree } : null),
     ...(colTree?.length ? { colTree } : null),
     colConds: ['comparison', ...ctxDims],
-    colValues: activeCols.map((c) => colValueOf.get(c) ?? [])
+    colValues
   }
 }
 

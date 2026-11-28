@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react'
 import { METRIC_IDS, METRIC_NAMES, type MetricId } from '../../graph/metricBars'
 import type { MetricsConfig } from '../../graph/types'
-import { ToggleSwitch } from '../../ui/ToggleSwitch'
+import { OnOffSwitch, ToggleSwitch } from '../../ui/ToggleSwitch'
 import { Field, QuickToggle, Select } from '../kit/settings/controls'
 import { type PlotPanelProps, PlotSections } from '../kit/settings/plotSections'
 import { type PlotSettingsProps } from '../settings'
@@ -30,6 +30,18 @@ export function MetricsPanel({ config, update }: PlotPanelProps<MetricsConfig>):
           options={METRIC_IDS.map((m) => ({ value: m, label: METRIC_NAMES[m] }))}
         />
       </Field>
+      {(config.metric ?? 'potency') === 'potency' && (
+        <Field
+          label="force pEC50"
+          info="A flat curve (its F-test doesn’t reject flat) has no midpoint, so no pEC50. On: placed at pEC50 0, the least potent."
+        >
+          <OnOffSwitch
+            on={!!config.forcePEC50}
+            label="Force pEC50"
+            onChange={(on) => update({ forcePEC50: on || undefined })}
+          />
+        </Field>
+      )}
       <Field
         label="show"
         aside={<QuickToggle config={config} field="show" update={update} />}

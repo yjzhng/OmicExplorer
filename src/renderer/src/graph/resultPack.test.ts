@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
-import { holderTable } from '../engine/lazyRows'
+import { attachLazyRows, holderTable } from '../engine/lazyRows'
+import { encodeTable } from '../engine/wire'
 import { packResults, unpackResults } from './resultPack'
 import type { NodeResult } from './types'
 
@@ -56,5 +57,36 @@ describe('packed results unpacked as lazy tables', () => {
     expect(holderTable(cmp)?.n).toBe(3000)
     expect(holderTable((got.small as { cmp: object }).cmp)).toBeUndefined()
     expect(canon(got)).toBe(canon(want))
+  })
+})
+
+describe('lazy results packed straight off their tables', () => {
+  /** `r` with its row tables lazy (columnar), the way a run's results come back from the worker —
+   *  their `rows` throwing if read, so the pack provably never builds them. */
+  function lazyOf(r: NodeResult): NodeResult {
+    const cmp = (r as unknown as { cmp: { rows: Record<string, unknown>[] } }).cmp
+    const holder: Record<string, unknown> = { ...cmp }
+    attachLazyRows(holder, encodeTable(cmp.rows, []))
+    Object.defineProperty(holder, 'rows', {
+      enumerable: true,
+      configurable: true,
+      get: () => {
+        throw new Error('rows built')
+      }
+    })
+    return { ...r, cmp: holder } as unknown as NodeResult
+  }
+
+  it('gives the file its rows would, without building them', () => {
+    for (const n of [40, 3000]) {
+      const plain = { a: bigResult(n) }
+      expect(packResults({ a: lazyOf(plain.a) }), String(n)).toEqual(packResults(plain))
+    }
+  })
+
+  it('a file opened (its tables lazy) saves back unchanged', () => {
+    const file = JSON.parse(JSON.stringify(packResults({ s: bigResult(3000) })))
+    const again = JSON.parse(JSON.stringify(packResults(unpackResults(file))))
+    expect(again).toEqual(file)
   })
 })

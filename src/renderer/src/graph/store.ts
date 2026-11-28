@@ -2,7 +2,7 @@
 import { type Connection, type Edge, type EdgeChange, type NodeChange } from '@xyflow/react'
 import { create, type StoreApi } from 'zustand'
 
-import type { ContrastStat, Progress, ScalePreview, ThresholdConfig } from '../engine'
+import type { ContrastStat, ModelView, Progress, ScalePreview, ThresholdConfig } from '../engine'
 import { type MatrixPreset } from '../engine/interactive'
 import { useAppSettings } from '../ui/useAppSettings'
 import { useAppView } from '../ui/useAppView'
@@ -129,6 +129,9 @@ export interface GraphState {
   /** A Curve fit's method label: 'custom', or unset (the preset its detector implies). UI only —
    *  the run reads the models themselves — so it never stales the result. */
   setCurveMethod: (id: string, method: 'custom' | undefined) => void
+  /** A Curve fit's model view (detector / descriptor). Display-only — it never stales the Curve
+   *  fit; the plots below that compute from it (a heatmap's clustering, enrichment) run again. */
+  setModelView: (id: string, view: ModelView) => void
   /** Set a curve fit's dose unit (pEC50's molar scale). Display-only — never stales the result. */
   /** Set a Load tile's condition units. Display-only — downstream results stay current. */
   setLoadUnits: (id: string, units: CondUnits) => void

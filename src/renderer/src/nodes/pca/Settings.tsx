@@ -232,10 +232,8 @@ export function ClusterPanel({ config, update, edgeNodeId }: PlotPanelProps<Clus
           {look.territory !== 'none' && (
             <div style={styles.hint}>
               {look.territory === 'hull'
-                ? 'The convex hull of each condition’s replicates — only where measurements landed.'
-                : 'A ~95% covariance ellipse per condition — smoother and comparable, but extrapolated beyond the replicates.'}
-              {(config.replicates ?? 'individual') === 'mean' &&
-                ' With replicate means (one point per condition), it spans each colour group’s condition means instead — e.g. a compound over its doses.'}
+                ? 'The convex hull of each condition group’s points (colour × fade) — only where measurements landed.'
+                : 'A ~95% covariance ellipse per condition group (colour × fade) — smoother, but extrapolated beyond the points.'}
             </div>
           )}
           <ClusterMarkerField config={config} update={update} centroid={look.data === 'centroid'} />

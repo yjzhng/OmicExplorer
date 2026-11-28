@@ -1,6 +1,6 @@
 import { useMemo } from 'react'
 
-import type { GeneShares } from '../../engine'
+import { distShape, VIOLIN_CAP, type GeneShares } from '../../engine'
 import { tooltip } from '../../ui/condTooltip'
 import { PlotlyChart } from '../../ui/PlotlyChart'
 import { axisBase, CATEGORICAL, PALETTES, plotBase, withAlpha } from '../../ui/theme'
@@ -77,11 +77,19 @@ export function VarianceView({
       i < terms.length ? colorOf(i) : withAlpha(p.textMuted, 0.45)
 
     if (view === 'overview') {
+      // Past VIOLIN_CAP genes, each violin is drawn from its shares' quantiles with the bandwidth
+      // for all of them (engine/distShape): the same shape, without Plotly smoothing every gene's
+      // share at each draw.
+      const violinOf = (i: number, name: string): Record<string, unknown> => {
+        const all = genes.map((g) => shareOf(g, i))
+        const d = all.length > VIOLIN_CAP ? distShape(all) : null
+        const y = d ? d.sample : all
+        return { x: y.map(() => name), y, ...(d ? { bandwidth: d.bandwidth } : null) }
+      }
       const data = names.map((name, i) => ({
         type: 'violin',
         name,
-        x: genes.map(() => name),
-        y: genes.map((g) => shareOf(g, i)),
+        ...violinOf(i, name),
         box: { visible: true, width: 0.12 },
         meanline: { visible: true },
         points: false,
@@ -161,5 +169,5 @@ export function VarianceView({
       }
     }
   }, [view, terms, genes, displayMap, mode])
-  return <PlotlyChart data={data} layout={layout} />
+  return <PlotlyChart controls="none" data={data} layout={layout} />
 }

@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react'
 import type { PotencyConfig } from '../../graph/types'
+import { OnOffSwitch } from '../../ui/ToggleSwitch'
 import { CapRow, Field, QuickToggle, Select } from '../kit/settings/controls'
 import { legendShown, useEffectColors, useEffectNames } from '../kit/settings/plotHooks'
 import {
@@ -32,6 +33,16 @@ export function PotencyPanel({
                 { value: 'called', label: 'significant only' },
                 { value: 'all', label: 'all' }
               ]}
+            />
+          </Field>
+          <Field
+            label="force pEC50"
+            info="A flat curve (its F-test doesn’t reject flat) has no midpoint, so no pEC50. On: placed at pEC50 0, the least potent."
+          >
+            <OnOffSwitch
+              on={!!config.forcePEC50}
+              label="Force pEC50"
+              onChange={(on) => update({ forcePEC50: on || undefined })}
             />
           </Field>
         </>

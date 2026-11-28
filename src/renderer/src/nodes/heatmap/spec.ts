@@ -1,6 +1,7 @@
 /** heatmap: its node contract (see nodes/contract.ts). */
 import type { HeatmapConfig } from '../../graph/types'
 import { defineSpec } from '../contract'
+import { fcHeatmapRunKey } from './runKey'
 
 export const heatmapSpec = defineSpec<'heatmap'>({
   kind: 'heatmap',
@@ -12,7 +13,14 @@ export const heatmapSpec = defineSpec<'heatmap'>({
   output: null,
   hasRun: true,
   defaultConfig: (): HeatmapConfig => ({ capEnabled: false, maxGenes: 50 }),
+  // Its run clusters (heatmap/run.ts): a fold-change heatmap's clustering settings need another
+  // run, as a Compare's statistic does — the rest only redraw. A result from before the heatmap
+  // clustered in its run (a bare marker) runs again on any change.
+  staleOn: (next, _prev, result) =>
+    result?.kind !== 'heatmap' ||
+    (!!result.fc && result.fc.key !== fcHeatmapRunKey(next as HeatmapConfig)),
   plot: {
+    computes: true,
     configurable: true,
     legend: true,
     axes: true,

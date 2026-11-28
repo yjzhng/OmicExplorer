@@ -137,9 +137,11 @@ interface PlotlyChartProps {
    *  its terms), those marks' ids: hovering it focuses them all, as hovering one of them does (the
    *  rest fade, their labels bold). Its genes, for a click, are pinIdsOf's. */
   memberIdsOf?: (id: string) => readonly string[] | null | undefined
-  /** show Plotly's control bar (zoom/pan/download) on hover — default on; off where it would cover
-   *  the view's own controls (the enrichment plot's category chips) */
-  modeBar?: boolean
+  /** Plotly's control bar, by what the plot is for (CONTROLS): 'points' (default) zoom, pan, box /
+   *  lasso select and reset — a cloud of genes to pick from; 'zoom' zoom, pan and reset — curves,
+   *  where the points are samples of a gene already picked; 'none' no bar and no drag — heatmaps,
+   *  bars and categories, networks. A 3-D scene shows its own camera tools under 'points' or 'zoom'. */
+  controls?: PlotControls
   /** off: no autoscale — the bar's button is gone and a double-click resets to the layout's range.
    *  For a view whose guides run far past its pinned range (so a zoom out still shows them to the
    *  edges), which an autoscale would take in. */
@@ -241,7 +243,7 @@ export function PlotlyChart({
   onAnnotationClick,
   pinIdsOf,
   memberIdsOf,
-  modeBar = true,
+  controls = 'points',
   autoscale = true,
   linkDelay,
   onCamera,
@@ -561,6 +563,8 @@ export function PlotlyChart({
   const [glTick, setGlTick] = useState(0)
   // Emptied while hidden (its WebGL slot taken by a plot on screen): drawn for real when shown.
   const blankRef = useRef(false)
+  // A draw skipped while its Results tab was hidden: made when it's shown (see the draw effect).
+  const hiddenDrawRef = useRef(false)
   // A very dense bulk drawn as a density (densityBins), keeping the labelled genes as markers.
   // The labels matter only to a plot that bins: elsewhere a change of labels must not redraw it.
   const bins = useMemo(() => wouldBin(data), [data])
@@ -611,7 +615,7 @@ export function PlotlyChart({
         ? new ResizeObserver(() => {
             const shown = el.offsetParent !== null
             slot.update({ shown })
-            if (shown && blankRef.current) setGlTick((n) => n + 1)
+            if (shown && (blankRef.current || hiddenDrawRef.current)) setGlTick((n) => n + 1)
           })
         : null
     if (el) ro?.observe(el)
@@ -631,6 +635,15 @@ export function PlotlyChart({
   useEffect(() => {
     const el = ref.current as PlotlyGraphDiv | null
     if (!el) return
+    // On a Results tab that isn't shown (its pane display:none, aria-hidden), or on the Results page
+    // kept behind the canvas (data-offscreen): drawn when it is — the resize below — not now. A plot
+    // whose data arrives while you're elsewhere (a heatmap clustered meanwhile) was drawn for
+    // nobody, at no size: a gene heatmap's then labelled every gene, ten seconds of the UI thread.
+    if (el.closest('[aria-hidden="true"],[data-offscreen]')) {
+      hiddenDrawRef.current = true
+      return
+    }
+    hiddenDrawRef.current = false
     let cancelled = false
     blankRef.current = false
     // A placement scheduled while this render is in flight would measure the OLD plot and could
@@ -697,16 +710,20 @@ export function PlotlyChart({
       levels: fitted.levels,
       margin: fitted.margin
     }
-    const drawn = { traces: fitted.traces, layout: fitted.layout }
+    // no controls, no drag either: a drag would zoom with no button to say so
+    const drawn = {
+      traces: fitted.traces,
+      layout: controls === 'none' ? { ...fitted.layout, dragmode: false } : fitted.layout
+    }
     void track(
       Plotly.react(el, drawn.traces, drawn.layout, {
         responsive: true,
         displaylogo: false,
-        ...(modeBar ? null : { displayModeBar: false }),
+        ...(controls === 'none' ? { displayModeBar: false } : null),
         // The bar keeps zoom, pan, box and lasso select and reset (each where Plotly offers it — no
         // select tools without points to select): the app has its own copy / export, and Reset
-        // covers zoom in / out and autoscale.
-        modeBarButtonsToRemove: MODEBAR_REMOVE,
+        // covers zoom in / out and autoscale. 'zoom' drops the select tools too.
+        modeBarButtonsToRemove: controls === 'zoom' ? MODEBAR_REMOVE_ZOOM : MODEBAR_REMOVE,
         ...(autoscale ? null : { doubleClick: 'reset' })
       })
     )
@@ -869,7 +886,7 @@ export function PlotlyChart({
     scheduleLabels,
     rebindDom,
     reserveBoldMargin,
-    modeBar,
+    controls,
     autoscale,
     glTick,
     track,
@@ -914,14 +931,26 @@ export function PlotlyChart({
       // share some of its genes don't light with it.
       const selectedOwn = new Set<string>()
       const genesOf = pinIdsOfRef.current
-      if (genesOf && pinnedIds.size) {
+      // A gene hovered in ANOTHER view (not one of this chart's own marks) lights the marks that
+      // stand for that one gene (a curve QC residual), as it lights a gene's point elsewhere.
+      const hoveredGenes = new Set<string>()
+      if (hoverId && genesOf?.(hoverId) == null) {
+        hoveredGenes.add(hoverId)
+        for (const g of hoverMembers) hoveredGenes.add(g)
+      }
+      if (genesOf && (pinnedIds.size || hoveredGenes.size)) {
         for (const raw of dataRef.current) {
           const t = raw as Trace & { __oeOwnIds?: boolean }
           if (!t.__oeOwnIds || !Array.isArray(t.customdata)) continue
           for (const id of t.customdata) {
             if (typeof id !== 'string' || selectedOwn.has(id)) continue
             const genes = genesOf(id)
-            if (genes?.length && genes.every((g) => pinnedIds.has(g))) selectedOwn.add(id)
+            if (!genes?.length) continue
+            if (
+              genes.every((g) => pinnedIds.has(g)) ||
+              (genes.length === 1 && hoveredGenes.has(genes[0]))
+            )
+              selectedOwn.add(id)
           }
         }
       }
@@ -1219,7 +1248,8 @@ export function PlotlyChart({
 }
 
 /** The control bar's buttons left out (PlotlyChart's config): all but zoom, pan, box / lasso select
- *  and reset. A 3-D scene keeps its own camera tools. */
+ *  and reset. A 3-D scene keeps its own camera tools, with turntable rotation (the scene's drag
+ *  default) the only rotation offered — orbital rotation tips the axes over. */
 const MODEBAR_REMOVE = [
   'zoomIn2d',
   'zoomOut2d',
@@ -1229,8 +1259,13 @@ const MODEBAR_REMOVE = [
   'hoverClosestCartesian',
   'hoverCompareCartesian',
   'hoverClosest3d',
+  'orbitRotation',
   'resetCameraLastSave3d'
 ]
+const MODEBAR_REMOVE_ZOOM = [...MODEBAR_REMOVE, 'select2d', 'lasso2d']
+
+/** Which of Plotly's controls a plot offers — PlotlyChartProps.controls. */
+export type PlotControls = 'points' | 'zoom' | 'none'
 
 /** The chart's margin where a view sets none. */
 const BASE_MARGIN = { l: 55, r: 20, t: 30, b: 45 }

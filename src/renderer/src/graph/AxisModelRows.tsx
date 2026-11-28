@@ -7,31 +7,11 @@
  */
 import type { CSSProperties, ReactNode } from 'react'
 
-import {
-  condLabel,
-  presetModel,
-  type AxisBaseline,
-  type AxisFit,
-  type ConditionKey
-} from '../engine'
+import { condLabel, type AxisBaseline, type AxisFit, type ConditionKey } from '../engine'
 import { ToggleSwitch } from '../ui/ToggleSwitch'
 import { UI } from '../ui/theme'
 import { descriptorOptions, detectorOptions, fitOf, type Describe } from './axisFits'
 import { MODEL_LOCK } from './curveSettings'
-
-const BASELINE_OPTIONS: { value: AxisBaseline; label: string; title: string }[] = [
-  {
-    value: 'reference',
-    label: 'control',
-    title: 'The baseline is a control off the curve (the vehicle): the 4PL fits towards it at −∞'
-  },
-  {
-    value: 'matched',
-    label: 'first point',
-    title:
-      'The baseline is the curve’s own first point (t₀; the lowest temperature — ratio to the lowest level): the curve starts there'
-  }
-]
 
 export function AxisModelRows({
   axes,
@@ -39,10 +19,10 @@ export function AxisModelRows({
   detection,
   fits,
   baselines,
+  pins,
   locked,
   joint,
-  onFit,
-  onBaseline
+  onFit
 }: {
   /** the axes the fit runs over: one, or a surface's two (first, second) */
   axes: readonly ConditionKey[]
@@ -50,24 +30,26 @@ export function AxisModelRows({
   /** the method's detector (what an axis without its own takes) */
   detection: '4pl' | 'spline'
   fits: Partial<Record<ConditionKey, AxisFit>> | undefined
-  /** each axis's baseline kind as set (absent: its preset's) */
+  /** what the baseline is to each axis — as the Baseline pick makes it (curveModel's
+   *  baselinesOfPick): shown, not set here, so the two can't disagree */
   baselines: Partial<Record<ConditionKey, AxisBaseline>> | undefined
+  /** the Baseline picked on the grid: each axis's pinned level (none: each level its own) */
+  pins: Partial<Record<ConditionKey, readonly string[]>>
   /** a method preset holds the models: shown faded */
   locked: boolean
   /** a surface described by the joint model (the coupling matters only then, or under a 4PL
    *  detector) */
   joint: boolean
   onFit: (index: number, field: keyof AxisFit, value: AxisFit[keyof AxisFit]) => void
-  /** null: back to the axis's preset */
-  onBaseline: (axis: ConditionKey, value: AxisBaseline | null) => void
 }): ReactNode {
   const lockProps = locked ? MODEL_LOCK : null
+  const pinOf = (a: ConditionKey): string | undefined =>
+    pins[a]?.length === 1 ? pins[a]![0] : undefined
   return (
     <div style={grid}>
       {axes.map((a, i) => {
         const f = fitOf(fits, axes, i, detection, baselines)
         const desc = descriptorOptions(surface, f.detect)
-        const base = baselines?.[a] ?? presetModel(a).baseline
         // the coupling: a surface's 4PL (in the joint model — its 4PL detector, or the joint
         // description)
         const couples = surface && (f.detect === '4pl' || (joint && f.describe === '4pl'))
@@ -102,16 +84,17 @@ export function AxisModelRows({
               </span>
             </Labelled>
             <Labelled label="baseline">
-              <ToggleSwitch
-                size="sm"
-                label={`${condLabel(a)} baseline`}
-                value={base}
-                options={BASELINE_OPTIONS.map((o) => ({
-                  ...o,
-                  title: `${o.title}${o.value === presetModel(a).baseline ? ` (${condLabel(a)}'s default)` : ''}`
-                }))}
-                onChange={(v) => onBaseline(a, v === presetModel(a).baseline ? null : v)}
-              />
+              {/* the Baseline picked on the grid, not set here (one source) */}
+              <span
+                style={pinText}
+                title={
+                  pinOf(a)
+                    ? `Every value against ${condLabel(a)} ${pinOf(a)} (at its own levels of the rest) — set by the Baseline picked on the grid`
+                    : `Each ${condLabel(a)} level against the control at that level — set by the Baseline picked on the grid`
+                }
+              >
+                {pinOf(a) ? `${condLabel(a)} ${pinOf(a)}` : 'each level its own'}
+              </span>
             </Labelled>
             {surface && (
               <Labelled label="drift">
@@ -153,7 +136,8 @@ function Labelled({ label, children }: { label: string; children: ReactNode }): 
   )
 }
 
-const grid: CSSProperties = { display: 'flex', flexDirection: 'column', gap: 8, minWidth: 0 }
+// the axes side by side (one under the other where the window is too narrow for both)
+const grid: CSSProperties = { display: 'flex', flexWrap: 'wrap', gap: 8, minWidth: 0 }
 const block: CSSProperties = {
   display: 'flex',
   flexDirection: 'column',
@@ -180,3 +164,5 @@ const row: CSSProperties = {
   flexWrap: 'wrap'
 }
 const rowLabel: CSSProperties = { fontSize: 11, color: UI.textMuted, width: 64, flex: '0 0 auto' }
+
+const pinText: CSSProperties = { fontSize: 12, color: 'var(--text-muted, #888)' }

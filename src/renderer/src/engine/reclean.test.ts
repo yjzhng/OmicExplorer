@@ -60,7 +60,7 @@ describe('Clean data on Clean data', () => {
     // normalisation on g0: sample 2's 2× loading removed
     const g1 = out.rows.filter((r) => r.uniqID === 'g1').map((r) => r.value!)
     expect(g1[1]).toBeCloseTo(g1[0], 6)
-    expect(out.normalization).toMatchObject({ used: 'protein', protein: 'g0', samples: 4 })
+    expect(out.normalization).toMatchObject({ used: 'protein', proteins: ['g0'], samples: 4 })
     // the import's settlement carries over; the summaries are this step's
     expect(out.activeConditions).toEqual(['cmpd'])
     // it arrives as the step above presents it — logged — and stays so unless told otherwise

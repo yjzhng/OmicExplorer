@@ -309,6 +309,12 @@ const api = {
   revealFolder: (dir: string): Promise<void> => ipcRenderer.invoke('plots:reveal', dir),
 
   // ── external annotation ────────────────────────────────────────────────────────
+  /** GO's hierarchy among these GO term names: each one's ancestors that are also in the list
+   *  (the ontology fetched once, then cached — goes to the network the first time). */
+  goAncestors: (
+    names: string[]
+  ): Promise<{ ancestors: Record<string, string[]>; version?: string; error?: string }> =>
+    ipcRenderer.invoke('go:ancestors', names),
   /** Fetch UniProt annotations for a list of accessions; returns {byId, fields, found, taxon, error?}.
    *  `refresh` bypasses the app-wide accession cache and re-queries every source. */
   fetchUniprot: (

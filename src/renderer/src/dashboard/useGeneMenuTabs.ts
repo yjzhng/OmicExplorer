@@ -15,6 +15,7 @@ import {
   enrichSourcesPresent,
   enrichTermsOf,
   ENRICH_SOURCE_LABEL,
+  proteinDescOf,
   resolveEnrichSource,
   type EnrichSource
 } from '../engine'
@@ -69,17 +70,8 @@ const ESSENTIALITY_LABEL: Record<string, string> = {
   DEG: 'DEG'
 }
 
-/** Pick a gene's protein description from its annotation record: the UniProt `proteinName` column
- *  first, else a data column whose name reads like a protein name / description / product. */
-function pickDesc(rec: Record<string, string> | undefined): string | undefined {
-  if (!rec) return undefined
-  if (rec.proteinName) return rec.proteinName
-  const key = Object.keys(rec).find((c) => /protein[_. ]?name|description|product/i.test(c))
-  return key ? rec[key] : undefined
-}
-
 /** id → protein description, as the gene selector shows it right of a gene's name: from every
- *  result's annotations (pickDesc). For a tile's gene picker, so it lists genes as the nav does. */
+ *  result's annotations (proteinDescOf). For a tile's gene picker, so it lists genes as the nav does. */
 export function useGeneDescriptions(): Record<string, string> {
   const parts = useGraph(useShallow(menuParts))
   return useMemo(() => {
@@ -88,7 +80,7 @@ export function useGeneDescriptions(): Record<string, string> {
       if (!am) continue
       for (const id in am) {
         if (id in map) continue
-        const d = pickDesc(am[id])
+        const d = proteinDescOf(am[id])
         if (d) map[id] = d
       }
     }
@@ -156,7 +148,7 @@ export function useGeneMenuTabs(parts: MenuParts): GeneGroupTab[] {
       else byTerm.set(term, [gene])
     }
     for (const id in geneLabels) {
-      const gene = { id, label: geneLabels[id], desc: pickDesc(annById[id]) }
+      const gene = { id, label: geneLabels[id], desc: proteinDescOf(annById[id]) }
       const terms = [...new Set(termsOf(id))]
       if (terms.length === 0) put(none, none, gene)
       else for (const t of terms) put(parentOf(t) ?? OTHER, t, gene)
@@ -264,7 +256,7 @@ export function useGeneMenuTabs(parts: MenuParts): GeneGroupTab[] {
     // A protein group carries its members' values `;`-joined; members that disagree put it in
     // each class they name, as a group sits under every pathway any member is in.
     for (const id in geneLabels) {
-      const gene = { id, label: geneLabels[id], desc: pickDesc(ann[id]) }
+      const gene = { id, label: geneLabels[id], desc: proteinDescOf(ann[id]) }
       const classes = new Set((ann[id]?.[essCol] ?? '').split(';').map(classOf))
       for (const c of classes) buckets[c].push(gene)
     }
@@ -296,7 +288,7 @@ export function useGeneMenuTabs(parts: MenuParts): GeneGroupTab[] {
     const none = `No ${shortLabel(source)} term`
     const byTerm = new Map<string, { id: string; label: string; desc?: string }[]>()
     for (const id in geneLabels) {
-      const gene = { id, label: geneLabels[id], desc: pickDesc(annById[id]) }
+      const gene = { id, label: geneLabels[id], desc: proteinDescOf(annById[id]) }
       const terms = enrichTermsOf(annById, source, id, kcatAll)
       for (const t of terms.length ? terms : [none]) {
         const arr = byTerm.get(t)

@@ -26,10 +26,12 @@ import {
   type StandardizeConfig,
   type ContrastConfig,
   type PlotGroupConfig,
+  modelViewOf,
   plotResultKey
 } from '../types'
 import { type StoreSet, type Getter, type GraphState } from '../store'
-import { NODE_SPECS, runsIn, wiredKindOf, loadAbove } from '../registry'
+import { NODE_SPECS, categoryOf, runsIn, wiredKindOf, loadAbove } from '../registry'
+import { PLOT_RUNS } from '../../nodes/runs'
 import { scalePreviews } from '../loadFiles'
 import { hiddenGeneIds } from '../geneMask'
 import { engine } from '../../engine/client'
@@ -45,6 +47,7 @@ export function configSlice(
   | 'updateConfig'
   | 'setCompareEffectLabels'
   | 'setCurveMethod'
+  | 'setModelView'
   | 'setLoadUnits'
   | 'setLoadNumeric'
   | 'previewStdScale'
@@ -104,9 +107,15 @@ export function configSlice(
         delete results[id]
         set({ results })
         get().invalidateDownstream(id)
-        // A cluster's run settings changed from the tile's switches: run it again at once (in the
-        // worker), as the switch implies — rather than leave the tile on "Not run yet".
-        if (kind === 'pca' && before && isStep(before) && before.data.status === 'done')
+        // A cluster's run settings (or a heatmap's clustering ones) changed from the tile's
+        // switches: run it again at once (in the worker), as the switch implies — rather than
+        // leave the tile on "Not run yet".
+        if (
+          (kind === 'pca' || kind === 'heatmap') &&
+          before &&
+          isStep(before) &&
+          before.data.status === 'done'
+        )
           void get().runNode(id)
       }
     },
@@ -146,6 +155,35 @@ export function configSlice(
         ),
         dirty: true
       }))
+    },
+    setModelView: (id, view) => {
+      const node = get().nodes.find((n) => n.id === id)
+      if (!node || !isStep(node) || !isComparisonKind(node.data.kind)) return
+      const cfg = node.data.config as CompareConfig
+      if (modelViewOf(cfg) === view) return
+      get().commit()
+      // Display-only, so patch the config directly (updateConfig would stale the curve fit).
+      const next = { ...cfg, modelView: view === 'descriptor' ? undefined : view }
+      set((s) => ({
+        nodes: s.nodes.map((n) =>
+          n.id === id && isStep(n) ? { ...n, data: { ...n.data, config: next as NodeConfig } } : n
+        ),
+        dirty: true
+      }))
+      // The plots reading it: those drawn straight from it redraw (they read it through
+      // viewedResult); those with a run of their own on it (a heatmap's clustering, enrichment)
+      // run again on the other model's fold changes — the rest aren't touched, so their charts
+      // stay up.
+      const computes = (k: string): boolean => PLOT_RUNS[k as keyof typeof PLOT_RUNS] != null
+      for (const e of get().edges) {
+        if (e.source !== id) continue
+        const t = get().nodes.find((n) => n.id === e.target)
+        if (!t || !isStep(t) || categoryOf(t.data.kind) !== 'plotting') continue
+        if (t.data.kind === 'plotGroup') {
+          for (const c of (t.data.config as PlotGroupConfig).children)
+            if (computes(c.kind)) void get().runPlotChild(t.id, c.id)
+        } else if (computes(t.data.kind)) void get().runNode(t.id)
+      }
     },
     setLoadUnits: (id, units) => {
       const node = get().nodes.find((n) => n.id === id)
@@ -453,8 +491,10 @@ export function configSlice(
             : n
         )
       }))
-      // A cluster's run settings changed: run it again at once (see updateConfig).
-      if (prev.kind === 'pca' && prev.status === 'done') void get().runPlotChild(groupId, childId)
+      // A cluster's run settings (or a heatmap's clustering ones) changed: run it again at once
+      // (see updateConfig).
+      if ((prev.kind === 'pca' || prev.kind === 'heatmap') && prev.status === 'done')
+        void get().runPlotChild(groupId, childId)
     }
   }
 }

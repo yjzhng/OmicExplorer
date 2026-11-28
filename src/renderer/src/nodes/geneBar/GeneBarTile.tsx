@@ -15,7 +15,6 @@ import {
   distinctOf,
   numericOf,
   sampleIndex,
-  valuesOf,
   type ConditionKey,
   type SampleOrder,
   type StandardizeResult,
@@ -23,7 +22,8 @@ import {
 } from '../../engine'
 import { barColoring, primaryColorLevels, sampleOrderOf, type BarConfig } from '../../graph/types'
 import { colorerArgs } from '../../ui/condColor'
-import { valueRange, type ValueRange } from '../../ui/colormap'
+import { type ValueRange } from '../../ui/colormap'
+import { pagerGenes, stdValueRange } from '../kit/views/helpers'
 import { GeneBarView, type ReplicateLook } from './GeneBarView'
 import { GeneSwitch } from '../../dashboard/GeneSwitch'
 
@@ -124,16 +124,11 @@ export function GeneBarTile({
   const valuePalette = useRolePalette('data')
   const present = useMemo(() => distinctOf(std, 'uniqID') as Set<string>, [std])
   // Every gene by default; the selected ones (those in this data) once any are selected.
-  const pager = useMemo(
-    () => (genes.some((id) => present.has(id)) ? genes : [...present]),
-    [genes, present]
-  )
+  const pager = pagerGenes(genes, present)
   // Global value range, for the bars' colour (shared with the Heatmap tile). Never a log axis of
   // its own: the values already are on the scale Clean data presents them on.
-  const range = useMemo(
-    () => ({ ...valueRange(valuesOf(std, 'value') as Array<number | null>), log: false }),
-    [std]
-  )
+  // (the scan of every value kept by the result: stdValueRange)
+  const range = useMemo(() => ({ ...stdValueRange(std), log: false }), [std])
   // Global axis scale: the whole dataset's values (from 0, as bars are), with headroom for the
   // error bars — so paging genes keeps one scale.
   const globalRange = useMemo((): [number, number] | undefined => {

@@ -1,13 +1,18 @@
 /**
  * Curve metrics plot: one gene's curve-fit parameter as a bar chart — the metric the tile's switch
- * picks (potency, slope, plateaus, R², peak, q). A curve has one bar; a surface one per slice level
- * along its curves (see metricBarsOf), so how the parameter moves across the levels shows, coloured
- * along the levels' palette.
+ * picks (potency, slope, plateaus, R², peak, q). A surface has one bar per slice level along its
+ * curves (see metricBarsOf), so how the parameter moves across the levels shows, coloured along the
+ * levels' palette; one-axis curves one bar per comparison, side by side (compound A vs B).
  */
 import { useMemo } from 'react'
 
 import { condLabel, type CompareResultRow, type ConditionKey } from '../../engine'
-import { metricBarsOf, type MetricCtx, type MetricId } from '../../graph/metricBars'
+import {
+  metricBarsOf,
+  type MetricBars,
+  type MetricCtx,
+  type MetricId
+} from '../../graph/metricBars'
 import { tooltip } from '../../ui/condTooltip'
 import { paletteSeries } from '../../ui/palettes'
 import { PlotlyChart } from '../../ui/PlotlyChart'
@@ -15,14 +20,28 @@ import { axisBase, CATEGORICAL, PALETTES, plotBase, UI } from '../../ui/theme'
 import { useRolePalette } from '../../ui/useAppSettings'
 import { useUiTheme } from '../../ui/useUiTheme'
 
+/** One-axis curves' bars for a gene: one per context (a comparison at a level of the other
+ *  conditions), named as the fold-change heatmap names its columns — what varies ("Bortezomib ·
+ *  time 960") — and its row there (none: no curve of it in that context). `title`: what every
+ *  context shares (the comparison, "dose curve | baseline"), as the heatmap's axis title; `by`:
+ *  the one condition they differ in, if one (its levels coloured along its palette). */
+export interface AcrossBars {
+  by?: ConditionKey
+  title: string
+  items: Array<{ at: string; row?: CompareResultRow }>
+}
+
 export function MetricBarsView({
   row,
+  across,
   metric,
   ctx,
   condTitle
 }: {
-  /** the gene's curve-fit row in the facet on show */
+  /** a surface: the gene's row in the facet on show (its slices are the bars) */
   row?: CompareResultRow
+  /** one-axis curves: the gene's curve in every context, one bar each */
+  across?: AcrossBars
   metric: MetricId
   /** a condition's axis title with its unit — dose (nM) — as the other plots title it */
   condTitle: (c: ConditionKey) => string
@@ -34,26 +53,31 @@ export function MetricBarsView({
   const unit = ctx.unit
   const scale = ctx.scale
   const delta = !!ctx.delta
+  const flat = ctx.flat
   const charts = useMemo(
-    () => (row ? metricBarsOf(row, [metric], { unit, scale, delta }) : []),
-    [row, metric, unit, scale, delta]
+    () => metricCharts(row, across, metric, { unit, scale, delta, flat }),
+    [row, across, metric, unit, scale, delta, flat]
   )
   const by = charts.find((c) => c.by)?.by
   const levelRole = useRolePalette(by === 'time' ? 'time' : 'dose')
   const { data, layout } = useMemo(() => {
+    const acrossTitle = across?.title
     const p = PALETTES[mode]
     const c = charts[0]
     if (!c) return { data: [], layout: {} }
     const levels = c.bars.length
+    // one bar per context, named on the axis: along the condition's palette when they differ in
+    // one condition (as a surface's slices), else one colour
+    const many = c.bars.length > 1 && !c.by
     const colors = c.by
       ? c.bars.map((_, k) => paletteSeries(levelRole, k, levels))
       : [CATEGORICAL[0]]
-    const xs = c.bars.map((b) => (c.by ? b.at : c.label))
+    const xs = c.bars.map((b) => (c.by || many ? b.at : c.label))
     // A bar at exactly 0 — a change's own reference slice — has no height to see: drawn as a band a
     // few pixels tall across the zero line, the bar's own width and colour. Sized in pixels, so it
     // never sets the axis's range (all bars 0 would otherwise zoom onto it).
     const zero = c.bars.flatMap((b, k) => (b.value === 0 ? [k] : []))
-    const gap = c.by ? 0.2 : 0.6
+    const gap = c.by || many ? 0.2 : 0.6
     return {
       data: [
         {
@@ -61,12 +85,15 @@ export function MetricBarsView({
           x: xs,
           y: c.bars.map((b) => b.value),
           marker: { color: c.by ? colors : colors[0] },
+          // one-axis curves' contexts: the bar's own name heads it (as the heatmap's column)
           hovertemplate: tooltip(
-            {
-              title: c.label,
-              conds: c.by ? [[condLabel(c.by), '%{x}']] : [],
-              values: [['value', '%{y:.3g}']]
-            },
+            across
+              ? { title: '%{x}', values: [[c.label, '%{y:.3g}']] }
+              : {
+                  title: c.label,
+                  conds: c.by ? [[condLabel(c.by), '%{x}']] : [],
+                  values: [['value', '%{y:.3g}']]
+                },
             p.textMuted,
             { template: true }
           )
@@ -95,8 +122,13 @@ export function MetricBarsView({
         xaxis: {
           ...axisBase(p),
           type: 'category',
-          title: c.by ? condTitle(c.by) : undefined,
-          showticklabels: !!c.by
+          // one-axis curves: what every context shares, as the heatmap titles its columns
+          title: across ? acrossTitle : c.by ? condTitle(c.by) : undefined,
+          showticklabels: !!c.by || many,
+          // long context names slant up to their bar, as the heatmap's columns (Plotly's own
+          // auto-rotation turns them the other way, +30°)
+          ...(many ? { tickangle: -45 } : null),
+          automargin: true
         },
         // the metric with its unit (a change: Δ, from the reference slice); 0 always in view, its
         // line drawn
@@ -110,9 +142,9 @@ export function MetricBarsView({
         }
       }
     }
-  }, [charts, mode, levelRole, condTitle])
+  }, [charts, mode, levelRole, condTitle, across])
 
-  if (!row) return null
+  if (!row && !across) return null
   if (!charts.length)
     return (
       <div style={{ padding: 12, fontSize: 12, color: UI.textMuted }}>
@@ -120,5 +152,30 @@ export function MetricBarsView({
         description to every gene).
       </div>
     )
-  return <PlotlyChart data={data} layout={layout} />
+  return <PlotlyChart controls="none" data={data} layout={layout} />
+}
+
+/** The bars on show: a surface's per slice (metricBarsOf); one-axis curves' one per context, each
+ *  its curve's value (none where it has none — no curve there, or undescribed). Empty when no
+ *  curve has the metric. */
+function metricCharts(
+  row: CompareResultRow | undefined,
+  across: AcrossBars | undefined,
+  metric: MetricId,
+  ctx: MetricCtx
+): MetricBars[] {
+  if (!across) return row ? metricBarsOf(row, [metric], ctx) : []
+  const per = across.items.map((it) =>
+    it.row ? metricBarsOf(it.row, [metric], ctx)[0] : undefined
+  )
+  const first = per.find(Boolean)
+  if (!first) return []
+  return [
+    {
+      id: first.id,
+      label: first.label,
+      ...(across.by ? { by: across.by } : null),
+      bars: across.items.map((it, k) => ({ at: it.at, value: per[k]?.bars[0]?.value ?? null }))
+    }
+  ]
 }

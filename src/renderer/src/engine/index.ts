@@ -7,6 +7,7 @@ export {
   manualSheetIssues,
   previewOfResult,
   previewScale,
+  previewProteins,
   samplesheetIssues,
   sheetIssueLines,
   sheetSamples,
@@ -52,6 +53,19 @@ export {
   type ContextIndex,
   type FacetIndexGroup
 } from './contextIndex'
+export { descPeakOf, hasResponseFits, withModelView, type ModelView } from './modelView'
+export {
+  fittedSurfaceModel,
+  linearJoin,
+  pchipJoin,
+  placed,
+  shiftReference,
+  surfaceAxes,
+  surfaceModel,
+  type SurfaceAxes,
+  type SurfaceKind,
+  type SurfaceModel
+} from './surfaceModel'
 export { rowsAt } from './lazyRows'
 export {
   arrayView,
@@ -63,6 +77,7 @@ export {
   valuesOf,
   type RowView
 } from './rowView'
+export { distShape, VIOLIN_CAP, type DistShape } from './distShape'
 export {
   sampleIndex,
   isSampleIndex,
@@ -152,6 +167,9 @@ export {
   logistic,
   curveSampleX,
   curveDescribed,
+  curveIsFlat,
+  flatPEC50,
+  type FlatPotency,
   relevanceScore,
   PEC50_DELTA,
   Y_LIMITS_LOG2,
@@ -222,12 +240,18 @@ export {
   buildIntensityScatter,
   buildMA,
   buildDR,
+  drBase,
+  drPick,
   responseCurve,
   comparisonOf,
   fcName,
   fcMeasure,
   buildBubble,
+  bubbleBase,
+  bubbleWith,
   buildDumbbell,
+  dumbbellBase,
+  dumbbellWith,
   thinPoints,
   RESIDUAL_DOT_CAP,
   DUMBBELL_ORDERS,
@@ -313,6 +337,7 @@ export {
   type DataShape
 } from './dataShape'
 export { detectCustomConditions } from './ingest'
+export type { ProteinList } from './ingest'
 
 export type { ThresholdConfig, Effect, FdrMethod } from './stats'
 export {
@@ -396,7 +421,14 @@ export type {
 export type { Analysis, PlotOption } from './plotChoice'
 export { IMPUTE_DEFAULTS, IMPUTE_LABEL } from './impute'
 export { MIN_SHARED_GENES, NORMALIZE_REFERENCE_LABEL } from './normalize'
-export type { NormalizeOptions, NormalizeReference, NormalizeSummary } from './normalize'
+export { proteinDescOf, proteinDescs } from './proteinDesc'
+export type {
+  NormalizeOptions,
+  NormalizeReference,
+  NormalizeSummary,
+  RefCombine,
+  RefMissing
+} from './normalize'
 export type { ImputeMethod, ImputeOptions, ImputeSummary } from './impute'
 export {
   defaultTransform,
@@ -442,4 +474,28 @@ export type { AnovaFactor, AnovaResult } from './anova'
 export { pickTop } from './topPick'
 export type { TopSplit, TopSplitSpec } from './topPick'
 export { MODULE_OVERLAP, moduleParts, termModules } from './enrichModules'
+export { termLevelsOf, type TermLevels } from './enrichLevels'
 export type { ModuleTerm, TermModules } from './enrichModules'
+export {
+  callSets,
+  directedSets,
+  facetNames,
+  intersections,
+  maskOf,
+  quantitySets,
+  regionPoints,
+  sampleConds,
+  sampleGroups,
+  sortIntersections,
+  termGroups,
+  vennLayout,
+  type CallGroup,
+  type Circle,
+  type Intersection,
+  type IntersectionOrder,
+  type MeasuredSets,
+  type SampleGroup,
+  type SampleOf,
+  type SetDef,
+  type SetDirection
+} from './sets'

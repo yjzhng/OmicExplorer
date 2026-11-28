@@ -25,6 +25,7 @@ import {
   baseLevelOf,
   toX,
   treatedLevel,
+  withZero,
   type AxisModel
 } from './axisModel'
 import {
@@ -634,7 +635,14 @@ export function runCompare(input: CompareInput): CompareTableResult {
  */
 /** A batch of curves to fit (each its treated points' log₁₀ doses and ratios) — what curveFitSteps
  *  hands out, and gets back fitted in the same order. */
-export type FitBatch = Array<{ x: number[]; y: number[]; grid?: number[]; x0?: number }>
+export type FitBatch = Array<{
+  x: number[]
+  y: number[]
+  grid?: number[]
+  x0?: number
+  /** the control among the curve's levels (a baseline picked above its lowest: dose 100) */
+  among?: boolean
+}>
 
 /** Run a step generator to the end, answering each batch it yields. */
 export function driveSync<Q, A, R>(gen: Generator<Q, R, A>, answer: (q: Q) => A): R {
@@ -654,7 +662,7 @@ export async function driveAsync<Q, A, R>(
 
 /** Fit a batch here, one curve after another. */
 export const fitBatch = (batch: FitBatch): Array<CurveFit | null> =>
-  batch.map((c) => fitCurve(c.x, c.y, c.grid, c.x0))
+  batch.map((c) => fitCurve(c.x, c.y, c.grid, c.x0, c.among))
 
 export function runCurveFit(
   input: CompareInput & { curveAxis: ConditionKey },
@@ -663,7 +671,7 @@ export function runCurveFit(
   // the fits one by one, each counted (progress)
   return driveSync(curveFitSteps(input, progress), (b) =>
     b.map((c) => {
-      const f = fitCurve(c.x, c.y, c.grid, c.x0)
+      const f = fitCurve(c.x, c.y, c.grid, c.x0, c.among)
       progress.add(1)
       return f
     })
@@ -730,18 +738,28 @@ export function* curveFitSteps(
       c.rep.push(r.rep ?? null)
       ctrl.set(r.uniqID, c)
     }
+    // The baseline picked among the curve's levels (dose 100: a level below it, dose 0 too): every
+    // level against the control there — those below it points like the rest (a log axis's 0
+    // placed a step below its lowest), the control's ratio 1 a point at its own level.
+    const ctlAt = new Set(denSlice.map((r) => numValue(r, axis) ?? 0))
+    const pin = ctlAt.size === 1 ? [...ctlAt][0] : null
+    const among = pin != null && grp.some((r) => (numValue(r, axis) ?? 0) < pin)
+    const sMap = among ? withZero(map, [...levels, pin!]) : map
+    const sx0 = among ? toX(sMap, pin!) : x0
+    const sliceX0 = among ? { x0: sx0, among: true } : matched ? { x0 } : null
     // Each gene's treated points: x (log₁₀ dose) and ratio to the control.
     const pts = new Map<string, { x: number[]; y: number[]; rep: Array<number | null> }>()
     for (const r of grp) {
-      const dose = numValue(r, axis)
+      const dose = among ? (numValue(r, axis) ?? 0) : numValue(r, axis)
       const c = ctrl.get(r.uniqID)
-      if (!treatedLevel(scale, dose) || !c || r.value == null) continue
+      const point = among ? dose !== pin : treatedLevel(scale, dose)
+      if (!point || dose == null || !c || r.value == null) continue
       const base = c.sum / c.n
       if (!(base > 0)) continue
       let p = pts.get(r.uniqID)
       if (!p) pts.set(r.uniqID, (p = { x: [], y: [], rep: [] }))
       p.rep.push(r.rep ?? null)
-      p.x.push(toX(map, dose))
+      p.x.push(toX(sMap, dose))
       p.y.push(r.value / base)
     }
     const first = raw.length
@@ -753,7 +771,7 @@ export function* curveFitSteps(
       x: p.x,
       y: p.y,
       grid,
-      ...(matched ? { x0 } : null)
+      ...sliceX0
     }))
     for (let gi = 0; gi < genes.length; gi++) {
       const [uniqID, p] = genes[gi]
@@ -808,7 +826,7 @@ export function* curveFitSteps(
         layout,
         nControls,
         si + 1
-      ).map((c) => ({ ...c, grid, ...(matched ? { x0 } : null) }))
+      ).map((c) => ({ ...c, grid, ...sliceX0 }))
       sliceDecoys.push({ first, decoys: decoyFits(decoyFitted) })
     }
   }

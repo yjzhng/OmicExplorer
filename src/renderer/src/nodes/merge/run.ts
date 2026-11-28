@@ -1,7 +1,7 @@
 /** Merge's run: pool every upstream Clean data into one dataset. */
 import { isStep } from '../../graph/types'
 import { stepTitle } from '../../graph/registry'
-import { combineStandardize } from '../../engine'
+import { engine } from '../../engine/client'
 import type { StepRunContext } from '../runContext'
 
 export async function run(ctx: StepRunContext): Promise<void> {
@@ -26,10 +26,16 @@ export async function run(ctx: StepRunContext): Promise<void> {
   const names = titles.map((t, i) =>
     titles.indexOf(t) !== titles.lastIndexOf(t) ? `${t} · ${ins[i].id}` : t
   )
-  const std = combineStandardize(
-    ins.map((x) => x.std),
-    names
-  )
+  setStatus('running')
+  // pooled in the worker (a single input passes straight through)
+  const std =
+    ins.length === 1
+      ? ins[0].std
+      : await engine.combine(
+          ins.map((x) => x.std),
+          names
+        )
+  if (get().nodes.find((n) => n.id === id)?.data.status !== 'running') return // cancelled
   set((s) => ({ results: { ...s.results, [id]: { kind: 'standardize', std } } }))
   setStatus('done')
   get().invalidateDownstream(id)

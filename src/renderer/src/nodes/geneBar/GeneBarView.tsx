@@ -422,5 +422,5 @@ export function GeneBarView({
     plainScale
   ])
 
-  return <PlotlyChart data={data} layout={layout} onGraphMount={bindSampleLink} />
+  return <PlotlyChart controls="none" data={data} layout={layout} onGraphMount={bindSampleLink} />
 }

@@ -15,6 +15,7 @@ import {
   responseShowWhy,
   tdrPair
 } from '../../graph/types'
+import { plotCached } from '../../ui/plotCache'
 import { Empty } from '../kit/views/common'
 import { type ViewContext } from '../kit/views/context'
 import { pagerGenes } from '../kit/views/helpers'
@@ -44,7 +45,11 @@ export function tdrView(v: ViewContext): ReactNode {
   const dim = responseDim(cfg)
   const show = responseShow(cfg)
   const look = responseLook(cfg)
-  const present = idsWhere(upstream.cmp, (c) => ctxNum(c, ax) != null && ctxNum(c, ay) != null)
+  // kept by the result and the pair (ui/plotCache): a scan of every row, and the same set render to
+  // render
+  const present = plotCached('tdrPresent', [upstream.cmp, ax, ay], () =>
+    idsWhere(upstream.cmp, (c) => ctxNum(c, ax) != null && ctxNum(c, ay) != null)
+  )
   if (!present.size)
     return (
       <Empty text={`Needs ${condLabel(ax)} and ${condLabel(ay)} both active in the Compare.`} />

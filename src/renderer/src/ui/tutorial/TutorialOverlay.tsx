@@ -17,6 +17,10 @@ import { useTutorial } from './useTutorial'
 const Z = 5000
 const PAD = 6
 const DIM = 'rgba(0, 0, 0, 0.6)'
+/** The callout and the controls: a light card in either theme — they sit on the dimming, which is
+ *  dark in both, and the light theme's dark accent there read as part of the dimmed page. */
+const CARD = '#ffffff'
+const CARD_TEXT = '#1c1c1c'
 const CALLOUT_W = 300
 /** The closing note's width (the offer card's). */
 const NOTE_W = 320
@@ -228,21 +232,22 @@ function Tour(): ReactNode {
         holeRef.current = b
         setHole(b)
       }
-      // A tile out of sight (placed near an edge, grown off it): fit the canvas so it's in view —
-      // the dimming keeps the canvas from being panned by hand. Once per stop, after it settles.
+      // A tile out of sight (placed near an edge, grown off it) or drawn small (the canvas zoomed
+      // out): bring it into view at full size — the dimming keeps the canvas from being panned or
+      // zoomed by hand. Once per stop.
       if (b && !fitted) {
+        const nav = canvasNav()
         const pane = boxOf(document.querySelector('.react-flow'))
         const inCanvas = !!document.querySelector(`.react-flow ${selectorOf(stop)}`)
-        const outside =
-          pane &&
-          inCanvas &&
-          (b.x < pane.x ||
+        if (nav && pane && inCanvas) {
+          const outside =
+            b.x < pane.x ||
             b.y < pane.y ||
             b.x + b.w > pane.x + pane.w ||
-            b.y + b.h > pane.y + pane.h)
-        if (outside) {
+            b.y + b.h > pane.y + pane.h
           fitted = true
-          canvasNav()?.fit()
+          // (the pane itself — placing a step — is only ever zoomed, never "outside")
+          if (outside || nav.zoom() < 1) nav.reveal(b, pane)
         }
       }
       // What the stop shows closed (a click away, Esc): open it again rather than leave the
@@ -452,13 +457,12 @@ function Callout({ stop, i, hole }: { stop: TourStop; i: number; hole: Box | nul
       )}
       <div style={styles.calloutTitle}>{stop.title}</div>
       <div style={styles.calloutText}>{stop.body}</div>
-      {/* A click stop: what to do, in place of Next. */}
-      {stop.clickHint && (
-        <div style={styles.hint}>
-          <span style={styles.hintDot} />
-          {stop.clickHint}
-        </div>
-      )}
+      {/* A click stop: what to do, in place of Next. Any other: how to move on. */}
+      <div style={styles.hint}>
+        <span style={styles.hintDot} />
+        {stop.clickHint ??
+          (stop.interactive ? 'Click outside it to continue' : 'Click anywhere to continue')}
+      </div>
       <div style={styles.bar}>
         <span style={{ ...styles.barFill, width: `${((i + 1) / STOPS.length) * 100}%` }} />
       </div>
@@ -652,8 +656,8 @@ const styles: Record<string, CSSProperties> = {
     zIndex: Z + 3,
     width: CALLOUT_W,
     boxSizing: 'border-box',
-    background: UI.accent,
-    color: UI.accentText,
+    background: CARD,
+    color: CARD_TEXT,
     borderRadius: 10,
     padding: '12px 14px 14px',
     boxShadow: '0 10px 30px rgba(0,0,0,0.3)',
@@ -664,7 +668,7 @@ const styles: Record<string, CSSProperties> = {
     position: 'absolute',
     width: 12,
     height: 12,
-    background: UI.accent,
+    background: CARD,
     transform: 'rotate(45deg)'
   },
   calloutTitle: { fontWeight: 700, fontSize: 14, marginBottom: 4 },
@@ -679,8 +683,8 @@ const styles: Record<string, CSSProperties> = {
     gap: 12,
     padding: '6px 6px 6px 16px',
     borderRadius: 10,
-    background: UI.accent,
-    color: UI.accentText,
+    background: CARD,
+    color: CARD_TEXT,
     boxShadow: '0 10px 30px rgba(0,0,0,0.3)'
   },
   count: { fontSize: 11.5, opacity: 0.6, fontVariantNumeric: 'tabular-nums', marginRight: 4 },
@@ -694,8 +698,8 @@ const styles: Record<string, CSSProperties> = {
     cursor: 'pointer'
   },
   next: {
-    background: UI.accentText,
-    color: UI.accent,
+    background: CARD_TEXT,
+    color: CARD,
     border: 'none',
     borderRadius: 7,
     padding: '6px 16px',
@@ -729,7 +733,7 @@ const styles: Record<string, CSSProperties> = {
     overflow: 'hidden',
     background: 'rgba(127,127,127,0.25)'
   },
-  barFill: { display: 'block', height: '100%', background: UI.accentText, opacity: 0.7 },
+  barFill: { display: 'block', height: '100%', background: CARD_TEXT, opacity: 0.7 },
   // Above the canvas's pan pad (bottom right), clear of the work.
   offer: {
     position: 'fixed',

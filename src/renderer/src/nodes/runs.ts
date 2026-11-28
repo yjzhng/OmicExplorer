@@ -12,6 +12,9 @@ import type { PlotRun, StepRun } from './runContext'
 import { run as corrRun } from './corr/run'
 import { run as pcaRun } from './pca/run'
 import { run as enrichRun } from './enrich/run'
+import { run as heatmapRun } from './heatmap/run'
+import { run as enrichMapRun } from './enrichMap/run'
+import { run as setCompareRun } from './setCompare/run'
 import { run as stringRun } from './string/run'
 import { run as standardize } from './standardize/run'
 import { run as subset } from './subset/run'
@@ -41,6 +44,8 @@ export const STEP_RUNS: Record<NodeKind, StepRun | null> = {
   geneBar: null,
   pca: null,
   enrich: null,
+  enrichMap: null,
+  setCompare: null,
   string: null,
   qc: null,
   corr: null,
@@ -53,6 +58,9 @@ export const STEP_RUNS: Record<NodeKind, StepRun | null> = {
 export const PLOT_RUNS: Partial<Record<NodeKind, PlotRun>> = {
   pca: { run: pcaRun },
   corr: { run: corrRun },
+  heatmap: { run: heatmapRun, afterRequirement: true },
   enrich: { run: enrichRun },
+  enrichMap: { run: enrichMapRun },
+  setCompare: { run: setCompareRun },
   string: { run: stringRun, afterRequirement: true }
 }

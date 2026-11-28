@@ -35,6 +35,7 @@ import {
   TIME_MODEL,
   toX,
   treatedLevel,
+  withZero,
   type AxisMap,
   type AxisModel,
   type AxisScale,
@@ -163,13 +164,15 @@ export interface SplineCurve {
    *  axes. `dose` / `time` name the two slots (the first axis's level, the second's), as on every
    *  surface before any pair could be fitted; `timeOffset` is the second axis's offset. */
   surface?: {
-    vehicle: Array<{ time: number; mean: number }>
+    /** the control's groups — one per reference (see surfaceFrame): its levels and mean */
+    vehicle: Array<{ dose?: number; time: number; mean: number }>
     treated: Array<{ dose: number; time: number; group: number }>
     timeOffset: number
     /** the two axes as fitted (absent: dose × time, log₁₀ dose and log₁₀(t + offset), spline) */
     axes?: [SurfaceAxis, SurfaceAxis]
-    /** against one position (SurfacePlan.position): one vehicle group, the first axis's base level
-     *  a cell at every other level of the second */
+    /** the baseline's pins as fitted (surfaceFrame; absent on results fitted before) */
+    pins?: SurfacePins
+    /** both axes pinned — one position: one control group, every other cell against it */
     position?: boolean
     /** the samples that aren't cells, kept for drawing (not fitted): the vehicle's replicates at
      *  each of its levels (`vehicle`; at the first axis's base level), and treated samples at a
@@ -433,6 +436,19 @@ function levelStats(
   }
   return new Map([...by].map(([k, v]) => [k, stats(v)]))
 }
+/** levelStats over every level, whatever the scale (a log axis's 0 included — placed by the map). */
+function levelStatsAt(rows: StandardRow[], axis: ConditionKey): Map<number, Level> {
+  const by = new Map<number, number[]>()
+  for (const r of rows) {
+    const lv = numValue(r, axis) ?? 0
+    const y = log2v(r.value)
+    if (y == null) continue
+    const a = by.get(lv)
+    if (a) a.push(y)
+    else by.set(lv, [y])
+  }
+  return new Map([...by].map(([k, v]) => [k, stats(v)]))
+}
 function stats(v: number[]): Level {
   const m = mean(v)
   return { mean: m, ss: v.reduce((s, x) => s + (x - m) ** 2, 0), n: v.length }
@@ -580,6 +596,52 @@ export function runSplineFit(
       // A matched baseline's level: the control's lowest (t₀; absent counts as 0) — below the
       // curve's levels, else (a baseline picked above them) 0 as it always was.
       const b = baseLevelOf(ctl.map((r) => numValue(r, axis)))
+      // The baseline picked among the curve's levels (dose 100: levels below it, dose 0 too):
+      // every level against the control there — the levels below it points of the curve like the
+      // rest (a log axis's 0 placed a step below its lowest), the baseline's 0 a point among them.
+      const ctlLevels = new Set(ctl.map((r) => numValue(r, axis) ?? 0))
+      const allLevels = [...new Set(rows.map((r) => numValue(r, axis) ?? 0))]
+      const pin = ctlLevels.size === 1 ? [...ctlLevels][0] : null
+      if (pin != null && allLevels.some((v) => v < pin)) {
+        const cv = ctl.map((r) => log2v(r.value)).filter((v): v is number => v != null)
+        if (cv.length === 0) continue
+        ctlStats = stats(cv)
+        const lvAll = levelStatsAt(
+          rows.filter((r) => (numValue(r, axis) ?? 0) !== pin),
+          axis
+        )
+        const at = [...lvAll.keys()].sort((p0, p1) => p0 - p1)
+        if (at.length < 3) continue
+        const pos = at.filter((v) => v > 0 || model.scale === 'linear')
+        const mapMid =
+          model.scale === 'linear'
+            ? runMap
+            : withZero(axisMapFor(model, pos.length ? pos : [pin]), [...pos, pin])
+        const all = rows.map((r) => log2v(r.value)).filter((v): v is number => v != null)
+        const lvs = [...lvAll.values(), ctlStats]
+        const curve = fitSplineCurve(
+          [toX(mapMid, pin), ...at.map((v) => toX(mapMid, v))],
+          [0, ...at.map((v) => lvAll.get(v)!.mean - ctlStats.mean)],
+          mean(all),
+          {
+            ss: lvs.reduce((a, l) => a + l.ss, 0),
+            df: lvs.reduce((a, l) => a + l.n - 1, 0),
+            nPerLevel: mean([...lvAll.values()].map((l) => l.n))
+          },
+          input.axisFits?.[axis]?.detect
+        )
+        if (curve)
+          fits.push({
+            uniqID,
+            cmpd: rep.cmpd,
+            comparison: label,
+            baseline: baselineText(denSlice, grp, numericConds(input.numericConditions)),
+            context,
+            peak: curve.peak,
+            curve: { ...curve, scale: { ...mapMid, axis } }
+          })
+        continue
+      }
       const base0 = model.baseline === 'matched' && b < levels[0] ? b : 0
       const map = model.scale === 'linear' ? runMap : axisMapFor(model, levels, base0)
       const tx = (t: number): number => toX(map, t)
@@ -772,8 +834,14 @@ export function describeCurve(
   const sc = c.scale
   if (model === 'none' || model === 'spline' || model === 'constant') return null
   if (!sc || c.x.length < (model === 'linear' ? 3 : 5)) return null
+  // a baseline among the levels (dose 100 picked): its 0 a point like the rest, the 4PL free
+  const among = c.x.slice(1).some((v) => v < c.x[0])
   const { p, pred, mid } =
-    model === 'linear' ? fitLine(c.x, c.y) : fit4pl(c.x, c.y, sc, interpolation)
+    model === 'linear'
+      ? fitLine(c.x, c.y)
+      : among
+        ? fit4plFree(c.x, c.y, sc, interpolation)
+        : fit4pl(c.x, c.y, sc, interpolation)
   const ym = mean(c.y)
   const sst = c.y.reduce((s, v) => s + (v - ym) ** 2, 0)
   const rss = pred.reduce((s, f, i) => s + (c.y[i] - f) ** 2, 0)
@@ -812,6 +880,31 @@ function fit4pl(
     pred: xs.map((v) => logistic(v, p)),
     mid: time ? Math.max(floor, fromX(sc, x50)) : fromX(sc, x50)
   }
+}
+
+/** The description's 4PL through points with no baseline below them to start from — the
+ *  reference among the levels (dose 100 pinned: its 0 a point like any other), or none on the
+ *  curve (an axis the baseline leaves free): fitted free over them all. */
+function fit4plFree(
+  x: number[],
+  y: number[],
+  sc: AxisMap,
+  interpolation = false
+): { p: LogisticParams; pred: number[]; mid: number } {
+  const order = x.map((_, i) => i).sort((i, j) => x[i] - x[j])
+  const xs = order.map((i) => x[i])
+  const ys = order.map((i) => y[i])
+  const extra = interpolation ? interpolatedPoints(xs, ys, interpolationGrid(xs)) : { x: [], y: [] }
+  const p = fitLogistic([...xs, ...extra.x], [...ys, ...extra.y], xs, { yLimits: Y_LIMITS_LOG2 })
+  return { p, pred: x.map((v) => logistic(v, p)), mid: fromX(sc, -p.pec50) }
+}
+
+/** A stored surface's baseline pins (surfaceFrame) — on a result fitted before they were kept:
+ *  one position at its axes' bases, else the first axis's base at each level of the second. */
+export function pinsOf(s: NonNullable<SplineCurve['surface']>): SurfacePins {
+  if (s.pins) return s.pins
+  const a = s.axes?.[0].base ?? 0
+  return s.position ? { a, b: s.axes?.[1].base ?? 0 } : { a, b: null }
 }
 
 /** The description's line on one curve's log₂ level means (baseline first, value 0): straight from
@@ -964,6 +1057,10 @@ export function describeSurface(
     const shape = shapes[along]
     if (shape !== '4pl' && shape !== 'linear') return null
     const base = s.axes?.[along].base ?? 0
+    // the baseline along this axis (pinsOf): its pin, and the other axis's
+    const pins = pinsOf(s)
+    const pinX = along === 0 ? pins.a : pins.b
+    const pinO = along === 0 ? pins.b : pins.a
     const by = new Map<number, number[]>()
     s.treated.forEach((r, i) => {
       const a = by.get(r[key])
@@ -972,27 +1069,61 @@ export function describeSurface(
     })
     const slices: SliceDescription[] = []
     let rss = 0
+    const levelOf = (i: number): number => (key === 'time' ? s.treated[i].dose : s.treated[i].time)
+    const lv = (i: number): number => toX(sc, levelOf(i))
     for (const at of [...by.keys()].sort((a, b) => a - b)) {
-      let idx = by.get(at)!
-      // against one position, a slice's own base cell (dose 0 at this temperature: the vehicle's
-      // melt) is where it starts — its value, not 0
-      const baseIdx = s.position
-        ? idx.find((i) => (key === 'time' ? s.treated[i].dose : s.treated[i].time) === base)
-        : undefined
-      if (baseIdx != null) idx = idx.filter((i) => i !== baseIdx)
+      const idx = [...by.get(at)!].sort((a, b) => lv(a) - lv(b))
       if (idx.length < 4) return null
-      // along the axis, on its x: against a reference (dose) the baseline at −∞ (placed a unit
-      // below the lowest), against its own first point (t₀) from that level
-      const lv = (i: number): number =>
-        key === 'time' ? toX(sc, s.treated[i].dose) : toX(sc, s.treated[i].time)
-      idx.sort((a, b) => lv(a) - lv(b))
-      const x0 =
-        baseIdx != null ? lv(baseIdx) : sc.baseline === 'matched' ? toX(sc, base) : lv(idx[0]) - 1
-      const xs = [x0, ...idx.map(lv)]
-      const ys = [baseIdx != null ? eff[baseIdx] : 0, ...idx.map((i) => eff[i])]
+      const lowest = levelOf(idx[0])
+      // Where the slice starts, as the baseline says (the 4PL then runs on from there):
+      //  - the reference on this slice below its cells: dose 0, the control at −∞ (CurveCurator);
+      //    a first point (t₀), the curve from its 0 there
+      //  - one position's own cell on a slice off it (dose 0 at a higher temperature: the
+      //    vehicle's melt), lowest: from its value
+      //  - the reference on this slice among its cells (dose 100 pinned): a point at 0 like any
+      //    other — the 4PL free through it
+      //  - no reference on the slice (an axis left free): from the first point under a matched
+      //    model (nothing responds before t₀), else free over the cells
+      const onSlice = pinX != null && (pinO == null || at === pinO)
+      const baseCell =
+        pinX != null && !onSlice && levelOf(idx[0]) === pinX && idx.length > 4 ? idx[0] : null
+      let xs: number[]
+      let ys: number[]
+      let lead: boolean
+      let free = false
+      if (baseCell != null) {
+        xs = idx.map(lv)
+        ys = idx.map((i) => eff[i])
+        lead = true
+      } else if (onSlice && pinX! < lowest) {
+        xs = [sc.baseline === 'matched' ? toX(sc, pinX!) : lv(idx[0]) - 1, ...idx.map(lv)]
+        ys = [0, ...idx.map((i) => eff[i])]
+        lead = true
+      } else if (onSlice) {
+        xs = [toX(sc, pinX!), ...idx.map(lv)]
+        ys = [0, ...idx.map((i) => eff[i])]
+        lead = true
+        free = true
+      } else if (pinX == null && sc.baseline === 'matched' && base < lowest) {
+        xs = [toX(sc, base), ...idx.map(lv)]
+        ys = [0, ...idx.map((i) => eff[i])]
+        lead = true
+      } else {
+        xs = idx.map(lv)
+        ys = idx.map((i) => eff[i])
+        lead = false
+        free = true
+      }
       const { p, pred, mid } =
-        shape === 'linear' ? fitLine(xs, ys) : fit4pl(xs, ys, sc, interpolation)
-      idx.forEach((i, k) => (rss += (eff[i] - pred[k + 1]) ** 2))
+        shape === 'linear'
+          ? fitLine(xs, ys)
+          : free
+            ? fit4plFree(xs, ys, sc, interpolation)
+            : fit4pl(xs, ys, sc, interpolation)
+      const off = lead && baseCell == null ? 1 : 0
+      idx.forEach((i, k) => {
+        if (i !== baseCell) rss += (eff[i] - pred[k + off]) ** 2
+      })
       slices.push({ ...p, at, mid })
     }
     return { slices, rss }
@@ -1020,13 +1151,19 @@ export function jointSpecOf(
     driftsByDefault(maps[0].baseline, maps[1].baseline),
     driftsByDefault(maps[1].baseline, maps[0].baseline)
   ]
+  const pins = pinsOf(s)
   const axis = (k: 0 | 1): JointSpec['a'] | null => {
     const sh = shapes[k]
     if (sh !== '4pl' && sh !== 'linear' && sh !== 'constant') return null
     const m = maps[k]
-    const lv = [...new Set(s.treated.map((t) => toX(m, k === 0 ? t.dose : t.time)))].sort(
-      (x, y) => x - y
-    )
+    const levels = s.treated.map((t) => (k === 0 ? t.dose : t.time))
+    // The joint model's response is 0 at its baseline along each axis — a control off it or its
+    // first point: a baseline pinned among the levels (dose 100), or an axis the pin leaves free
+    // with no first point to start from, it can't model (the slices describe it instead).
+    const pin = k === 0 ? pins.a : pins.b
+    if (pin != null && pin > Math.min(...levels)) return null
+    if (pin == null && m.baseline !== 'matched') return null
+    const lv = [...new Set(levels.map((v) => toX(m, v)))].sort((x, y) => x - y)
     const steps = lv
       .slice(1)
       .map((v, i) => v - lv[i])
@@ -1095,12 +1232,12 @@ export function describeSurfaceRun(
  * attached to the nearest vehicle time, their means shifted by the estimated drift (driftEstimator).
  */
 export function fitSurface(
-  vehicle: Array<{ time: number; mean: number }>,
+  vehicle: Array<{ dose?: number; time: number; mean: number }>,
   treated: Array<{ dose: number; time: number; mean: number; group: number }>,
   abundance: number,
   rep: { ss: number; df: number; nPerLevel: number },
   axes?: [SurfaceAxis, SurfaceAxis],
-  position = false
+  pins?: SurfacePins
 ): SplineCurve | null {
   const doses = [...new Set(treated.map((r) => r.dose))].sort((a, b) => a - b)
   const times = [...new Set(treated.map((r) => r.time))].sort((a, b) => a - b)
@@ -1177,7 +1314,8 @@ export function fitSurface(
       treated: treated.map((r) => ({ dose: r.dose, time: r.time, group: r.group })),
       timeOffset: off,
       ...(axes ? { axes } : null),
-      ...(position ? { position: true } : null)
+      ...(pins ? { pins } : null),
+      ...(pins?.a != null && pins.b != null ? { position: true } : null)
     }
   }
 }
@@ -1193,25 +1331,48 @@ export interface SurfacePlan {
   /** the second axis's first point, from the whole dataset (t₀ — its rows may be filtered out of
    *  this run by a pin); absent: the lowest the run's vehicle sits at */
   bBase?: number
-  /** the baseline is one position — the vehicle at one level of each axis (dose 0 at the lowest
-   *  temperature) — rather than the vehicle at each level of the second axis: every other cell is
-   *  measured against it, the first axis's own base level included (dose 0 at a higher
-   *  temperature: the vehicle's melt is response too) */
-  position?: boolean
+  /** the baseline's pins (surfacePinsOf — the Baseline picked on the Curve fit's grid): each
+   *  axis's pinned level, or null — every level of it its own (see surfaceFrame) */
+  pins?: SurfacePins
 }
 
-/** A log axis map that places a level at or below 0 (its base, as a data point) a median step
- *  below its lowest level (AxisMap.zeroX); any other map as it is. */
-function withZero(m: AxisMap, levels: readonly number[]): AxisMap {
-  if (m.scale !== 'log' || m.offset > 0) return m
-  const xs = levels.filter((v) => v > 0).map((v) => toX(m, v))
-  if (!xs.length) return m
-  const sorted = [...new Set(xs)].sort((a, b) => a - b)
-  const steps = sorted
-    .slice(1)
-    .map((v, i) => v - sorted[i])
-    .sort((a, b) => a - b)
-  return { ...m, zeroX: sorted[0] - (steps.length ? steps[steps.length >> 1] : 1) }
+/** A surface's baseline as picked: the level each axis is pinned to, null where it isn't. */
+export interface SurfacePins {
+  a: number | null
+  b: number | null
+}
+
+/** What each cell of a surface is against: the control at its own levels with the pinned ones set
+ *  to their pins — dose 0 pinned, each time's dose 0; dose 100, each time's dose 100; time 360,
+ *  each dose's value at 360; both, one position. A cell at the reference itself is the control's,
+ *  not a cell. An axis the pick leaves free whose control sits at one level of it (a vehicle
+ *  compound, at dose 0) is pinned there. Null with no pin at all. */
+export interface SurfaceFrame {
+  pinA: number | null
+  pinB: number | null
+  pins: SurfacePins
+  isRef: (a: number, b: number) => boolean
+  refKey: (a: number, b: number) => string
+}
+export function surfaceFrame(
+  pins: SurfacePins | undefined,
+  /** the control's levels on the first axis */
+  controlA: readonly number[]
+): SurfaceFrame | null {
+  const one = (vs: readonly number[]): number | null => {
+    const u = new Set(vs)
+    return u.size === 1 ? [...u][0] : null
+  }
+  const pinA = pins?.a ?? one(controlA)
+  const pinB = pins?.b ?? null
+  if (pinA == null && pinB == null) return null
+  return {
+    pinA,
+    pinB,
+    pins: { a: pinA, b: pinB },
+    isRef: (a, b) => (pinA == null || a === pinA) && (pinB == null || b === pinB),
+    refKey: (a, b) => `${pinA ?? a}|${pinB ?? b}`
+  }
 }
 
 /**
@@ -1249,106 +1410,116 @@ export function runSurfaceFit(
     }
   }
   // the second axis's level of a sample (none counts as 0: t₀), and its first point — the lowest
-  // the vehicle sits at — before which a matched axis has nothing to respond
+  // the vehicle sits at (the second axis's log offset)
   const bOf = (r: StandardRow): number => numValue(r, B) ?? 0
+  const aOf = (r: StandardRow): number => numValue(r, A) ?? 0
   const vehRows = input.rows.filter((r) => denC.has(r.cmpd))
   const bBase = plan?.bBase ?? baseLevelOf(vehRows.map((r) => numValue(r, B)))
-  const aBase = baseLevelOf(vehRows.map((r) => numValue(r, A)))
-  // against one position, every level but that position is a cell (the first axis's base level
-  // at another level of the second carries the vehicle's own response)
-  const position = !!plan?.position
-  const bTreated = (v: number): boolean =>
-    position ? true : mB.baseline === 'matched' ? v > bBase : treatedLevel(mB.scale, v)
-  const aTreated = (v: number | null): v is number =>
-    position ? v != null : treatedLevel(mA.scale, v)
-  // a linear axis counts in one step for the whole run (its treated levels' spacing)
-  const runLevels = (k: ConditionKey, keep: (v: number) => boolean): number[] =>
+  // The baseline: each cell against the control at its own levels with the pinned ones set to
+  // their pins (surfaceFrame) — dose 100 pinned, every dose against dose 100 at its time.
+  const frame = surfaceFrame(plan?.pins, vehRows.map(aOf))
+  if (!frame) return score([])
+  const { isRef, refKey } = frame
+  // a linear axis counts in one step for the whole run (its levels' spacing)
+  const runLevels = (k: ConditionKey): number[] =>
     [
       ...new Set(
         input.rows
           .filter((r) => numC.has(r.cmpd))
           .map((r) => numValue(r, k))
-          .filter((v): v is number => v != null && keep(v))
+          .filter((v): v is number => v != null && (mapsLinear(k) || v > 0))
       )
     ].sort((x, y) => x - y)
-  const aLevels = runLevels(A, (v) => treatedLevel(mA.scale, v))
-  const aMap0 = axisMapFor(mA, aLevels)
-  // one position: the first axis's base level is a data point — on a log axis a step below
-  const aMapRun = position ? withZero(aMap0, aLevels) : aMap0
-  const bLevelsRun = runLevels(B, bTreated)
-  // which vehicle level is nearest a treated level without one: by log (t + 1) on a log axis
+  const mapsLinear = (k: ConditionKey): boolean => (k === A ? mA : mB).scale === 'linear'
+  const aLevels = runLevels(A)
+  // a log axis's level at 0 that is a cell (dose 0 against a pin elsewhere) placed a step below
+  const aMapRun = withZero(axisMapFor(mA, aLevels), aLevels)
+  const bLevelsRun = runLevels(B)
+  // which control level is nearest a level without one: by log (t + 1) on a log axis
   const near = (t: number): number => (mB.scale === 'log' ? Math.log10(t + 1) : t)
   const fits: Array<Omit<SplineRow, 'F' | 'df1' | 'df2' | 'p' | 'q'>> = []
   for (const [uniqID, { veh, trt }] of byGene) {
     progress.add(1)
-    const vBy = new Map<number, number[]>()
+    // the control's groups: one per reference (its levels on the unpinned axes)
+    const vBy = new Map<string, { dose: number; time: number; v: number[] }>()
+    // the control's samples off the reference (one position's dose 0 at a later time): cells,
+    // each compound's where it has none of its own there
+    const vehCells = new Map<string, { dose: number; time: number; v: number[] }>()
     for (const r of veh) {
       const v = log2v(r.value)
       if (v == null) continue
-      const t = bOf(r) || 0
-      const a = vBy.get(t)
-      if (a) a.push(v)
-      else vBy.set(t, [v])
+      const d = aOf(r)
+      const t = bOf(r)
+      if (!isRef(d, t)) {
+        const c = vehCells.get(`${d}|${t}`)
+        if (c) c.v.push(v)
+        else vehCells.set(`${d}|${t}`, { dose: d, time: t, v: [v] })
+        continue
+      }
+      const k = refKey(d, t)
+      const g = vBy.get(k)
+      if (g) g.v.push(v)
+      else vBy.set(k, { dose: frame.pinA ?? d, time: frame.pinB ?? t, v: [v] })
     }
     if (vBy.size === 0) continue
-    const vTimes = [...vBy.keys()].sort((a, b) => a - b)
-    const vStats = vTimes.map((t) => stats(vBy.get(t)!))
-    // the vehicle's replicates, for drawing (the surface's samples)
-    const vehSamples: SurfaceSample[] = vTimes.map((t, k) => ({
-      dose: aBase,
-      time: t,
+    const groups = [...vBy.entries()].sort((x, y) => x[1].time - y[1].time || x[1].dose - y[1].dose)
+    const gIdx = new Map(groups.map(([k], i) => [k, i]))
+    const vStats = groups.map(([, g]) => stats(g.v))
+    // the control's replicates, for drawing (the surface's samples)
+    const vehSamples: SurfaceSample[] = groups.map(([, g], k) => ({
+      dose: g.dose,
+      time: g.time,
       group: k,
-      v: vBy.get(t)!,
+      v: g.v,
       vehicle: true
     }))
     for (const [cmpd, rows] of trt) {
       const cells = new Map<string, { dose: number; time: number; v: number[] }>()
-      // treated samples at a baseline level: not cells, kept to draw (the surface's samples)
+      // treated samples at the reference itself: not cells, kept to draw (the surface's samples)
       const atBase = new Map<string, { dose: number; time: number; v: number[] }>()
       for (const r of rows) {
         const v = log2v(r.value)
-        const d = numValue(r, A)
-        const t = bOf(r)
         if (v == null) continue
-        // (the position itself is the baseline: the vehicle's, not a cell)
-        const baseLevel = !aTreated(d) || !bTreated(t) || (position && d === aBase && t === bBase)
-        const into = baseLevel ? atBase : cells
-        const dd = d ?? aBase
-        const k = `${dd}|${t}`
+        const d = aOf(r)
+        const t = bOf(r)
+        const into = isRef(d, t) ? atBase : cells
+        const k = `${d}|${t}`
         const c = into.get(k)
         if (c) c.v.push(v)
-        else into.set(k, { dose: dd, time: t, v: [v] })
+        else into.set(k, { dose: d, time: t, v: [v] })
       }
-      const treated = [...cells.values()].map((c) => {
+      for (const [k, c] of vehCells) if (!cells.has(k)) cells.set(k, c)
+      const treated = [...cells.values()].flatMap((c) => {
         const st = stats(c.v)
-        // against one position, every cell against that one vehicle group
-        let group = position ? 0 : vTimes.indexOf(c.time)
+        let group = gIdx.get(refKey(c.dose, c.time)) ?? -1
         let m = st.mean
         if (group < 0) {
-          // no vehicle at this level: the nearest vehicle level, shifted by the estimated drift
-          group = vTimes.reduce(
-            (best, t, k) =>
-              Math.abs(near(t) - near(c.time)) < Math.abs(near(vTimes[best]) - near(c.time))
-                ? k
-                : best,
-            0
+          // no control at this cell's reference: against each level of the second axis, the
+          // nearest level's, shifted by the estimated drift; else none — left out
+          if (frame.pinB != null) return []
+          const same = groups.flatMap(([, g], k) => (g.dose === (frame.pinA ?? c.dose) ? [k] : []))
+          if (!same.length) return []
+          group = same.reduce((best, k) =>
+            Math.abs(near(groups[k][1].time) - near(c.time)) <
+            Math.abs(near(groups[best][1].time) - near(c.time))
+              ? k
+              : best
           )
           m -= driftAt(c.time, uniqID, vStats[group].mean)
         }
-        return { dose: c.dose, time: c.time, mean: m, group, st }
+        return [{ dose: c.dose, time: c.time, mean: m, group, st }]
       })
       if (treated.length < 4) continue
       const lvls = [...treated.map((t) => t.st), ...vStats]
       const all = rows.map((r) => log2v(r.value)).filter((v): v is number => v != null)
-      // the second axis's map: a log one with a matched baseline at 0 takes this surface's own
-      // offset (as it always has); a linear one the run's step
+      // the second axis's map: a log one with its base at 0 takes this surface's own offset (as
+      // it always has); a linear one the run's step
       const bTimes = [...new Set(treated.map((t) => t.time))].sort((x, y) => x - y)
       const bMap0 =
         mB.scale === 'linear' ? axisMapFor(mB, bLevelsRun) : axisMapFor(mB, bTimes, bBase)
-      // one position: a base level at 0 with no offset to place it is a step below too
-      const bMap = position ? withZero(bMap0, bTimes) : bMap0
+      const bMap = withZero(bMap0, bTimes)
       const curve = fitSurface(
-        vTimes.map((t, k) => ({ time: t, mean: vStats[k].mean })),
+        groups.map(([, g], k) => ({ dose: g.dose, time: g.time, mean: vStats[k].mean })),
         treated,
         mean(all),
         {
@@ -1358,26 +1529,19 @@ export function runSurfaceFit(
         },
         plan
           ? [
-              { axis: A, map: aMapRun, detect: plan.detect[0], base: aBase },
-              { axis: B, map: bMap, detect: plan.detect[1], base: bBase }
+              { axis: A, map: aMapRun, detect: plan.detect[0], base: frame.pinA ?? aLevels[0] },
+              { axis: B, map: bMap, detect: plan.detect[1], base: frame.pinB ?? bBase }
             ]
           : undefined,
-        position
+        frame.pins
       )
       if (curve) {
-        // each baseline-level sample against its level's vehicle (the nearest without one)
-        const groupOf = (t: number): number => {
-          const k = vTimes.indexOf(t)
-          if (k >= 0) return k
-          return vTimes.reduce(
-            (best, vt, j) =>
-              Math.abs(near(vt) - near(t)) < Math.abs(near(vTimes[best]) - near(t)) ? j : best,
-            0
-          )
-        }
         curve.surface!.samples = [
           ...vehSamples,
-          ...[...atBase.values()].map((c) => ({ ...c, group: groupOf(c.time) }))
+          ...[...atBase.values()].flatMap((c) => {
+            const g = gIdx.get(refKey(c.dose, c.time))
+            return g == null ? [] : [{ ...c, group: g }]
+          })
         ]
         fits.push({ uniqID, cmpd, context: {}, peak: curve.peak, curve })
       }
@@ -1402,9 +1566,11 @@ export function runSurfaceFit(
  * The null's levels are free (not a smooth curve), so whatever every slice shares — the intrinsic
  * melt, a TMT plex's step between temperatures — cancels; what's tested is the slices differing.
  * Moderated F as every spline test (score): exact, nested linear models. The peak (the volcano's
- * effect) is the largest departure from the shared fit; `shift` says what kind it is. Laid out for
- * drawing as a surface against one position — the vehicle's lowest level on both axes — so the
- * Response plot shows the curves themselves (the melt), each slice from its own first point.
+ * effect) is the largest departure from the shared fit; `shift` says what kind it is. The baseline
+ * (plan.position) is the surface fit's: against one position — the vehicle's lowest level on both
+ * axes, the melt shown as response — or against the vehicle at each level of the second axis (dose
+ * 0 at every time), whose offset along that axis is then no change (the null's, see `offsets`);
+ * laid out against it for drawing as every surface is.
  */
 export function runSliceShift(
   input: Pick<CompareInput, 'rows' | 'num' | 'den'>,
@@ -1466,8 +1632,17 @@ export function runSliceShift(
   const aMap = mapOf(mA, levelsOf(A), aBase)
   const bMap = mapOf(mB, levelsOf(B), bBase)
   const rMap = rk === 0 ? aMap : bMap
-  // the compared axis's control level: where the vehicle sits on it (the Curve fit's baseline)
-  const ctlLevel = rk === 0 ? bBase : aBase
+  // The baseline (surfaceFrame — as the surface fit's): each cell against the control at its own
+  // levels with the pinned ones set to their pins. Where the compared axis is left free, each slice
+  // has its own control, so what the controls do across the slices is no response: each slice's
+  // own offset is the null's, not a change (`offsets`). (The compared axis pinned: the reference
+  // varies along the response axis only, which the null's level per response level holds.)
+  const frame = surfaceFrame(plan.pins, vehRows.map(aOf))
+  if (!frame) return score([])
+  // the compared axis's control level: its pin, else where the control sits lowest on it
+  const ctlLevel = rk === 0 ? (frame.pinB ?? bBase) : (frame.pinA ?? aBase)
+  const offsets = rk === 0 ? frame.pinB == null : frame.pinA == null
+  const fr: SurfaceFrame = frame
   type Cell = { a: number; b: number; v: number[] }
   const fits: Array<Omit<SplineRow, 'F' | 'df1' | 'df2' | 'p' | 'q'>> = []
   // a 4PL along the response axis: the fits, scored together once all are in (the null is the run's)
@@ -1511,14 +1686,15 @@ export function runSliceShift(
       // fit's baseline sets it), else its lowest
       const baseSlice = slices.includes(ctlLevel) ? ctlLevel : slices[0]
       if (shapeR === '4pl') {
-        const f = sliceFits4pl(all, rOf, cOf, rMap)
+        const f = sliceFits4pl(all, rOf, cOf, rMap, offsets)
         if (f) {
           pending4.push({ f, uniqID, cmpd, all, rOf, cOf, baseSlice })
           continue
         }
         continue
       }
-      // the alternative's columns: each non-base slice's own deviation along the response axis
+      // the alternative's columns: each non-base slice's own deviation along the response axis —
+      // without its intercept where the slices' offsets are the null's (offsets)
       const dev: Array<{ idx: number[]; basis: number[][] }> = []
       let nDev = 0
       for (const sl of slices.slice(1)) {
@@ -1528,17 +1704,26 @@ export function runSliceShift(
         let basis = axisBasis(shapeR, xs)
         // too few points for the shape: just its offset
         if (!basis || basis[0].length >= xs.length) basis = xs.map(() => [1])
+        if (offsets) basis = basis.map((r) => r.slice(1))
+        if (!basis[0].length) continue
         dev.push({ idx, basis })
         nDev += basis[0].length
       }
+      // the null: a level per response level, shared by every slice — plus, against the control at
+      // each level of the compared axis, each non-base slice's own offset
+      const offSlices = offsets ? slices.slice(1) : []
       const nR = rLevels.length
       const n = all.length
-      const p1 = nR + nDev
+      const p0 = nR + offSlices.length
+      const p1 = p0 + nDev
       if (!nDev || n - p1 < 1) continue
       const y = all.map((c) => mean(c.v))
-      const X0: number[][] = all.map((c) => rLevels.map((l) => (rOf(c) === l ? 1 : 0)))
+      const X0: number[][] = all.map((c) => [
+        ...rLevels.map((l) => (rOf(c) === l ? 1 : 0)),
+        ...offSlices.map((s) => (cOf(c) === s ? 1 : 0))
+      ])
       const X1 = X0.map((row) => [...row, ...new Array<number>(nDev).fill(0)])
-      let col = nR
+      let col = p0
       for (const { idx, basis } of dev) {
         idx.forEach((i, k) => basis[k].forEach((v, j) => (X1[i][col + j] = v)))
         col += basis[0].length
@@ -1551,7 +1736,7 @@ export function runSliceShift(
       const rss0 = y.reduce((s, v, i) => s + (v - f0[i]) ** 2, 0)
       const rss1 = y.reduce((s, v, i) => s + (v - f1[i]) ** 2, 0)
       const built = sliceCurve(all, rOf, cOf, baseSlice, y, f0, f1, {
-        df: p1 - nR,
+        df: p1 - p0,
         rss: rss1,
         dfRes: n - p1,
         ssModel: Math.max(0, rss0 - rss1)
@@ -1563,7 +1748,7 @@ export function runSliceShift(
   return score(fits)
 
   /** A tested gene's curve: the effect (the largest departure from the shared fit), what kind of
-   *  change it is, and the layout it's drawn by — a surface against one position. */
+   *  change it is, and the layout it's drawn by — a surface against the baseline. */
   function sliceCurve(
     all: Cell[],
     rOf: (c: Cell) => number,
@@ -1588,11 +1773,35 @@ export function runSliceShift(
         peakB = c.b
       }
     })
-    // what kind: each slice against the base slice (fitted), split into its consistent offset
-    // and the rest
+    // Laid out against the baseline as every surface (surfaceFrame): the control groups — the
+    // cells at a reference — and every other cell against its own (the nearest along the free
+    // axis without one measured; with no reference cell at all, the first cell's)
+    const groupKey = new Map<string, number>()
+    all.forEach((c, i) => {
+      if (fr.isRef(c.a, c.b) && !groupKey.has(fr.refKey(c.a, c.b)))
+        groupKey.set(fr.refKey(c.a, c.b), i)
+    })
+    const groups = groupKey.size
+      ? [...groupKey.values()].sort((i, j) => all[i].b - all[j].b || all[i].a - all[j].a)
+      : [0]
+    const near = (k: ConditionKey, v: number): number =>
+      (k === A ? mA : mB).scale === 'log' ? Math.log10(Math.max(v, 0) + 1) : v
+    const groupOf = (i: number): number => {
+      const c = all[i]
+      const own = groupKey.get(fr.refKey(c.a, c.b))
+      if (own != null) return groups.indexOf(own)
+      const dist = (j: number): number =>
+        Math.abs(near(A, all[j].a) - near(A, c.a)) + Math.abs(near(B, all[j].b) - near(B, c.b))
+      return groups.reduce((best, j, g) => (dist(j) < dist(groups[best]) ? g : best), 0)
+    }
+    const inGroups = new Set(groups)
+    // each cell's fitted value against its control's fitted value: the model's own control at 0
+    const frameOf = (i: number): number => f1[i] - f1[groups[groupOf(i)]]
+    // what kind: each slice against the base slice (fitted, against the baseline), split into its
+    // consistent offset and the rest
     const baseAt = new Map<number, number>()
     all.forEach((c, i) => {
-      if (cOf(c) === baseSlice) baseAt.set(rOf(c), f1[i])
+      if (cOf(c) === baseSlice) baseAt.set(rOf(c), frameOf(i))
     })
     let drift = 0
     let shapeDev = 0
@@ -1600,7 +1809,7 @@ export function runSliceShift(
     let ssShape = 0
     for (const sl of slices.slice(1)) {
       const d = all.flatMap((c, i) =>
-        cOf(c) === sl && baseAt.has(rOf(c)) ? [f1[i] - baseAt.get(rOf(c))!] : []
+        cOf(c) === sl && baseAt.has(rOf(c)) ? [frameOf(i) - baseAt.get(rOf(c))!] : []
       )
       if (!d.length) continue
       const m = mean(d)
@@ -1619,18 +1828,13 @@ export function runSliceShift(
       repSS += c.v.reduce((s, v) => s + (v - m) ** 2, 0)
       repDf += c.v.length - 1
     }
-    // drawn as a surface against one position: the vehicle's lowest level on both axes (else the
-    // first cell), every other cell against it
-    const refIdx = Math.max(
-      0,
-      all.findIndex((c) => c.a === aBase && c.b === bBase)
-    )
-    const ref = all[refIdx]
-    const order = all.map((_, i) => i).filter((i) => i !== refIdx)
+    const order = all.map((_, i) => i).filter((i) => !inGroups.has(i))
+    // (a cell's stored fit is read against its control group's measured mean — so stored as its
+    // frame value over that mean, the model's control reads 0)
     const curve: SplineCurve = {
       x: [],
-      y: [y[refIdx], ...order.map((i) => y[i])],
-      fitted: [y[refIdx], ...order.map((i) => f1[i])],
+      y: [...groups.map((g) => y[g]), ...order.map((i) => y[i])],
+      fitted: [...groups.map((g) => y[g]), ...order.map((i) => y[groups[groupOf(i)]] + frameOf(i))],
       ...test,
       peak,
       abundance: mean(all.flatMap((c) => c.v)),
@@ -1638,15 +1842,22 @@ export function runSliceShift(
       repDf,
       nPerLevel: mean(all.map((c) => c.v.length)),
       surface: {
-        vehicle: [{ time: ref.b, mean: y[refIdx] }],
-        treated: order.map((i) => ({ dose: all[i].a, time: all[i].b, group: 0 })),
+        vehicle: groups.map((g) => ({ dose: all[g].a, time: all[g].b, mean: y[g] })),
+        treated: order.map((i) => ({ dose: all[i].a, time: all[i].b, group: groupOf(i) })),
         timeOffset: bMap.offset,
         axes: [
-          { axis: A, map: aMap, detect: plan.detect[0], base: ref.a },
-          { axis: B, map: bMap, detect: plan.detect[1], base: ref.b }
+          { axis: A, map: aMap, detect: plan.detect[0], base: fr.pinA ?? aBase },
+          { axis: B, map: bMap, detect: plan.detect[1], base: fr.pinB ?? bBase }
         ],
-        position: true,
-        samples: [{ dose: ref.a, time: ref.b, group: 0, v: ref.v, vehicle: true }]
+        pins: fr.pins,
+        ...(fr.pinA != null && fr.pinB != null ? { position: true } : null),
+        samples: groups.map((g, k) => ({
+          dose: all[g].a,
+          time: all[g].b,
+          group: k,
+          v: all[g].v,
+          vehicle: true as const
+        }))
       },
       shift: {
         response,
@@ -1714,16 +1925,21 @@ export interface SliceFits {
   slice: number[]
   /** the cells tested (of the gene's): every slice with 5+ levels */
   idx: number[]
+  /** each slice's own offset is the null's (against the control at each level of the compared
+   *  axis — see runSliceShift's `offsets`): the null is the shared 4PL plus them */
+  offsets?: boolean
 }
 
-/** A 4PL along the response axis on log₂ level means: one shared by every slice (null) vs each
- *  slice its own (alternative). A slice with fewer than 5 levels can't take its own 4PL: left out
- *  of both. Null when fewer than 2 slices remain, or no df is left over. */
+/** A 4PL along the response axis on log₂ level means: one shared by every slice (null; with
+ *  `offsets`, plus each slice's own offset) vs each slice its own (alternative). A slice with fewer
+ *  than 5 levels can't take its own 4PL: left out of both. Null when fewer than 2 slices remain, or
+ *  no df is left over. */
 function sliceFits4pl<C>(
   all: C[],
   rOf: (c: C) => number,
   cOf: (c: C) => number,
-  rMap: AxisMap
+  rMap: AxisMap,
+  offsets = false
 ): SliceFits | null {
   const bySlice = new Map<number, number[]>()
   all.forEach((c, i) => {
@@ -1736,7 +1952,7 @@ function sliceFits4pl<C>(
   if (kept.length < 2) return null
   const idx = kept.flatMap(([, i]) => i)
   const n = idx.length
-  const d1 = 4 * (kept.length - 1)
+  const d1 = (offsets ? 3 : 4) * (kept.length - 1)
   const d2 = n - 4 * kept.length
   if (d2 < 1) return null
   const xs = idx.map((i) => toX(rMap, rOf(all[i])))
@@ -1746,23 +1962,37 @@ function sliceFits4pl<C>(
   const raw = idx.map((i) => mean((all[i] as unknown as { v: number[] }).v))
   const centre = mean(raw)
   const y = raw.map((v) => v - centre)
-  return { ...fitSlices(xs, y, slice, kept.length), y, d1, d2, xs, slice, idx }
+  return {
+    ...fitSlices(xs, y, slice, kept.length, offsets),
+    y,
+    d1,
+    d2,
+    xs,
+    slice,
+    idx,
+    ...(offsets ? { offsets } : null)
+  }
 }
 
-/** The shared and the per-slice 4PLs through (xs, y), slices numbered 0..k−1. */
+/** Backfitting rounds for the shared 4PL with each slice's own offset. */
+const OFFSET_ROUNDS = 4
+
+/** The shared and the per-slice 4PLs through (xs, y), slices numbered 0..k−1 — the shared one with
+ *  each slice's own offset (slice 0's 0) where `offsets`, by backfitting. */
 function fitSlices(
   xs: number[],
   y: number[],
   slice: number[],
-  k: number
+  k: number,
+  offsets = false
 ): Pick<SliceFits, 'f0' | 'f1' | 'rss0' | 'rss1'> {
   // (the fitter's starting guesses read the points in ascending x)
-  const fit = (ix: number[]): number[] => {
+  const fit = (ix: number[], to: readonly number[] = y): number[] => {
     const order = [...ix].sort((a, b) => xs[a] - xs[b])
     const x = order.map((i) => xs[i])
     const p = fitLogistic(
       x,
-      order.map((i) => y[i]),
+      order.map((i) => to[i]),
       x,
       { yLimits: Y_LIMITS_LOG2 }
     )
@@ -1770,7 +2000,24 @@ function fitSlices(
     return ix.map((i) => at.get(i)!)
   }
   const all = xs.map((_, i) => i)
-  const f0 = fit(all)
+  let f0 = fit(all)
+  if (offsets) {
+    // the shared 4PL on the values less each slice's offset, then each offset the slice's mean
+    // residual from it — a few rounds
+    const off = new Array<number>(k).fill(0)
+    for (let round = 0; round < OFFSET_ROUNDS; round++) {
+      off.forEach((o, sl) => {
+        if (sl === 0) return
+        const ix = all.filter((i) => slice[i] === sl)
+        off[sl] = ix.length ? mean(ix.map((i) => y[i] - f0[i])) : 0
+      })
+      f0 = fit(
+        all,
+        y.map((v, i) => v - off[slice[i]])
+      )
+    }
+    f0 = f0.map((v, i) => v + off[slice[i]])
+  }
   const f1 = new Array<number>(xs.length)
   for (let s = 0; s < k; s++) {
     const ix = all.filter((i) => slice[i] === s)
@@ -1916,7 +2163,7 @@ function adjustedSliceP(
         const ySim = shared.map(
           (v) => v + sd * Math.sqrt(-2 * Math.log(1 - r())) * Math.cos(2 * Math.PI * r())
         )
-        const sim = fitSlices(g.xs, ySim, g.slice, Math.max(...g.slice) + 1)
+        const sim = fitSlices(g.xs, ySim, g.slice, Math.max(...g.slice) + 1, g.offsets)
         const F = Fof({ ...sim, d1: g.d1, d2: g.d2 })
         if (Number.isFinite(F)) sample.push(F)
       }

@@ -11,6 +11,7 @@ import {
   contextRowAt,
   ctxValue,
   curveHasLof,
+  curveIsFlat,
   curveMetrics,
   customCond,
   customSlug,
@@ -717,7 +718,14 @@ export function compareCellRow(
   return r.curve
     ? ({
         ...r,
-        ...curveMetrics(r.log2FC, r.curve, threshold, doseScale)
+        ...curveMetrics(
+          r.log2FC,
+          r.curve,
+          threshold,
+          doseScale,
+          // a flat curve has no midpoint: no potency (the plots can force it to 0)
+          curveIsFlat(r, threshold) ? 'na' : undefined
+        )
       } as CompareResultRow)
     : r.rs
       ? ({ ...r, ...responseMetrics(r, doseScale, threshold) } as CompareResultRow)

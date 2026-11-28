@@ -13,6 +13,7 @@ import {
   comparisonOf,
   condLabel,
   curveDescribed,
+  curveIsFlat,
   fcName,
   PEC50_DELTA,
   xUnits,
@@ -42,6 +43,7 @@ import {
 } from '../../ui/theme'
 import { useSelectedGeneSets } from '../../ui/useSelection'
 import { useUiTheme } from '../../ui/useUiTheme'
+import { usePlotCached } from '../../ui/plotCache'
 
 type Eff = 'up' | 'down' | 'none'
 const ORDER: Eff[] = ['none', 'down', 'up']
@@ -59,6 +61,7 @@ export function PotencyView({
   rows,
   displayMap,
   dose = { scale: 1 },
+  forcePEC50 = false,
   show = 'called',
   fcLow,
   fcHigh,
@@ -76,6 +79,8 @@ export function PotencyView({
   displayMap: Record<string, string>
   /** the dose unit and its molar scale (see curveDoseUnit); no unit = the axis's own units */
   dose?: { unit?: string; scale: number; molar?: boolean }
+  /** force pEC50: flat curves at pEC50 0 (else left out — they have no midpoint) */
+  forcePEC50?: boolean
   /** the called curves only, or every curve */
   show?: 'called' | 'all'
   /** the fold-change limits of the calls, drawn as guides (omitted = none) */
@@ -125,77 +130,87 @@ export function PotencyView({
       r.rs?.scale === 'linear' ||
       (r.rs?.axis === 'surface' && r.rs.maps?.[curveAxisOf(r)]?.scale === 'linear')
   )
-  const { points, offBound } = useMemo(() => {
-    const out: Point[] = []
-    // surfaces whose dose curve at the peak ran into a fitting bound (see below): not placed,
-    // counted
-    let off = 0
-    // A point from its EC50 (in the axis's units) and its fold change: pEC50 = −log₁₀ EC50 in
-    // molar (the unit's scale), as CurveCurator reports it; on a linear axis the EC50 itself.
-    const add = (r: CompareResultRow, ec50: number, y: number, at?: string): void => {
-      if (!Number.isFinite(ec50) || (!linear && !(ec50 > 0)) || !Number.isFinite(y)) return
-      out.push({
-        uniqID: r.uniqID,
-        label: (displayMap[r.uniqID] || r.uniqID) + (at ? ` · ${at}` : ''),
-        x: linear ? ec50 : -Math.log10(ec50 * dose.scale),
-        y,
-        ec50,
-        effect: (r.effect ?? 'none') as Eff
-      })
+  // Kept app-wide by the rows (ui/plotCache): the tab shown again, or the tile remounted, takes
+  // them rather than placing every curve again.
+  const { points, offBound } = usePlotCached(
+    'potencyPoints',
+    [rows, displayMap, show, dose.scale, forcePEC50, linear],
+    () => {
+      const out: Point[] = []
+      // surfaces whose dose curve at the peak ran into a fitting bound (see below): not placed,
+      // counted
+      let off = 0
+      // A point from its EC50 (in the axis's units) and its fold change: pEC50 = −log₁₀ EC50 in
+      // molar (the unit's scale), as CurveCurator reports it; on a linear axis the EC50 itself.
+      const add = (r: CompareResultRow, ec50: number, y: number, at?: string): void => {
+        if (!Number.isFinite(ec50) || (!linear && !(ec50 > 0)) || !Number.isFinite(y)) return
+        out.push({
+          uniqID: r.uniqID,
+          label: (displayMap[r.uniqID] || r.uniqID) + (at ? ` · ${at}` : ''),
+          x: linear ? ec50 : -Math.log10(ec50 * dose.scale),
+          y,
+          ec50,
+          effect: (r.effect ?? 'none') as Eff
+        })
+      }
+      for (const r of rows) {
+        if (show === 'called' && !r.signf) continue
+        const c = r.curve
+        if (c) {
+          // an undescribed curve (its run described responders only) has no EC50 to place; a flat
+          // one none either — its midpoint is the fit's bound — unless its setting places it at
+          // pEC50 0 (EC50 1 M: a log axis only)
+          if (!curveDescribed(c) || r.log2FC == null) continue
+          if (curveIsFlat(r)) {
+            if (forcePEC50 && !linear) add(r, 1 / dose.scale, r.log2FC)
+          } else if (Number.isFinite(c.pec50)) add(r, xUnits(c, -c.pec50), r.log2FC)
+          continue
+        }
+        // The response surface method: a curve's description midpoint against its peak; a
+        // surface's likewise — the curve through its peak along the axis its curves run along, at
+        // its midpoint, against the peak. (A line has no midpoint.)
+        if (r.rs?.desc && r.log2FC != null && Number.isFinite(r.rs.desc.mid))
+          add(r, r.rs.desc.mid, r.log2FC)
+        const rs = r.rs
+        const d = rs?.surface
+        if (!rs || !d || r.log2FC == null) continue
+        const k = curveAxisOf(r)
+        const slices = k === 1 ? d.byDose : d.byTime
+        // which of them: at the peak's level of the other axis — tested for changes, the cell with
+        // the largest departure; else the largest fitted effect
+        const sh = rs.shift
+        let at: number | undefined = sh ? (k === 1 ? sh.peakA : sh.peakB) : undefined
+        if (!sh) {
+          let best = 0
+          for (const cell of rs.cells ?? [])
+            if (Math.abs(cell.fitted) > best) {
+              best = Math.abs(cell.fitted)
+              at = cell.time
+            }
+        }
+        const sl = slices.find((x) => x.at === at)
+        if (!sl || !Number.isFinite(sl.mid)) continue
+        // Placed only where its 4PL found a midpoint: a top on a plateau limit, or (a log axis) a
+        // midpoint at the edge of the range it may take (the tested levels ± PEC50_DELTA), is the fit
+        // running off on a flat or still-rising curve.
+        const atTop = sl.back <= Y_LIMITS_LOG2[0] + 1e-6 || sl.back >= Y_LIMITS_LOG2[1] - 1e-6
+        const tested = (rs.cells ?? []).map((x) => (k === 1 ? x.time : x.dose)).filter((x) => x > 0)
+        const lm = Math.log10(sl.mid)
+        const atEdge =
+          rs.maps?.[k]?.scale !== 'linear' &&
+          tested.length > 0 &&
+          (!(lm > Math.log10(Math.min(...tested)) - PEC50_DELTA + 0.05) ||
+            !(lm < Math.log10(Math.max(...tested)) + PEC50_DELTA - 0.05))
+        if (atTop || atEdge) {
+          off++
+          continue
+        }
+        const [a0, a1] = rs.pair ?? ['dose', 'time']
+        add(r, sl.mid, r.log2FC, `${condLabel(k === 1 ? a0 : a1)} ${sl.at}`)
+      }
+      return { points: out, offBound: off }
     }
-    for (const r of rows) {
-      if (show === 'called' && !r.signf) continue
-      const c = r.curve
-      if (c) {
-        // an undescribed curve (its run described responders only) has no EC50 to place
-        if (curveDescribed(c) && r.log2FC != null && Number.isFinite(c.pec50))
-          add(r, xUnits(c, -c.pec50), r.log2FC)
-        continue
-      }
-      // The response surface method: a curve's description midpoint against its peak; a
-      // surface's likewise — the curve through its peak along the axis its curves run along, at
-      // its midpoint, against the peak. (A line has no midpoint.)
-      if (r.rs?.desc && r.log2FC != null && Number.isFinite(r.rs.desc.mid))
-        add(r, r.rs.desc.mid, r.log2FC)
-      const rs = r.rs
-      const d = rs?.surface
-      if (!rs || !d || r.log2FC == null) continue
-      const k = curveAxisOf(r)
-      const slices = k === 1 ? d.byDose : d.byTime
-      // which of them: at the peak's level of the other axis — tested for changes, the cell with
-      // the largest departure; else the largest fitted effect
-      const sh = rs.shift
-      let at: number | undefined = sh ? (k === 1 ? sh.peakA : sh.peakB) : undefined
-      if (!sh) {
-        let best = 0
-        for (const cell of rs.cells ?? [])
-          if (Math.abs(cell.fitted) > best) {
-            best = Math.abs(cell.fitted)
-            at = cell.time
-          }
-      }
-      const sl = slices.find((x) => x.at === at)
-      if (!sl || !Number.isFinite(sl.mid)) continue
-      // Placed only where its 4PL found a midpoint: a top on a plateau limit, or (a log axis) a
-      // midpoint at the edge of the range it may take (the tested levels ± PEC50_DELTA), is the fit
-      // running off on a flat or still-rising curve.
-      const atTop = sl.back <= Y_LIMITS_LOG2[0] + 1e-6 || sl.back >= Y_LIMITS_LOG2[1] - 1e-6
-      const tested = (rs.cells ?? []).map((x) => (k === 1 ? x.time : x.dose)).filter((x) => x > 0)
-      const lm = Math.log10(sl.mid)
-      const atEdge =
-        rs.maps?.[k]?.scale !== 'linear' &&
-        tested.length > 0 &&
-        (!(lm > Math.log10(Math.min(...tested)) - PEC50_DELTA + 0.05) ||
-          !(lm < Math.log10(Math.max(...tested)) + PEC50_DELTA - 0.05))
-      if (atTop || atEdge) {
-        off++
-        continue
-      }
-      const [a0, a1] = rs.pair ?? ['dose', 'time']
-      add(r, sl.mid, r.log2FC, `${condLabel(k === 1 ? a0 : a1)} ${sl.at}`)
-    }
-    return { points: out, offBound: off }
-  }, [rows, displayMap, show, dose.scale, linear])
+  )
 
   const doseUnit = dose.unit
   const doseMolar = dose.molar

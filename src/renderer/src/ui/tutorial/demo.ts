@@ -17,12 +17,14 @@ import type { LoadConfig } from '../../graph/types'
 import tourDatamatrix from './data/tour_datamatrix.csv?raw'
 import tourMetadata from './data/tour_metadata.csv?raw'
 import tourSamplesheet from './data/tour_samplesheet.csv?raw'
+import { lastViewports, viewportKey } from '../../app/canvasModel'
 import { newFolder } from '../../graph/project'
 import { loadSlot, makeNode, syncActiveSlot } from '../../graph/state/shared'
 import { type GraphState, useGraph } from '../../graph/store'
 import type { CompareConfig, GraphNode } from '../../graph/types'
 import { buildWorkflowDoc } from '../../graph/workflowDoc'
 import { useAppView } from '../useAppView'
+import { canvasNav } from './canvasNav'
 
 /** The tour's tiles, by id (the stops find them on the canvas by these) — its own ids, never a
  *  user's tile's, so nothing cached for one can answer for the other. */
@@ -53,13 +55,18 @@ export const EXAMPLE_COMPARE: Pick<CompareConfig, 'num' | 'den' | 'match'> = {
   match: ['time']
 }
 
+/** The ready-made chain's width on the canvas (three 230 px tiles, 290 apart), and its gap from
+ *  the canvas's top edge when the tour opens. */
+const CHAIN_W = 810
+const CHAIN_TOP = 40
+
 export const DEMO_PROJECT_NAME = 'Tutorial (example data)'
 
 function demoGraph(): { nodes: GraphNode[]; edges: Edge[] } {
-  const load = makeNode(DEMO.load, 'load', { x: 0, y: 60 })
+  const load = makeNode(DEMO.load, 'load', { x: 0, y: 0 })
   load.data.config = { ...TOUR_LOAD_CONFIG }
-  const clean = makeNode(DEMO.clean, 'standardize', { x: 290, y: 60 })
-  const compare = makeNode(DEMO.compare, 'compare', { x: 580, y: 60 })
+  const clean = makeNode(DEMO.clean, 'standardize', { x: 290, y: 0 })
+  const compare = makeNode(DEMO.compare, 'compare', { x: 580, y: 0 })
   compare.data.config = { ...(compare.data.config as CompareConfig), ...EXAMPLE_COMPARE }
   return {
     nodes: [load, clean, compare],
@@ -128,6 +135,9 @@ export async function restoreProject(a: SetAside): Promise<void> {
   if (has) {
     loadSlot(useGraph.getState, useGraph.setState, project.activeFolderId!)
     useGraph.setState({ past, future })
+    // its canvas view too (the tour set its own on the same canvas)
+    const back = lastViewports.get(viewportKey())
+    if (back) canvasNav()?.setView(back)
     await useGraph.getState().refreshDataFiles()
   }
   const v = useAppView.getState()
@@ -162,6 +172,13 @@ export async function openDemoProject(): Promise<void> {
     inputFileFolders: {}
   })
   loadSlot(useGraph.getState, useGraph.setState, folder.id)
+  // Opened at full size with the chain along the top (not fitted to the middle), so the canvas
+  // below is free for the steps the user places.
+  // Set for the canvas to open on, and on the canvas now if it's already up (it isn't remounted
+  // for another project).
+  const view = { x: Math.max(CHAIN_TOP, (window.innerWidth - CHAIN_W) / 2), y: CHAIN_TOP, zoom: 1 }
+  lastViewports.set(viewportKey(), view)
+  canvasNav()?.setView(view)
   useAppView.getState().setView('canvas')
   await useGraph.getState().refreshDataFiles()
 }

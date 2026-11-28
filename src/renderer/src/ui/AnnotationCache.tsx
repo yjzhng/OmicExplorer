@@ -6,6 +6,8 @@ import { useCallback, useEffect, useState, type CSSProperties, type ReactNode } 
 
 import { StatusDot, type StatusInfo } from '../graph/StatusDot'
 import { Chevron } from './Chevron'
+import { ScrollFade } from './ScrollFade'
+import { TABLE } from './tableStyles'
 import { Section as UiSection } from './Section'
 import { formatSize, REVEAL } from './fileLabels'
 import { Select } from './Select'
@@ -446,69 +448,73 @@ function CacheBrowser({ uni }: { uni: NonNullable<Summary['uniprot']> }): ReactN
           )}
         </span>
       </div>
+      {/* The app's table box: it scrolls on its own (header pinned, edges fading), not down the
+          whole Settings page. */}
       {rows.length > 0 && (
-        <table style={{ ...styles.table, tableLayout: 'fixed' }}>
-          <colgroup>
-            <col style={{ width: 120 }} />
-            {withGene && <col style={{ width: 100 }} />}
-            {cols.map((c) => (
-              <col key={c} />
-            ))}
-          </colgroup>
-          <thead>
-            <tr>
-              <th style={styles.colHead}>Accession</th>
-              {withGene && <th style={styles.colHead}>Gene</th>}
+        <ScrollFade style={styles.browseBox}>
+          <table style={{ ...TABLE.grid, tableLayout: 'fixed', width: '100%' }}>
+            <colgroup>
+              <col style={{ width: 120 }} />
+              {withGene && <col style={{ width: 100 }} />}
               {cols.map((c) => (
-                <th key={c} style={styles.colHead}>
-                  {c}
-                </th>
+                <col key={c} />
               ))}
-            </tr>
-          </thead>
-          {/* Windowed (ui/VirtualRows); the next chunk is read as the view nears the end. */}
-          <VirtualTbody
-            count={rows.length}
-            span={cols.length + (withGene ? 2 : 1)}
-            onEnd={!loading && rows.length < total ? more : undefined}
-            row={(k) => {
-              const r = rows[k]
-              const isOpen = openAcc.has(r.acc)
-              const cell = { ...styles.td, ...(isOpen ? styles.wrap : styles.clip) }
-              const none = r.values.every((v) => !v)
-              return (
-                <tr
-                  key={r.acc}
-                  style={styles.browseRow}
-                  onClick={() => flip(r.acc)}
-                  title={isOpen ? 'Clip the values to one line' : 'Show the values in full'}
-                >
-                  <td style={{ ...styles.td, ...styles.clip, verticalAlign: 'top' }}>
-                    <span style={styles.dotted}>
-                      <Chevron deg={isOpen ? 90 : 0} size={9} />
-                      {r.acc}
-                    </span>
-                  </td>
-                  {withGene && (
-                    <td style={{ ...cell, verticalAlign: 'top' }}>
-                      {r.gene || <span style={styles.muted}>—</span>}
+            </colgroup>
+            <thead>
+              <tr>
+                <th style={TABLE.th}>Accession</th>
+                {withGene && <th style={TABLE.th}>Gene</th>}
+                {cols.map((c) => (
+                  <th key={c} style={{ ...TABLE.th, ...styles.clip }}>
+                    {c}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            {/* Windowed (ui/VirtualRows); the next chunk is read as the view nears the end. */}
+            <VirtualTbody
+              count={rows.length}
+              span={cols.length + (withGene ? 2 : 1)}
+              onEnd={!loading && rows.length < total ? more : undefined}
+              row={(k) => {
+                const r = rows[k]
+                const isOpen = openAcc.has(r.acc)
+                const cell = { ...TABLE.td, ...(isOpen ? styles.wrap : styles.clip) }
+                const none = r.values.every((v) => !v)
+                return (
+                  <tr
+                    key={r.acc}
+                    style={styles.browseRow}
+                    onClick={() => flip(r.acc)}
+                    title={isOpen ? 'Clip the values to one line' : 'Show the values in full'}
+                  >
+                    <td style={{ ...TABLE.td, ...styles.clip, verticalAlign: 'top' }}>
+                      <span style={styles.dotted}>
+                        <Chevron deg={isOpen ? 90 : 0} size={9} />
+                        {r.acc}
+                      </span>
                     </td>
-                  )}
-                  {r.values.map((v, i) => (
-                    <td key={cols[i]} style={{ ...cell, verticalAlign: 'top' }}>
-                      {v ||
-                        (none && i === 0 ? (
-                          <span style={{ ...styles.muted, color: AMBER }}>no value</span>
-                        ) : (
-                          <span style={styles.muted}>—</span>
-                        ))}
-                    </td>
-                  ))}
-                </tr>
-              )
-            }}
-          />
-        </table>
+                    {withGene && (
+                      <td style={{ ...cell, verticalAlign: 'top' }}>
+                        {r.gene || <span style={styles.muted}>—</span>}
+                      </td>
+                    )}
+                    {r.values.map((v, i) => (
+                      <td key={cols[i]} style={{ ...cell, verticalAlign: 'top' }}>
+                        {v ||
+                          (none && i === 0 ? (
+                            <span style={{ ...styles.muted, color: AMBER }}>no value</span>
+                          ) : (
+                            <span style={styles.muted}>—</span>
+                          ))}
+                      </td>
+                    ))}
+                  </tr>
+                )
+              }}
+            />
+          </table>
+        </ScrollFade>
       )}
       {rows.length < total && (
         <div style={styles.hint}>
@@ -1046,6 +1052,8 @@ const styles: Record<string, CSSProperties> = {
     cursor: 'pointer'
   },
   browseRow: { cursor: 'pointer' },
+  // its own height, rather than the whole page's: up to about 15 rows
+  browseBox: { flex: 'none', maxHeight: 'min(420px, 55vh)' },
   pick: { display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: 12 },
   // Above the Settings window (its scrim is 60, the window 61).
   confirmScrim: { position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.35)', zIndex: 70 },

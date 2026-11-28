@@ -129,8 +129,9 @@ describe('runResponseSurface — dose × time surface', () => {
     expect(x.dose).toBeNull()
     expect(x.time).toBeNull()
   })
-  it('keeps the reference for drawing: the vehicle’s replicates and the t₀ samples', () => {
-    // A at t₀ too: a matched time's baseline level — not cells, kept as samples
+  it('keeps the reference for drawing: the vehicle’s replicates — t₀ a cell like any time not picked', () => {
+    // A at t₀ too: the baseline is the vehicle (dose 0) at each time, so A at t₀ is against the
+    // vehicle at t₀ — a cell (only what the baseline picks is reference)
     const rows = build('vehicle')
     const r = rng(9)
     for (let rep = 1; rep <= 3; rep++)
@@ -147,11 +148,11 @@ describe('runResponseSurface — dose × time surface', () => {
       expect(Math.abs(c.y)).toBeLessThan(1e-9)
       expect(c.reps.some((v) => Math.abs(v) > 1e-6)).toBe(true)
     }
-    // the treated samples at t₀: one per dose, not among the cells
-    const base = ctl.filter((c) => !c.vehicle)
-    expect(base.map((c) => c.dose)).toEqual([1, 10, 100, 1000, 3000])
-    expect(base.every((c) => c.time === 0 && c.reps.length === 3)).toBe(true)
-    expect(x.rs?.cells?.some((c) => c.time === 0)).toBe(false)
+    // the treated samples at t₀: cells, not reference
+    expect(ctl.filter((c) => !c.vehicle)).toEqual([])
+    expect(x.rs?.cells?.filter((c) => c.time === 0).map((c) => c.dose)).toEqual([
+      1, 10, 100, 1000, 3000
+    ])
   })
   it('with the 4PL surface detector: adjusted-F p and BH q, the 4PL’s fit and peak', () => {
     const rows = build('vehicle')

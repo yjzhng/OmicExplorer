@@ -334,7 +334,11 @@ export function FcHeatmapView({
   useLayoutEffect(() => {
     const el = wrapRef.current
     if (!el) return
-    const measure = (): void => setSize({ w: el.clientWidth, h: el.clientHeight })
+    // hidden (its tab left, 0×0): keep the last size rather than redraw for nobody (HeatmapView)
+    const measure = (): void => {
+      if (el.clientWidth === 0 && el.clientHeight === 0) return
+      setSize({ w: el.clientWidth, h: el.clientHeight })
+    }
     const ro = new ResizeObserver(measure)
     ro.observe(el)
     measure()
@@ -472,7 +476,7 @@ export function FcHeatmapView({
     }
     const compAxis = {
       ...axisBase(p),
-      title: 'comparison',
+      title: data.columnsTitle ?? 'comparison',
       automargin: true,
       tickfont: { size: PLOT_TEXT.dense },
       ...(landscape ? {} : { tickangle: -45 })
@@ -736,6 +740,7 @@ export function FcHeatmapView({
   return (
     <div ref={wrapRef} style={{ width: '100%', height: '100%' }}>
       <PlotlyChart
+        controls="none"
         data={traces}
         layout={layout}
         style={settled ? undefined : { opacity: 0 }}

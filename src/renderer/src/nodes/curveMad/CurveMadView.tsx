@@ -11,14 +11,19 @@
  * show. A violin off zero is high or low on most curves (a normalisation, loading or sample
  * problem); a wide one misses them either way.
  */
+import { usePlotCached } from '../../ui/plotCache'
 import { useMemo } from 'react'
 
 import {
   condLabel,
+  curveIsFlat,
   curveMetrics,
+  type FlatPotency,
   curvePointsFromStd,
   curveResidualMad,
   curveResidualPoints,
+  distShape,
+  VIOLIN_CAP,
   normalPpf,
   type StdLookup,
   thinPoints,
@@ -99,6 +104,7 @@ export function CurveMadView({
   metricY = CURVE_QC_DEFAULT_Y,
   threshold,
   doseScale = 1,
+  flatPotency,
   effectLabels = DEFAULT_EFFECT_LABELS,
   effectColors,
   onMetricX,
@@ -135,6 +141,8 @@ export function CurveMadView({
   threshold?: ThresholdConfig
   /** the dose unit's size in molar, so pEC50 is molar (see curveMetrics) */
   doseScale?: number
+  /** how a flat curve's potency reads (see FlatPotency; unset: none) */
+  flatPotency?: FlatPotency
   /** the upstream Compare's effect labels and colours — the metrics check's dots are coloured by
    *  each curve's call */
   effectLabels?: EffectLabels
@@ -154,15 +162,14 @@ export function CurveMadView({
   const downColor = effectColors?.down
   const noneColor = effectColors?.none
   // Each curve with its points: kept with the fit, else rebuilt from the Clean data.
-  const curves = useMemo(
-    () =>
-      rows.map((r) => {
-        const c = r.curve
-        if (!c || (c.x && c.rep) || !byGene) return r
-        const got = curvePointsFromStd(r, byGene.get(r.uniqID) ?? [], c.axis)
-        return got ? { ...r, curve: { ...c, ...got } } : r
-      }),
-    [rows, byGene]
+  // (kept app-wide by the rows, ui/plotCache: a remount takes them)
+  const curves = usePlotCached('curveMadCurves', [rows, byGene], () =>
+    rows.map((r) => {
+      const c = r.curve
+      if (!c || (c.x && c.rep) || !byGene) return r
+      const got = curvePointsFromStd(r, byGene.get(r.uniqID) ?? [], c.axis)
+      return got ? { ...r, curve: { ...c, ...got } } : r
+    })
   )
   const { data, layout, missing } = useMemo(() => {
     const p = PALETTES[mode]
@@ -179,6 +186,7 @@ export function CurveMadView({
       const built = metricsCheck(curves, comparisons, metricX, metricY, {
         threshold,
         doseScale,
+        flat: flatPotency,
         displayMap,
         style,
         effectLabels: { up: upName, down: downName, none: noneName },
@@ -300,6 +308,8 @@ export function CurveMadView({
         }
         const x: string[] = []
         const y: number[] = []
+        // each dose's residuals, as its own violin's — past VIOLIN_CAP of them (below)
+        const perDose: Array<{ x: string; y: number[] }> = []
         // The outlier dots: each dose's most extreme residuals.
         const ox: string[] = []
         const oy: number[] = []
@@ -313,6 +323,7 @@ export function CurveMadView({
             x.push(lab(d))
             y.push(r)
           }
+          perDose.push({ x: lab(d), y: d.residuals })
           const n = Math.max(1, Math.round(d.residuals.length * OUTLIER_SHARE))
           const top = d.residuals
             .map((r, j) => j)
@@ -334,15 +345,13 @@ export function CurveMadView({
           }
         }
         if (!y.length) continue
-        traces.push({
+        const violin = {
           type: 'violin',
           name: many ? `${comparisons[i]} · ${g.name}` : g.name,
           showlegend: g.legend,
           legendgroup: `${i}|${key}`,
           // Side by side per comparison at each dose (violinmode 'group' below).
           offsetgroup: many ? comparisons[i] : undefined,
-          x,
-          y,
           // Every residual shapes the violin; the outlier dots are their own trace below.
           points: false,
           spanmode: 'hard',
@@ -353,7 +362,23 @@ export function CurveMadView({
           line: { color, width: 1 },
           fillcolor: withAlpha(color, 0.35),
           hoveron: 'violins'
-        })
+        }
+        // Every residual shapes the violin. Past VIOLIN_CAP at a dose, a violin per dose, each drawn
+        // from its residuals' quantiles with the bandwidth for all of them (engine/distShape) — the
+        // same shapes, without Plotly smoothing every residual at each draw; one legend entry still.
+        if (perDose.every((d) => d.y.length <= VIOLIN_CAP)) traces.push({ ...violin, x, y })
+        else
+          perDose.forEach((d, k) => {
+            const sh = d.y.length > VIOLIN_CAP ? distShape(d.y) : null
+            const ys = sh ? sh.sample : d.y
+            traces.push({
+              ...violin,
+              showlegend: k === 0 && violin.showlegend,
+              x: ys.map(() => d.x),
+              y: ys,
+              ...(sh ? { bandwidth: sh.bandwidth } : null)
+            })
+          })
         // The median and quartiles: a narrow box, no whiskers (precomputed — no raw values again).
         const qs = m.filter((d) => (d.x == null) === (key === 'control'))
         traces.push({
@@ -472,6 +497,7 @@ export function CurveMadView({
     metricY,
     threshold,
     doseScale,
+    flatPotency,
     upName,
     downName,
     noneName,
@@ -479,6 +505,16 @@ export function CurveMadView({
     downColor,
     noneColor
   ])
+
+  // A residual dot stands for its gene: a click pins the gene, so the selection reaches every
+  // plot. Any other id (a gene, another view's dot) is none of this chart's: null.
+  const pinIdsOf = useMemo(() => {
+    const genes = genesByPoint(data)
+    return (id: string): string[] | null => {
+      const g = genes.get(id)
+      return g ? [g] : null
+    }
+  }, [data])
 
   // The metrics check: each axis title picks its metric (or none — the other's distribution).
   const pickers = useAxisTitlePickers<CurveQcAxis>(
@@ -527,6 +563,7 @@ export function CurveMadView({
           data={data}
           layout={layout}
           emphasis={emphasis}
+          pinIdsOf={pinIdsOf}
           onGraphMount={pickers.onGraphMount}
           // its own note says why it's empty (the metric no curve has)
           emptyNote={false}
@@ -534,7 +571,15 @@ export function CurveMadView({
         {pickers.overlay}
       </div>
     )
-  return <PlotlyChart data={data} layout={layout} emphasis={emphasis} emptyNote={false} />
+  return (
+    <PlotlyChart
+      data={data}
+      layout={layout}
+      emphasis={emphasis}
+      pinIdsOf={pinIdsOf}
+      emptyNote={false}
+    />
+  )
 }
 
 type Palette = (typeof PALETTES)[keyof typeof PALETTES]
@@ -548,6 +593,24 @@ interface DotPoint {
   where?: string
 }
 
+/** A residual trace's per-point genes (beside its own-id customdata) — see pointTrace. */
+const POINT_GENES = '__oeGenes'
+
+/** A residual dot's gene, by its own id, over the traces drawn (pointTrace's). */
+function genesByPoint(data: Record<string, unknown>[]): Map<string, string> {
+  const out = new Map<string, string>()
+  for (const t of data) {
+    const ids = t.customdata
+    const genes = t[POINT_GENES]
+    if (!t.__oeOwnIds || !Array.isArray(ids) || !Array.isArray(genes)) continue
+    for (let k = 0; k < ids.length; k++) {
+      const g = genes[k]
+      if (typeof ids[k] === 'string' && typeof g === 'string') out.set(ids[k], g)
+    }
+  }
+  return out
+}
+
 /** A group's points as the point plots draw them (MAView, VolcanoView): an SVG scatter whose
  *  customdata are ids PlotlyChart highlights by — so it rings and labels a hovered or pinned point
  *  with its shared overlay, dims the rest, and a legend click selects the group — styled by the
@@ -557,7 +620,9 @@ interface DotPoint {
  *  gene has a residual at every dose and replicate, in both groups, so gene ids would light a
  *  gene's every dot on hover and make a legend click select every gene. Each point's id is the
  *  view (`scope`), the trace's name and its place in it — stable across redraws (the thinning is
- *  deterministic), and apart between views, so a pin doesn't land on another dot after a switch. */
+ *  deterministic), and apart between views, so a pin doesn't land on another dot after a switch.
+ *  Each point still stands for its gene (POINT_GENES, read by pinIdsOf): a click selects the gene
+ *  — in every plot, its residuals here all lit — and a gene hovered elsewhere lights its dots. */
 function pointTrace(
   pts: DotPoint[],
   g: ResolvedGroup,
@@ -585,6 +650,8 @@ function pointTrace(
     text: pts.map((q) => (q.id && o.displayMap[q.id]) || q.id || ''),
     hovertext: pts.map((q) => q.where ?? ''),
     customdata: pts.map((_, k) => `residual|${o.scope}|${name}|${k}`),
+    // each point's gene, for pinIdsOf: a click selects it, and it lights with it in every plot
+    [POINT_GENES]: pts.map((q) => q.id ?? null),
     hovertemplate: o.hover,
     marker: {
       color,
@@ -958,6 +1025,8 @@ function metricsCheck(
   o: {
     threshold?: ThresholdConfig
     doseScale: number
+    /** how a flat curve's potency reads (unset: none) */
+    flat?: FlatPotency
     displayMap: Record<string, string>
     style?: PointStyle
     effectLabels: EffectLabels
@@ -977,7 +1046,13 @@ function metricsCheck(
   for (const r of rows) {
     if (!r.curve) continue
     const m: Record<string, number | null | undefined> = {
-      ...curveMetrics(r.log2FC, r.curve, o.threshold, o.doseScale),
+      ...curveMetrics(
+        r.log2FC,
+        r.curve,
+        o.threshold,
+        o.doseScale,
+        curveIsFlat(r, o.threshold) ? (o.flat ?? 'na') : undefined
+      ),
       log2FC: r.log2FC,
       pP: r.pP
     }

@@ -1,19 +1,23 @@
 /**
  * One gene's dose × time response surface (a Curve fit by the response surface method) — the
- * Response plot. Values are log₂ relative to that time's vehicle.
+ * Response plot. Values are log₂ against the fit's baseline (one position, or the vehicle at each
+ * time). What the model is, and what it reads at any dose × time — a control's 0 included — is
+ * engine/surfaceModel.ts's, the one reading every view and the descriptor's fold change take; this
+ * view only draws it.
  *
  *  - line (2-D): dose curves, one per time point (the legend), coloured early → late; the level
  *    means as points (coloured by their log₂ on the value palette, as in every view) and, as the
- *    line, the description's dose curve at that time — flat at 0 where the surface wasn't
- *    described (q beyond the describe cutoff, or no description could be fitted).
+ *    line, the model's dose curve at that time (its Curve fit's model view — engine/modelView.ts):
+ *    the description's, none where the surface wasn't described (q beyond the describe cutoff, or
+ *    no description could be fitted) — or, under the detector, the spline surface's fit.
  *  - line (3-D) and surface (3-D) draw the gene's description, so the lines are the surface's own:
  *    · joint description: the joint model over a fine dose × time grid; the lines are its slices
  *      at each time (dose curves) or at each dose (time curves).
  *    · per-time description: each time's 4PL as the lines; the surface joins them across times.
  *    · per-dose description: each dose's 4PL time curve as the lines; the surface joins them
  *      across doses.
- *    · no description: flat at 0 — no response. The spline surface is the detector, not the
- *      representation, so its fit is never drawn.
+ *    · no description: no line or surface — NA, the level means only.
+ *    · the detector (model view): the spline surface's fit at the cells, joined smoothly.
  *    The surface carries its curves as thin lines in both directions: a dose curve at each time
  *    and a time curve at each dose, from the same model. The level means as points.
  *  - heatmap (2-D): the measured log₂ effect over dose × time, on the value colour scale.
@@ -30,7 +34,15 @@ import Plotly, { type PlotlyGraphDiv } from 'plotly.js-strict-dist-min'
 
 import { useNearView } from '../../dashboard/useInView'
 
-import { condLabel, descValue, jointAt, type CompareResultRow } from '../../engine'
+import {
+  condLabel,
+  placed,
+  shiftReference,
+  surfaceAxes,
+  surfaceModel,
+  type CompareResultRow,
+  type ModelView
+} from '../../engine'
 import type { ResponseLook } from '../../graph/types'
 import { AUTO } from '../../ui/ColorPicker'
 import { paletteScale, paletteSeries, type PaletteRef, type PaletteRole } from '../../ui/palettes'
@@ -52,95 +64,10 @@ export interface AxisLevels {
   names: string[]
 }
 
-/** A fitted surface's cells with a log axis's base level at 0 (a cell against one position: dose 0
- *  at a higher temperature) moved to where the fit placed it — a step below the lowest level
- *  (SurfaceAxisMap.zeroX) — so a log axis can draw it. */
-function placeZero<T extends { dose: number; time: number }>(
-  cells: T[],
-  maps: NonNullable<CompareResultRow['rs']>['maps']
-): T[] {
-  const za = maps?.[0].scale !== 'linear' ? maps?.[0].zeroX : undefined
-  const zb = maps?.[1].scale !== 'linear' ? maps?.[1].zeroX : undefined
-  if (za == null && zb == null) return cells
-  const offB = maps?.[1].timeOffset ?? 0
-  return cells.map((c) => ({
-    ...c,
-    ...(za != null && !(c.dose > 0) ? { dose: 10 ** za } : null),
-    ...(zb != null && !(c.time + offB > 0) ? { time: 10 ** zb - offB } : null)
-  }))
-}
-
 /** Evenly spaced points along each time's 4PL (2-D), and per axis of the 3-D grid (97 × 97
  *  vertices: visibly smooth, still light for WebGL). */
 const SAMPLES = 60
 const GRID = 96
-
-/** Straight lines through the finite (x, y) pairs — xs ascending — evaluated at `qs`; null outside
- *  their span. For measured values (no model to curve them): the drawing claims nothing between
- *  two levels beyond the line joining them. */
-function linear(xs: number[], ys: Array<number | null>, qs: number[]): Array<number | null> {
-  const x: number[] = []
-  const y: number[] = []
-  xs.forEach((v, i) => {
-    const w = ys[i]
-    if (w != null && Number.isFinite(w)) {
-      x.push(v)
-      y.push(w)
-    }
-  })
-  const n = x.length
-  if (n === 0) return qs.map(() => null)
-  if (n === 1) return qs.map((q) => (Math.abs(q - x[0]) < 1e-9 ? y[0] : null))
-  return qs.map((q) => {
-    if (q < x[0] - 1e-9 || q > x[n - 1] + 1e-9) return null
-    let k = 0
-    while (k < n - 2 && q > x[k + 1]) k++
-    const t = Math.min(1, Math.max(0, (q - x[k]) / (x[k + 1] - x[k])))
-    return y[k] + (y[k + 1] - y[k]) * t
-  })
-}
-
-/** Monotone cubic (PCHIP, Fritsch–Butland) through the finite (x, y) pairs — xs ascending —
- *  evaluated at `qs`; null outside their span. It passes through every point and never overshoots
- *  them, so a drawing smoothed with it shows no bump the values don't have. */
-function pchip(xs: number[], ys: Array<number | null>, qs: number[]): Array<number | null> {
-  const x: number[] = []
-  const y: number[] = []
-  xs.forEach((v, i) => {
-    const w = ys[i]
-    if (w != null && Number.isFinite(w)) {
-      x.push(v)
-      y.push(w)
-    }
-  })
-  const n = x.length
-  if (n === 0) return qs.map(() => null)
-  if (n === 1) return qs.map((q) => (Math.abs(q - x[0]) < 1e-9 ? y[0] : null))
-  const h = x.slice(1).map((v, k) => v - x[k])
-  const d = h.map((hk, k) => (y[k + 1] - y[k]) / hk)
-  const m = x.map((_, k) => {
-    if (k === 0) return d[0]
-    if (k === n - 1) return d[n - 2]
-    const [a, b] = [d[k - 1], d[k]]
-    if (a * b <= 0) return 0
-    const [h0, h1] = [h[k - 1], h[k]]
-    return (3 * (h0 + h1)) / ((2 * h1 + h0) / a + (h1 + 2 * h0) / b)
-  })
-  return qs.map((q) => {
-    if (q < x[0] - 1e-9 || q > x[n - 1] + 1e-9) return null
-    let k = 0
-    while (k < n - 2 && q > x[k + 1]) k++
-    const t = Math.min(1, Math.max(0, (q - x[k]) / h[k]))
-    const t2 = t * t
-    const t3 = t2 * t
-    return (
-      (2 * t3 - 3 * t2 + 1) * y[k] +
-      (t3 - 2 * t2 + t) * h[k] * m[k] +
-      (-2 * t3 + 3 * t2) * y[k + 1] +
-      (t3 - t2) * h[k] * m[k + 1]
-    )
-  })
-}
 
 /** A measured dose × time level: its log₂FC, the fold change's SE, and its replicates (each
  *  sample over the control's mean, log₂ — from the Clean data the Compare ran on). */
@@ -403,10 +330,14 @@ export function ResponseSurfaceView({
   valueRange,
   shiftRange,
   levels,
-  valueTitle: valueTitleSet
+  valueTitle: valueTitleSet,
+  model = 'descriptor'
 }: {
   /** the gene's surface row (rs.axis 'surface') in the facet on show */
   row?: CompareResultRow
+  /** a fitted surface's model to draw (its Curve fit's model view): the description, or the
+   *  detector's spline surface */
+  model?: ModelView
   /** instead of a fitted surface: a Compare's measured log₂FC at each dose × time level (the
    *  Time & Dose-response plot), and the comparison it's for (the value axis's title) */
   measured?: { cells: MeasuredCell[]; comparison?: string }
@@ -542,13 +473,39 @@ export function ResponseSurfaceView({
           ]
     const textOf = (xs: number[], ys: number[]): { text?: string[] } =>
       named ? { text: xs.map((x, i) => xyText(x, ys[i])) } : {}
-    // Measured levels only: each is its own "fit", so the lines join the values themselves. A level
-    // at 0 (or below) has no place on a log axis.
+    // The axes — each one's coordinate, and where a log axis draws 0 — and the model on them
+    // (engine/surfaceModel.ts: the one reading of a surface every view and the descriptor's fold
+    // change take). Measured levels: each is its own "fit", joined straight; a level at 0 (or
+    // below) has no place on a log axis. A fitted surface: its cells and controls (the vehicle, a
+    // baseline level's samples — 0 by definition) placed as the fit placed them.
+    const measuredCells = measured
+      ? measured.cells.filter(
+          (c) => (!xLog || c.dose > 0) && (!yLog || c.time > 0) && Number.isFinite(c.y)
+        )
+      : []
+    const rawCells = measured ? measuredCells : (row?.rs?.cells ?? [])
+    const axes = surfaceAxes({
+      xLog,
+      yLog,
+      doses: rawCells.map((c) => c.dose),
+      times: rawCells.map((c) => c.time),
+      maps: fm,
+      timeOffset: row?.rs?.timeOffset
+    })
     const cells: Array<MeasuredCell & { fitted: number }> = measured
-      ? measured.cells
-          .filter((c) => (!xLog || c.dose > 0) && (!yLog || c.time > 0) && Number.isFinite(c.y))
-          .map((c) => ({ ...c, fitted: c.y }))
-      : placeZero(row?.rs?.cells ?? [], row?.rs?.maps)
+      ? measuredCells.map((c) => ({ ...c, fitted: c.y }))
+      : placed(row?.rs?.cells ?? [], axes)
+    const allControls = measured ? [] : placed(row?.rs?.controls ?? [], axes)
+    const sm = surfaceModel({
+      cells,
+      controls: allControls,
+      axes,
+      desc: row?.rs?.surface,
+      fromCells: !!measured || model === 'detector',
+      join: measured ? 'linear' : 'pchip',
+      slice,
+      ubar: cells.length ? cells.reduce((a, c) => a + axes.uOf(c.time), 0) / cells.length : 0
+    })
     // The points drawn for cells: measured, each one's replicates where the Clean data gives them
     // (as the Dose/time-response plot's focused view); else its value — a fit's level mean.
     const spread = (cs: typeof cells): Array<{ dose: number; time: number; y: number }> =>
@@ -566,45 +523,29 @@ export function ResponseSurfaceView({
     // The reference: the vehicle's replicates and the treated samples at a baseline level (t₀) —
     // not cells. Shown where the reference reads (the heatmap, 3-D); the 2-D curves leave it out,
     // as response curves do (their log axis has no 0).
-    const controls =
-      !measured && (dim === '3d' || show === 'heatmap') ? (row?.rs?.controls ?? []) : []
-    // Where a log axis puts a level it can't (0): the fit's own place for it (one position), else a
-    // median step below its lowest level — labelled 0.
-    const below = (levels: number[]): number => {
-      const L = levels.filter((v) => v > 0).map(Math.log10)
-      const st = L.slice(1)
-        .map((v, i) => v - L[i])
-        .sort((a, b) => a - b)
-      return 10 ** ((L[0] ?? 0) - (st.length ? st[st.length >> 1] : 1))
-    }
-    const zx = fm?.[0].zeroX
-    const zy = fm?.[1].zeroX != null ? 10 ** fm[1].zeroX - (fm[1].timeOffset ?? 0) : undefined
-    const xZero = zx != null ? 10 ** zx : below(doses)
-    const yZero = zy != null && zy > 0 ? zy : below(times)
-    const placeX = (d: number): number => (xLog && !(d > 0) ? xZero : d)
-    const placeY = (t: number): number => (yLog && !(t > 0) ? yZero : t)
+    const controls = dim === '3d' || show === 'heatmap' ? allControls : []
+    const { xZero, yZero, placeX, placeY } = axes
     // Testing response changes: coloured by each point's shift from the reference curve — the
     // compared axis's base level (dose 0: the vehicle's own curve) at the same response level —
     // rather than by its value; the height still shows the curves themselves (the melt).
     const shift = !measured ? row?.rs?.shift : undefined
     // the curves run along the second axis (time / temperature), compared across the first
     const shiftAlongB = !!shift && shift.response === (row?.rs?.pair?.[1] ?? 'time')
-    const posA = placeX(fm?.[0].base ?? 0)
-    const posB = placeY(fm?.[1].base ?? 0)
-    // the reference curve's value at a point's response level: its base-level cell there — or the
-    // position itself (the reference's first point, the vehicle: 0)
-    // the reference curve's level on the compared axis: its control level as the Curve fit set it
-    // (placed as the cells are), else its lowest
-    const ctlDose = placeX(fm?.[0].base ?? doses[0])
-    const ctlTime = placeY(fm?.[1].base ?? times[0])
-    const refDose = doses.includes(ctlDose) ? ctlDose : doses[0]
-    const refTime = times.includes(ctlTime) ? ctlTime : times[0]
-    const refAt = (c: { dose: number; time: number }): number | null => {
-      if (!shift) return null
-      const r = shiftAlongB ? at.get(`${refDose}|${c.time}`) : at.get(`${c.dose}|${refTime}`)
-      if (r) return r.y
-      return (shiftAlongB ? c.time === posB : c.dose === posA) ? 0 : null
-    }
+    // the reference curve (engine shiftReference): the compared axis at its control level as the
+    // Curve fit set it (placed as the cells are), else its lowest — its cell at a point's response
+    // level, or a control there (0)
+    const ref = shift
+      ? shiftReference(
+          cells,
+          allControls,
+          shiftAlongB,
+          // (a result stored without its axes: dose × time against dose 0 at each time)
+          shiftAlongB ? placeX(fm?.[0].base ?? 0) : placeY(fm?.[1].base ?? times[0])
+        )
+      : null
+    const refDose = ref && shiftAlongB ? ref.level : doses[0]
+    const refTime = ref && !shiftAlongB ? ref.level : times[0]
+    const refAt = (c: { dose: number; time: number }): number | null => (ref ? ref.at(c) : null)
     // named by the reference: the compared axis at its base level (dose 0)
     const shiftName = shift
       ? `shift from ${condLabel(shift.across)} ${shiftAlongB ? (fm?.[0].base ?? 0) : (fm?.[1].base ?? 0)}`
@@ -669,10 +610,9 @@ export function ResponseSurfaceView({
     // The scene's gridlines a step stronger than the 2-D plots' (theme grid): a 3-D box reads by
     // them, and at the theme's strength they faded into its background.
     const grid3 = mode === 'dark' ? '#343434' : '#e4e4e4'
-    // The value axis's extent: the set range, else every value drawn (lines, surface, points and
-    // their error) — flat values given a unit's room. (Unpadded: finish3 adds the margin.)
-    const zExtent = (): [number, number] => {
-      if (valueRange) return valueRange
+    // Every value drawn along the value axis (`key`: z in 3-D, y in 2-D) — lines, surface, points
+    // and their error.
+    const drawnExtent = (key: 'y' | 'z'): [number, number] | null => {
       let lo = Infinity
       let hi = -Infinity
       const take = (v: unknown): void => {
@@ -681,8 +621,9 @@ export function ResponseSurfaceView({
         if (v > hi) hi = v
       }
       for (const t of traces) {
-        const zs = (t.z ?? []) as unknown[]
-        const err = (t.error_z as { array?: number[] } | undefined)?.array
+        const zs = (t[key] ?? []) as unknown[]
+        const err = (t[key === 'z' ? 'error_z' : 'error_y'] as { array?: number[] } | undefined)
+          ?.array
         zs.forEach((v, i) => {
           if (Array.isArray(v)) v.forEach(take)
           else if (err && typeof v === 'number') {
@@ -691,7 +632,24 @@ export function ResponseSurfaceView({
           } else take(v)
         })
       }
-      if (!(lo <= hi)) return [-1, 1]
+      return lo <= hi ? [lo, hi] : null
+    }
+    // A set range (the global scale: the genes' level means) widened to hold what this gene draws —
+    // a model's surface runs past its means, and down to the control's 0 — so nothing drawn crosses
+    // the box; else undefined.
+    const heldRange = (key: 'y' | 'z'): [number, number] | undefined => {
+      if (!valueRange) return undefined
+      const d = drawnExtent(key)
+      return d ? [Math.min(valueRange[0], d[0]), Math.max(valueRange[1], d[1])] : valueRange
+    }
+    // The value axis's extent: the set range (holding everything drawn), else every value drawn —
+    // flat values given a unit's room. (Unpadded: finish3 adds the margin.)
+    const zExtent = (): [number, number] => {
+      const held = heldRange('z')
+      if (held) return held
+      const d = drawnExtent('z')
+      if (!d) return [-1, 1]
+      const [lo, hi] = d
       if (hi - lo < 1e-6) return [lo - 0.5, hi + 0.5]
       return [lo, hi]
     }
@@ -862,34 +820,13 @@ export function ResponseSurfaceView({
       }
     }
 
-    // ── the model the 3-D views draw (see the file comment) ──
-    const desc = row?.rs?.surface
-    const off = (fm ? fm[1].timeOffset : row?.rs?.timeOffset) ?? 0
-    const offA = fm?.[0].timeOffset ?? 0
-    // a fitted linear axis counts in steps of its spacing (the fit's x)
-    const stepA = fm?.[0].step ?? 1
-    const stepB = fm?.[1].step ?? 1
-    // Each slice by the level it's drawn at: a log axis's 0 (against one position, dose 0 — the
-    // control's own melt) sits at its placed level, as its cells do (placeZero).
-    const slices = new Map((desc?.byTime ?? []).map((s) => [placeY(s.at), s]))
-    // The x and y axes' own coordinates (log dose, log(t + offset); a linear axis its values) and back.
-    const tx = (d: number): number =>
-      xLog ? (offA ? Math.log10(d + offA) : Math.log10(d)) : d / stepA
-    const itx = (v: number): number => (xLog ? 10 ** v - offA : v * stepA)
-    const uOf = (t: number): number => (yLog ? Math.log10(t + off) : t / stepB)
-    const iu = (u: number): number => (yLog ? 10 ** u - off : u * stepB)
-    const jp = desc?.method === 'joint' ? desc.joint : undefined
-    // ū: stored with the description; recomputed for results from before it was (the same mean).
-    const ubar = desc?.jointUbar ?? cells.reduce((a, c) => a + uOf(c.time), 0) / cells.length
-    const joint = jp ? (d: number, t: number): number => jointAt(jp, ubar, tx(d), uOf(t)) : null
-    const doseSlices = new Map((desc?.byDose ?? []).map((s) => [placeX(s.at), s]))
-    // A slices description viewed per dose when so sliced — or when only the dose direction could
-    // be described (too few doses at some time); else per time.
-    const perDose = !joint && doseSlices.size > 0 && (slice === 'dose' || slices.size === 0)
-    const perTime = !joint && !perDose && slices.size > 0
-    // No description (q beyond the describe cutoff, or none could be fitted): drawn flat at 0 —
-    // no response. The spline surface is the detector, not the representation.
-    const flat = !measured && !joint && !perTime && !perDose
+    // ── the model every view draws (sm — engine/surfaceModel.ts; see the file comment) ──
+    const { tx, itx, uOf, iu } = axes
+    const perDose = sm.kind === 'byDose'
+    const perTime = sm.kind === 'byTime'
+    // No description (q beyond the describe cutoff, or none could be fitted): no line or surface —
+    // NA, the level means only. (The spline surface is the detector's, drawn under that model.)
+    const flat = sm.kind === 'none'
     const span = (lo: number, hi: number): number[] =>
       Array.from({ length: GRID + 1 }, (_, k) => lo + ((hi - lo) * k) / GRID)
     // The fine grid with the measured levels in it: every measured dose a column and every
@@ -904,17 +841,11 @@ export function ResponseSurfaceView({
       const kept = fine.filter((v) => !levels.some((l) => near(v, l)))
       return [...new Set([...kept, ...levels])].sort((a, b) => a - b)
     }
-    // The control, where an axis's reference is its level 0 (dose 0) on a log axis that can't hold
-    // it: the views that show it (3-D, the heatmap — at its placed 0) run the fit down to it — the
-    // ratio to the control is 0 there by definition, and the model carries on to it from the first
-    // level. (Measured values stop at the data: nothing was measured there; the 2-D curves leave
-    // the control out, see `controls`.)
+    // The views that show the reference (3-D, the heatmap) span it: the model runs down to the
+    // controls' 0 (sm.gridDoses / gridTimes); the 2-D curves stop at the cells.
     const showsControl = !measured && (dim === '3d' || show === 'heatmap')
-    const ctrlX =
-      showsControl && xLog && (fm?.[0].baseline ?? 'reference') === 'reference' ? xZero : null
-    const ctrlY = showsControl && yLog && fm?.[1].baseline === 'reference' ? yZero : null
-    const gridDoses = ctrlX != null && ctrlX < doses[0] ? [ctrlX, ...doses] : doses
-    const gridTimes = ctrlY != null && ctrlY < times[0] ? [ctrlY, ...times] : times
+    const gridDoses = showsControl ? sm.gridDoses : doses
+    const gridTimes = showsControl ? sm.gridTimes : times
     const fineDoses = withLevels(
       span(tx(gridDoses[0]), tx(gridDoses[gridDoses.length - 1])).map(itx),
       gridDoses
@@ -928,60 +859,23 @@ export function ResponseSurfaceView({
     const fineLx = lx(fineDoses)
     const fineU = fineTimes.map(uOf)
     const timesU = times.map(uOf)
-    const what = joint ? 'joint model' : perTime || perDose ? '4PL' : 'no description'
-    const lineLabel = measured ? 'log₂FC' : flat ? 'flat (no description)' : `${what} log₂`
-    // The value at a measured cell: the description's there (joint, or a per-time / per-dose
-    // 4PL's), 0 with none — or, measured, the value itself.
-    const cellValue = (d: number, t: number): number | null => {
-      if (joint) return joint(d, t)
-      if (flat) return 0
-      const st = perTime ? slices.get(t) : undefined
-      if (st) return descValue(st, tx(d))
-      const sd = perDose ? doseSlices.get(d) : undefined
-      if (sd) return descValue(sd, uOf(t))
-      return measured ? (cells.find((c) => c.time === t && c.dose === d)?.fitted ?? null) : null
-    }
+    const what =
+      sm.kind === 'joint'
+        ? 'joint model'
+        : perTime || perDose
+          ? '4PL'
+          : sm.kind === 'cells' && !measured
+            ? 'spline'
+            : 'no description'
+    const lineLabel = measured ? 'log₂FC' : flat ? 'no description' : `${what} log₂`
+    // The value at a measured cell (and a control's 0).
+    const cellValue = sm.at
     const lxDoses = lx(doses)
-    // How values are joined between levels: straight for measured values (no model behind them),
-    // else smoothly by the monotone cubic.
-    const join = measured ? linear : pchip
-    // Joined across doses (or times) from the levels' values — and from the control's 0, where
-    // the view runs down to it (see ctrlX).
-    const joinDoses = (vals: Array<number | null>, at: number[]): Array<number | null> =>
-      gridDoses !== doses
-        ? join([tx(gridDoses[0]), ...lxDoses], [0, ...vals], at)
-        : join(lxDoses, vals, at)
-    const joinTimes = (vals: Array<number | null>, at: number[]): Array<number | null> =>
-      gridTimes !== times
-        ? join([uOf(gridTimes[0]), ...timesU], [0, ...vals], at)
-        : join(timesU, vals, at)
-    // The drawn surface along dose at a measured time, at log doses `at` (the fine ones by
-    // default): the model's dose curve (joint, or that time's 4PL); flat with no description;
-    // per-dose, across the doses' 4PLs at that time; measured, the values — the joins smoothed by
-    // the monotone cubic (null beyond the data).
-    const doseCurve = (t: number, at: number[] = fineLx): Array<number | null> => {
-      if (joint) return at.map((v) => joint(itx(v), t))
-      if (flat) return at.map(() => 0)
-      const sl = perTime ? slices.get(t) : undefined
-      if (sl) return at.map((v) => descValue(sl, v))
-      return joinDoses(
-        doses.map((d) => cellValue(d, t)),
-        at
-      )
-    }
-    // …and along time at a measured dose, at times `at` on the time axis (the fine ones by default).
-    const timeCurve = (d: number, at: number[] = fineU): Array<number | null> => {
-      if (joint) return at.map((u) => joint(d, iu(u)))
-      if (flat) return at.map(() => 0)
-      const sl = perDose ? doseSlices.get(d) : undefined
-      if (sl) return at.map((u) => descValue(sl, u))
-      // the control's own column, per dose (no slice of its own): 0, the ratio to itself
-      if (perDose && gridDoses !== doses && d === gridDoses[0]) return at.map(() => 0)
-      return joinTimes(
-        times.map((t) => cellValue(d, t)),
-        at
-      )
-    }
+    // The model along dose at a level of time, at log doses `at` (the fine ones by default) — and
+    // along time at a level of dose, at times `at` on the time axis.
+    const doseCurve = (t: number, at: number[] = fineLx): Array<number | null> =>
+      sm.doseCurve(t, at)
+    const timeCurve = (d: number, at: number[] = fineU): Array<number | null> => sm.timeCurve(d, at)
 
     if (show === 'line' && dim === '3d') {
       // Time curves per dose: a per-dose description's own, or — when picked — a joint model's,
@@ -1140,18 +1034,10 @@ export function ResponseSurfaceView({
         const lx0 = fwd(along(pts[0]))
         const lx1 = fwd(along(pts[pts.length - 1]))
         const lxs = Array.from({ length: SAMPLES + 1 }, (_, k) => lx0 + ((lx1 - lx0) * k) / SAMPLES)
-        // Measured: straight between the levels, sampled along them (as a model's curve is) so the
-        // line answers the hover anywhere on it, not only near a level.
+        // (measured values too: straight between the levels, sampled along them as a model's curve
+        // is, so the line answers the hover anywhere on it, not only near a level)
         const lineX = lxs.map(inv)
-        const lineY = measured
-          ? linear(
-              pts.map((c) => fwd(along(c))),
-              pts.map((c) => c.fitted),
-              lxs
-            )
-          : byDose
-            ? timeCurve(g, lxs)
-            : doseCurve(g, lxs)
+        const lineY = byDose ? timeCurve(g, lxs) : doseCurve(g, lxs)
         const conds: [string, string | number][] = [
           [byDose ? doseLabel : timeLabel, name],
           [xLabel, '%{x:.3g}']
@@ -1244,40 +1130,17 @@ export function ResponseSurfaceView({
             ...axisBase(p),
             title: valueTitle,
             zeroline: true,
-            ...(valueRange ? { range: valueRange } : null)
+            ...(valueRange ? { range: heldRange('y') } : null)
           }
         }
       }
     }
 
     if (show === 'surface') {
-      // The joint model over the fine grid; each time's (or dose's) 4PL, joined across the other
-      // axis; flat at 0 with no description; measured, the values.
-      // Without a joint model the surface is drawn smooth from its lines, carried across the other
-      // axis by the monotone cubic (it passes through every line): per-dose, each dose's time
-      // curve across doses; otherwise each time's dose curve across times.
-      const z: Array<Array<number | null>> = joint
-        ? fineTimes.map((t) => fineDoses.map((d) => joint(d, t)))
-        : perDose
-          ? (() => {
-              const byD = doses.map((d) => timeCurve(d))
-              return fineTimes.map((_, i) =>
-                joinDoses(
-                  byD.map((r) => r[i]),
-                  fineLx
-                )
-              )
-            })()
-          : (() => {
-              const byT = times.map((t) => doseCurve(t))
-              const cols = fineDoses.map((_, j) =>
-                joinTimes(
-                  byT.map((r) => r[j]),
-                  fineU
-                )
-              )
-              return fineTimes.map((_, i) => cols.map((c) => c[i]))
-            })()
+      // The model over the fine grid (sm.grid): the joint model's own values; else its lines —
+      // each time's dose curve (or each dose's time curve) — carried across the other axis by the
+      // monotone cubic, which passes through every line; NA with no description.
+      const z = sm.grid(fineDoses, fineTimes)
       const surf = { x: fineDoses, y: fineTimes, z }
       const zMax = Math.max(
         zAbs,
@@ -1359,7 +1222,8 @@ export function ResponseSurfaceView({
         meta: { oeRole: 'surface' },
         // inside the plot's right edge (see finish3's legend)
         colorbar: {
-          title: { text: valueName },
+          // testing changes: the colour is the shift from the reference curve, not the value
+          title: { text: shift ? shiftName : valueName },
           thickness: 12,
           len: 0.5,
           x: 1,
@@ -1553,7 +1417,7 @@ export function ResponseSurfaceView({
           : zAbs
         return { zmin: -m, zmax: m }
       })(),
-      colorbar: { title: { text: valueName }, thickness: 12 },
+      colorbar: { title: { text: shift ? shiftName : valueName }, thickness: 12 },
       hovertemplate: '%{text}<extra></extra>'
     })
     return {
@@ -1581,7 +1445,8 @@ export function ResponseSurfaceView({
     shiftRange,
     levels,
     valueTitleSet,
-    mode
+    mode,
+    model
   ])
 
   // A 3-D view's axes, drawn for the side it's seen from: their traces after the view's, and
@@ -1710,11 +1575,12 @@ export function ResponseSurfaceView({
             : 'No surface for this gene here.'}
         </div>
       ) : dim !== '3d' ? (
-        <PlotlyChart data={data} layout={layout} />
+        <PlotlyChart controls={show === 'heatmap' ? 'none' : 'zoom'} data={data} layout={layout} />
       ) : (
         // Mounted again after being away: from the camera it was left at.
         near && (
           <PlotlyChart
+            controls="zoom"
             data={data}
             layout={shown}
             onCamera={onCamera}

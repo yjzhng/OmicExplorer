@@ -1,10 +1,12 @@
 import type { ReactNode } from 'react'
+import { plotCached } from '../../ui/plotCache'
 import { FacetedPlot } from '../../dashboard/FacetedPlot'
 import { GeneSwitch } from '../../dashboard/GeneSwitch'
 import { SwitchBar, SwitchStrip } from '../../dashboard/SwitchBar'
 import {
   quantityLabel,
-  buildDR,
+  drBase,
+  drPick,
   type CompareResultRow,
   type ConditionKey,
   condLabel,
@@ -15,7 +17,6 @@ import {
   contrastYRangeOf,
   ctxNum,
   distinctOf,
-  someNested,
   stdLookupOf
 } from '../../engine'
 import { firstRow } from '../../engine/lazyRows'
@@ -29,6 +30,7 @@ import {
   drLook,
   drYScale,
   geneCapOn,
+  modelViewOf,
   topCountOf,
   topSplitOf
 } from '../../graph/types'
@@ -42,21 +44,14 @@ import { ResponseCompareView } from './ResponseCompareView'
 
 /** A rows array as a result (one per array, so a memo keyed on it holds across renders). */
 export const holders = new WeakMap<readonly object[], { rows: readonly object[] }>()
+/** A facet's rows of one gene, kept by the rows (ui/plotCache): the same array render to render,
+ *  so a focused view isn't rebuilt and redrawn on every render (a pin anywhere). */
+const geneRows = <T extends { uniqID: string }>(rows: T[], gene: string): T[] =>
+  plotCached('geneRows', [rows, gene], () => rows.filter((r) => r.uniqID === gene))
 export function asHolder<T extends object>(rows: readonly T[]): { rows: readonly T[] } {
   let h = holders.get(rows)
   if (!h) holders.set(rows, (h = { rows }))
   return h as { rows: readonly T[] }
-}
-export const responseFits = new WeakMap<object, boolean>()
-/** Whether a Compare's rows carry a response fit along one axis (`rs`, not a surface) — read off
- *  its nested rs.axis column (someNested), no row built. Cached per result. */
-export function responseFitOf(cmp: { rows: readonly CompareResultRow[] }): boolean {
-  let fit = responseFits.get(cmp)
-  if (fit === undefined) {
-    fit = someNested(cmp, 'rs', 'axis', (present, axis) => present && axis !== 'surface')
-    responseFits.set(cmp, fit)
-  }
-  return fit
 }
 /** The dr result body (nodes/views.ts). Plain render function: it runs inside
  *  PanelBody, so it must not call hooks — derive what needs a hook in usePlotContext. */
@@ -71,6 +66,7 @@ export function drView(v: ViewContext): ReactNode {
     effectsOf,
     upstream,
     upStep,
+    upCompareCfg,
     edges,
     upId,
     results,
@@ -100,13 +96,20 @@ export function drView(v: ViewContext): ReactNode {
     [a, b]: [CompareResultRow[], CompareResultRow[]],
     dm: Record<string, string>
   ): ReactNode => {
-    const both = [...a, ...b]
-    const present = new Set(both.map((r) => r.uniqID))
-    const disjoint = condsIn(both).filter((c) => {
-      const va = new Set(a.map((r) => String(condValue(r, c) ?? '')))
-      return !b.some((r) => va.has(String(condValue(r, c) ?? '')))
+    // kept by the two sides (ui/plotCache, the sides are the same arrays each render): the same
+    // rows and sets render to render, so the plot below isn't rebuilt and redrawn for nothing
+    const { both, present, disjoint, responseFit } = plotCached('contrastBoth', [a, b], () => {
+      const both = [...a, ...b]
+      return {
+        both,
+        present: new Set(both.map((r) => r.uniqID)),
+        disjoint: condsIn(both).filter((c) => {
+          const va = new Set(a.map((r) => String(condValue(r, c) ?? '')))
+          return !b.some((r) => va.has(String(condValue(r, c) ?? '')))
+        }),
+        responseFit: both.some((r) => r.rs)
+      }
     })
-    const responseFit = both.some((r) => r.rs)
     const model = cfg.model ?? 'curve'
     return (
       <div style={styles.chart}>
@@ -151,7 +154,7 @@ export function drView(v: ViewContext): ReactNode {
                 >
                   {(rows) => (
                     <DRFocusView
-                      rows={rows.filter((r) => r.uniqID === gene)}
+                      rows={geneRows(rows, gene)}
                       axis={axis}
                       axisLabel={axisTitle(axis, units)}
                       gene={gene}
@@ -280,9 +283,9 @@ export function drView(v: ViewContext): ReactNode {
       oneAxisLevel(rows, axis, axisTitle(axis, units)) ?? draw(rows)
   // Fed by a Curve fit: its look's defaults differ (no confidence band unless asked — drLook).
   const drCurveFit = upStep?.data.kind === 'curveFit'
-  // A response surface method curve fit: its description 4PL ('curve') or its detection spline.
-  const responseFit = responseFitOf(upstream.cmp)
-  const model = cfg.model ?? 'curve'
+  // A response surface method curve fit: drawn by the model its Curve fit's plots show (the shared
+  // model switch, in the analysis's context bar): the description ('curve') or the detector's spline.
+  const model = modelViewOf(upCompareCfg) === 'detector' ? 'spline' : 'curve'
   const present = distinctOf(upstream.cmp, 'uniqID') as Set<string>
   // The global ⇆ detailed ⇆ focused switch. (The stored value for global stays 'overview'.)
   const viewSwitch = (): ReactNode =>
@@ -316,29 +319,15 @@ export function drView(v: ViewContext): ReactNode {
         onChange={(v) => patchConfig({ yScale: v })}
       />
     ) : null
-  // The detection model ⇆ description switch, for a response surface method fit only.
-  const modelSwitch = (): ReactNode =>
-    responseFit && quickOn(cfg, 'model') ? (
-      <SwitchBar
-        inline
-        label="model"
-        value={model}
-        options={['spline', 'curve']}
-        onChange={(v) => patchConfig({ model: v })}
-      />
-    ) : null
   return (
     <div style={styles.chart}>
       <div style={styles.stack}>
-        {/* Global / detailed: one strip for the view / model (/ scale) switches, one line while
-                  the tile is wide enough, wrapping (not cropped) when it isn't. Focused: the pager's. */}
+        {/* Global / detailed: one strip for the view (/ scale) switches, one line while the tile
+                  is wide enough, wrapping (not cropped) when it isn't. Focused: the pager's. */}
         {drView !== 'focus' &&
-          ((responseFit && quickOn(cfg, 'model')) ||
-            quickOn(cfg, 'view') ||
-            (drView === 'detail' && quickOn(cfg, 'yScale'))) && (
+          (quickOn(cfg, 'view') || (drView === 'detail' && quickOn(cfg, 'yScale'))) && (
             <SwitchStrip>
               {viewSwitch()}
-              {modelSwitch()}
               {drView === 'detail' && scaleSwitch()}
             </SwitchStrip>
           )}
@@ -352,12 +341,11 @@ export function drView(v: ViewContext): ReactNode {
               genes={pagerGenes(genes, present)}
               present={present}
               displayMap={dm}
-              // The view, model and axis-scale switches on the gene switcher's own row, before
-              // the gene (as the bar's) — the master view first.
+              // The view and axis-scale switches on the gene switcher's own row, before the gene
+              // (as the bar's) — the master view first.
               controls={
                 <>
                   {viewSwitch()}
-                  {modelSwitch()}
                   {scaleSwitch()}
                 </>
               }
@@ -371,7 +359,7 @@ export function drView(v: ViewContext): ReactNode {
                 >
                   {levelled((rows) => (
                     <DRFocusView
-                      rows={rows.filter((r) => r.uniqID === gene)}
+                      rows={geneRows(rows, gene)}
                       axis={axis}
                       axisLabel={axisTitle(axis, units)}
                       gene={gene}
@@ -400,37 +388,39 @@ export function drView(v: ViewContext): ReactNode {
             >
               {levelled((rows) => (
                 <Built
-                  build={() =>
-                    buildDR(rows, {
-                      axis,
-                      model,
-                      topGenes: detailN,
-                      split,
-                      displayMap: dm,
-                      within: genes
-                    })
-                  }
-                  deps={[rows, axis, model, detailN, splitKey, dm, genes]}
+                  name="drBase"
+                  build={() => drBase(rows, { axis, model, displayMap: dm })}
+                  deps={[rows, axis, model, dm]}
                 >
-                  {(dr) => {
-                    const shown = dr.series.slice(0, dr.highlight).map((sr) => sr.uniqID)
-                    const on = new Set(shown)
-                    return (
-                      <DRFocusView
-                        rows={rows.filter((r) => on.has(r.uniqID))}
-                        genes={shown}
-                        displayMap={dm}
-                        axis={axis}
-                        axisLabel={axisTitle(axis, units)}
-                        std={repStd ? stdLookupOf(repStd) : undefined}
-                        look={drLook(cfg, drCurveFit)}
-                        effectColors={effectsOf(cfg)}
-                        categorical={categoricalOf(cfg)}
-                        model={model}
-                        scaleOf={drYScale(cfg, false) === 'global' ? upstream.cmp : undefined}
-                      />
-                    )
-                  }}
+                  {(base) => (
+                    <Built
+                      name="drFocus"
+                      build={() => drPick(base, { topGenes: detailN, split, within: genes })}
+                      deps={[base, detailN, splitKey, genes]}
+                    >
+                      {(dr) => {
+                        const shown = dr.series.slice(0, dr.highlight).map((sr) => sr.uniqID)
+                        const on = new Set(shown)
+                        return (
+                          <DRFocusView
+                            rows={plotCached('drShownRows', [rows, dr], () =>
+                              rows.filter((r) => on.has(r.uniqID))
+                            )}
+                            genes={shown}
+                            displayMap={dm}
+                            axis={axis}
+                            axisLabel={axisTitle(axis, units)}
+                            std={repStd ? stdLookupOf(repStd) : undefined}
+                            look={drLook(cfg, drCurveFit)}
+                            effectColors={effectsOf(cfg)}
+                            categorical={categoricalOf(cfg)}
+                            model={model}
+                            scaleOf={drYScale(cfg, false) === 'global' ? upstream.cmp : undefined}
+                          />
+                        )
+                      }}
+                    </Built>
+                  )}
                 </Built>
               ))}
             </FacetedPlot>
@@ -446,34 +436,37 @@ export function drView(v: ViewContext): ReactNode {
             >
               {levelled((rows) => (
                 <Built
-                  build={() =>
-                    buildDR(rows, {
-                      axis,
-                      model,
-                      topGenes: geneCapOn(cfg) ? topCountOf(cfg, cfg.topGenes) : 0,
-                      split,
-                      displayMap: dm,
-                      focus: genes
-                    })
-                  }
-                  deps={[
-                    rows,
-                    axis,
-                    model,
-                    geneCapOn(cfg) ? topCountOf(cfg, cfg.topGenes) : 0,
-                    splitKey,
-                    dm,
-                    genes
-                  ]}
+                  name="drBase"
+                  build={() => drBase(rows, { axis, model, displayMap: dm })}
+                  deps={[rows, axis, model, dm]}
                 >
-                  {(dr) => (
-                    <DRView
-                      dr={dr}
-                      axisLabel={axisTitle(dr.axis, units)}
-                      look={drLook(cfg, drCurveFit)}
-                      palette={paletteOf(cfg, 'fcObject')}
-                      categorical={categoricalOf(cfg)}
-                    />
+                  {(base) => (
+                    <Built
+                      name="dr"
+                      build={() =>
+                        drPick(base, {
+                          topGenes: geneCapOn(cfg) ? topCountOf(cfg, cfg.topGenes) : 0,
+                          split,
+                          focus: genes
+                        })
+                      }
+                      deps={[
+                        base,
+                        geneCapOn(cfg) ? topCountOf(cfg, cfg.topGenes) : 0,
+                        splitKey,
+                        genes
+                      ]}
+                    >
+                      {(dr) => (
+                        <DRView
+                          dr={dr}
+                          axisLabel={axisTitle(dr.axis, units)}
+                          look={drLook(cfg, drCurveFit)}
+                          palette={paletteOf(cfg, 'fcObject')}
+                          categorical={categoricalOf(cfg)}
+                        />
+                      )}
+                    </Built>
                   )}
                 </Built>
               ))}

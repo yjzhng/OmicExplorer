@@ -35,7 +35,11 @@ const VARIANTS: Record<string, string[]> = {
   curveFit: ['compare'],
   tdr: ['response'],
   // the interaction plot's 3-D view is the Response plot's surface view on its cell means
-  variance: ['response']
+  variance: ['response'],
+  // the enrichment plot's run, term cut, colours and term-set picker, drawn as a flow
+  enrichMap: ['enrich'],
+  // its terms are the enrichment plot's run, picked with its term-set picker
+  setCompare: ['enrich']
 }
 /** What the rest of the app may import from nodes/: the registries, the contract, the kit. */
 const NODES_PUBLIC = /^nodes\/(contract|specs|settings|views|tiles|runs|runContext|kit\/)/
@@ -163,14 +167,15 @@ describe('architecture', () => {
   })
 
   it("a table's scrollbars span only what scrolls: every sticky-header table uses the gutter", () => {
-    // A table with pinned header rows (a sticky <th>) scrolls in a TableScroll, or a scroller of
-    // its own with useStickyGutter (ui/useStickyGutter) — so its gutter runs beside the rows only.
+    // A table with pinned header rows (a sticky <th>) scrolls in a TableScroll or a ScrollFade, or
+    // a scroller of its own with useStickyGutter (ui/useStickyGutter) — so its gutter runs beside
+    // the rows only.
     const bad = sources(ROOT).flatMap((p) => {
       const file = relative(ROOT, p)
       if (!file.endsWith('.tsx')) return []
       const text = readFileSync(p, 'utf8')
       const sticky = text.includes('<thead') && text.includes("position: 'sticky'")
-      return sticky && !/useStickyGutter\(|<TableScroll\b/.test(text)
+      return sticky && !/useStickyGutter\(|<TableScroll\b|<ScrollFade\b/.test(text)
         ? [`${file}: a sticky-header table without ui/useStickyGutter`]
         : []
     })

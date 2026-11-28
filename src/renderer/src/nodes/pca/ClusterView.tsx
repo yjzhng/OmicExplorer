@@ -59,9 +59,9 @@ function rankT(levels: number[], v: number | null): number {
 
 /** Sample/condition embedding (PCA / UMAP / t-SNE). Two independent settings: `display` is what
  *  marks the data — 'replicate' every underlying data point, 'centroid' one marker per condition —
- *  and `territory` a filled region per condition under those markers ('hull' / 'gaussian'), or
- *  'none'. `legend` picks single-condition colouring ('simple') or the multi-condition aesthetics
- *  ('complex'). */
+ *  and `territory` a filled region per condition group (colour × fade) under those markers
+ *  ('hull' / 'gaussian'), or 'none'. `legend` picks single-condition colouring ('simple') or the
+ *  multi-condition aesthetics ('complex'). */
 export function ClusterView({
   cluster,
   title,
@@ -183,18 +183,11 @@ export function ClusterView({
       traces.push(...condGroupTraces(pts, color, g || '(none)', display, p, hover, look))
       i++
     }
-    // A territory per condition, around ALL its replicates — even when the colouring splits them
-    // (a computed cluster can) — in the colour of the group most of them are in.
-    if (territory !== 'none') {
-      const byCond = new Map<string, ClusterPoint[]>()
-      for (const pt of cluster.points) byCond.set(pt.cond, [...(byCond.get(pt.cond) ?? []), pt])
-      for (const reps of byCond.values()) {
-        const count = new Map<string, number>()
-        for (const r of reps) count.set(r.group, (count.get(r.group) ?? 0) + 1)
-        const g = [...count].reduce((a, b) => (b[1] > a[1] ? b : a))[0]
-        traces.push(...territoryTrace(reps, territory, groupColor.get(g)!, g || '(none)'))
-      }
-    }
+    // A territory per colour group — the condition(s) coloured by, or a computed cluster — around
+    // all its points, in its colour. (With a fade, the complex build's: one per colour × shade.)
+    if (territory !== 'none')
+      for (const [g, pts] of groupEntries)
+        traces.push(...territoryTrace(pts, territory, groupColor.get(g)!, g || '(none)'))
     // the legend headed by what the colours are: the condition (dose / time with its unit). On top
     // of the theme's placement (plotBase) — replacing it had left the title flush against the
     // plot — set a little further out, so the heading has room from the frame; and no gap between
@@ -387,9 +380,9 @@ function territoriesBehind(traces: Array<Record<string, unknown>>): Array<Record
   return [...traces.filter((t) => t.fill != null), ...traces.filter((t) => t.fill == null)]
 }
 
-/** A condition's territory: one region around its replicates, in `color` (the colour-by's for that
- *  condition), tied to the legend entry `name`. Empty when they enclose no area — averaged
- *  replicates (one point per condition) draw none. */
+/** A colour group's territory: one region around its points — every replicate of its conditions,
+ *  or their means — in `color`, tied to its legend entry `name`. Empty when they enclose no area
+ *  (fewer than three points apart). */
 function territoryTrace(
   pts: ClusterPoint[],
   territory: TerritoryShape,
@@ -417,9 +410,9 @@ function territoryTrace(
       y: ring.map((q) => q.y),
       // The fill must not answer hovers meant for the markers sitting on it.
       hoverinfo: 'skip',
-      text: pts[0].cond,
-      // dims with its condition when another sample is hovered (see sampleLink)
-      meta: sampleMeta(sampleKey(pts[0].meta))
+      text: name,
+      // stands for every condition in it: lit while any of them is hovered (see sampleLink)
+      meta: sampleMeta([...new Set(pts.map((pt) => sampleKey(pt.meta)))])
     }
   ]
 }
@@ -670,9 +663,6 @@ function buildComplex(
     const shadeGroups = shadeGroupOf(m)
     dataTraces.push(
       ...[
-        // its territory around its replicates, in its colour — drawn even in arrow mode: the
-        // arrows stand in for the markers, not the region
-        ...(territory !== 'none' ? territoryTrace(pts, territory, finalColor(m), gname) : []),
         ...condGroupTraces(pts, finalColor(m), gname, display, p, hover, look, false, !arrowMode)
       ].map((t) =>
         shadeGroups.length
@@ -680,6 +670,29 @@ function buildComplex(
           : t
       )
     )
+  }
+  // A territory per condition group — its colour group × its fade value (one shade of one colour)
+  // — around all its points, in that shade; tied to its colour's legend entry and its shade's (as
+  // its markers). Drawn even in arrow mode: the arrows stand in for the markers, not the region.
+  if (territory !== 'none') {
+    const byGroup = new Map<string, ClusterPoint[]>()
+    for (const cond of condOrder) {
+      const pts = condPts.get(cond)!
+      const m = pts[0].meta
+      const key = [groupName(m), ...shadeGroupOf(m)].join('\u0001')
+      byGroup.set(key, [...(byGroup.get(key) ?? []), ...pts])
+    }
+    for (const pts of byGroup.values()) {
+      const m = pts[0].meta
+      const shadeGroups = shadeGroupOf(m)
+      dataTraces.push(
+        ...territoryTrace(pts, territory, finalColor(m), groupName(m)).map((t) =>
+          shadeGroups.length
+            ? { ...t, meta: { ...(t.meta as object), ...groupMeta({ groups: shadeGroups }) } }
+            : t
+        )
+      )
+    }
   }
   // Territories behind the markers; the legend swatches and arrows below go on top of both.
   const traces: Array<Record<string, unknown>> = territoriesBehind(dataTraces)

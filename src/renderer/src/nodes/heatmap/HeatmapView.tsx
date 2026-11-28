@@ -231,6 +231,10 @@ export function HeatmapView({
     const el = wrapRef.current
     if (!el) return
     const ro = new ResizeObserver(() => {
+      // Hidden (its tab left: display:none, 0×0): keep the last size. Taking 0×0 re-laid the
+      // heatmap out — a full Plotly redraw of every cell, seconds for a proteome — for a tab
+      // nobody is looking at, and again when it was shown.
+      if (el.clientWidth === 0 && el.clientHeight === 0) return
       setPlotH(el.clientHeight)
       setPlotW(el.clientWidth)
     })
@@ -388,6 +392,7 @@ export function HeatmapView({
   return (
     <div ref={wrapRef} style={{ width: '100%', height: '100%' }}>
       <PlotlyChart
+        controls="none"
         data={traces}
         layout={layout}
         // the other plots follow a hover once it rests (a sweep down the rows redraws none)

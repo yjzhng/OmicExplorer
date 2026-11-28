@@ -62,13 +62,16 @@ export function DRView({
   // NOT per hover — it's thousands of points, and rebuilding+redrawing it on every mouse move is
   // what made hover laggy. Keeping a stable trace object means Plotly.react skips redrawing it,
   // so a hover only re-draws the handful of coloured curves on top.
+  // Every gene's line, as the base it was picked from has them (DRData.all): the same array when
+  // a pin or the top-N picks others, so the background isn't rebuilt for it.
+  const allSeries = dr.all ?? dr.series
   const background = useMemo(() => {
     const p = PALETTES[mode]
     const bx: (string | number | null)[] = []
     const by: (number | null)[] = []
     const btext: (string | null)[] = []
     const bid: (string | null)[] = []
-    for (const s of dr.series) {
+    for (const s of allSeries) {
       for (const pt of s.points) {
         bx.push(xOf(dr, pt.x))
         by.push(pt.y)
@@ -104,7 +107,10 @@ export function DRView({
       opacity: 0.22,
       showlegend: false
     }
-  }, [dr, mode])
+    // dr's other fields read here (axis, total, comparison, continuous, linear) come with the
+    // base, as allSeries does
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [allSeries, mode])
 
   // Everything a hover/pin doesn't change — the top-N curves at their resting width, the colour
   // scale, the layout — is built once per data/look, so a hover reuses the SAME trace objects and
@@ -228,5 +234,5 @@ export function DRView({
   }, [base, dr, activeKey, background, look, setColor])
   const layout = base.layout
 
-  return <PlotlyChart data={data} layout={layout} />
+  return <PlotlyChart controls="zoom" data={data} layout={layout} />
 }

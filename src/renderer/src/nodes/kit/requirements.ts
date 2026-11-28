@@ -42,6 +42,16 @@ export function stringTaxon(ann: Record<string, Record<string, string>>): number
   for (const [t, n] of tally) if (n > bestN) [best, bestN] = [t, n]
   return best || dominantTaxon(ann)
 }
+/** stringTaxon of a result's annotations, kept by the map: the plot gates ask on every canvas
+ *  render, and it walks every gene's annotations — half a second on a proteome. A result's map is
+ *  never changed once made (a re-run makes a new one); maps built up in place (the import dialog's)
+ *  call stringTaxon itself. */
+const taxonOf = new WeakMap<object, number>()
+export function resultStringTaxon(ann: Record<string, Record<string, string>>): number {
+  let t = taxonOf.get(ann)
+  if (t === undefined) taxonOf.set(ann, (t = stringTaxon(ann)))
+  return t
+}
 // Which plots take a Curve fit is their `acceptsFrom` (a fitted curve has no per-dose rows or group
 // means, so MA, Scatter, Bubble and Time & Dose-response don't; Potency and the residual plots take
 // nothing else).

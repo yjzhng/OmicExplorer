@@ -6,6 +6,7 @@ import { type ReactNode } from 'react'
 import { hasTermRows } from '../engine'
 import { categoryOf } from '../graph/registry'
 import { useGraph } from '../graph/store'
+import { isQueuedRun } from '../graph/state/run'
 import { plotResultKey } from '../graph/types'
 import { Empty, PlotNotRun } from '../nodes/kit/views/common'
 import { type PanelBodyProps, usePlotContext } from '../nodes/kit/views/context'
@@ -19,7 +20,15 @@ import { VIEWS } from '../nodes/views'
  */
 /** A 2-way ANOVA's two plot sets (see PanelBody): the directional plots read its overall 2×2 fold
  *  changes; the variance and interaction plots, its factors. */
-const OVERALL_ONLY_KINDS: ReadonlySet<string> = new Set(['dr', 'bubble', 'tdr', 'enrich', 'string'])
+const OVERALL_ONLY_KINDS: ReadonlySet<string> = new Set([
+  'dr',
+  'bubble',
+  'tdr',
+  'enrich',
+  'enrichMap',
+  'setCompare',
+  'string'
+])
 const FACTORS_ONLY_KINDS: ReadonlySet<string> = new Set(['variance', 'interaction'])
 
 export function PanelBody(props: PanelBodyProps): ReactNode {
@@ -41,6 +50,7 @@ export function PanelBody(props: PanelBodyProps): ReactNode {
         <PlotNotRun
           status={runState}
           error={runError}
+          queued={runState === 'running' && isQueuedRun(plotResultKey(node.id, child?.id))}
           onRun={() => {
             const g = useGraph.getState()
             void (child ? g.runPlotChild(node.id, child.id) : g.runTargets([node.id]))

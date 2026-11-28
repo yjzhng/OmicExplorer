@@ -1,5 +1,10 @@
 import type { EnrichData, EnrichTerm } from '../../engine'
 
+/** A term is significant below this FDR, unless the plot sets its own (`termFdr`). */
+export const SIGNIFICANT_FDR = 0.05
+/** The FDR cuts offered as a switch on the tile (any other is typed in the settings). */
+export const FDR_PRESETS = [0.01, 0.05, 0.1]
+
 /** The terms an enrichment plot draws: each direction's most significant `top` (its lists run most
  *  significant first) of those `keep` takes — the cap keeps the plot legible, it doesn't hide
  *  results: choosing categories or modules in the legend draws THEIR top `top` from every term

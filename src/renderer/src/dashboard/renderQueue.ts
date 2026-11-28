@@ -36,6 +36,9 @@ let urgent: RevealJob[] = []
 let background: RevealJob[] = []
 let framePending = false
 let idlePending = false
+/** The background lane held (the Results page hidden behind the canvas): its tiles build when it's
+ *  back on show — on screen first — not while you work on the canvas. */
+let backgroundPaused = false
 /** The job that ran and is being waited on (its draw), with its timeout. */
 let waiting: { job: RevealJob; timer: ReturnType<typeof setTimeout> } | null = null
 
@@ -55,7 +58,7 @@ function schedule(): void {
         pump()
       })
     }
-  } else if (background.length && !idlePending && !framePending) {
+  } else if (background.length && !backgroundPaused && !idlePending && !framePending) {
     idlePending = true
     whenIdle(() => {
       idlePending = false
@@ -75,7 +78,7 @@ function release(job: RevealJob): void {
 
 function pump(): void {
   if (waiting) return
-  const job = urgent.shift() ?? background.shift()
+  const job = urgent.shift() ?? (backgroundPaused ? undefined : background.shift())
   if (!job) return
   waiting = { job, timer: setTimeout(() => release(job), REVEAL_TIMEOUT_MS) }
   try {
@@ -106,6 +109,13 @@ export function enqueueReveal(job: RevealJob, isUrgent = true): Reveal {
   }
 }
 
+/** Hold the background lane (true) or let it go on (false); urgent reveals go on regardless. */
+export function setBackgroundPaused(paused: boolean): void {
+  if (backgroundPaused === paused) return
+  backgroundPaused = paused
+  if (!paused) schedule()
+}
+
 /** Test-only: forget all queued and waited-on work. */
 export function resetRevealQueue(): void {
   if (waiting) clearTimeout(waiting.timer)
@@ -114,4 +124,5 @@ export function resetRevealQueue(): void {
   background = []
   framePending = false
   idlePending = false
+  backgroundPaused = false
 }

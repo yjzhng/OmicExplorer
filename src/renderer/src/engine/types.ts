@@ -57,8 +57,14 @@ export const ctxLabel = (c: ConditionKey, v: unknown): string =>
 export type NumericConds = ReadonlySet<ConditionKey>
 
 /** A dataset's numeric conditions from its declared numeric custom ones (dose and time always). */
+const numericSets = new Map<string, NumericConds>()
+/** One set per list of customs, the same each call: a fresh set per call is a fresh prop or memo
+ *  input every render — a whole heatmap rebuilt and redrawn on a tab switch, for one. */
 export function numericConds(customs: readonly CustomConditionKey[] = []): NumericConds {
-  return new Set<ConditionKey>(['dose', 'time', ...customs])
+  const key = customs.join('\u0000')
+  let set = numericSets.get(key)
+  if (!set) numericSets.set(key, (set = new Set<ConditionKey>(['dose', 'time', ...customs])))
+  return set
 }
 
 /** The numeric conditions of a Clean data result (absent — none declared, or a result from before
@@ -493,6 +499,10 @@ export interface ResponseFit {
    *  surface's (per time slice, or joint) */
   desc?: import('./splineFit').CurveDescription
   surface?: import('./splineFit').SurfaceDescription
+  /** the description's peak at the tested levels (cells), signed, log₂ — the fold change under the
+   *  descriptor model (modelView.ts descPeakOf); absent without a description, or on results fitted
+   *  before it was kept */
+  descPeak?: number
 }
 
 export interface VehNormResult {

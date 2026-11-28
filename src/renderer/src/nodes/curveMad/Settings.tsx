@@ -10,6 +10,7 @@ import {
   curvesReplicatedOf
 } from '../../graph/types'
 import { useUpstreamFacts } from '../../graph/useUpstreamFacts'
+import { OnOffSwitch } from '../../ui/ToggleSwitch'
 import { CapRow, Field, QuickToggle, Select } from '../kit/settings/controls'
 import { legendShown } from '../kit/settings/plotHooks'
 import { type PlotPanelProps, PlotSections, PointStyleSections } from '../kit/settings/plotSections'
@@ -60,6 +61,21 @@ export function CurveMadPanel({ config, update, edgeNodeId }: PlotPanelProps<Cur
                   options={curveQcAxisOptions(config.metricX ?? CURVE_QC_DEFAULT_X, 'x')}
                 />
               </Field>
+              {[
+                config.metricX ?? CURVE_QC_DEFAULT_X,
+                config.metricY ?? CURVE_QC_DEFAULT_Y
+              ].includes('pEC50') && (
+                <Field
+                  label="force pEC50"
+                  info="A flat curve (its F-test doesn’t reject flat) has no midpoint, so no pEC50. On: placed at pEC50 0, the least potent."
+                >
+                  <OnOffSwitch
+                    on={!!config.forcePEC50}
+                    label="Force pEC50"
+                    onChange={(on) => update({ forcePEC50: on || undefined })}
+                  />
+                </Field>
+              )}
             </>
           )}
           {!metrics && (

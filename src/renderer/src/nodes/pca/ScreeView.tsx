@@ -104,5 +104,5 @@ export function ScreeView({ cluster, title }: { cluster: ClusterData; title?: st
       </div>
     )
 
-  return <PlotlyChart data={data} layout={layout} />
+  return <PlotlyChart controls="none" data={data} layout={layout} />
 }

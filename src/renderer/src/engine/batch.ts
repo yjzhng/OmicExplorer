@@ -350,6 +350,18 @@ export function batchesOf(
   return std.batches ?? std.sources
 }
 
+/** Rows with each sample's batch (`of`, by sample label) as the BATCH_COND condition (a sample in
+ *  no batch keeps its rows as they are). */
+export function tagBatch<
+  T extends Pick<StandardRow, 'cell' | 'cmpd' | 'dose' | 'time' | 'rep' | 'extra'>
+>(rows: readonly T[], of: Record<string, string>): T[] {
+  const slug = BATCH_COND.slice(1)
+  return rows.map((r) => {
+    const b = of[sampleLabel(r)]
+    return b == null ? r : { ...r, extra: { ...r.extra, [slug]: b } }
+  })
+}
+
 const withBatch = new WeakMap<StandardizeResult, StandardizeResult>()
 /** `std` with each sample's batch as the BATCH_COND condition on its rows and samples (a sample in
  *  no batch carries none) — the same object when the data has no batches. Cached per result. */
@@ -358,17 +370,10 @@ export function withBatchCond(std: StandardizeResult): StandardizeResult {
   if (!of) return std
   const hit = withBatch.get(std)
   if (hit) return hit
-  const slug = BATCH_COND.slice(1)
-  const tag = <T extends Pick<StandardRow, 'cell' | 'cmpd' | 'dose' | 'time' | 'rep' | 'extra'>>(
-    r: T
-  ): T => {
-    const b = of[sampleLabel(r)]
-    return b == null ? r : { ...r, extra: { ...r.extra, [slug]: b } }
-  }
   const out: StandardizeResult = {
     ...std,
-    rows: std.rows.map(tag),
-    ...(std.samples ? { samples: std.samples.map(tag) } : null)
+    rows: tagBatch(std.rows, of),
+    ...(std.samples ? { samples: tagBatch(std.samples, of) } : null)
   }
   withBatch.set(std, out)
   return out

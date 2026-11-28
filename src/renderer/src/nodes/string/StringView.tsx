@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { usePlotCached } from '../../ui/plotCache'
 import { createPortal } from 'react-dom'
 import Plotly, { type PlotlyGraphDiv } from 'plotly.js-strict-dist-min'
 
@@ -233,11 +234,12 @@ export function StringView({
   // background export of the tile's tables (stringModel.ts), and its force layout. The costly
   // part (Markov clustering, the layout), so it's cached on what it's built from alone: a resize
   // (legendBudget), a theme flip or an outline change never re-runs it.
-  const model = useMemo(() => {
+  // Kept app-wide (ui/plotCache): the tile shown again takes the network it laid out.
+  const model = usePlotCached('stringModel', [net, genes, annotationMap, maxGenes], () => {
     if (!net) return null
     const m = buildStringModel(net, genes, annotationMap, maxGenes)
     return { ...m, pos: layoutNetwork(m.vis.length, m.eIdx, 0x1a2b3c) }
-  }, [net, genes, annotationMap, maxGenes])
+  })
   // The traces, labels and hover geometry — none of it depends on the tile's width, so a resize
   // hands the chart the SAME traces (only the legend's layout below re-flows).
   const graph = useMemo(() => {
@@ -942,6 +944,7 @@ export function StringView({
     // Measured (for the legend's flow width) and otherwise invisible — the chart fills it.
     <div ref={boxRef} style={{ position: 'relative', width: '100%', height: '100%' }}>
       <PlotlyChart
+        controls="none"
         data={data}
         layout={layout}
         labels={labels}

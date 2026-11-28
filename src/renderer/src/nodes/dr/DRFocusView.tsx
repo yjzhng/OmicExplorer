@@ -20,6 +20,7 @@ import {
   curvePointsFromStd,
   curveSampleX,
   curveDescribed,
+  curveIsFlat,
   logistic,
   replicateLog2FCs,
   responseCurve,
@@ -335,27 +336,29 @@ export function DRFocusView({
           if (!c) continue
           const col = color(id, gRows, r.comparison)
           const what = c.drawn === 'curve' ? '4PL' : 'spline'
-          traces.push({
-            type: 'scatter',
-            mode: 'lines',
-            name: nameOf(id, r.comparison),
-            x: c.x,
-            y: c.y,
-            line: { color: col, width: look.lineWidth, dash: dash(r.comparison) },
-            opacity: look.lineOpacity,
-            hovertemplate:
-              tooltip(
-                {
-                  ...who,
-                  conds: [
-                    ['comparison', r.comparison],
-                    [condLabel(axis), '%{x:.3g}']
-                  ],
-                  values: [[`${what} log₂ vs control`, '%{y:.3f}']]
-                },
-                p.textMuted
-              ) + `<extra></extra>`
-          })
+          // (no line: the descriptor, and this curve has no description — its level means only)
+          if (c.x.length)
+            traces.push({
+              type: 'scatter',
+              mode: 'lines',
+              name: nameOf(id, r.comparison),
+              x: c.x,
+              y: c.y,
+              line: { color: col, width: look.lineWidth, dash: dash(r.comparison) },
+              opacity: look.lineOpacity,
+              hovertemplate:
+                tooltip(
+                  {
+                    ...who,
+                    conds: [
+                      ['comparison', r.comparison],
+                      [condLabel(axis), '%{x:.3g}']
+                    ],
+                    values: [[`${what} log₂ vs control`, '%{y:.3f}']]
+                  },
+                  p.textMuted
+                ) + `<extra></extra>`
+            })
           if (look.points && c.points.length)
             traces.push({
               type: 'scatter',
@@ -482,7 +485,7 @@ export function DRFocusView({
             })
           // EC50 (when shown), where it falls within the tested doses — a 4PL's only (M0 has none).
           const ec50 = -c.pec50
-          if (described && look.ec50Line && ec50 >= c.xMin && ec50 <= c.xMax)
+          if (described && !curveIsFlat(r) && look.ec50Line && ec50 >= c.xMin && ec50 <= c.xMax)
             shapes.push({
               type: 'line',
               x0: xUnits(c, ec50),
@@ -647,7 +650,7 @@ export function DRFocusView({
         {ids.length > 1 ? 'No response for these genes here.' : 'No response for this gene here.'}
       </div>
     )
-  return <PlotlyChart data={data} layout={layout} />
+  return <PlotlyChart controls="zoom" data={data} layout={layout} />
 }
 
 /** Line dashes telling comparisons apart when several genes share the colours. */

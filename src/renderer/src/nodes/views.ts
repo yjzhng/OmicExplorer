@@ -30,6 +30,8 @@ import { tdrView } from './tdr/View'
 import { geneBarView } from './geneBar/View'
 import { pcaView } from './pca/View'
 import { enrichView } from './enrich/View'
+import { enrichMapView } from './enrichMap/View'
+import { setCompareView } from './setCompare/View'
 import { stringView } from './string/View'
 import { qcView } from './qc/View'
 import { corrView } from './corr/View'
@@ -62,6 +64,8 @@ export const VIEWS: Record<NodeKind, ViewFn | null> = {
   geneBar: geneBarView,
   pca: pcaView,
   enrich: enrichView,
+  enrichMap: enrichMapView,
+  setCompare: setCompareView,
   string: stringView,
   qc: qcView,
   corr: corrView,

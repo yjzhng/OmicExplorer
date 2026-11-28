@@ -85,7 +85,8 @@ describe('a surface over any two numeric conditions', () => {
     // named for its own pair, with its axes kept to draw it
     expect(temp[0].rs?.pair).toEqual(['dose', '@temp'])
     expect(temp[0].rs?.maps?.[1]).toMatchObject({ baseline: 'matched', base: 0, timeOffset: 30 })
-    expect(time[0].rs?.pair).toBeUndefined()
+    // (the baseline's pins kept with every surface fitted now: its axes stored too)
+    expect(time[0].rs?.pair).toEqual(['dose', 'time'])
   })
 
   it('a straight line along one axis (dose; time’s 4 levels are a line already): fewer columns, the responders still found', () => {

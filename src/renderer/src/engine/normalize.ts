@@ -8,13 +8,15 @@
  * measured in every sample, as MaxQuant, DIA-NN and Spectronaut normalise on features shared
  * across runs: a sample that detected more low-abundance genes otherwise reads as lower loaded
  * when it isn't. 'all' uses whatever each sample measured. Too few shared genes falls back to all.
- * 'protein' takes one reference protein (a housekeeping protein, a spike-in): every value is
- * divided by that protein's value in its own sample, so the protein reads 1 in every sample and
- * each abundance becomes a fraction of it. Division on the linear values is subtraction on log
- * ones — Perseus's "Subtract row cluster" on log data, DIA-NN's multiplicative normalisation
- * factors — so Clean data's log transform then shows the reference at 0 and every value as its
- * log-ratio to it. A sample that didn't measure the protein can't be divided: the summary counts
- * (and names) those samples, and Clean data refuses to run with them (ingest.ts).
+ * 'protein' takes reference proteins (a housekeeping protein, a set of them, spike-ins): every
+ * value is divided by the reference's level in its own sample — one protein's value, or a set's
+ * median (default) or mean of logs (the geometric mean, as qPCR's multiple reference genes) — so
+ * the reference reads 1 in every sample and each abundance becomes a fraction of it. Division on
+ * the linear values is subtraction on log ones — Perseus's "Subtract row cluster" on log data,
+ * DIA-NN's multiplicative normalisation factors — so Clean data's log transform then shows the
+ * reference at 0 and every value as its log-ratio to it. A sample missing references can't be put
+ * on the same footing as the rest; by `missing`, Clean data stops and names those samples
+ * (ingest.ts), drops them, or — some references measured — uses the ones it has.
  *
  * Optionally the spread too, as Perseus's width adjustment (cox-labs.github.io/coxdocs/
  * widthadjustment.html): from each sample's quartiles, values above its median are scaled by
@@ -34,14 +36,24 @@ export interface NormalizeOptions {
   /** also equalise each sample's spread (Perseus width adjustment); absent = medians only. Not
    *  with a reference protein: one value per sample has no spread. */
   spread?: boolean
-  /** reference 'protein': the protein's uniqID */
+  /** reference 'protein': the proteins' uniqIDs — one, or a set combined per sample */
+  proteins?: string[]
+  /** (older) one reference protein — `proteins` of one */
   protein?: string
+  /** a set's level in a sample: the median of its logs (default), or their mean (geometric mean) */
+  combine?: RefCombine
+  /** a sample missing references: 'stop' (default; Clean data stops and names them), 'drop' it, or
+   *  'available' — use the references it measured (one with none is dropped) */
+  missing?: RefMissing
 }
+
+export type RefCombine = 'median' | 'mean'
+export type RefMissing = 'stop' | 'drop' | 'available'
 
 export const NORMALIZE_REFERENCE_LABEL: Record<NormalizeReference, string> = {
   shared: 'Common genes',
   all: 'All genes',
-  protein: 'Reference protein'
+  protein: 'Reference proteins'
 }
 
 /** Fewer genes measured in every sample than this and 'shared' falls back to 'all': a median over
@@ -61,11 +73,24 @@ export interface NormalizeSummary {
   maxFold: number
   /** with the spread equalised: the range of half-width scale factors applied (1 = unchanged) */
   spread?: { min: number; max: number }
-  /** reference 'protein': the protein, how many samples didn't measure it (nothing is divided
-   *  then), and the first few of them by name */
+  /** reference 'protein': the proteins; under 'stop', how many samples lack any of them (nothing
+   *  is divided then) and the first few by name */
+  proteins?: string[]
+  /** (results from before sets) the one reference protein */
   protein?: string
+  /** several reference proteins: how their level was taken */
+  combine?: RefCombine
   missingSamples?: number
   missingLabels?: string[]
+  /** samples left out for want of references ('drop', or 'available' with none measured) */
+  droppedSamples?: number
+  droppedLabels?: string[]
+  /** 'available': samples divided by only the references they measured */
+  partialSamples?: number
+  /** reference 'protein', nothing divided because there's no protein to divide by: none picked
+   *  ('unpicked'), or the one picked is in no sample ('absent' — dropped in clean-up, or not in
+   *  this data). Clean data stops with why (the run), not passing un-normalised values on. */
+  refused?: 'unpicked' | 'absent'
 }
 
 /** The p-quantile of sorted values, interpolated between order statistics. */
@@ -90,7 +115,6 @@ export function normalizeSamples(
   opts: NormalizeOptions = {}
 ): { rows: StandardRow[]; summary: NormalizeSummary } {
   const reference = opts.reference ?? 'shared'
-  const protein = reference === 'protein' ? opts.protein : undefined
   const spread = !!opts.spread && reference !== 'protein'
   const measured = (r: StandardRow): boolean =>
     r.value != null && Number.isFinite(r.value) && r.value > 0
@@ -108,16 +132,12 @@ export function normalizeSamples(
   }
   const shared = new Set<string>()
   for (const [g, s] of seenIn) if (s.size === samples.size) shared.add(g)
+  if (reference === 'protein') return toReference(rows, opts, samples, shared.size, measured)
   const used: NormalizeReference =
-    reference === 'protein'
-      ? 'protein'
-      : reference === 'shared' && shared.size >= MIN_SHARED_GENES
-        ? 'shared'
-        : 'all'
-  const inReference = (r: StandardRow): boolean =>
-    used === 'protein' ? r.uniqID === protein : used !== 'shared' || shared.has(r.uniqID)
+    reference === 'shared' && shared.size >= MIN_SHARED_GENES ? 'shared' : 'all'
+  const inReference = (r: StandardRow): boolean => used !== 'shared' || shared.has(r.uniqID)
 
-  // Each sample's median log₂ over the reference genes (with a reference protein: its value).
+  // Each sample's median log₂ over the reference genes.
   const logs = new Map<string, number[]>()
   for (const r of rows) {
     if (!measured(r) || !inReference(r)) continue
@@ -131,38 +151,8 @@ export function normalizeSamples(
     const q2 = quantile(l, 0.5)
     quart.set(sk, { q2, up: quantile(l, 0.75) - q2, lo: q2 - quantile(l, 0.25) })
   }
-  const missing = used === 'protein' ? [...samples.keys()].filter((sk) => !quart.has(sk)) : []
-  const base = {
-    reference,
-    used,
-    sharedGenes: shared.size,
-    samples: quart.size,
-    ...(used === 'protein'
-      ? {
-          protein: protein ?? '',
-          missingSamples: missing.length,
-          ...(missing.length
-            ? { missingLabels: missing.slice(0, 5).map((sk) => sampleName(samples.get(sk)!)) }
-            : null)
-        }
-      : null)
-  }
+  const base = { reference, used, sharedGenes: shared.size, samples: quart.size }
   if (quart.size === 0) return { rows, summary: { ...base, samples: 0, maxFold: 1 } }
-
-  // A reference protein: each value over the protein's value in its sample (its log, the median
-  // should a sample hold it twice). Every sample must have it — one that doesn't can't be put on
-  // the same footing, so nothing is divided and the caller says which are missing.
-  if (used === 'protein') {
-    if (missing.length) return { rows, summary: { ...base, maxFold: 1 } }
-    let maxLog = 0
-    for (const q of quart.values()) maxLog = Math.max(maxLog, Math.abs(q.q2))
-    const out = rows.map((r) => {
-      if (!measured(r)) return r
-      const q = quart.get(sampleKey(r))!
-      return { ...r, value: Math.pow(2, Math.log2(r.value!) - q.q2) }
-    })
-    return { rows: out, summary: { ...base, maxFold: Math.pow(2, maxLog) } }
-  }
 
   // Every sample to the median of the sample medians, so the data keeps its overall level; with
   // `spread`, each half-width to the median of that half-width across samples. A sample whose
@@ -199,6 +189,99 @@ export function normalizeSamples(
       ...base,
       maxFold: Math.pow(2, maxShift),
       ...(spread ? { spread: { min: sMin, max: sMax } } : {})
+    }
+  }
+}
+
+/** Reference proteins (see the module note): each value over its sample's reference level — one
+ *  protein's log (its median, should a sample hold it twice), or a set's median or mean of those.
+ *  A sample missing references goes by `missing`: under 'stop' nothing is divided and the summary
+ *  names the samples (Clean data stops, ingest.ts); 'drop' leaves them out; 'available' divides by
+ *  the ones measured, leaving out only samples with none. */
+function toReference(
+  rows: StandardRow[],
+  opts: NormalizeOptions,
+  samples: Map<string, StandardRow>,
+  sharedGenes: number,
+  measured: (r: StandardRow) => boolean
+): { rows: StandardRow[]; summary: NormalizeSummary } {
+  const refs = [...new Set(opts.proteins ?? (opts.protein ? [opts.protein] : []))]
+  const policy = opts.missing ?? 'stop'
+  const base = {
+    reference: 'protein' as const,
+    used: 'protein' as const,
+    sharedGenes,
+    proteins: refs,
+    ...(refs.length > 1 ? { combine: opts.combine ?? 'median' } : null)
+  }
+  if (!refs.length)
+    return { rows, summary: { ...base, samples: 0, maxFold: 1, refused: 'unpicked' } }
+
+  // each sample's logs of each reference
+  const want = new Set(refs)
+  const logs = new Map<string, Map<string, number[]>>()
+  for (const r of rows) {
+    if (!want.has(r.uniqID) || !measured(r)) continue
+    const sk = sampleKey(r)
+    let m = logs.get(sk)
+    if (!m) logs.set(sk, (m = new Map()))
+    ;(m.get(r.uniqID) ?? m.set(r.uniqID, []).get(r.uniqID)!).push(Math.log2(r.value!))
+  }
+  if (!logs.size) return { rows, summary: { ...base, samples: 0, maxFold: 1, refused: 'absent' } }
+
+  // each sample's level, from the references it measured — all of them, or under 'available' any
+  const level = new Map<string, number>()
+  const lacking: string[] = []
+  let partial = 0
+  for (const sk of samples.keys()) {
+    const m = logs.get(sk)
+    const vals = refs.flatMap((g) => {
+      const l = m?.get(g)
+      return l ? [median(l)] : []
+    })
+    const whole = vals.length === refs.length
+    if (!vals.length || (!whole && policy !== 'available')) {
+      lacking.push(sk)
+      continue
+    }
+    if (!whole) partial++
+    level.set(
+      sk,
+      opts.combine === 'mean' ? vals.reduce((a, b) => a + b, 0) / vals.length : median(vals)
+    )
+  }
+  const labels = (sks: string[]): string[] =>
+    sks.slice(0, 5).map((sk) => sampleName(samples.get(sk)!))
+  // stop — or nothing left to normalise: nothing divided, the samples named
+  if (lacking.length && (policy === 'stop' || !level.size))
+    return {
+      rows,
+      summary: {
+        ...base,
+        samples: 0,
+        maxFold: 1,
+        missingSamples: lacking.length,
+        missingLabels: labels(lacking)
+      }
+    }
+  let maxLog = 0
+  for (const v of level.values()) maxLog = Math.max(maxLog, Math.abs(v))
+  const out: StandardRow[] = []
+  for (const r of rows) {
+    const v = level.get(sampleKey(r))
+    if (v == null) continue // a sample left out
+    out.push(measured(r) ? { ...r, value: Math.pow(2, Math.log2(r.value!) - v) } : r)
+  }
+  return {
+    rows: out,
+    summary: {
+      ...base,
+      samples: level.size,
+      maxFold: Math.pow(2, maxLog),
+      ...(lacking.length
+        ? { droppedSamples: lacking.length, droppedLabels: labels(lacking) }
+        : null),
+      ...(partial ? { partialSamples: partial } : null)
     }
   }
 }

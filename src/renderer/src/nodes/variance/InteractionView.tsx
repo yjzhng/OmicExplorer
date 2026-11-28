@@ -174,5 +174,5 @@ export function InteractionView({
     })
     return { data: [...behind, ...front], layout: lay }
   }, [gene, xName, xLevels, lineName, lineLevels, yLabel, displayMap, look, mode, plainScale])
-  return <PlotlyChart data={data} layout={layout} />
+  return <PlotlyChart controls="none" data={data} layout={layout} />
 }

@@ -169,6 +169,11 @@ export function attachLazyRows(holder: Obj, table: Table, seed?: Obj[]): void {
 /** The table behind a lazy holder's `rows`, without building the rows. */
 export const holderTable = (holder: object): Table | undefined => slotOf.get(holder)?.table
 
+/** A holder's rows as an engine call takes them: its table when they're lazy (none built here —
+ *  the worker gets the rows), else the rows. */
+export const rowsArg = <T>(holder: { rows: readonly T[] }): T[] | Table =>
+  holderTable(holder) ?? (holder.rows as T[])
+
 /** How many rows a holder has, without building them. */
 export function rowCount(holder: { rows: readonly unknown[] }): number {
   const slot = slotOf.get(holder)

@@ -72,6 +72,7 @@ export function CorrMatrixView({
 
   return (
     <PlotlyChart
+      controls="none"
       data={traces}
       layout={layout}
       // the hovered cell's row and column (or a sample hovered elsewhere) — see bindCorrFocus

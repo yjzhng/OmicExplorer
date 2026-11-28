@@ -258,12 +258,19 @@ export function encodeValue(v: unknown, transfer: Transferable[]): unknown {
   }
   if (!isPlain(v)) return v
   const lazy = holderTable(v)
-  let out: Obj | null = null
+  // A lazy `rows` goes as its table, without building the rows — so never read (nor spread) here.
+  const copy = (): Obj => {
+    const o: Obj = {}
+    for (const k of Object.keys(v)) o[k] = lazy && k === 'rows' ? lazy : v[k]
+    return o
+  }
+  let out: Obj | null = lazy ? copy() : null
   for (const k of Object.keys(v)) {
-    // a lazy `rows` goes as its table, without building the rows
-    const e = lazy && k === 'rows' ? lazy : encodeValue(v[k], transfer)
-    if (e !== v[k]) {
-      out ??= { ...v }
+    if (lazy && k === 'rows') continue
+    const x = v[k]
+    const e = encodeValue(x, transfer)
+    if (e !== x) {
+      out ??= copy()
       out[k] = e
     }
   }
@@ -449,6 +456,15 @@ export function tableColumn(t: Table, key: string): ((r: number) => unknown) | u
   const read = cellReader(col, t.nest ? memoRows(t.nest, true) : (): Obj => ({}), true)
   const has = keyIn(t, key)
   return (r) => (has(r) ? read(r) : undefined)
+}
+
+/** One column of a table by row, as decodeTable builds it (lists and nested records in full, each
+ *  nested record once and shared) — for the rows that hold the key (`keyIn`); what the others read
+ *  is meaningless. For a reader of every column without building the rows (resultPack's). */
+export function columnCells(t: Table, key: string): (r: number) => unknown {
+  const col = t.cols[key]
+  if (!col) return () => undefined
+  return cellReader(col, t.nest ? memoRows(t.nest, false) : (): Obj => ({}), false)
 }
 
 /** One field of a nested record column (`curve.axis`), without building the records: `has(r)` is

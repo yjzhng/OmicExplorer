@@ -44,6 +44,9 @@ interface ChecklistProps {
   members?: boolean
   /** a note beside a value in the list (where a sample is now: "in batch 2") */
   noteOf?: (v: string) => string | undefined
+  /** what a value is, beside its label and searched with it — a protein's description, as the
+   *  gene search lists genes (GeneSearchMenu) */
+  descOf?: (v: string) => string | undefined
   /** a line under the list (e.g. that only the commonest values are listed) */
   footnote?: ReactNode
 }
@@ -56,6 +59,7 @@ export function ValueChecklist({
   labelOf,
   members = false,
   noteOf,
+  descOf,
   footnote
 }: ChecklistProps): ReactNode {
   const p = PALETTES[useUiTheme((s) => s.mode)]
@@ -76,10 +80,15 @@ export function ValueChecklist({
   )
   const filtered = useMemo(() => {
     const needle = q.trim().toLowerCase()
+    // by its label — and, labelled, by the value itself (a protein's ID), and its description
+    const hit = (t: string | undefined): boolean => !!t && t.toLowerCase().includes(needle)
     return needle
-      ? listed.filter((v) => (labelOf ? labelOf(v) : valueText(v)).toLowerCase().includes(needle))
+      ? listed.filter(
+          (v) =>
+            hit(labelOf ? labelOf(v) : valueText(v)) || (!!labelOf && hit(v)) || hit(descOf?.(v))
+        )
       : listed
-  }, [listed, q, labelOf])
+  }, [listed, q, labelOf, descOf])
 
   const isOn = (v: string): boolean => !none && (all || kept.has(v))
   // Normalise: every value kept is no filter at all (a members list is as ticked).
@@ -211,11 +220,17 @@ export function ValueChecklist({
                     style={{ margin: 0, accentColor: p.accent }}
                   />
                   <span
-                    style={{ ...L.geneName, maxWidth: 'none', flex: 1 }}
+                    // with a description, the name gives it room (as the gene search's rows)
+                    style={descOf ? L.geneName : { ...L.geneName, maxWidth: 'none', flex: 1 }}
                     title={labelOf ? v : undefined}
                   >
                     {text(v)}
                   </span>
+                  {descOf && !stale && (
+                    <span style={{ ...L.geneDesc, color: p.textMuted }} title={descOf(v)}>
+                      {descOf(v)}
+                    </span>
+                  )}
                   {stale ? (
                     <span style={{ ...L.geneDesc, flex: '0 0 auto' }}>not in data</span>
                   ) : (

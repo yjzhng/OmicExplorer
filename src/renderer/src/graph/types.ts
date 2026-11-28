@@ -18,7 +18,10 @@ import type {
   FilterSpec,
   ImputeMethod,
   InteractiveRole,
+  NormalizeOptions,
   NormalizeReference,
+  RefCombine,
+  RefMissing,
   PairFix,
   InteractiveSampleCond,
   SampleOrder,
@@ -86,6 +89,8 @@ export type NodeKind =
   | 'tdr'
   | 'geneBar'
   | 'enrich'
+  | 'enrichMap'
+  | 'setCompare'
   | 'string'
   | 'qc'
   | 'corr'
@@ -330,10 +335,17 @@ export interface StandardizeConfig {
   /** median normalisation on/off (absent = off) */
   normalizeEnabled?: boolean
   /** the genes each sample's median is taken over (absent = 'shared': genes in every sample), or
-   *  one reference protein ('protein': normalizeProtein) */
+   *  reference proteins ('protein': refProteinsOf) */
   normalizeReference?: NormalizeReference
-  /** normalizeReference 'protein': the reference protein's uniqID */
+  /** normalizeReference 'protein': the reference proteins' uniqIDs (one, or a set) */
+  normalizeProteins?: string[]
+  /** (older configs) the one reference protein — read through refProteinsOf */
   normalizeProtein?: string
+  /** several reference proteins: their level per sample, the median of their logs (absent) or
+   *  the mean (geometric mean) */
+  normalizeCombine?: RefCombine
+  /** a sample missing reference proteins: stop (absent), drop it, or use the ones it measured */
+  normalizeMissing?: RefMissing
   /** also equalise each sample's spread, Perseus width adjustment (absent = off) */
   normalizeSpread?: boolean
   /** batch correction on/off (absent = off) */
@@ -368,6 +380,24 @@ export const cleanupOn = (c: StandardizeConfig): boolean =>
 export const cleanupModeOfConfig = (c: StandardizeConfig): CleanupMode =>
   c.cleanupMode ?? ((c.minSamplePctBy ?? []).length ? 'anyGroup' : 'overall')
 /** Its clean-up as the engine takes it (cleanup.ts CleanupRule); undefined while it's off. */
+/** A Clean data step's reference proteins: its set, or (older configs) its one protein. */
+export const refProteinsOf = (c: StandardizeConfig): string[] =>
+  c.normalizeProteins ?? (c.normalizeProtein ? [c.normalizeProtein] : [])
+
+/** Its normalisation as the engine takes it (normalize.ts NormalizeOptions); undefined while off. */
+export function normalizeOptionsOf(c: StandardizeConfig): NormalizeOptions | undefined {
+  if (!c.normalizeEnabled) return undefined
+  const reference = c.normalizeReference ?? 'shared'
+  return reference === 'protein'
+    ? {
+        reference,
+        proteins: refProteinsOf(c),
+        combine: c.normalizeCombine ?? 'median',
+        missing: c.normalizeMissing ?? 'stop'
+      }
+    : { reference, spread: !!c.normalizeSpread }
+}
+
 export function cleanupRuleOfConfig(c: StandardizeConfig): CleanupRule | undefined {
   if (!cleanupOn(c)) return undefined
   return cleanupRuleOf(
@@ -460,6 +490,10 @@ export interface CompareConfig {
    *  method preset; unset = the preset `detection` implies (spline → Hybrid, 4PL → 4PL). See
    *  curveMethodOf. UI only — the run reads the models themselves. */
   curveMethod?: 'custom'
+  /** curve_fit by the response surface method: the model every plot below shows — the detector
+   *  (spline: its peak, its line) or the descriptor (unset — the description's peak and curve, NA
+   *  where undescribed). Display-only: no re-run. See engine/modelView.ts. */
+  modelView?: import('../engine').ModelView
   /** curve_fit, the CurveCurator method (4PL over one axis): its interpolation — the fit also sees
    *  points between the doses, read off straight lines between the measured ratios; the test stays
    *  on the real points. Off (unset) by default, as CurveCurator's own. */
@@ -679,6 +713,11 @@ export type CurveMethod = 'hybrid' | '4pl' | 'custom'
 export function curveMethodOf(c: Pick<CompareConfig, 'curveMethod' | 'detection'>): CurveMethod {
   return c.curveMethod === 'custom' ? 'custom' : c.detection === 'spline' ? 'hybrid' : '4pl'
 }
+
+/** The model a Curve fit's plots show (CompareConfig.modelView): the descriptor unless set. */
+export const modelViewOf = (
+  c: Pick<CompareConfig, 'modelView'> | undefined
+): import('../engine').ModelView => c?.modelView ?? 'descriptor'
 
 /** Whether a Curve fit describes every gene (else its responders only): its setting, else every
  *  gene under the 4PL detector over one axis — its 4PL is its test, so already fitted — and the
@@ -1621,6 +1660,9 @@ function resolveDRLook(c: Partial<DRConfig>, curveFit: boolean): DRLook {
 /** Curve metrics plot (a Curve fit's): one gene's fitted parameter as a bar chart — a surface's per
  *  slice level (graph/metricBars.ts). Genes from the gene picker, the metric from a switch. */
 export interface MetricsConfig {
+  /** force pEC50: a flat curve (its F-test doesn't reject the flat line) at pEC50 0 — EC50 1 M,
+   *  the least potent — instead of none (unset): it has no midpoint to place */
+  forcePEC50?: boolean
   /** the metric drawn (unset: the potency — graph/metricBars.ts METRIC_IDS) */
   metric?: 'potency' | 'slope' | 'front' | 'back'
   /** a 2-D fit's per-slice values as they are (unset / 'value') or as their difference from the
@@ -1632,6 +1674,9 @@ export interface MetricsConfig {
 /** Potency plot (curve-fit Compare, as CurveCurator draws it): each curve's potency (pEC50)
  *  against its curve fold change. */
 export interface PotencyConfig extends FcPaletteConfig {
+  /** force pEC50: a flat curve (its F-test doesn't reject the flat line) at pEC50 0 — EC50 1 M,
+   *  the least potent — instead of none (unset): it has no midpoint to place */
+  forcePEC50?: boolean
   /** every curve (default), or the called curves only — a flat curve's pEC50 means little */
   show?: 'called' | 'all'
   /** which settings the tile surfaces as quick-access switch bars (unset = all) */
@@ -1972,6 +2017,9 @@ export function curveQcAxisOptions(
 }
 
 export interface CurveMadConfig {
+  /** the metrics check, force pEC50: a flat curve (its F-test doesn't reject the flat line) at pEC50 0 — EC50 1 M,
+   *  the least potent — instead of none (unset): it has no midpoint to place */
+  forcePEC50?: boolean
   /** the residual axis: 'range' spans every residual, outliers included; 'fit' (default) is
    *  symmetric about zero and holds 99.9% of the residuals, so a few extremes don't flatten them */
   yScale?: 'fit' | 'range'
@@ -2137,6 +2185,9 @@ export interface EnrichConfig extends FcPaletteConfig {
   style: 'dot' | 'bar' | 'ridge'
   /** how many top terms to show */
   topTerms: number
+  /** only terms with an FDR (BH-adjusted p) below this are drawn, still at most `topTerms` each
+   *  way; unset = no cut (the top terms whatever their FDR) */
+  termFdr?: number
   /** how terms are stacked: by significance alone (unset), or by category first — the
    *  categories in their fixed order (the legend's), each's terms by significance (within a module,
    *  with modules on) */
@@ -2156,6 +2207,74 @@ export interface EnrichConfig extends FcPaletteConfig {
   quick?: QuickAccess
   /** x / y axis overrides (title, fonts, range, ticks, grid, line); unset = the view's layout */
   axes?: PlotAxes
+}
+
+/** Enrichment map (compare): the enriched terms as a flow — the source's levels (KEGG category ›
+ *  group, GO aspect, …), then the terms, GO terms nested inside their enriched ancestors, then the
+ *  gene modules gathering them — each node as tall as its hit genes, a ribbon carrying the genes a term shares with
+ *  each group it sits in; ribbons into one node overlap on its genes, so overlap shows as depth.
+ *  The same run as the enrichment plot's. */
+export interface EnrichMapConfig {
+  method: 'ora' | 'gsea'
+  source: EnrichSource
+  /** an older map's choice of terms: 'significant' = every one below FDR 0.05 (up to 200 each
+   *  way). Read while `termFdr` is unset; the FDR switch replaces it. */
+  terms?: 'top' | 'significant'
+  /** only terms with an FDR (BH-adjusted p) below this are drawn, at most `topTerms` each way;
+   *  unset = no cut (the top terms whatever their FDR) */
+  termFdr?: number
+  topTerms: number
+  /** which direction's terms: both (unset; a term found both ways is one node, its genes pooled),
+   *  up or down */
+  direction?: 'both' | 'up' | 'down'
+  /** a gene-modules column on the right, the terms flowing into it (on unless switched off) */
+  modules?: boolean
+  /** where overlapping terms leave a ribbon's genes apart on a node's edge: strands off each run
+   *  merging soon after ('split'), or that edge's ribbons stacked, thinned to fill the bar
+   *  ('stack', unset) */
+  overlap?: 'split' | 'stack'
+  /** the categories' palette, this plot's own; unset = the global one */
+  categorical?: import('../ui/palettes').CategoricalId
+  /** the modules' palette; unset = the global one (past the categories' colours, as the
+   *  enrichment plot's) */
+  moduleCategorical?: import('../ui/palettes').CategoricalId
+  quick?: QuickAccess
+}
+
+/** Set comparison: sets of genes — measured per sample or condition group (Clean data), or
+ *  significant per facet (a Compare / Curve fit) — or of a Compare's enriched terms, with any saved
+ *  gene sets, drawn as an UpSet or an area-proportional Venn (two or three sets). */
+export interface SetCompareConfig {
+  /** what the sets hold: genes (unset), or a Compare's enriched terms */
+  elements?: 'genes' | 'terms'
+  /** Clean data: a set per sample ('sample'), or per group of samples sharing these conditions
+   *  (unset = every condition the samples carry) */
+  groupBy?: 'sample' | import('../engine').ConditionKey[]
+  /** Clean data: a gene is in a group's set when measured in at least this share of its samples
+   *  (0 = any one; unset = 0.5) */
+  minShare?: number
+  /** a Compare: which of a facet's genes / terms — up, down, either (unset), or up and down as two
+   *  sets */
+  direction?: import('../engine').SetDirection
+  /** the sets drawn, by their group (a sample group, a facet); unset = the first ones (up to
+   *  DEFAULT_SETS) */
+  sets?: string[]
+  /** saved gene sets drawn as sets too, by id (genes only) */
+  geneSets?: string[]
+  /** terms: the enrichment's method and term set, and the FDR a term is significant below */
+  method?: 'ora' | 'gsea'
+  source?: EnrichSource
+  termFdr?: number
+  /** an UpSet (unset), or a Venn of two or three sets */
+  view?: 'upset' | 'venn'
+  /** UpSet: its columns largest first (unset), or by how many sets */
+  order?: import('../engine').IntersectionOrder
+  /** UpSet: the most columns drawn (with `capEnabled`) */
+  maxIntersections?: number
+  capEnabled?: boolean
+  /** the sets' palette, this plot's own; unset = the global one */
+  categorical?: import('../ui/palettes').CategoricalId
+  quick?: QuickAccess
 }
 
 /** STRING network (compare): PPI network among the top differential genes, fetched from STRING-DB.
@@ -2567,6 +2686,8 @@ export interface NodeConfigMap {
   tdr: TdrConfig
   geneBar: BarConfig
   enrich: EnrichConfig
+  enrichMap: EnrichMapConfig
+  setCompare: SetCompareConfig
   string: StringConfig
   qc: QcConfig
   corr: CorrConfig
@@ -2659,7 +2780,24 @@ export type NodeResult =
   | { kind: 'plot' }
   /** enrichment, every method × term source, per facet (facetKey): every tested term — the tile
    *  shows its top N, the export writes them all */
-  | { kind: 'enrich'; facets: Record<string, Record<string, EnrichData>> }
+  | {
+      kind: 'enrich'
+      facets: Record<string, Record<string, EnrichData>>
+      /** the enrichment map's GO nesting: each tested GO term's ancestors among the tested GO
+       *  terms (main/goHierarchy); unset for an enrichment plot's run, or when GO isn't tested */
+      goAncestors?: Record<string, string[]>
+      /** why there's no nesting when GO was tested (the ontology couldn't be fetched) */
+      goError?: string
+    }
+  /** a set comparison's sets: a Clean data upstream's measured genes per sample (`quantity`), a
+   *  Compare's significant genes per facet (`calls`), and — when it compares terms — the
+   *  enrichment run over those facets (`enrich`, as an enrichment plot's `facets`) */
+  | {
+      kind: 'sets'
+      quantity?: import('../engine').MeasuredSets
+      calls?: import('../engine').CallGroup[]
+      enrich?: Record<string, Record<string, EnrichData>>
+    }
   /** STRING, every confidence × gene cap × interactor setting, per facet (facetKey) — see StringAll */
   | { kind: 'string'; species: number; caps: number[]; facets: Record<string, StringAll> }
   /** a cluster plot's sample embedding (in the worker), with the settings it was computed under
@@ -2669,6 +2807,21 @@ export type NodeResult =
   /** a correlation plot's sample-pair matrix under every metric (in the worker) — the metric,
    *  clustering and sample order on the tile arrange it without another run */
   | { kind: 'corr'; corr: import('../engine').SampleCorrAll }
+  /** a heatmap's clustering (nodes/heatmap/run.ts, in the worker). From Clean data: the `n` gene
+   *  rows' cluster groups (each as its genes' uniqIDs), on the scale it clustered on — the sample
+   *  order and the look draw from them without another run. From a Compare: the built fold-change
+   *  heatmap per row set, under the clustering settings `key` names (heatmap/runKey.ts). Neither
+   *  when the worker failed: the tile clusters */
+  | {
+      kind: 'heatmap'
+      std?: { scale: import('../engine').ValueScale; n: number; groups: string[][] }
+      fc?: {
+        key: string
+        overall: import('../engine').FcHeatmapData
+        /** a two-way ANOVA's factors rows */
+        factors?: import('../engine').FcHeatmapData
+      }
+    }
 
 /** The numeric conditions of a data result's dataset — its condition schema (dose and time, plus
  *  the custom ones declared numeric at import), as Clean data recorded it and Compare / Contrast

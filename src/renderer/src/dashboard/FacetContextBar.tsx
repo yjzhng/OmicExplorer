@@ -8,12 +8,17 @@
  * leaves the conditions unchangeable. Both results layouts (the dashboard and the paged form view)
  * render it for that reason.
  *
+ * A Curve fit by the response surface method adds its model view (detector / descriptor) — a
+ * context every plot below it follows, as the conditions are (engine/modelView.ts).
+ *
  * Renders nothing for a non-faceted group (e.g. a Clean data tile's heatmap or cluster).
  */
 import { type CSSProperties, type ReactNode } from 'react'
 
+import { hasResponseFits, type ModelView } from '../engine'
 import type { AnalysisGroup } from '../graph/groups'
-import type { NodeResult } from '../graph/types'
+import { useGraph } from '../graph/store'
+import { type CompareConfig, isStep, modelViewOf, type NodeResult } from '../graph/types'
 import { UI } from '../ui/theme'
 import { ChoiceSwitch, PILL_CAP } from '../ui/ChoiceSwitch'
 import {
@@ -34,9 +39,31 @@ export function FacetContextBar({
 }): ReactNode {
   const { rows, dims, bars, numeric, sel } = useGroupFacets(group, results)
   const setSel = useFacet((s) => s.setSel)
-  if (!bars.length) return null
+  // A response surface method Curve fit: which model its plots show (one row's check, per result)
+  const root = results[group.rootId]
+  const fits = group.kind === 'curveFit' && root?.kind === 'compare' && hasResponseFits(root.cmp)
+  const view = useGraph((s): ModelView | null => {
+    if (!fits) return null
+    const n = s.nodes.find((x) => x.id === group.rootId)
+    return n && isStep(n) ? modelViewOf(n.data.config as CompareConfig) : null
+  })
+  const setView = useGraph((s) => s.setModelView)
+  if (!bars.length && !view) return null
   return (
     <div style={styles.facetBar}>
+      {view && (
+        <div style={styles.facetGroup}>
+          <span style={styles.facetLabel}>model</span>
+          <ChoiceSwitch
+            fit
+            pager={false}
+            label="Model"
+            value={view}
+            options={MODEL_OPTIONS}
+            onChange={(v) => setView(group.rootId, v)}
+          />
+        </div>
+      )}
       {bars.map((bar) => {
         const { dim, value, options } = bar
         return (
@@ -65,6 +92,20 @@ export function FacetContextBar({
     </div>
   )
 }
+
+/** The model switch's two views (see engine/modelView.ts). */
+const MODEL_OPTIONS: ReadonlyArray<{ value: ModelView; label: string; title: string }> = [
+  {
+    value: 'detector',
+    label: 'detector',
+    title: 'The spline: its peak as the fold change, its fit drawn — what was tested'
+  },
+  {
+    value: 'descriptor',
+    label: 'descriptor',
+    title: 'The description (4PL, line, joint model): its peak and curve; NA where undescribed'
+  }
+]
 
 const styles: Record<string, CSSProperties> = {
   facetBar: {

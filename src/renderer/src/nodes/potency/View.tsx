@@ -1,7 +1,12 @@
 import type { ReactNode } from 'react'
 import { FacetedPlot } from '../../dashboard/FacetedPlot'
 import { SwitchBar } from '../../dashboard/SwitchBar'
-import { type CompareResultRow, DEFAULT_THRESHOLD, curveCuratorWall } from '../../engine'
+import {
+  type CompareResultRow,
+  DEFAULT_THRESHOLD,
+  curveCuratorWall,
+  hasResponseFits
+} from '../../engine'
 import { quickOn } from '../../graph/registry'
 import {
   type CompareConfig,
@@ -9,9 +14,10 @@ import {
   curveAxisUnit,
   effectLabelsOf,
   labelCapOn,
+  modelViewOf,
   normalizeCompareConfig
 } from '../../graph/types'
-import { Empty } from '../kit/views/common'
+import { DETECTOR_NO_PARAMS, Empty } from '../kit/views/common'
 import { type ViewContext } from '../kit/views/context'
 import { curvePointCounts, facetAlpha } from '../kit/views/helpers'
 import { styles } from '../kit/views/styles'
@@ -34,6 +40,9 @@ export function potencyView(v: ViewContext): ReactNode {
   if (upstream?.kind !== 'compare') return <Empty text="Connect a Curve fit tile and run it." />
   const cfg = cfgSource as PotencyConfig
   const upCfg = upStep ? normalizeCompareConfig(upStep.data.config as CompareConfig) : undefined
+  // Potency is the description's: the detector (spline) has none.
+  if (modelViewOf(upCfg) === 'detector' && hasResponseFits(upstream.cmp))
+    return <Empty text={DETECTOR_NO_PARAMS} />
   const threshold = upstream.cmp.threshold ?? upCfg?.threshold ?? DEFAULT_THRESHOLD
   // The calls' smallest fold change either side — the volcano boundary's vertical wall: under
   // CurveCurator's score, where it sits for this facet's α (by a target FDR, the α its
@@ -76,8 +85,10 @@ export function potencyView(v: ViewContext): ReactNode {
               <PotencyView
                 rows={rows}
                 dose={curveAxisUnit(upCfg, units)}
+                forcePEC50={!!cfg.forcePEC50}
                 displayMap={upstream.displayMap}
                 show={show}
+                // (its scans are kept by the facet's rows: facetAlpha, curvePointCounts)
                 fcLow={wallsFor(rows).low}
                 fcHigh={wallsFor(rows).high}
                 labelTop={labelCapOn(cfg) ? cfg.labelTop : 0}

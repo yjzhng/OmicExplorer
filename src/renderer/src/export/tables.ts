@@ -7,6 +7,7 @@ import type { Edge } from '@xyflow/react'
 import {
   condLabel,
   condPresent,
+  curveIsFlat,
   curveMetrics,
   CURVE_METRICS,
   responseMetrics,
@@ -204,7 +205,14 @@ function compareTable(
   const response = src.some((r) => r.rs)
   const metrics: Array<Partial<Record<string, Cell | undefined>> | undefined> = src.map((r) =>
     r.curve
-      ? curveMetrics(r.log2FC, r.curve, t, dose.scale)
+      ? curveMetrics(
+          r.log2FC,
+          r.curve,
+          t,
+          dose.scale,
+          // a flat curve has no midpoint: no potency
+          curveIsFlat(r, t) ? 'na' : undefined
+        )
       : r.rs
         ? responseMetrics(r, dose.scale, t)
         : undefined

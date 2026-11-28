@@ -1,9 +1,11 @@
 import type { ReactNode } from 'react'
+import { plotCached } from '../../ui/plotCache'
 import { FacetedPlot } from '../../dashboard/FacetedPlot'
 import {
   type CompareResultRow,
   DEFAULT_THRESHOLD,
   buildVolcano,
+  hasResponseFits,
   nestedCol,
   nestedPresent,
   rowView
@@ -14,8 +16,10 @@ import {
   type VolcanoConfig,
   effectLabelsOf,
   labelCapOn,
+  modelViewOf,
   normalizeCompareConfig
 } from '../../graph/types'
+import { UI } from '../../ui/theme'
 import { Built, Empty } from '../kit/views/common'
 import { type ViewContext } from '../kit/views/context'
 import { curvePointCounts, facetAlpha } from '../kit/views/helpers'
@@ -79,11 +83,15 @@ export function volcanoView(v: ViewContext): ReactNode {
   // a re-run). The node config is only the fallback for a result saved before it carried one.
   const upCfg = upStep ? normalizeCompareConfig(upStep.data.config as CompareConfig) : undefined
   const threshold = upstream.cmp.threshold ?? upCfg?.threshold ?? DEFAULT_THRESHOLD
+  // A Curve fit shown by its descriptor: the genes without a description have no fold change (NA)
+  // and aren't drawn — counted, so their absence reads as the model's, not as missing data.
+  const descriptor = modelViewOf(upCfg) === 'descriptor' && hasResponseFits(upstream.cmp)
   return (
     <div style={styles.chart}>
       <FacetedPlot numeric={numeric} rows={subSource(upstream.cmp)} facetSel={facetSel}>
         {(rows) => (
           <Built
+            name="volcano"
             build={() =>
               buildVolcano(rows, {
                 statType: threshold.statType,
@@ -104,17 +112,28 @@ export function volcanoView(v: ViewContext): ReactNode {
               cfg.untestedAtZero
             ]}
           >
-            {(volcano) =>
-              volcano.points.length === 0 && rows.length > 0 ? (
-                <Empty text={untestedNote(upstream.cmp, rows, threshold.statType)} />
-              ) : (
+            {(volcano) => {
+              const na = descriptor ? undescribedIn(rows) : 0
+              if (volcano.points.length === 0 && rows.length > 0)
+                return (
+                  <Empty
+                    text={
+                      na === rows.length
+                        ? 'No gene here has a description — switch the model to detector.'
+                        : untestedNote(upstream.cmp, rows, threshold.statType)
+                    }
+                  />
+                )
+              const plot = (
                 <VolcanoView
                   volcano={volcano}
                   threshold={threshold}
                   curveNs={curvePointCounts(rows)}
                   samCut={
                     threshold.type === 'sam_fdr'
-                      ? samCutoff(upstream.cmp, rows, threshold.statMin)
+                      ? plotCached('samCut', [rows, upstream.cmp, threshold.statMin], () =>
+                          samCutoff(upstream.cmp, rows, threshold.statMin)
+                        )
                       : undefined
                   }
                   ccAlpha={
@@ -134,7 +153,18 @@ export function volcanoView(v: ViewContext): ReactNode {
                   }
                 />
               )
-            }
+              return na ? (
+                <div style={styles.stack}>
+                  <div style={NA_NOTE}>
+                    {na.toLocaleString()} undescribed {na === 1 ? 'gene' : 'genes'} not shown
+                    (descriptor model)
+                  </div>
+                  <div style={styles.stackBody}>{plot}</div>
+                </div>
+              ) : (
+                plot
+              )
+            }}
           </Built>
         )}
       </FacetedPlot>
@@ -143,6 +173,17 @@ export function volcanoView(v: ViewContext): ReactNode {
 
   return <Empty text="No output." />
 }
+/** The descriptor model's NA rows among a facet's: a response fit without a fold change (no
+ *  description). Cached per facet rows (they're the same array render to render). */
+function undescribedIn(rows: CompareResultRow[]): number {
+  return plotCached('volcanoNA', [rows], () => {
+    let n = 0
+    for (const r of rows) if (r.rs && r.log2FC == null) n++
+    return n
+  })
+}
+const NA_NOTE = { fontSize: 11, color: UI.textMuted, padding: '2px 8px 0' } as const
+
 /** Why a volcano has nothing to draw: its genes carry a fold change but no p-value — a side with
  *  one replicate can't be tested, or (both sides replicated) the t-test blocks on Clean data's
  *  batches and the two sides share none, so the comparison can't be told from the batch — and, of

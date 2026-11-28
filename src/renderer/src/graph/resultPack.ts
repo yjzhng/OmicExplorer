@@ -12,9 +12,11 @@
  *
  * The in-memory results never change shape; this is only the file's representation.
  */
-import { attachLazyRows, LAZY_MIN_ROWS } from '../engine/lazyRows'
+import { attachLazyRows, holderTable, LAZY_MIN_ROWS } from '../engine/lazyRows'
 import {
+  columnCells,
   encodeColumn,
+  keyIn,
   encodeTable as encodeTableImpl,
   T_MAIN,
   T_NULL,
@@ -23,6 +25,7 @@ import {
   type Pool,
   type Table as WireTable
 } from '../engine/wire'
+import { runSteps, type Steps } from './steps'
 import type { NodeResult } from './types'
 
 /** Marks a workflow's `results` as packed (absent = the plain objects of older files). */
@@ -57,7 +60,16 @@ function jsonValue(v: unknown): Json | undefined {
   return v as Json
 }
 
-function packTable(rows: Obj[]): Table {
+/** A table's columns as packTable reads them: its row count, its keys in first-seen order, and
+ *  per key each row's value (undefined where the row lacks the key). */
+interface ColumnSource {
+  n: number
+  keys: string[]
+  values: (key: string) => (i: number) => unknown
+}
+
+/** Row objects as a column source. */
+function rowsSource(rows: Obj[]): ColumnSource {
   const keys: string[] = []
   const seen = new Set<string>()
   for (const r of rows)
@@ -66,17 +78,56 @@ function packTable(rows: Obj[]): Table {
         seen.add(k)
         keys.push(k)
       }
+  return { n: rows.length, keys, values: (k) => (i) => rows[i][k] }
+}
+
+/** The engine's columnar table (a lazy result's own — lazyRows.ts) as a column source, its rows
+ *  never built: the same keys in the same order, the same values, as its rows would give. */
+function wireSource(t: WireTable): ColumnSource {
+  const keys: string[] = []
+  const seen = new Set<string>()
+  const seenShape = new Set<number>()
+  for (let r = 0; r < t.n && seenShape.size < t.shapes.length; r++) {
+    const s = t.shape[r]
+    if (seenShape.has(s)) continue
+    seenShape.add(s)
+    for (const k of t.shapes[s])
+      if (!seen.has(k)) {
+        seen.add(k)
+        keys.push(k)
+      }
+  }
+  return {
+    n: t.n,
+    keys,
+    values: (k) => {
+      const has = keyIn(t, k)
+      const read = columnCells(t, k)
+      return (i) => (has(i) ? read(i) : undefined)
+    }
+  }
+}
+
+/** (a step per column: see packResultsSteps) */
+function packTable(rows: Obj[]): Steps<Table> {
+  return packSource(rowsSource(rows))
+}
+
+function* packSource({ n, keys, values }: ColumnSource): Steps<Table> {
   const cols: Record<string, Column> = {}
   for (const k of keys) {
     const absent: number[] = []
-    const vals: Array<Json | undefined> = rows.map((r, i) => {
-      const v = jsonValue(r[k])
+    const at = values(k)
+    const vals: Array<Json | undefined> = new Array(n)
+    for (let i = 0; i < n; i++) {
+      const v = jsonValue(at(i))
       if (v === undefined) absent.push(i)
-      return v
-    })
+      vals[i] = v
+    }
     const a = absent.length ? { a: absent } : null
     const present = vals.filter((v): v is Json => v !== undefined)
     const first = JSON.stringify(present[0] ?? null)
+    yield
     if (present.every((v) => JSON.stringify(v) === first)) {
       cols[k] = { c: present[0] ?? null, ...a }
       continue
@@ -109,12 +160,12 @@ function packTable(rows: Obj[]): Table {
           objs.push(v)
         }
       })
-      cols[k] = { o: packTable(objs), p, ...a }
+      cols[k] = { o: yield* packTable(objs), p, ...a }
     } else {
       cols[k] = { j: vals.map((v) => (v === undefined ? null : v)), ...a }
     }
   }
-  return { $rows: rows.length, cols }
+  return { $rows: n, cols }
 }
 
 function unpackTable(t: Table): Obj[] {
@@ -262,17 +313,34 @@ function wireColumn(col: Column, n: number, pool: Pool): WireColumn {
 /** Records as a columnar table, their buffers kept (nothing is transferred). */
 const encodeTableOf = (rows: Obj[]): WireTable => encodeTableImpl(rows, [])
 
+const isNested = (v: unknown): boolean => v !== null && typeof v === 'object'
+
 /** Pack every large array of row objects inside a value (any depth). */
-function packValue(v: unknown, pool: AnnotationPool): unknown {
+function* packValue(v: unknown, pool: AnnotationPool): Steps<unknown> {
   if (Array.isArray(v)) {
-    if (v.length >= MIN_ROWS && v.every(isObj)) return { $table: packTable(v as Obj[]) }
-    return v.map((x) => packValue(x, pool))
+    if (v.length >= MIN_ROWS && v.every(isObj)) return { $table: yield* packTable(v as Obj[]) }
+    // (a list of plain values is as it is — no step per value)
+    if (!v.some(isNested)) return v
+    const items: unknown[] = []
+    for (const x of v) items.push(isNested(x) ? yield* packValue(x, pool) : x)
+    return items
   }
   if (!isObj(v)) return v
+  // a lazy holder's rows (a Clean data table, a Compare's rows) packed straight off its columns —
+  // none of them built
+  const lazy = holderTable(v)
   const out: Obj = {}
-  for (const [k, x] of Object.entries(v)) {
-    if (k === 'annotationMap' && isObj(x)) out[k] = { $pool: pool.add(x) }
-    else out[k] = packValue(x, pool)
+  // (keys, not entries: reading a lazy holder's `rows` would build every row)
+  for (const k of Object.keys(v)) {
+    if (k === 'rows' && lazy && lazy.n >= MIN_ROWS) {
+      out[k] = { $table: yield* packSource(wireSource(lazy)) }
+      continue
+    }
+    const x = v[k]
+    if (k === 'annotationMap' && isObj(x)) {
+      out[k] = { $pool: pool.add(x) }
+      yield
+    } else out[k] = isNested(x) ? yield* packValue(x, pool) : x
   }
   return out
 }
@@ -320,9 +388,16 @@ class AnnotationPool {
 
 /** A workflow's results as stored in the project file. */
 export function packResults(results: Record<string, NodeResult>): unknown {
+  return runSteps(packResultsSteps(results))
+}
+
+/** packResults in steps — a table's column at a time — for work done in the background (the undo
+ *  history's copies: runStepsSliced). The results must not change meanwhile: they never do, a
+ *  change replaces them. */
+export function* packResultsSteps(results: Record<string, NodeResult>): Steps<unknown> {
   const pool = new AnnotationPool()
   const packed: Obj = {}
-  for (const [id, r] of Object.entries(results)) packed[id] = packValue(r, pool)
+  for (const [id, r] of Object.entries(results)) packed[id] = yield* packValue(r, pool)
   return { [PACKED]: 1, annotations: pool.tables, results: packed }
 }
 

@@ -47,6 +47,7 @@ export function maView(v: ViewContext): ReactNode {
       <FacetedPlot numeric={numeric} rows={subSource(upstream.cmp)} facetSel={facetSel}>
         {(rows) => (
           <Built
+            name="ma"
             build={() =>
               buildMA(rows, {
                 fcLow: threshold.fcLow,

@@ -24,6 +24,7 @@ import { condPresent, condValue } from './compare'
 import { filterActive, keptBy, narrowedConds, samplePasses } from './subset'
 import { imputeMissing, sampleKey } from './impute'
 import { normalizeSamples, type NormalizeSummary } from './normalize'
+import { proteinDescs } from './proteinDesc'
 import { correctBatches, resolveBatches, type BatchSpec } from './batch'
 import { sampleIndex } from './sampleIndex'
 import {
@@ -397,6 +398,28 @@ export function previewScale(dataText: string, dataFilename: string): ScalePrevi
   return { inputScale: scale, evidence, sample: sampleValues(values) }
 }
 
+/** The proteins an import holds, as Clean data reads them (its ID mapping and labels) — uniqID →
+ *  name, and → description (proteinDescs) — before any clean-up, normalisation or imputation: what
+ *  its reference-protein picker offers, and searches, before the step has run. */
+export function previewProteins(input: StandardizeInput): ProteinList {
+  const std = standardize({
+    ...input,
+    minSamplePct: undefined,
+    minSamplePctBy: undefined,
+    cleanupRule: undefined,
+    normalize: undefined,
+    batch: undefined,
+    impute: undefined
+  })
+  return { names: std.displayMap, descs: proteinDescs(std.annotationMap) }
+}
+
+/** A set of proteins by uniqID: their names, and the descriptions they have. */
+export interface ProteinList {
+  names: Record<string, string>
+  descs: Record<string, string>
+}
+
 /** The data scale of a Clean data result, as a Clean data step fed by it (through a Merge or a
  *  Subset) previews it: its values on the scale it presents them on (its rows are linear) — what
  *  it passes on, already log-transformed if it was — and that scale, the one the result carries,
@@ -449,19 +472,28 @@ function cleanupSummary(
   }
 }
 
-/** A reference protein a sample didn't measure leaves nothing to divide that sample by: Clean data
- *  stops and says which (rather than mix divided and undivided samples). Not picked yet, or
- *  nowhere at all, it's the panel's warning instead and nothing is normalised. */
+/** Reference proteins a sample didn't (all) measure leave nothing to divide that sample by: under
+ *  'stop', Clean data stops and says which samples (rather than mix divided and undivided ones).
+ *  None picked, or none measured anywhere, is the run's to say (summary.refused). */
 function refuseMissingReference(summary: NormalizeSummary): void {
   const n = summary.missingSamples ?? 0
-  if (summary.used !== 'protein' || !summary.protein || n === 0 || summary.samples === 0) return
+  if (summary.used !== 'protein' || summary.refused || n === 0) return
+  const refs = summary.proteins ?? (summary.protein ? [summary.protein] : [])
+  const one = refs.length === 1
   const names = (summary.missingLabels ?? []).join(', ')
   throw new Error(
-    `The reference protein ${summary.protein} wasn't measured in ${n} sample${n === 1 ? '' : 's'}` +
-      `${names ? ` (${names}${n > (summary.missingLabels?.length ?? 0) ? ', …' : ''})` : ''}, so ` +
-      `${n === 1 ? 'it' : 'they'} can't be divided by it. Pick a protein measured in every sample, ` +
-      'or leave those samples out with a Subset.'
+    `${one ? `The reference protein ${refs[0]} wasn't` : "The reference proteins weren't all"} ` +
+      `measured in ${n} sample${n === 1 ? '' : 's'}` +
+      `${names ? ` (${names}${n > (summary.missingLabels?.length ?? 0) ? ', …' : ''})` : ''}. ` +
+      `Pick ${one ? 'a protein' : 'proteins'} measured in every sample, or set Missing to drop ` +
+      `those samples${one ? '' : ' or use the references they measured'}.`
   )
+}
+
+/** A sample list less the samples a normalisation dropped (those with no rows left). */
+function keptSamples(samples: SampleConds[], rows: StandardRow[]): SampleConds[] {
+  const keep = new Set(rows.map(sampleKey))
+  return samples.filter((s) => keep.has(sampleKey(s as unknown as StandardRow)))
 }
 
 export function standardize(input: StandardizeInput): StandardizeResult {
@@ -718,6 +750,8 @@ export function standardize(input: StandardizeInput): StandardizeResult {
     refuseMissingReference(res.summary)
     rows = res.rows
     normalization = res.summary
+    // samples left out for want of reference proteins: out of the sample list too
+    if (res.summary.droppedSamples) samples.splice(0, samples.length, ...keptSamples(samples, rows))
   }
 
   // ── batch correction: each batch's shift removed, every condition protected (batch.ts) ──
@@ -894,6 +928,10 @@ export function recleanStandardized(input: RecleanInput): StandardizeResult {
       sampleCount
     },
     ...(normalization ? { normalization } : {}),
+    // samples left out for want of reference proteins: out of the sample list too
+    ...(normalization?.droppedSamples && prev.samples
+      ? { samples: keptSamples(prev.samples, rows) }
+      : {}),
     ...(batch
       ? {
           batches: batch.of,

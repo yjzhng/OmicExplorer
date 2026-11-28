@@ -103,6 +103,23 @@ export function baseLevelOf(values: ReadonlyArray<number | null>): number {
   return Number.isFinite(b) ? b : 0
 }
 
+/** A two-axis fit's baseline, from the control's pins (the Baseline picked on the Curve fit's
+ *  grid — the one place it's decided): the level pinned on each axis, or null where the pick
+ *  leaves it free (several listed — dose 0 at every time, as a config may list them — is free:
+ *  each level its own). Every cell is then against the control at its own levels with the pinned
+ *  ones set to the pins (splineFit's surfaceFrame). */
+export function surfacePinsOf(
+  den: Partial<Record<ConditionKey, unknown[]>>,
+  a: ConditionKey,
+  b: ConditionKey
+): { a: number | null; b: number | null } {
+  const one = (c: ConditionKey): number | null => {
+    const v = den[c]?.length === 1 ? Number(den[c]![0]) : NaN
+    return Number.isFinite(v) ? v : null
+  }
+  return { a: one(a), b: one(b) }
+}
+
 /** What detectAxisScale saw: the scale (null: can't tell) and why, for the Curve fit to show. */
 export interface ScaleGuess {
   scale: AxisScale | null
@@ -198,3 +215,17 @@ export const storedMap = (f: StoredScale): Pick<AxisMap, 'scale' | 'offset' | 's
     : { scale: 'log', offset: f.timeOffset ?? 0, step: 1 }
 /** A stored fit's x in its axis's units. */
 export const xUnits = (f: StoredScale, x: number): number => fromX(storedMap(f), x)
+
+/** A log axis map that places a level at or below 0 (its base, as a data point) a median step
+ *  below its lowest level (AxisMap.zeroX); any other map as it is. */
+export function withZero(m: AxisMap, levels: readonly number[]): AxisMap {
+  if (m.scale !== 'log' || m.offset > 0) return m
+  const xs = levels.filter((v) => v > 0).map((v) => toX(m, v))
+  if (!xs.length) return m
+  const sorted = [...new Set(xs)].sort((a, b) => a - b)
+  const steps = sorted
+    .slice(1)
+    .map((v, i) => v - sorted[i])
+    .sort((a, b) => a - b)
+  return { ...m, zeroX: sorted[0] - (steps.length ? steps[steps.length >> 1] : 1) }
+}

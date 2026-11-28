@@ -6,7 +6,6 @@ import {
   type EnrichData,
   ENRICH_SOURCE_LABEL,
   type EnrichSource,
-  enrichSourcesPresent,
   fcMeasure,
   isInteractionRow,
   isSlopeRow,
@@ -19,10 +18,30 @@ import { type EnrichConfig, normalizeCompareConfig } from '../../graph/types'
 import { Built, Empty } from '../kit/views/common'
 import { type ViewContext } from '../kit/views/context'
 import { styles } from '../kit/views/styles'
+import { resultEnrichSources } from './spec'
 import { EnrichView } from './EnrichView'
+import { FDR_PRESETS } from './termCut'
 import { groupOrderOf } from './groupOrder'
 
 export const NO_CATS: Record<string, string> = {}
+
+/** The terms significant at `fdr` (BH-adjusted p below it), each direction's order kept. Cached
+ *  per run result and cut, so the plot's memos hold across renders. */
+const sigCache = new WeakMap<EnrichData, Map<number, EnrichData>>()
+function significantOf(e: EnrichData, fdr: number): EnrichData {
+  let m = sigCache.get(e)
+  if (!m) sigCache.set(e, (m = new Map()))
+  let out = m.get(fdr)
+  if (!out) {
+    out = {
+      ...e,
+      up: e.up.filter((t) => t.pAdjust < fdr),
+      down: e.down.filter((t) => t.pAdjust < fdr)
+    }
+    m.set(fdr, out)
+  }
+  return out
+}
 
 /** With modules on, each term's gene module (engine/enrichModules), over every term computed — so
  *  a module is the same whatever the plot draws of it. */
@@ -64,12 +83,20 @@ export function enrichView(v: ViewContext): ReactNode {
   // tile falls back through ENRICH_FALLBACK to one that is, rather than an error the user can't
   // act on — display only, the config keeps what it had (same as the GSEA-only ridge style
   // falling back to dot above).
-  const sources = enrichSourcesPresent(ann, cats)
+  // kept by the annotations (resultEnrichSources): not a walk of every gene's on each render
+  const sources = resultEnrichSources(upstream.annotationMap, upstream.keggCategories)
   const saved = cfg.source ?? 'go'
   const source = resolveEnrichSource(saved, sources) ?? saved
   const unmet = unmetRequirement('enrich', { ...cfg, source }, factsOf(upstream))
   const modules = !!cfg.modules
   const show = cfg.show ?? 'all'
+  // the FDR cut as a switch: none, the presets, and the config's own where it's another
+  const fdrOptions = [
+    'none',
+    ...[...new Set([...FDR_PRESETS, ...(cfg.termFdr != null ? [cfg.termFdr] : [])])]
+      .sort((a, b) => a - b)
+      .map(String)
+  ]
   const withBar = (body: ReactNode): ReactNode => (
     <div style={styles.chart}>
       <div style={styles.stack}>
@@ -92,6 +119,14 @@ export function enrichView(v: ViewContext): ReactNode {
                 (ENRICH_SOURCE_LABEL[o as EnrichSource] ?? o).replace(/\s*\(human\)$/, '')
               }
               onChange={(v) => patchConfig({ source: v })}
+            />
+          )}
+          {quickOn(cfg, 'termFdr') && (
+            <SwitchBar
+              label="FDR <"
+              value={cfg.termFdr != null ? String(cfg.termFdr) : 'none'}
+              options={fdrOptions}
+              onChange={(v) => patchConfig({ termFdr: v === 'none' ? undefined : Number(v) })}
             />
           )}
           {quickOn(cfg, 'style') && (
@@ -120,12 +155,22 @@ export function enrichView(v: ViewContext): ReactNode {
       {(facetRows, facetKey) => {
         // From the plot's run: this facet's terms for the method and source on show (every one
         // was computed), cut to the top N — so switching any of them only re-renders.
-        const all =
+        const computed =
           plotRun?.kind === 'enrich' ? plotRun.facets[facetKey]?.[`${method}|${source}`] : undefined
-        if (!all) return <Empty text="No enrichment for these terms here — re-run the plot." />
+        if (!computed) return <Empty text="No enrichment for these terms here — re-run the plot." />
+        // with an FDR cut: the terms below it, of which the top N are drawn (the modules still
+        // over every term computed, so a module is the same either way)
+        const fdr = cfg.termFdr
+        const all = fdr != null ? significantOf(computed, fdr) : computed
+        if (fdr != null && !all.up.length && !all.down.length)
+          return <Empty text={`No terms significant at FDR < ${fdr}.`} />
         const top = cfg.topTerms > 0 ? cfg.topTerms : 15
         return (
-          <Built build={() => ({ moduleOf: moduleView(all, modules) })} deps={[all, modules]}>
+          <Built
+            name="enrichModules"
+            build={() => ({ moduleOf: moduleView(computed, modules) })}
+            deps={[computed, modules]}
+          >
             {({ moduleOf }) => (
               <EnrichView
                 // every term computed: the plot draws the top ones — or, with categories or modules

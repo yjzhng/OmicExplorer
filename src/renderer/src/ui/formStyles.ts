@@ -76,6 +76,8 @@ export const FORM: Record<string, CSSProperties> = {
     alignSelf: 'center',
     padding: '3px 0'
   },
+  // a multi-line control's label: at its top, level with its first line (a boxed block's title)
+  fieldGridLabelTop: { alignSelf: 'start', paddingTop: 10 },
   fieldGridBody: {
     gridColumn: 2,
     display: 'flex',

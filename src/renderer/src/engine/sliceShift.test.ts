@@ -110,7 +110,7 @@ describe('test response changes: curves along one axis compared across the other
         curveAxis: 'surface',
         intent: 'changes'
       })
-    ).toThrow(/axis/)
+    ).toThrow(/Pick which curves to fit/)
   })
 
   // a 4PL along the temperature: its F's null estimated (NPARC) or simulated (adjusted F)

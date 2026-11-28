@@ -1,4 +1,5 @@
 import { type ReactNode, useEffect, useMemo, useState } from 'react'
+import { plotCached } from '../../../ui/plotCache'
 import { SwitchBar, SwitchBarToggle } from '../../../dashboard/SwitchBar'
 import { showTable } from '../../../dashboard/tableOnShow'
 import {
@@ -81,24 +82,32 @@ export function StdTable({
   // Abundance cells on the value palette (default viridis, as the Clean data heatmap).
   const dataPalette = useRolePalette('data')
   const palette = colour?.palette ?? dataPalette
-  const long = useMemo(() => {
-    const heat = makeValueHeat(std, palette)
-    return {
-      // Colour the long view's `value` column with the same viridis heat scale as the matrix.
-      columns: stdColumnsOf(std, numericOf(std), units).map((c) =>
-        c.key === 'value' ? { ...c, cellStyle: heat } : c
-      ),
-      // the rows built only as the table shows them (longSource)
-      rows: longSource(rowView(std), std.displayMap)
-    }
-  }, [std, palette, units])
-  const matrix = useMemo(() => standardizeMatrix(std, palette), [std, palette])
+  // Only the view on show is built, and kept app-wide by the result (ui/plotCache): the matrix is a
+  // full pivot, the long view's colours a scan of every value — switching back takes the one built.
+  const long =
+    view === 'long'
+      ? plotCached('stdLong', [std, palette, units], () => {
+          const heat = makeValueHeat(std, palette)
+          return {
+            // Colour the long view's `value` column with the same viridis heat scale as the matrix.
+            columns: stdColumnsOf(std, numericOf(std), units).map((c) =>
+              c.key === 'value' ? { ...c, cellStyle: heat } : c
+            ),
+            // the rows built only as the table shows them (longSource)
+            rows: longSource(rowView(std), std.displayMap)
+          }
+        })
+      : null
+  const matrix =
+    view === 'matrix'
+      ? plotCached('stdMatrix', [std, palette], () => standardizeMatrix(std, palette))
+      : null
   // built only once the QC view is opened
-  const qc = useMemo(
-    () => (view === 'qc' ? sampleQcTable(std, palette, units) : null),
-    [view, std, palette, units]
-  )
-  const cur = qc ?? (view === 'matrix' ? matrix : long)
+  const qc =
+    view === 'qc'
+      ? plotCached('stdQc', [std, palette, units], () => sampleQcTable(std, palette, units))
+      : null
+  const cur = (qc ?? matrix ?? long)!
   // What's on show is what the tile's Download writes: this view and its columns.
   useEffect(
     () =>

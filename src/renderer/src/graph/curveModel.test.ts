@@ -132,6 +132,20 @@ describe('baselines the engine runs', () => {
     expect(m.match).not.toContain('time')
   })
 
+  it('a surface against any level picked: dose 3 or a time alone is the baseline', () => {
+    // dose 3: every dose against dose 3 at its own time — dose 0 a point of the curves too
+    const d = run(own, { ...fresh('surface'), base: { dose: ['3'] } }).m
+    expect(d.picked).toBe(true)
+    expect(d.den).toEqual({ dose: ['3'] })
+    expect(d.num.dose).toContain('0')
+    expect(d.num.dose).not.toContain('3')
+    // a time alone: every dose against its own value at that time
+    expect(run(own, { ...fresh('surface'), base: {} }).m.yChips.every((h) => !h.why)).toBe(true)
+    const t = run(own, { ...fresh('surface'), base: { time: ['8'] } }).m
+    expect(t.picked).toBe(true)
+    expect(t.den).toEqual({ time: ['8'] })
+  })
+
   it('a surface with a time filtered out: the curves keep the other times', () => {
     const { m, preview } = run(shared, { ...fresh('surface'), filter: { time: ['24'] } })
     expect(m.num.time).toEqual(['0', '8'])
@@ -325,7 +339,8 @@ describe('any numeric condition is an axis', () => {
     )
 
   it('runs over it, its grid partnered with time; ratio to the lowest temperature compiles', () => {
-    const m = model({ baselines: { '@temp': 'matched' } })
+    // 37 °C picked: a treated level, so the curve's own first point — the pick says so
+    const m = model({})
     expect(m.refAx).toBe('@temp')
     expect(m.partner).toBe('time')
     // time across, the temperature down (hierarchy order)
@@ -351,15 +366,20 @@ describe('any numeric condition is an axis', () => {
     expect(previewCompare(input).controlTreated).toBeFalsy()
     expect(compareSlices(input).slices).toHaveLength(2)
   })
-  it('its baseline kind is its preset’s (a control) unless set', () => {
-    expect(model({}).baseline).toBe('reference')
-    // a surface keeps the presets'
+  it('its baseline kind is the pick’s: a treated level its first point, an untreated one its preset', () => {
+    expect(model({}).baseline).toBe('matched')
+    // dose 0: a control off the axis; time 0: the time course's t₀
     expect(curveModel(fresh('surface'), sampleRows(shared, active), active, numeric).baseline).toBe(
       'reference'
     )
     expect(curveModel(fresh('time'), sampleRows(own, active), active, numeric).baseline).toBe(
       'matched'
     )
+    // a treated dose picked as the baseline: the curve's own first point
+    expect(
+      curveModel({ ...fresh(), base: { dose: ['1'] } }, sampleRows(own, active), active, numeric)
+        .baseline
+    ).toBe('matched')
   })
   it('one position: 37 °C at 0 h serves every time', () => {
     const m = model({ base: { '@temp': ['37'], time: ['0'] } })
@@ -367,7 +387,7 @@ describe('any numeric condition is an axis', () => {
     expect(m.match).not.toContain('time')
   })
   it('reads back from its config, the baseline kind with it', () => {
-    const m = model({ baselines: { '@temp': 'matched' } })
+    const m = model({})
     const s = readCurveState(
       {
         num: m.num,
@@ -382,6 +402,46 @@ describe('any numeric condition is an axis', () => {
     )
     expect(s.axis).toBe('@temp')
     expect(s.base).toEqual({ '@temp': ['37'] })
-    expect(s.baselines).toEqual({ '@temp': 'matched' })
+    expect(curveModel(s, sampleRows(rows, tActive), tActive, tNumeric).baselines).toEqual({
+      '@temp': 'matched'
+    })
+  })
+})
+
+describe('a surface’s baselines follow the pick, one source', () => {
+  // dose × time, DMSO at dose 0 at every time; times starting at 60 min (no t₀) or at 0
+  const surfaceRows = (times: number[]): StandardRow[] => {
+    const out: StandardRow[] = []
+    for (const time of times)
+      for (const [cmpd, doses] of [
+        ['A', DOSES],
+        ['DMSO', [0]]
+      ] as Array<[string, number[]]>)
+        for (const dose of doses)
+          for (const rep of [1, 2])
+            out.push({ uniqID: 'g1', cell: 'M', cmpd, dose, time, rep, value: 10 })
+    return out
+  }
+  const baselines = (rows: StandardRow[], base: CurveState['base']) =>
+    curveModel({ ...fresh('surface'), base }, sampleRows(rows, active), active, numeric).baselines
+
+  it('dose 0 at every time, the first time treated: each time against its own vehicle', () => {
+    // 60 min is a treated time: a control, not a t₀ (which would drop it and pin the fit to 0 there)
+    expect(baselines(surfaceRows([60, 120, 240]), { dose: ['0'] })).toEqual({
+      dose: 'reference',
+      time: 'reference'
+    })
+  })
+  it('dose 0 at every time, from time 0: time keeps its preset (nothing responds at 0)', () => {
+    expect(baselines(surfaceRows([0, 120, 240]), { dose: ['0'] })).toEqual({
+      dose: 'reference',
+      time: 'matched'
+    })
+  })
+  it('one position (dose 0 at 60 min): that time is the start', () => {
+    expect(baselines(surfaceRows([60, 120, 240]), { dose: ['0'], time: ['60'] })).toEqual({
+      dose: 'reference',
+      time: 'matched'
+    })
   })
 })

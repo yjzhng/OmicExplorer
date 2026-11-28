@@ -4,6 +4,7 @@ import { useElementSize } from '../../dashboard/useElementSize'
 
 import {
   condLabel,
+  distShape,
   metaValue,
   type ConditionKey,
   type QcData,
@@ -20,6 +21,7 @@ import { fmtQuantity, plainTicks, rangeOf } from '../../ui/quantityAxis'
 import { sectionKey, SECTIONED_LEGEND } from '../../ui/legendSections'
 import { axisBase, PALETTES, PLOT_TEXT, plotBase, QC_FILL, withAlpha } from '../../ui/theme'
 import { useUiTheme } from '../../ui/useUiTheme'
+import { usePlotCached } from '../../ui/plotCache'
 
 /** How opaque the imputed share of a protein-count bar is: its bar's colour, solid, on top
  *  of the stack… */
@@ -33,13 +35,6 @@ const DENSE_SLOT = 12
 const DENSE_EDGE = 0.5
 /** Of the tile's width, roughly what the axis and legend take — the rest is the bars'. */
 const DENSE_ALLOWANCE = 200
-
-const median = (xs: number[]): number => {
-  if (xs.length === 0) return 0
-  const s = [...xs].sort((a, b) => a - b)
-  const m = s.length >> 1
-  return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2
-}
 
 /**
  * Per-sample QC plot for a standardized result: a violin, box, or bar chart of the chosen
@@ -98,6 +93,14 @@ export function QcPlotView({
   const catTag = colorCats.join('×')
   // Only intensity is an abundance (counts and CV % are their own numbers)
   const plain = data.metric === 'intensity' ? plainScale : undefined
+  // Each group's distribution worked out once per QC data (engine/distShape) and kept app-wide:
+  // its box's statistics and a violin's points, so Plotly is never handed every value
+  const shapes = usePlotCached('qcShapes', [data], () =>
+    data.summary === 'count' ? [] : data.groups.map((g) => distShape(g.values))
+  )
+  // a bar's height: its count, or its distribution's median
+  const topOf = (i: number): number =>
+    data.summary === 'count' ? (data.groups[i].values[0] ?? 0) : (shapes[i]?.median ?? 0)
   const { data: traces, layout } = useMemo(() => {
     const p = PALETTES[mode]
     const labels = data.groups.map((g) => g.label)
@@ -142,9 +145,7 @@ export function QcPlotView({
       // a dense bar's outline: the split between it and its neighbours (see `dense`), in the
       // tile's own colour (the plot's background is transparent over it)
       const edge = { color: p.panel, width: DENSE_EDGE }
-      const measured = data.groups.map((g) =>
-        data.summary === 'count' ? (g.values[0] ?? 0) : median(g.values)
-      )
+      const measured = data.groups.map((_, i) => topOf(i))
       // With imputation on, either part of a stacked bar says the whole count: measured, imputed
       // and their total. `text` carries the tooltip only — never drawn on the bar.
       const stackTip = `%{text}<br>measured %{customdata[0]:,}<br>imputed %{customdata[1]:,}<br>total %{customdata[2]:,}<extra></extra>`
@@ -203,59 +204,62 @@ export function QcPlotView({
           }
         ]
     } else {
-      // (category, value) pairs, one trace per sample (a violin/box trace takes one colour, and is
-      // dimmed whole by the sample link), overlaid so each keeps its own category's slot. The shapes
+      // One trace per sample (a violin/box trace takes one colour, and is dimmed whole by the
+      // sample link), overlaid so each keeps its own category's slot. A box is handed its
+      // statistics (no points shown, so its whiskers run to the min and max); a violin its
+      // distribution's quantiles with the bandwidth for all its values (engine/distShape) — the
+      // same shapes, without Plotly sorting and smoothing every value at each draw. The shapes
       // don't answer hovers — a box/violin hover is one label per statistic, each repeating the
       // sample — an invisible bar over each sample's span does, with one label (hoverBars below).
-      const shapeOf = (gs: QcGroup[], ink: string, key: string): Record<string, unknown> => {
-        const x: string[] = []
-        const y: number[] = []
-        for (const g of gs)
-          for (const v of g.values) {
-            x.push(g.label)
-            y.push(v)
-          }
+      const shapeOf = (i: number | null, ink: string, key: string): Record<string, unknown> => {
+        const g = i == null ? null : data.groups[i]
+        const d = i == null ? null : shapes[i]
         const common = {
-          x,
-          y,
           showlegend: false,
           line: { color: ink, width: 1 },
           fillcolor: withAlpha(ink, 0.35),
           hoverinfo: 'skip',
-          meta: { ...sampleMeta(key), ...groupMeta({ groups: gs.flatMap(condGroups) }) }
+          meta: { ...sampleMeta(key), ...groupMeta({ groups: g ? condGroups(g) : [] }) }
         }
-        return plot === 'violin'
+        if (plot === 'violin') {
+          const y = d?.sample ?? []
+          return {
+            type: 'violin',
+            ...common,
+            x: y.map(() => g!.label),
+            y,
+            ...(d ? { bandwidth: d.bandwidth } : null),
+            // Density only (no per-point markers) so it stays fast with many proteins.
+            points: false,
+            spanmode: 'hard',
+            box: { visible: true, width: 0.2 },
+            meanline: { visible: false }
+          }
+        }
+        return d
           ? {
-              type: 'violin',
+              type: 'box',
               ...common,
-              // Density only (no per-point markers) so it stays fast with many proteins.
-              points: false,
-              spanmode: 'hard',
-              box: { visible: true, width: 0.2 },
-              meanline: { visible: false }
+              x: [g!.label],
+              q1: [d.q1],
+              median: [d.median],
+              q3: [d.q3],
+              lowerfence: [d.min],
+              upperfence: [d.max],
+              mean: [d.mean],
+              boxpoints: false
             }
-          : { type: 'box', ...common, boxpoints: false }
+          : { type: 'box', ...common, x: [], y: [], boxpoints: false }
       }
-      traces = data.groups.map((g, i) => shapeOf([g], fills[i], linkKeys[i]))
-      trace = traces.shift() ?? shapeOf([], color, '')
+      traces = data.groups.map((_, i) => shapeOf(i, fills[i], linkKeys[i]))
+      trace = traces.shift() ?? shapeOf(null, color, '')
       // The hover target: per sample, a clear bar from its lowest value to its highest, whose
       // tooltip is the sample and its summary (median, quartiles, n).
-      const stats = data.groups.map((g) => {
-        const s = [...g.values].sort((a, b) => a - b)
-        const q = (f: number): number => {
-          if (!s.length) return NaN
-          const at = (s.length - 1) * f
-          const lo = Math.floor(at)
-          return s[lo] + (s[Math.min(lo + 1, s.length - 1)] - s[lo]) * (at - lo)
-        }
-        return {
-          min: s[0] ?? 0,
-          max: s[s.length - 1] ?? 0,
-          q1: q(0.25),
-          med: q(0.5),
-          q3: q(0.75),
-          n: s.length
-        }
+      const stats = data.groups.map((_, i) => {
+        const d = shapes[i]
+        return d
+          ? { min: d.min, max: d.max, q1: d.tipQ1, med: d.median, q3: d.tipQ3, n: d.n }
+          : { min: 0, max: 0, q1: NaN, med: NaN, q3: NaN, n: 0 }
       })
       extra = [
         {
@@ -343,9 +347,7 @@ export function QcPlotView({
     // same total, so fitting the stacks would flatten them — the imputed share runs off the top.
     let fitRange: [number, number] | undefined
     if (fit && plot === 'bar') {
-      const tops = data.groups.map((g) =>
-        data.summary === 'count' ? (g.values[0] ?? 0) : median(g.values)
-      )
+      const tops = data.groups.map((_, i) => topOf(i))
       const lo = Math.min(...tops)
       const hi = Math.max(...tops)
       const pad = (hi - lo) * 0.15 || Math.abs(hi) * 0.05 || 1
@@ -385,7 +387,9 @@ export function QcPlotView({
         ...axisBase(p),
         title: data.yLabel,
         automargin: true,
-        ...(plain ? plainTicks(plain, rangeOf(data.groups.flatMap((g) => g.values))) : null),
+        ...(plain
+          ? plainTicks(plain, rangeOf(shapes.flatMap((d) => (d ? [d.min, d.max] : []))))
+          : null),
         // Counts/CV/log-intensity are all ≥0; let intensity (non-log) autoscale normally.
         ...(fitRange
           ? { range: fitRange }
@@ -395,12 +399,28 @@ export function QcPlotView({
       }
     }
     return { data: [trace, ...traces, ...extra, ...keys], layout: lay }
-  }, [data, plot, title, mode, color, catTag, colorNum, fit, categorical, condTitle, dense, plain])
+    // topOf reads data and shapes, both listed
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    data,
+    shapes,
+    plot,
+    title,
+    mode,
+    color,
+    catTag,
+    colorNum,
+    fit,
+    categorical,
+    condTitle,
+    dense,
+    plain
+  ])
 
   return (
     // Measured for the bars' density only; the chart fills it as before.
     <div ref={boxRef} style={{ width: '100%', height: '100%' }}>
-      <PlotlyChart data={traces} layout={layout} onGraphMount={bindSampleLink} />
+      <PlotlyChart controls="none" data={traces} layout={layout} onGraphMount={bindSampleLink} />
     </div>
   )
 }

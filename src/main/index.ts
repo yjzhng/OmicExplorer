@@ -10,6 +10,7 @@ import { registerFileIo } from './file-io'
 import { registerCloseGuard } from './close-guard'
 import { registerPlotExport } from './plot-export'
 import { registerAnnotate } from './annotate'
+import { registerGoHierarchy } from './goHierarchy'
 import { registerStringNet } from './string-net'
 import { registerPark } from './park'
 import { registerRefCache } from './ref-cache'
@@ -118,6 +119,7 @@ if (shoot) {
     registerCloseGuard() // unsaved-changes prompt on close / open / new
     registerPlotExport() // renderer ↔ main plot-image writing (Export plots)
     registerAnnotate() // renderer ↔ main external-annotation fetch (UniProt)
+    registerGoHierarchy() // renderer ↔ main GO's hierarchy (the enrichment map's nesting)
     registerStringNet() // renderer ↔ main STRING network fetch
     registerPark() // inactive workflows' results parked on disk (renderer memory)
     registerRefCache() // Settings › Database: the UniProt / STRING cache's contents

@@ -1,6 +1,7 @@
-/** QC plot panel body. buildQc scans every standardized row (O(rows)), so it's memoized on
- *  the result + metric — a plot-type toggle or an unrelated re-render won't rebuild it. */
-import { useMemo } from 'react'
+/** QC plot panel body. buildQc scans every standardized row (O(rows)), so it's kept app-wide by
+ *  the result + metric (ui/plotCache) — a plot-type toggle, an unrelated re-render or a remount
+ *  won't rebuild it. */
+import { usePlotCached } from '../../ui/plotCache'
 
 import type { ConditionColoring } from '../../graph/types'
 import { colorerArgs } from '../../ui/condColor'
@@ -48,9 +49,8 @@ export function QcTile({
   /** the samples' / groups' order along the axis (default natural) */
   sampleOrder?: SampleOrder
 }) {
-  const data = useMemo(
-    () => buildQc(std, metric, scale, { by: sampleOrder, samples: std.samples }, !!plainScale),
-    [std, metric, scale, sampleOrder, plainScale]
+  const data = usePlotCached('qc', [std, metric, scale, sampleOrder, !!plainScale], () =>
+    buildQc(std, metric, scale, { by: sampleOrder, samples: std.samples }, !!plainScale)
   )
   return (
     <QcPlotView

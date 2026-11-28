@@ -54,9 +54,14 @@ describe('responseCurve', () => {
       { x: 1000, y: 1.5 }
     ])
   })
-  it('falls back to the spline where the curve was not described, or when asked', () => {
+  it('draws no line under the descriptor where the curve was not described; the spline when asked', () => {
     const line = { x: [0, 1.5, 3], y: [0.1, 1, 1.5] }
-    expect(responseCurve(row({ x, y, line }), 'curve')!.drawn).toBe('spline')
+    // the descriptor without a description: NA — the level means only, never the spline
+    const none = responseCurve(row({ x, y, line }), 'curve')!
+    expect(none.x).toEqual([])
+    expect(none.y).toEqual([])
+    expect(none.points.length).toBe(x.length - 1)
+    // the detector: the spline
     const c = responseCurve(row({ x, y, line, desc }), 'spline')!
     expect(c.drawn).toBe('spline')
     expect(c.y).toEqual(line.y)

@@ -14,12 +14,17 @@ import {
   recleanStandardized,
   standardize,
   previewScale,
+  previewProteins,
+  combineStandardize,
+  subsetStandardize,
   enrichmentTable,
   enrichmentAll,
   buildCluster,
   buildSampleCorrAll
 } from './index'
 import type { ContrastInput, ContrastPairInput } from './contrast'
+import { stackContrasts, type ContrastStackPart } from './contrastStack'
+import { contrastSelect, type ContrastSelectInput } from './contrastSelect'
 import { failure } from './engineError'
 import type { RecleanInput } from './ingest'
 import type { DirectInput } from './direct'
@@ -28,15 +33,20 @@ import type {
   CompareInput,
   CompareResultRow,
   ConditionKey,
+  CondSelector,
   StandardizeInput,
+  StandardizeResult,
   StandardRow,
   VehNormInput
 } from './types'
 import type { ClusterOptions } from './plotData'
 import type { ValueScale } from './scale'
+import { heatmapGroups } from './heatmapGroups'
+import { tagBatch } from './batch'
 import { curveFitSteps, driveAsync } from './direct'
 import { responseSurfaceSteps, runResponseSurface, type ResponseInput } from './responseSurface'
-import { enrichmentAllSteps } from './plotData'
+import { buildFcHeatmap, enrichmentAllSteps, type FcHeatmapOptions } from './plotData'
+import { measuredSets } from './sets'
 import { configurePool, pool, setUiBusy } from './pool'
 import { clusterRowGroups, clusterRowTree, type ClusterOrderOptions } from './cluster'
 import { progressTracker, type Progress, type ProgressTracker } from './progress'
@@ -45,15 +55,24 @@ import { decodeValue, encodeValue } from './wire'
 export type EngineRequest =
   | { id: number; op: 'standardize'; payload: StandardizeInput }
   | { id: number; op: 'reclean'; payload: RecleanInput }
+  | { id: number; op: 'combine'; payload: { stds: StandardizeResult[]; names?: string[] } }
+  | {
+      id: number
+      op: 'subset'
+      payload: { std: StandardizeResult; keep: CondSelector; reps?: string[]; drop?: string[] }
+    }
   | { id: number; op: 'previewScale'; payload: { dataText: string; dataFilename: string } }
+  | { id: number; op: 'previewProteins'; payload: StandardizeInput }
   | { id: number; op: 'vehNorm'; payload: VehNormInput }
   | { id: number; op: 'direct'; payload: DirectInput }
-  | { id: number; op: 'compare'; payload: CompareInput }
+  | { id: number; op: 'compare'; payload: CompareInput & { batchOf?: Record<string, string> } }
   | { id: number; op: 'factorAnova'; payload: FactorAnovaInput }
   | { id: number; op: 'curveFit'; payload: CompareInput & { curveAxis: ConditionKey } }
   | { id: number; op: 'responseSurface'; payload: ResponseInput }
   | { id: number; op: 'contrast'; payload: ContrastInput }
   | { id: number; op: 'contrastPair'; payload: ContrastPairInput }
+  | { id: number; op: 'contrastStack'; payload: { parts: ContrastStackPart[] } }
+  | { id: number; op: 'contrastSelect'; payload: ContrastSelectInput }
   | { id: number; op: 'putDataset'; payload: { key: number; rows: unknown[] } }
   | { id: number; op: 'configurePool'; payload: { size: number } }
   | { id: number; op: 'uiBusy'; payload: { busy: boolean } }
@@ -64,6 +83,12 @@ export type EngineRequest =
       payload: { flat: Float64Array; m: number; opts: ClusterOrderOptions }
     }
   | { id: number; op: 'dropDataset'; payload: { key: number } }
+  | {
+      id: number
+      op: 'heatmapGroups'
+      payload: { rows: StandardRow[]; scale: ValueScale; k?: number }
+    }
+  | { id: number; op: 'fcHeatmap'; payload: { rows: CompareResultRow[]; opts: FcHeatmapOptions } }
   | {
       id: number
       op: 'enrichmentTable'
@@ -79,6 +104,7 @@ export type EngineRequest =
       op: 'sampleCorr'
       payload: { rows: StandardRow[]; activeConditions: ConditionKey[]; scale?: ValueScale }
     }
+  | { id: number; op: 'measuredSets'; payload: { rows: StandardRow[] } }
   | {
       id: number
       op: 'enrichmentAll'
@@ -118,6 +144,9 @@ type PayloadOf<O extends ComputeRequest['op']> = Extract<ComputeRequest, { op: O
 const OPS: { [O in ComputeRequest['op']]: (payload: PayloadOf<O>, id: number) => unknown } = {
   standardize: (p) => standardize(p),
   reclean: (p) => recleanStandardized(p),
+  // a Merge's pooling and a Subset's filter: whole tables, so off the UI thread
+  combine: (p) => combineStandardize(p.stds, p.names),
+  subset: (p) => subsetStandardize(p.std, p.keep, { reps: p.reps, drop: p.drop }),
   clusterRowGroups: ({ flat, m, k }) => {
     // rows arrive as one flat (transferred) buffer; each row a view onto it
     const rows: Float64Array[] = []
@@ -130,10 +159,19 @@ const OPS: { [O in ComputeRequest['op']]: (payload: PayloadOf<O>, id: number) =>
     for (let i = 0; i + m <= flat.length && m > 0; i += m) rows.push(flat.subarray(i, i + m))
     return clusterRowTree(rows as unknown as number[][], opts)
   },
+  // A Clean data heatmap's gene clustering, pivot and all (a columnar table arrives as one)
+  heatmapGroups: ({ rows, scale, k }) =>
+    heatmapGroups((Array.isArray(rows) ? rows : decodeValue(rows)) as StandardRow[], scale, k),
+  // A fold-change heatmap built whole (pivot, top-N pick, both clusterings) off the UI thread.
+  fcHeatmap: ({ rows, opts }) =>
+    buildFcHeatmap((Array.isArray(rows) ? rows : decodeValue(rows)) as CompareResultRow[], opts),
   previewScale: (p) => previewScale(p.dataText, p.dataFilename),
+  previewProteins: (p) => previewProteins(p),
   vehNorm: (p) => runVehNorm(p),
   direct: (p) => runDirect(p),
-  compare: (p) => runCompare(p),
+  // per batch: each row tagged with its sample's batch here, not on the UI thread
+  compare: ({ batchOf, ...p }) =>
+    runCompare(batchOf ? { ...p, rows: tagBatch(p.rows, batchOf) } : p),
   factorAnova: (p) => runFactorAnova(p),
   curveFit: (p, id) => {
     // The fits shared out over the pool when there is one (same results, more cores), each
@@ -152,6 +190,8 @@ const OPS: { [O in ComputeRequest['op']]: (payload: PayloadOf<O>, id: number) =>
   },
   contrast: (p) => runContrast(p),
   contrastPair: (p) => runContrastPair(p),
+  contrastStack: ({ parts }) => stackContrasts(parts),
+  contrastSelect: (p) => contrastSelect(p),
   enrichmentAll: (p) => {
     const pl = pool()
     return pl
@@ -159,6 +199,7 @@ const OPS: { [O in ComputeRequest['op']]: (payload: PayloadOf<O>, id: number) =>
       : enrichmentAll(p.rows, p.opts)
   },
   buildCluster: (p) => buildCluster(p.rows, p.opts),
+  measuredSets: (p) => measuredSets({ rows: p.rows }),
   sampleCorr: (p) =>
     buildSampleCorrAll({ rows: p.rows, activeConditions: p.activeConditions }, { scale: p.scale }),
   enrichmentTable: (p) => enrichmentTable(p.rows, p.opts, p.facet)
@@ -182,7 +223,9 @@ ctx.addEventListener('message', async (e) => {
     setUiBusy(msg.payload.busy)
     return
   }
-  // A request naming a kept table gets it back in place of the key.
+  // The payload's row tables back as rows (the client sends them columnar — see its call), then
+  // a request naming a kept table gets it back in place of the key.
+  ;(msg as { payload: unknown }).payload = decodeValue(msg.payload)
   const ref = (msg.payload as { rows?: { $dataset?: number } } | null)?.rows?.$dataset
   if (ref !== undefined) {
     const rows = datasets.get(ref)

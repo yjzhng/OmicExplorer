@@ -379,7 +379,7 @@ export const STOPS: TourStop[] = [
     id: 'running',
     target: () => tile(own()),
     title: 'How it went',
-    body: 'Each step’s dot shows its progress and turns green when it’s done. A step that can’t run yet says what it still needs — hover its dot.',
+    body: 'Each step’s dot shows its progress and turns green when it’s done.',
     enter: () => {
       toCanvas()
       const g = graph()
@@ -483,11 +483,13 @@ export const STOPS: TourStop[] = [
   },
   {
     id: 'gene-menu',
-    reopen: true,
     target: '[data-tour="gene-menu"]',
     interactive: true,
     title: 'Genes and groups',
     body: 'Search genes or pathways, or browse them by function. Save a selection as a gene group, and click groups to colour them in every plot.',
+    // The menu closing (by any click that closes it) moves on — it isn't opened again (`reopen`),
+    // which brought it straight back each time it closed.
+    done: () => !el('[data-tour="gene-menu"]'),
     enter: () => {
       toResults()
       if (!el('[data-tour="gene-menu"]')) el(GENES_BTN)?.click()
@@ -505,11 +507,14 @@ export const STOPS: TourStop[] = [
   },
   {
     id: 'plot-settings',
-    reopen: true,
     target: PLOT_SETTINGS,
     interactive: true,
     title: 'Plot settings',
     body: 'Colours, labels, axes, text sizes: changes show on the plot at once. That’s the tour.',
+    clickHint: 'Apply or Close to finish',
+    // Closing the settings (Apply, Close) ends the tour — they aren't opened again (`reopen`),
+    // which would bring them straight back after Apply.
+    done: () => !el(PLOT_SETTINGS),
     enter: () => {
       toResults()
       if (!el(PLOT_SETTINGS)) el(PLOT_SETTINGS_BTN)?.click()

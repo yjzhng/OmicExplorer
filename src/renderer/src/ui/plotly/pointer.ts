@@ -322,19 +322,80 @@ export function bindPointer(el: PlotlyGraphDiv, ctx: PointerContext, guide: Guid
     for (let t = data.length - 1; t >= 0; t--) {
       const tr = data[t] as Trace & { __oeId?: unknown; fill?: unknown; visible?: unknown }
       if (typeof tr.__oeId !== 'string' || tr.fill !== 'toself' || tr.visible === false) continue
+      const xs = tr.x as (number | null)[] | undefined
+      const ys = tr.y as (number | null)[] | undefined
+      if (!Array.isArray(xs) || !Array.isArray(ys)) continue
+      // even-odd ray cast over each outline in pixels — a fill of several shapes (an enrichment
+      // map's ribbon in strands) has them apart by a null
+      let from = 0
+      for (let end = 0; end <= xs.length; end++) {
+        if (end < xs.length && xs[end] != null && ys[end] != null) continue
+        let inside = false
+        for (let i = from, j = end - 1; i < end; j = i++) {
+          const xi = xa._offset + xa.l2p(xs[i]!)
+          const yi = ya._offset + ya.l2p(ys[i]!)
+          const xj = xa._offset + xa.l2p(xs[j]!)
+          const yj = ya._offset + ya.l2p(ys[j]!)
+          if (yi > py !== yj > py && px < ((xj - xi) * (py - yi)) / (yj - yi) + xi) inside = !inside
+        }
+        if (inside) return tr.__oeId
+        from = end + 1
+      }
+    }
+    return null
+  }
+  // The own-id bar under a click (a bar standing for an id — a set comparison's column or set):
+  // the topmost bar of any bar trace with per-bar ids whose box holds the point. By position: a
+  // press on a bar clears Plotly's hover (its drag start) and no plotly_click follows.
+  const barAt = (clientX: number, clientY: number): string | null => {
+    const gdx = el as unknown as {
+      data?: Trace[]
+      _fullLayout?: Record<string, unknown>
+      getBoundingClientRect: () => DOMRect
+    }
+    const fl = gdx._fullLayout
+    if (!fl) return null
+    const box = gdx.getBoundingClientRect()
+    type Ax = { _offset: number; l2p: (v: number) => number }
+    const xa = fl.xaxis as Ax | undefined
+    const ya = fl.yaxis as Ax | undefined
+    if (!xa || !ya) return null
+    const px = clientX - box.left
+    const py = clientY - box.top
+    const data = gdx.data ?? []
+    for (let t = data.length - 1; t >= 0; t--) {
+      const tr = data[t] as Trace & {
+        type?: unknown
+        orientation?: unknown
+        base?: unknown
+        width?: unknown
+        customdata?: unknown
+        visible?: unknown
+      }
+      if (tr.type !== 'bar' || tr.visible === false || !Array.isArray(tr.customdata)) continue
       const xs = tr.x as number[] | undefined
       const ys = tr.y as number[] | undefined
       if (!Array.isArray(xs) || !Array.isArray(ys)) continue
-      // even-odd ray cast over the outline in pixels
-      let inside = false
-      for (let i = 0, j = xs.length - 1; i < xs.length; j = i++) {
-        const xi = xa._offset + xa.l2p(xs[i])
-        const yi = ya._offset + ya.l2p(ys[i])
-        const xj = xa._offset + xa.l2p(xs[j])
-        const yj = ya._offset + ya.l2p(ys[j])
-        if (yi > py !== yj > py && px < ((xj - xi) * (py - yi)) / (yj - yi) + xi) inside = !inside
+      const h = tr.orientation === 'h'
+      for (let k = 0; k < tr.customdata.length; k++) {
+        const id = tr.customdata[k]
+        if (typeof id !== 'string') continue
+        const b = (Array.isArray(tr.base) ? tr.base[k] : tr.base) ?? 0
+        const w = (Array.isArray(tr.width) ? tr.width[k] : tr.width) ?? 0
+        const along = h ? xs[k] : ys[k]
+        const across = h ? ys[k] : xs[k]
+        const [a0, a1] = [b, b + along].sort((p, q) => p - q)
+        const [c0, c1] = [across - w / 2, across + w / 2]
+        const [x0, x1] = (h ? [a0, a1] : [c0, c1]).map((v) => xa._offset + xa.l2p(v))
+        const [y0, y1] = (h ? [c0, c1] : [a0, a1]).map((v) => ya._offset + ya.l2p(v))
+        if (
+          px >= Math.min(x0, x1) &&
+          px <= Math.max(x0, x1) &&
+          py >= Math.min(y0, y1) &&
+          py <= Math.max(y0, y1)
+        )
+          return id
       }
-      if (inside) return tr.__oeId
     }
     return null
   }
@@ -362,6 +423,7 @@ export function bindPointer(el: PlotlyGraphDiv, ctx: PointerContext, guide: Guid
         const id =
           pointAt(clientX, clientY) ??
           regionAt(clientX, clientY) ??
+          barAt(clientX, clientY) ??
           shapeIdAt(clientX, clientY) ??
           (ctx.boldTicks()?.idByTick ? tickIdAt(clientX, clientY) : null) ??
           hoverAtClick

@@ -971,7 +971,7 @@ export function EnrichView({
         memberIdsOf={memberIdsOf}
         // Its control bar would sit over the category chips (top right); drag-zoom and
         // double-click reset still work without it.
-        modeBar={false}
+        controls="none"
       />
     </div>
   )

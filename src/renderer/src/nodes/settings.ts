@@ -32,6 +32,8 @@ import { Settings as tdr } from './tdr/Settings'
 import { Settings as geneBar } from './geneBar/Settings'
 import { Settings as pca } from './pca/Settings'
 import { Settings as enrich } from './enrich/Settings'
+import { Settings as enrichMap } from './enrichMap/Settings'
+import { Settings as setCompare } from './setCompare/Settings'
 import { Settings as string } from './string/Settings'
 import { Settings as qc } from './qc/Settings'
 import { Settings as corr } from './corr/Settings'
@@ -77,6 +79,8 @@ export const SETTINGS: Record<NodeKind, SettingsEntry> = {
   geneBar: { plot: geneBar },
   pca: { plot: pca },
   enrich: { plot: enrich },
+  enrichMap: { plot: enrichMap },
+  setCompare: { plot: setCompare },
   string: { plot: string },
   qc: { plot: qc },
   corr: { plot: corr },

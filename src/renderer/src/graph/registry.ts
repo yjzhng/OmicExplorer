@@ -73,6 +73,8 @@ export const CATEGORIES: Record<NodeCategory, CategorySpec> = {
       'geneBar',
       'pca',
       'enrich',
+      'enrichMap',
+      'setCompare',
       'string',
       'qc',
       'corr',
@@ -94,7 +96,8 @@ export const PLOT_SECTIONS: { label: string; kinds: NodeKind[] }[] = [
   { label: 'Factors', kinds: ['variance', 'interaction'] },
   { label: 'Conditions', kinds: ['bubble', 'dr', 'response', 'potency', 'metrics', 'tdr'] },
   { label: 'Contrast', kinds: ['scatter', 'dumbbell'] },
-  { label: 'Function', kinds: ['enrich', 'string'] }
+  { label: 'Function', kinds: ['enrich', 'enrichMap', 'string'] },
+  { label: 'Overlap', kinds: ['setCompare'] }
 ]
 export const ALL_OPS: NodeKind[] = [
   'load',
@@ -121,6 +124,8 @@ export const ALL_OPS: NodeKind[] = [
   'geneBar',
   'pca',
   'enrich',
+  'enrichMap',
+  'setCompare',
   'string',
   'qc',
   'corr',

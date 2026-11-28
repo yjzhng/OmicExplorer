@@ -9,14 +9,16 @@ import {
   batchSpecOf,
   cleanupRuleOfConfig,
   imputeOn,
+  normalizeOptionsOf,
   isStep,
   type LoadConfig,
-  loadCustomConditions,
-  loadNumericConditions,
   resolveLoadMode,
   type StandardizeConfig
 } from '../../graph/types'
+import type { StandardizeResult } from '../../engine'
 import type { StepRunContext } from '../runContext'
+import { importOptions } from './importOptions'
+import { forgetProteinPreview } from './proteinPreview'
 
 export async function run(ctx: StepRunContext): Promise<void> {
   const { id, kind, node, state, get, set, setStatus } = ctx
@@ -37,13 +39,7 @@ export async function run(ctx: StepRunContext): Promise<void> {
     const std = await engine.reclean({
       std: upRes.std,
       cleanupRule: cleanupRuleOfConfig(cfg),
-      normalize: cfg.normalizeEnabled
-        ? {
-            reference: cfg.normalizeReference ?? 'shared',
-            spread: !!cfg.normalizeSpread,
-            ...(cfg.normalizeReference === 'protein' ? { protein: cfg.normalizeProtein } : null)
-          }
-        : undefined,
+      normalize: normalizeOptionsOf(cfg),
       batch: batchSpecOf(cfg),
       impute: imputeOn(cfg)
         ? {
@@ -56,6 +52,7 @@ export async function run(ctx: StepRunContext): Promise<void> {
       logDisplay: cfg.logDisplay
     })
     if (get().nodes.find((n) => n.id === id)?.data.status !== 'running') return // cancelled
+    if (refusedReference(ctx, std)) return
     set((s) => ({ results: { ...s.results, [id]: { kind: 'standardize', std } } }))
     setStatus('done')
     get().invalidateDownstream(id)
@@ -103,6 +100,7 @@ export async function run(ctx: StepRunContext): Promise<void> {
     // The file is being read afresh: drop its cached preview so the settings re-read it too
     // (a re-converted import keeps the same file name).
     scalePreviews.delete(`${dir}|${wf?.base ?? ''}|${load.data}`)
+    forgetProteinPreview(id)
     const [dataText, samplesheetText, dbText] = await Promise.all([
       window.api.readDataFile(dir, load.data, wf),
       window.api.readDataFile(dir, load.samplesheet, wf),
@@ -140,23 +138,9 @@ export async function run(ctx: StepRunContext): Promise<void> {
       dataFilename,
       samplesheetText,
       dbText: dbText ?? undefined,
-      activeConditions: cfg.activeConditions ?? undefined,
-      ...(above?.keep.length ? { subsets: above.keep } : null),
-      // The interactive import knows exactly which samplesheet columns are custom conditions;
-      // a hand-written samplesheet (manual mode) leaves this unset and ingest auto-detects. One
-      // switched off isn't written, so isn't listed.
-      customConditions: loadCustomConditions(load),
-      // …and of those, the ones declared numeric: checked as numbers, and Clean data's schema
-      // from then on (numericConditions)
-      numericConditions: loadNumericConditions(load),
+      ...importOptions(load, above?.keep ?? [], cfg),
       cleanupRule: cleanupRuleOfConfig(cfg),
-      normalize: cfg.normalizeEnabled
-        ? {
-            reference: cfg.normalizeReference ?? 'shared',
-            spread: !!cfg.normalizeSpread,
-            ...(cfg.normalizeReference === 'protein' ? { protein: cfg.normalizeProtein } : null)
-          }
-        : undefined,
+      normalize: normalizeOptionsOf(cfg),
       batch: batchSpecOf(cfg),
       impute: imputeOn(cfg)
         ? {
@@ -165,13 +149,11 @@ export async function run(ctx: StepRunContext): Promise<void> {
             width: cfg.imputeWidth
           }
         : undefined,
-      // Global (non-per-row) map from the interactive import — passed straight through so
-      // enrichment can group KEGG pathways by category.
-      keggCategories: load.interactive?.annotations?.keggCategories,
       logTransform: cfg.logTransform,
       logDisplay: cfg.logDisplay
     })
     if (get().nodes.find((n) => n.id === id)?.data.status !== 'running') return // cancelled
+    if (refusedReference(ctx, std)) return
     set((s) => ({ results: { ...s.results, [id]: { kind: 'standardize', std } } }))
     // A DB is optional, so a missing one doesn't stop the run — but say so.
     setStatus(
@@ -183,4 +165,29 @@ export async function run(ctx: StepRunContext): Promise<void> {
     )
     get().invalidateDownstream(id)
   }
+}
+
+/** Normalising to a reference protein with none to divide by — none picked, or the one picked in no
+ *  sample (dropped in clean-up, or not in this data): the step stops with why, rather than pass
+ *  un-normalised values on as fractions of it. True when it stopped. */
+function refusedReference(ctx: StepRunContext, std: StandardizeResult): boolean {
+  const { id, get, setStatus } = ctx
+  const nz = std.normalization
+  if (!nz?.refused) return false
+  // their names from this run, or (dropped since) the last one that had them
+  const prev = get().results[id]
+  const nameOf = (uid: string): string =>
+    std.displayMap[uid] ??
+    (prev?.kind === 'standardize' ? prev.std.displayMap[uid] : undefined) ??
+    uid
+  const refs = (nz.proteins ?? (nz.protein ? [nz.protein] : [])).map(nameOf)
+  setStatus(
+    'error',
+    nz.refused === 'unpicked'
+      ? 'Pick the reference protein to normalise to.'
+      : refs.length === 1
+        ? `The reference protein ${refs[0]} isn't in the data (dropped in clean-up?). Pick another.`
+        : `None of the reference proteins (${refs.join(', ')}) is in the data (dropped in clean-up?). Pick others.`
+  )
+  return true
 }

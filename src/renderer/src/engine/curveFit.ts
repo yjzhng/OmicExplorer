@@ -659,7 +659,10 @@ export function fitCurve(
   doseX: number[],
   ratios: number[],
   grid?: number[],
-  x0 = -Infinity
+  x0 = -Infinity,
+  /** the control among the levels (a baseline picked above the lowest: dose 100) — its ratio 1 a
+   *  point like the rest, the midpoint anywhere */
+  among = false
 ): CurveFit | null {
   const pts: Array<[number, number]> = []
   for (let i = 0; i < doseX.length; i++)
@@ -675,7 +678,8 @@ export function fitCurve(
   // grid's points within the curve's measured range, each read off the straight line between the
   // neighbouring measured ratios; the test, R² and fold change stay on the real points alone.
   const fitPts = grid?.length ? withInterpolation(xs, ys, pts, grid) : { x: xs, y: ys }
-  const p = fitLogistic(fitPts.x, fitPts.y, dx, real ? { pec50Max: -x0 } : undefined)
+  const cap = real && !among ? { pec50Max: -x0 } : undefined
+  const p = fitLogistic(fitPts.x, fitPts.y, dx, cap)
   const v = toVec(p)
 
   // Null model: the flat line fitted to the same points as the curve — the mean of every point
@@ -694,7 +698,7 @@ export function fitCurve(
   const xMax = dx[dx.length - 1]
   const lof = curveLackOfFit(dx, ys.slice(1), p, x0)
   // The description: the same 4PL on log₂ ratios (the ratio fit's where that can't be had).
-  const desc = fitLogisticLog2(fitPts.x, fitPts.y, dx, p, real ? { pec50Max: -x0 } : undefined) ?? p
+  const desc = fitLogisticLog2(fitPts.x, fitPts.y, dx, p, cap) ?? p
   return {
     ...desc,
     ratioFit: p,
@@ -978,6 +982,28 @@ export function curveModel(
   return r.pP != null && Number.isFinite(r.pP) && r.pP >= -Math.log10(alpha) ? '4PL' : 'M0'
 }
 
+/** How a flat curve's potency reads: none — 'na', the default: with no step there is no midpoint,
+ *  as a gene with no difference has no p — or 'zero' (a plot's "force pEC50"): pEC50 0 (EC50
+ *  1 M), placed as the least potent. Either way not the fit's midpoint, which a flat curve can't
+ *  place: its dosed points a little off the control send it below the lowest dose, to the bound —
+ *  the most potent pEC50 the fit allows. */
+export type FlatPotency = 'na' | 'zero'
+
+/** Whether a curve-fit row is flat: its final model is M0 — its F-test doesn't reject the flat
+ *  line at the threshold's α (`model`; on a result classified before it was kept, from its p and
+ *  `t`). */
+export function curveIsFlat(
+  r: { model?: '4PL' | 'M0'; pP: number | null; curve?: { ccAlpha?: number } },
+  t?: ThresholdConfig
+): boolean {
+  if (r.model) return r.model === 'M0'
+  return !!r.curve && !!t && curveModel(r, t) === 'M0'
+}
+
+/** A flat curve's pEC50 as `mode` reads it (see FlatPotency): 0, or none. */
+export const flatPEC50 = (mode: FlatPotency | undefined): number | undefined =>
+  mode === 'zero' ? 0 : undefined
+
 function classifyCall(
   r: Parameters<typeof classifyCompareRow>[0],
   t: ThresholdConfig
@@ -1041,7 +1067,10 @@ export function curveMetrics(
   },
   t: ThresholdConfig | undefined,
   /** the dose unit's size in molar (1e-9 for nM), so pEC50 is molar; 1 = in the dose's own units */
-  doseScale = 1
+  doseScale = 1,
+  /** set when the curve is flat (curveIsFlat): its potency read as this says — no EC50, its pEC50
+   *  none or 0 — not the midpoint the fit pushed to its bound */
+  flat?: FlatPotency
 ): Record<(typeof CURVE_METRICS)[number], number | undefined> {
   let relevance: number | undefined
   if (t?.type === 'curvecurator' && log2FC != null && Number.isFinite(log2FC)) {
@@ -1071,8 +1100,8 @@ export function curveMetrics(
   // On a log axis the potency is pEC50 (molar where the unit is), on a linear one EC50 in its units.
   const lin = c.scale === 'linear'
   return {
-    pEC50: d && !lin ? c.pec50 - Math.log10(doseScale) : undefined,
-    EC50: d ? xUnits(c, -c.pec50) : undefined,
+    pEC50: d && !lin ? (flat ? flatPEC50(flat) : c.pec50 - Math.log10(doseScale)) : undefined,
+    EC50: d && !flat ? xUnits(c, -c.pec50) : undefined,
     slope: d ? c.slope : undefined,
     front: d ? c.front : undefined,
     back: d ? c.back : undefined,

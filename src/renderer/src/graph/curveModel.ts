@@ -48,8 +48,6 @@ export interface CurveState {
   base: Partial<Record<ConditionKey, string[]>>
   /** each axis's scale as the user set it (absent: the detected one — scaleOf) */
   scales?: Partial<Record<ConditionKey, AxisScale>>
-  /** each axis's baseline kind as the user set it (absent: its preset's — baselineOf) */
-  baselines?: Partial<Record<ConditionKey, AxisBaseline>>
   /** a surface's two conditions (absent: dose × time) */
   pair?: [ConditionKey, ConditionKey]
   /** each axis's models as the user set them (absent: the method's — graph/axisFits.ts) */
@@ -88,8 +86,10 @@ export interface CurveModelOut {
   scale: AxisScale
   scaleGuess: ScaleGuess
   /** what the baseline is to the curve: a control off it ('reference') or its own first point
-   *  ('matched') — the user's, else the axis's preset; a surface's is the presets' */
+   *  ('matched') — as the Baseline pick makes it (baselinesOfPick) */
   baseline: AxisBaseline
+  /** …and to each axis the fit runs over (a surface's two) */
+  baselines: Partial<Record<ConditionKey, AxisBaseline>>
   /** the dataset's numeric conditions (its schema), as the model was built with */
   numeric: NumericConds
   /** some baseline is picked */
@@ -123,10 +123,36 @@ export function scaleOf(
   return { scale: set ?? guess.scale ?? 'linear', guess }
 }
 
-/** A curve axis's baseline kind: the user's pick, else its preset's (dose a control, time its own
- *  first point, any other a control). */
-export const baselineOf = (axis: ConditionKey, set: AxisBaseline | undefined): AxisBaseline =>
-  set ?? presetModel(axis).baseline
+/**
+ * Each fitted axis's baseline kind as the Baseline pick makes it — the one place it's decided (the
+ * models panel shows it, read-only), so the two can't say different things:
+ *  - the curve's axis (a surface's first): its picked level. A treated level (dose 0.1, time 60, the
+ *    lowest temperature) is its own first point ('matched'); an untreated one (0 on a log axis)
+ *    is the axis's preset — dose 0 a control off the axis, time 0 the time course's t₀.
+ *  - a surface's second axis: picked too (one position) — its first point. Not picked, each of its
+ *    levels is matched to its own baseline (dose 0 at every time): every level responds — a control
+ *    ('reference') — unless its lowest is untreated (time 0: nothing to respond there either way),
+ *    which keeps the axis's preset.
+ */
+export function baselinesOfPick(
+  axisConds: readonly ConditionKey[],
+  pin: Partial<Record<ConditionKey, readonly string[]>>,
+  levels: (c: ConditionKey) => readonly string[],
+  scale: (c: ConditionKey) => AxisScale
+): Partial<Record<ConditionKey, AxisBaseline>> {
+  const out: Partial<Record<ConditionKey, AxisBaseline>> = {}
+  axisConds.forEach((c, i) => {
+    const picked = pin[c]?.[0]
+    if (i === 0)
+      out[c] = picked != null && treatedOn(scale(c), picked) ? 'matched' : presetModel(c).baseline
+    else if (picked != null) out[c] = 'matched'
+    else {
+      const lowest = levels(c)[0]
+      out[c] = lowest != null && treatedOn(scale(c), lowest) ? 'reference' : presetModel(c).baseline
+    }
+  })
+  return out
+}
 
 /** A surface's pair as picked (absent: dose × time). */
 export const pairOf = (state: Pick<CurveState, 'pair'>): [ConditionKey, ConditionKey] =>
@@ -179,8 +205,10 @@ function chipWhy(
     return `A pooled baseline (several ${condLabel(c)} levels) isn't supported yet: clear ${condLabel(c)} ${mine[0]} first`
   if (c === s.refAx)
     return theirs.length > 1 && other ? `Several ${condLabel(other)} levels are picked` : null
-  // the partner: only as one position, with one of the axis' own picked (on a surface: every
-  // cell against that one position, instead of the baseline at each level of it)
+  // the partner: on a surface, any level — every cell against its own levels with the pinned ones
+  // set to the pick (time 360: each dose against its value at 360; with a dose too, one
+  // position); beside a one-axis curve, only as one position with one of the axis' own picked
+  if (s.surface) return null
   if (!theirs.length)
     return `A ${condLabel(c)} on its own isn't a baseline for a ${condLabel(s.refAx)} curve: pick a ${condLabel(s.refAx)} first (then ${name} makes one position)`
   return null
@@ -220,7 +248,6 @@ export function curveModel(
     valuesOf(rows, refAx, numeric),
     state.scales?.[refAx]
   )
-  const baseline: AxisBaseline = baselineOf(refAx, state.baselines?.[refAx])
   const treated = (v: string): boolean => treatedOn(scale, v)
 
   const pick: Partial<Record<ConditionKey, string[]>> = {}
@@ -244,12 +271,23 @@ export function curveModel(
   // The picks the engine runs: the axis' own level, plus (not on a surface) one of the partner.
   const ownPick = pick[refAx] ?? []
   const otherPick = partner ? (pick[partner] ?? []) : []
-  const picked = ownPick.length === 1 && otherPick.length <= 1
+  // (a surface: any one level of either axis, or one of each)
+  const picked = surface
+    ? ownPick.length <= 1 && otherPick.length <= 1 && ownPick.length + otherPick.length > 0
+    : ownPick.length === 1 && otherPick.length <= 1
   const pin: CurveModelOut['pin'] = {}
   if (picked) {
-    pin[refAx] = ownPick
+    if (ownPick.length) pin[refAx] = ownPick
     if (otherPick.length && partner) pin[partner] = otherPick
   }
+  // what the baseline is to each axis: the pick says (baselinesOfPick)
+  const baselines = baselinesOfPick(
+    axisConds,
+    pin,
+    (c) => valuesOf(rows, c, numeric),
+    (c) => (c === refAx ? scale : scaleOf(valuesOf(rows, c, numeric), state.scales?.[c]).scale)
+  )
+  const baseline: AxisBaseline = baselines[refAx] ?? presetModel(refAx).baseline
   const isBase = (r: StandardRow): boolean =>
     picked &&
     (Object.entries(pin) as Array<[ConditionKey, string[]]>).every(([c, vs]) =>
@@ -260,7 +298,12 @@ export function curveModel(
   // a surface spans both
   const ctxConds: ConditionKey[] = conds.filter((c) => !axisConds.includes(c))
   const warnings: string[] = []
-  if (!picked) warnings.push(`Pick the baseline: a ${condLabel(refAx)} on the grid.`)
+  if (!picked)
+    warnings.push(
+      surface
+        ? 'Pick the baseline: a level on the grid.'
+        : `Pick the baseline: a ${condLabel(refAx)} on the grid.`
+    )
   for (const c of conds)
     if (valuesOf(samples, c, numeric).every((v) => outOf(c).has(v)))
       warnings.push(`${condLabel(c)}: every value is filtered out.`)
@@ -271,7 +314,11 @@ export function curveModel(
   if (picked) {
     // the curve's points: every treated axis level beyond the baseline's (the engine leaves the
     // rest out: ≤ 0 on a log axis, 0 on a linear one)
-    num[refAx] = valuesOf(rows, refAx, numeric).filter((v) => !ownPick.includes(v) && treated(v))
+    // — every level but the pick's on a surface, or where the pick is above the axis's lowest
+    // (dose 0 against dose 100 is a point too: the engine places it)
+    const axisLevels = valuesOf(rows, refAx, numeric)
+    const above = ownPick.some((p) => axisLevels.some((v) => Number(v) < Number(p)))
+    num[refAx] = axisLevels.filter((v) => !ownPick.includes(v) && (surface || above || treated(v)))
     for (const [c, vs] of Object.entries(pin)) den[c as ConditionKey] = vs
     const baseRows = rows.filter(isBase)
     for (const c of conds) {
@@ -322,6 +369,7 @@ export function curveModel(
     scale,
     scaleGuess,
     baseline,
+    baselines,
     picked,
     isBase,
     ctxConds,
@@ -424,7 +472,6 @@ export function readCurveState(
     filter: {},
     drop: {},
     scales: { ...cfg.axisScale },
-    baselines: { ...cfg.axisBaseline },
     ...(pair ? { pair } : null),
     ...(cfg.axisFits ? { fits: { ...cfg.axisFits } } : null),
     ...defaultBaseline(samples, refAx, numeric)
@@ -442,10 +489,11 @@ export function readCurveState(
       ? valuesOf(denRows, refAx, numeric)
       : []
   base.base = own.length ? { [refAx]: own } : {}
-  // any other numeric condition pinned on the baseline: a partner level (one position) — one
-  // matched (each level its own baseline) isn't a pick
+  // any other numeric condition pinned on the baseline to one level: a partner level (one
+  // position) — pinned to several (each level its own baseline: matched) it isn't a pick
   for (const c of active)
-    if (c !== refAx && isNumericCond(c, numeric) && den[c]?.length) base.base[c] = [...den[c]!]
+    if (c !== refAx && isNumericCond(c, numeric) && den[c]?.length === 1)
+      base.base[c] = [...den[c]!]
   for (const c of active) {
     if (c === refAx || (axis === 'surface' && (pair ?? ['dose', 'time']).includes(c))) continue
     const all = valuesOf(samples, c, numeric)

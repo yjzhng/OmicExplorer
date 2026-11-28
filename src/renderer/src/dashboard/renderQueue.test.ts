@@ -1,6 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { enqueueReveal, resetRevealQueue, REVEAL_TIMEOUT_MS, type RevealJob } from './renderQueue'
+import {
+  enqueueReveal,
+  resetRevealQueue,
+  REVEAL_TIMEOUT_MS,
+  setBackgroundPaused,
+  type RevealJob
+} from './renderQueue'
 import { createDrawTracker } from '../ui/tileDraw'
 
 // Frames and idle moments are driven by hand: `frame()` runs the pending rAF callbacks, `idle()`
@@ -57,6 +63,26 @@ describe('renderQueue', () => {
     expect(log).toEqual(['a']) // never synchronously
     frame()
     expect(log).toEqual(['a', 'b'])
+  })
+
+  it('holds the background lane while paused (urgent jobs go on), and resumes it', () => {
+    const log: string[] = []
+    const d: Record<string, () => void> = {}
+    setBackgroundPaused(true)
+    enqueueReveal(job(log, 'bg', d), false)
+    idle()
+    frame()
+    expect(log).toEqual([])
+    enqueueReveal(job(log, 'u', d))
+    frame()
+    expect(log).toEqual(['u'])
+    d.u()
+    frame()
+    idle()
+    expect(log).toEqual(['u']) // still held
+    setBackgroundPaused(false)
+    idle()
+    expect(log).toEqual(['u', 'bg'])
   })
 
   it('puts urgent jobs ahead of background ones, which run on idle', () => {

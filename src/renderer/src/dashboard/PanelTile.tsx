@@ -240,10 +240,16 @@ export const PanelTile = memo(function PanelTile({
   const [applied, setApplied] = useState({ facetSel, results })
   const behind = applied.facetSel !== facetSel || applied.results !== results
   const revealApplied = useReveal(draw)
+  // A plot with no chart to draw (not run yet, running, waiting its turn, failed) shows a line of
+  // text: nothing to pace or veil, so it takes the new state at once — a spinner over "Not run
+  // yet" read as a draw that never came.
+  const runState = child ? (child.status ?? 'idle') : node.data.status
+  const charted = !isPlot || (runState === 'done' && !!results[plotResultKey(node.id, child?.id)])
+  if (behind && !charted) setApplied({ facetSel, results })
   useEffect(() => {
-    if (!behind) return
+    if (!behind || !charted) return
     return revealApplied(() => setApplied({ facetSel, results }), near)
-  }, [behind, near, facetSel, results, revealApplied])
+  }, [behind, charted, near, facetSel, results, revealApplied])
   // The new selection / results committed (charts below have started their draws): see tileDraw.
   useEffect(() => draw.committed(), [applied, draw])
   const [settingsAt, setSettingsAt] = useState<Anchor | null>(null)
@@ -716,8 +722,8 @@ export const PanelTile = memo(function PanelTile({
         }
         {/* Waiting its turn to show the new condition / results (see `applied`): the old plot
             dimmed, with a spinner, so it doesn't read as the new one. */}
-        {behind && <div style={styles.staleVeil} />}
-        {behind && near && <Spinner size={20} />}
+        {behind && charted && <div style={styles.staleVeil} />}
+        {behind && charted && near && <Spinner size={20} />}
       </div>
     </div>
   )

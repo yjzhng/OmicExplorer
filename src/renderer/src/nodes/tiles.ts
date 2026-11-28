@@ -53,6 +53,8 @@ export const TILES: Record<NodeKind, ((t: TileContext) => ReactNode) | null> = {
   geneBar: null,
   pca: null,
   enrich: null,
+  enrichMap: null,
+  setCompare: null,
   string: null,
   qc: null,
   corr: null,

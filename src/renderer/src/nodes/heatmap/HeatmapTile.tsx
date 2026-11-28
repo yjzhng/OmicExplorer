@@ -1,7 +1,9 @@
 /** Heatmap panel body. Clustering gene rows (average-linkage) is O(n²) in time and memory — a
- *  full proteome's is seconds and a few hundred MB — so it runs in the UI worker lane
- *  (engineUi), off the UI thread: the tile pivots the data, hands the clustering out, and draws
- *  when it's back, keeping the previous heatmap up meanwhile. It rebuilds only when the
+ *  full proteome's is seconds and a few hundred MB — so the plot's run does it (heatmap/run.ts)
+ *  and the tile only pivots the data and orders it by the run's groups. Where there are none (a
+ *  gene pick, a result from before the run clustered) it clusters here, in the UI worker lane
+ *  (engineUi), off the UI thread, and draws when it's back, keeping the previous heatmap up
+ *  meanwhile. It rebuilds only when the
  *  standardized result (or the scale it's presented on) or the focus genes change, not on every
  *  parent re-render. `std` comes already on the scale Clean data's log-transform setting picks
  *  (presentStd), so it's drawn as given. */
@@ -21,6 +23,7 @@ import {
   type ValueScale
 } from '../../engine'
 import { engineUi } from '../../engine/client'
+import { groupsAt } from '../../engine/heatmapGroups'
 import { Spinner } from '../../ui/Spinner'
 import { HeatmapView } from './HeatmapView'
 
@@ -43,7 +46,8 @@ export function HeatmapTile({
   condBar,
   palette,
   sampleOrder = 'natural',
-  plainScale
+  plainScale,
+  runGroups
 }: {
   /** its values shown plain on a log colour scale (ui/quantityAxis): `scale`, when they are */
   plainScale?: ValueScale
@@ -61,6 +65,9 @@ export function HeatmapTile({
   palette?: PaletteRef
   /** the sample columns' order (default natural) */
   sampleOrder?: SampleOrder
+  /** the plot's run's cluster groups of all `n` gene rows, each as its genes (heatmap/run.ts),
+   *  used in place of clustering here — not for a gene pick, which clusters just those genes */
+  runGroups?: { n: number; groups: string[][] }
 }) {
   const focusKey = focus.join(',')
   const key = `${sampleOrder}\u0000${focusKey}`
@@ -88,7 +95,10 @@ export function HeatmapTile({
         return
       }
       if (!live) return
-      const { matrix, k } = r.value
+      const { matrix, k, genes } = r.value
+      // the run clustered these rows: its groups, as these rows' positions
+      const fromRun = focus.length === 0 ? groupsAt(runGroups, genes) : null
+      if (fromRun) return step(gen.next(fromRun))
       engineUi.clusterRowGroups(matrix, k).then(
         (groups) => step(gen.next(groups)),
         // the worker lane failed: cluster here rather than show nothing
@@ -101,7 +111,7 @@ export function HeatmapTile({
     }
     // key stands in for sampleOrder and the focus array's contents (stable across renders)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [std, key])
+  }, [std, key, runGroups])
   const heatmap = cached ?? last
   if (!heatmap) return <Spinner />
   const scope = focus.length > 0 ? `${heatmap.y.length} selected genes` : 'all genes'

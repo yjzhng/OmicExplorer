@@ -1,4 +1,11 @@
-import { contextOf, type ContextRow, ConditionKey, ctxNum } from '../engine'
+import {
+  contextOf,
+  customSlug,
+  distinctOf,
+  isCustomCond,
+  type ContextRow,
+  ConditionKey
+} from '../engine'
 import { numericOfResult, NodeResult } from './types'
 
 /** The numeric conditions assumed where the data isn't known (no upstream, Settings' defaults). */
@@ -35,10 +42,38 @@ export function scanAxisAvail(r: NodeResult): AxisAvail {
     const ac = r.std.activeConditions ?? []
     return [...numeric].filter((c) => ac.includes(c))
   }
-  // the context tuples (contextOf) carry every condition value the rows do — no row built
-  const rows = contextRowsOf(r)
-  if (!rows) return DEFAULT_AXES
-  return [...numeric].filter((c) => rows.some((x) => ctxNum(x, c) != null))
+  const h = holderOf(r)
+  if (!h) return DEFAULT_AXES
+  return [...numeric].filter((c) => levelsOf(h, c, 1).size > 0)
+}
+
+/** A Compare's or a Contrast's rows' holder, else null. */
+const holderOf = (r: NodeResult): { rows: readonly object[] } | null =>
+  r.kind === 'compare' ? r.cmp : r.kind === 'contrast' ? r.ctr : null
+
+/** The numeric levels a condition takes over a result's rows (ctxNum's reading: null, '' or not
+ *  a finite number is none), up to `enough` of them — off the column's distinct values (distinctOf,
+ *  cached per table), not the context index: the canvas asks this of every result as a project
+ *  opens, and indexing a million-row Contrast's contexts is most of a second. */
+function levelsOf(h: { rows: readonly object[] }, c: ConditionKey, enough: number): Set<number> {
+  const out = new Set<number>()
+  const add = (v: unknown): void => {
+    if (v == null || v === '') return
+    const n = typeof v === 'number' ? v : Number(v)
+    if (Number.isFinite(n)) out.add(n)
+  }
+  if (isCustomCond(c)) {
+    const slug = customSlug(c)
+    for (const e of distinctOf(h, 'extra')) {
+      add((e as Record<string, unknown> | null | undefined)?.[slug])
+      if (out.size >= enough) break
+    }
+  } else
+    for (const v of distinctOf(h, c)) {
+      add(v)
+      if (out.size >= enough) break
+    }
+  return out
 }
 /**
  * The numeric conditions this result actually varies over: at least TWO distinct levels.
@@ -57,19 +92,9 @@ export function multiLevelAxes(r: NodeResult | undefined): AxisAvail {
   if (!r) return DEFAULT_AXES
   const hit = multiByResult.get(r)
   if (hit) return [...hit]
-  const rows = contextRowsOf(r)
+  const h = holderOf(r)
   const avail = axisAvailFromResult(r)
-  const found = !rows
-    ? avail
-    : avail.filter((c) => {
-        const seen = new Set<number>()
-        for (const x of rows) {
-          const v = ctxNum(x, c)
-          if (v != null) seen.add(v)
-          if (seen.size > 1) return true
-        }
-        return false
-      })
+  const found = !h ? avail : avail.filter((c) => levelsOf(h, c, 2).size > 1)
   multiByResult.set(r, found)
   return [...found]
 }

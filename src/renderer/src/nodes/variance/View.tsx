@@ -15,7 +15,8 @@ import {
   rankByQ,
   stdLookupOf,
   isNumericCond,
-  type AnovaFactor
+  type AnovaFactor,
+  type GeneShares
 } from '../../engine'
 import { quickOn } from '../../graph/registry'
 import {
@@ -38,6 +39,11 @@ import { InteractionHeatmap } from './InteractionHeatmap'
 import { InteractionSurface } from './InteractionSurface'
 import { InteractionView } from './InteractionView'
 import { VarianceView } from './VarianceView'
+import { plotCached } from '../../ui/plotCache'
+
+const NO_SHARES: GeneShares[] = []
+/** factor 2's one level with no factor 2 (the rest averaged) */
+const MEAN_ONLY = ['mean']
 
 /** The variance / interaction result body (nodes/views.ts). Plain render function: it runs inside
  *  PanelBody, so it must not call hooks — derive what needs a hook in usePlotContext. */
@@ -61,14 +67,20 @@ export function varianceView(v: ViewContext): ReactNode {
   const anova = rawUp.cmp.anova
   if (!anova) return <Empty text="Needs an ANOVA — re-run the Compare." />
   const dm = rawUp.displayMap
-  const terms = anova.terms.map((t) => t.label)
+  // kept by the ANOVA (ui/plotCache), so the plots below get the same arrays render to render —
+  // a fresh one is a rebuild and a redraw, on every pin
+  const terms = plotCached('anovaTerms', [anova], () => anova.terms.map((t) => t.label))
   // The context pick (dose …) chooses the model's slice: one term's rows carry the contexts.
   const facetRows = holderWhere(
     rawUp.cmp,
     `term¦${terms[0]}`,
     (c) => !!c.term && c.comparison === terms[0]
   ).rows
-  const present = new Set(anova.slices.flatMap((s) => s.genes.map((g) => g.uniqID)))
+  const present = plotCached(
+    'anovaPresent',
+    [anova],
+    () => new Set(anova.slices.flatMap((s) => s.genes.map((g) => g.uniqID)))
+  )
   const geneIn = (rows: CompareResultRow[], id: string) =>
     anovaSliceFor(anova, rows[0])?.genes.find((g) => g.uniqID === id)
   if (kind === 'variance') {
@@ -87,12 +99,22 @@ export function varianceView(v: ViewContext): ReactNode {
     // detailed: the selected genes, else the most significant (smallest q of any factor)
     const detailOf = (rows: CompareResultRow[]) => {
       const slice = anovaSliceFor(anova, rows[0])
-      if (!slice) return []
-      const sel = genes.filter((id) => slice.genes.some((g) => g.uniqID === id))
-      const picked = sel.length
-        ? sel.map((id) => slice.genes.find((g) => g.uniqID === id)!)
-        : rankByQ(slice.genes).slice(0, Math.max(1, Math.min(cfg.topGenes || 20, 60)))
-      return picked.map(geneShares)
+      if (!slice) return NO_SHARES
+      const top = Math.max(1, Math.min(cfg.topGenes || 20, 60))
+      return plotCached('varianceDetail', [slice, genes, top], () => {
+        const sel = genes.filter((id) => slice.genes.some((g) => g.uniqID === id))
+        const picked = sel.length
+          ? sel.map((id) => slice.genes.find((g) => g.uniqID === id)!)
+          : rankByQ(slice.genes).slice(0, top)
+        return picked.map(geneShares)
+      })
+    }
+    // every gene of the slice on show, as shares (the global view)
+    const allOf = (rows: CompareResultRow[]) => {
+      const slice = anovaSliceFor(anova, rows[0])
+      return slice
+        ? plotCached('varianceAll', [slice], () => slice.genes.map(geneShares))
+        : NO_SHARES
     }
     return (
       <div style={styles.chart}>
@@ -114,7 +136,7 @@ export function varianceView(v: ViewContext): ReactNode {
                         <VarianceView
                           view="focus"
                           terms={terms}
-                          genes={[geneShares(g)]}
+                          genes={plotCached('varianceGene', [g], () => [geneShares(g)])}
                           displayMap={dm}
                         />
                       ) : (
@@ -130,11 +152,7 @@ export function varianceView(v: ViewContext): ReactNode {
                   <VarianceView
                     view={view}
                     terms={terms}
-                    genes={
-                      view === 'detail'
-                        ? detailOf(rows)
-                        : (anovaSliceFor(anova, rows[0])?.genes ?? []).map(geneShares)
-                    }
+                    genes={view === 'detail' ? detailOf(rows) : allOf(rows)}
                     displayMap={dm}
                   />
                 )}
@@ -246,16 +264,21 @@ export function varianceView(v: ViewContext): ReactNode {
                   const slice = anovaSliceFor(anova, rows[0])
                   const g = slice?.genes.find((x0) => x0.uniqID === gene)
                   // the same cell means either way: as lines, or as a grid of tiles
+                  // 3-D: log₂ against the control cell, whatever the abundance scale
+                  const scale = as3d ? 'log2' : quantityScale
+                  // kept by the gene's fit (ui/plotCache): the same object render to render, so a
+                  // pin elsewhere doesn't redraw it
                   const ig =
                     slice && g
-                      ? interactionGene(
-                          anova,
-                          slice,
-                          g,
-                          { x, line },
-                          // 3-D: log₂ against the control cell, whatever the abundance scale
-                          as3d ? 'log2' : quantityScale,
-                          std && (std.get(gene) ?? [])
+                      ? plotCached('interactionGene', [g, slice, anova, x, line, scale, std], () =>
+                          interactionGene(
+                            anova,
+                            slice,
+                            g,
+                            { x, line },
+                            scale,
+                            std && (std.get(gene) ?? [])
+                          )
                         )
                       : undefined
                   return ig && as3d ? (
@@ -274,7 +297,7 @@ export function varianceView(v: ViewContext): ReactNode {
                       xName={condLabel(anova.factors[x].condition)}
                       xLevels={anova.factors[x].levels}
                       lineName={line == null ? '' : condLabel(anova.factors[line].condition)}
-                      lineLevels={line == null ? ['mean'] : anova.factors[line].levels}
+                      lineLevels={line == null ? MEAN_ONLY : anova.factors[line].levels}
                       valueLabel={quantityLabel(quantityScale, quantityUnit, !!plainScale)}
                       displayMap={dm}
                       plainScale={plainScale}
@@ -285,7 +308,7 @@ export function varianceView(v: ViewContext): ReactNode {
                       xName={condLabel(anova.factors[x].condition)}
                       xLevels={anova.factors[x].levels}
                       lineName={line == null ? '' : condLabel(anova.factors[line].condition)}
-                      lineLevels={line == null ? ['mean'] : anova.factors[line].levels}
+                      lineLevels={line == null ? MEAN_ONLY : anova.factors[line].levels}
                       yLabel={quantityLabel(quantityScale, quantityUnit, !!plainScale)}
                       displayMap={dm}
                       look={drLook(cfg)}

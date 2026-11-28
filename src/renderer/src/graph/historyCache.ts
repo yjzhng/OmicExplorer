@@ -15,7 +15,8 @@ export interface HistoryIO {
   write: (key: string, pieces: string[]) => Promise<void>
   read: (key: string) => Promise<string>
   drop: (key: string) => Promise<void>
-  pack: (results: Record<string, NodeResult>) => string[]
+  /** (may take its time: the copy is made in the background — packedResultsChunksSliced) */
+  pack: (results: Record<string, NodeResult>) => string[] | Promise<string[]>
   unpack: (text: string) => Record<string, NodeResult>
 }
 
@@ -160,7 +161,7 @@ export class HistoryCache {
       this.enqueue(async () => {
         try {
           if (!this.versions.has(v.id)) return
-          const pieces = this.io.pack({ r: obj })
+          const pieces = await this.io.pack({ r: obj })
           await this.io.write(key, pieces)
           v.file = key
           v.size = pieces.reduce((n, p) => n + p.length, 0)

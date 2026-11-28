@@ -6,6 +6,7 @@ import { attachLazyRows, holderTable } from './lazyRows'
 import {
   buildGeneBar,
   buildHeatmap,
+  buildHeatmapSteps,
   buildQc,
   buildSampleCorr,
   buildStdMatrix,
@@ -15,8 +16,9 @@ import {
   type SampleMeta,
   type SampleOrdering
 } from './plotData'
+import { groupsAt, heatmapGroups } from './heatmapGroups'
 import { sampleIndex } from './sampleIndex'
-import { quantityLabel, fromLinear, type ValueScale } from './scale'
+import { quantityLabel, fromLinear, presentStd, type ValueScale } from './scale'
 import {
   condLabel,
   customCond,
@@ -458,6 +460,25 @@ describe('sampleIndex', () => {
         const want = buildHeatmap(plain.rows, opts)
         expect(buildHeatmap(sampleIndex(lazy), opts), name).toEqual(want)
         expect(buildHeatmap(sampleIndex(plain), opts), name).toEqual(want)
+      }
+  })
+
+  it("a heatmap run's groups (by gene, off the rows) give the tile the heatmap it clusters itself", () => {
+    for (const { name, lazy, plain } of CASES)
+      for (const scale of ['linear', 'log10'] as const) {
+        const shown = presentStd(lazy, scale)
+        const run = heatmapGroups(plain.rows, scale) // the rows the worker decodes
+        const want = buildHeatmap(sampleIndex(shown), { log10: false })
+        const gen = buildHeatmapSteps(sampleIndex(shown), { log10: false })
+        let r = gen.next()
+        while (!r.done) {
+          const at = groupsAt(run, r.value.genes)
+          expect(at, name).not.toBeNull()
+          r = gen.next(at!)
+        }
+        expect(r.value, name).toEqual(want)
+        // another gene set: not matched, the tile clusters
+        expect(groupsAt(run, ['P1', 'P2'])).toBeNull()
       }
   })
 

@@ -1,5 +1,4 @@
-import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { GeneSearchMenu } from '../../dashboard/GeneSearchMenu'
+import { type ReactNode, useCallback, useEffect, useMemo, useState } from 'react'
 import {
   type ConditionKey,
   IMPUTE_DEFAULTS,
@@ -25,7 +24,7 @@ import {
   toLinear
 } from '../../engine'
 import type { SampleConds } from '../../engine/types'
-import type { CleanupMode } from '../../engine'
+import type { CleanupMode, ProteinList, RefCombine, RefMissing } from '../../engine'
 import { loadAbove, wiredKindOf } from '../../graph/registry'
 import { useGraph } from '../../graph/store'
 import {
@@ -34,11 +33,14 @@ import {
   cleanupModeOfConfig,
   cleanupOn,
   imputeOn,
-  isStep
+  isStep,
+  refProteinsOf
 } from '../../graph/types'
 import { StatusNote } from '../../ui/StatusNote'
 import { UI } from '../../ui/theme'
 import { OnOffSwitch, ToggleSwitch } from '../../ui/ToggleSwitch'
+import { FitOneLine } from '../../ui/FitOneLine'
+import { previewStdProteins, proteinListOf } from './proteinPreview'
 import { ValueMultiSelect } from '../../ui/ValueMultiSelect'
 import { EffectLabelInput, Field, NumberInput, Section, Select } from '../kit/settings/controls'
 import { CONDS } from '../kit/settings/hooks'
@@ -257,23 +259,23 @@ export function ValueHistogramView({
     </div>
   )
 }
-/** Pick one protein: a button showing the pick, opening the app's gene search (GeneSearchMenu, as
- *  the one-gene pager's) over the last run's genes. Before any run there are none to list. */
-export function ProteinPicker({
-  value,
-  names,
-  onChange
+/** The reference proteins: picked from the step's input (previewStdProteins) — none to list until
+ *  there's an input to read — with, for several, how they combine, and what a sample missing some
+ *  does. Picks no longer in the input are flagged (and listed as such in the menu). */
+function RefProteinFields({
+  config,
+  proteins,
+  update
 }: {
-  value: string | undefined
-  /** uniqID → display name, from the Clean data step's last run */
-  names: Record<string, string> | undefined
-  onChange: (uid: string) => void
+  config: StandardizeConfig
+  /** the step's input's proteins: names and descriptions */
+  proteins: ProteinList | undefined
+  update: (patch: Partial<StandardizeConfig>) => void
 }): ReactNode {
-  const [rect, setRect] = useState<DOMRect | null>(null)
-  const btnRef = useRef<HTMLButtonElement>(null)
-  const close = useCallback(() => setRect(null), [])
-  // every gene, by name
-  const genes = useMemo(
+  const refs = refProteinsOf(config)
+  const names = proteins?.names
+  // every protein, by name
+  const ids = useMemo(
     () =>
       names
         ? Object.keys(names).sort((a, b) =>
@@ -282,46 +284,97 @@ export function ProteinPicker({
         : [],
     [names]
   )
-  const shown = value ? (names?.[value] ?? value) : null
+  const absent = names ? refs.filter((u) => !(u in names)) : []
+  const many = refs.length > 1
+  // using the measured ones means nothing with one reference: it's measured, or the sample drops
+  const missing = config.normalizeMissing ?? 'stop'
+  const shownMissing = !many && missing === 'available' ? 'drop' : missing
   return (
     <>
-      <button
-        ref={btnRef}
-        type="button"
-        disabled={!names}
-        title={!names ? 'Run Clean data once to list its proteins' : 'Pick the reference protein'}
-        onClick={() =>
-          setRect((r) => (r ? null : (btnRef.current?.getBoundingClientRect() ?? null)))
-        }
-        style={{
-          ...styles.input,
-          textAlign: 'left',
-          cursor: names ? 'pointer' : 'not-allowed',
-          color: shown ? UI.text : UI.textMuted
-        }}
-      >
-        {shown ?? (names ? 'Pick a protein…' : 'Run Clean data first')}
-      </button>
-      {rect && names && (
-        <GeneSearchMenu
-          genes={genes}
-          current={value}
-          displayMap={names}
-          anchor={rect}
-          triggerRef={btnRef}
-          onPick={onChange}
-          onClose={close}
+      <Field label="Proteins">
+        <ValueMultiSelect
+          members
+          values={ids}
+          selected={refs}
+          labelOf={(u) => names?.[u] ?? u}
+          // listed and searched by description too, as the gene search does
+          descOf={(u) => proteins?.descs[u]}
+          noun="protein"
+          disabled={!names}
+          onChange={(next) => update({ normalizeProteins: [...next], normalizeProtein: undefined })}
         />
+        {!names && (
+          <div style={{ color: UI.textMuted, fontSize: 11, marginTop: 3 }}>
+            Set its input first: the Load&apos;s files, or run the Clean data it reads
+          </div>
+        )}
+        {absent.length > 0 && (
+          <div style={{ color: UI.err, fontSize: 11, marginTop: 3 }}>
+            not in the data: {absent.join(', ')}
+          </div>
+        )}
+      </Field>
+      {many && (
+        <Field label="Combine">
+          <Select
+            value={config.normalizeCombine ?? 'median'}
+            onChange={(v) => update({ normalizeCombine: v as RefCombine })}
+            options={[
+              { value: 'median', label: 'median' },
+              { value: 'mean', label: 'geometric mean' }
+            ]}
+          />
+        </Field>
       )}
+      <Field label="If missing">
+        <Select
+          value={shownMissing}
+          onChange={(v) => update({ normalizeMissing: v as RefMissing })}
+          options={[
+            { value: 'stop', label: 'stop: pick another reference' },
+            { value: 'drop', label: 'drop the sample' },
+            ...(many ? [{ value: 'available', label: 'use the references measured' }] : [])
+          ]}
+        />
+      </Field>
     </>
   )
 }
 export function StandardizePanel({ id, config }: { id: string; config: StandardizeConfig }) {
   const update = useGraph((s) => s.updateConfig)
+  // The proteins its input holds, for the reference-protein picker — read from the input itself
+  // (the Load's import, or the Clean data feeding it), so one can be picked before this step has
+  // ever run. Re-read when the input changes: the Load's files or Subsets, or the upstream result.
+  const pickingProtein = !!config.normalizeEnabled && config.normalizeReference === 'protein'
+  const inputKey = useGraph((s) => {
+    const a = loadAbove(s, id)
+    const l = a?.load.data.config as LoadConfig | undefined
+    return l ? JSON.stringify([s.dataDir, l.data, l.samplesheet, l.db, a!.keep]) : ''
+  })
+  const upResult = useGraph((s) => {
+    const up = s.edges.find((e) => e.target === id)?.source
+    return up ? s.results[up] : undefined
+  })
+  const [inputProteins, setInputProteins] = useState<ProteinList | null>(null)
+  useEffect(() => {
+    if (!pickingProtein) return
+    let live = true
+    void previewStdProteins(useGraph.getState(), id).then((list) => {
+      if (live) setInputProteins(list)
+    })
+    return () => {
+      live = false
+    }
+  }, [id, pickingProtein, inputKey, upResult])
   const std = useGraph((s) => {
     const r = s.results[id]
     return r?.kind === 'standardize' ? r.std : null
   })
+  // its own last result's, until the input has been read
+  const ownProteins = useMemo(
+    () => (pickingProtein && std ? proteinListOf(std.displayMap, std.annotationMap) : null),
+    [pickingProtein, std]
+  )
   // The conditions the imported data actually carries, for "Coverage per": read off the upstream
   // interactive import's sample conditions (any included sample with a value), so they're right
   // before this tile has ever run. Joined into a string so the selector returns a stable value.
@@ -364,6 +417,9 @@ export function StandardizePanel({ id, config }: { id: string; config: Standardi
   // The clean-up rule as chosen, shown under its controls. Only the conditions on offer: one the
   // data doesn't carry groups nothing.
   const cleanupBy = (config.minSamplePctBy ?? []).filter((c) => conds.includes(c))
+  // the picks kept in the conditions' own order, whatever order they were ticked in
+  const setCleanupBy = (next: readonly string[]): void =>
+    update(id, { minSamplePctBy: conds.filter((k) => next.includes(k)) })
   const cleanupMode = cleanupModeOfConfig(config)
   const grouped = cleanupMode !== 'overall'
   const byCount = config.minSampleUnit === 'count'
@@ -386,7 +442,7 @@ export function StandardizePanel({ id, config }: { id: string; config: Standardi
       <DataScaleSection id={id} config={config} std={std} />
       <Section
         title="Clean-up"
-        info="Drop low coverage genes."
+        info="Drop low coverage proteins."
         action={
           <OnOffSwitch
             on={cleanupOn(config)}
@@ -409,44 +465,59 @@ export function StandardizePanel({ id, config }: { id: string; config: Standardi
                 value={cleanupMode}
                 onChange={(v) => update(id, { cleanupMode: v as CleanupMode })}
                 options={[
-                  { value: 'overall', label: 'remove proteins below threshold overall' },
-                  {
-                    value: 'withinGroup',
-                    label: 'remove proteins below threshold within each condition group'
-                  },
                   {
                     value: 'anyGroup',
                     label: 'keep proteins above threshold in at least one group'
                   },
-                  { value: 'everyGroup', label: 'keep proteins above threshold in every group' }
+                  { value: 'everyGroup', label: 'keep proteins above threshold in every group' },
+                  { value: 'overall', label: 'remove proteins below threshold overall' },
+                  {
+                    value: 'withinGroup',
+                    label: 'remove values of proteins below threshold within each condition group'
+                  }
                 ]}
               />
             </Field>
             {grouped && (
               <>
+                {/* a checkbox per condition while they fit on one line; past that, a
+                    multi-select dropdown (as the cluster plot's colour conditions) */}
                 <Field label="groups by">
-                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0 12px' }}>
-                    {conds.map((c) => {
-                      const by = config.minSamplePctBy ?? []
-                      const on = by.includes(c)
-                      return (
-                        <label key={c} style={{ ...styles.checkRow, marginBottom: 0 }}>
-                          <input
-                            type="checkbox"
-                            checked={on}
-                            onChange={(e) =>
-                              update(id, {
-                                minSamplePctBy: e.target.checked
-                                  ? conds.filter((k) => k === c || by.includes(k))
-                                  : by.filter((k) => k !== c)
-                              })
-                            }
-                          />
-                          {condLabel(c)}
-                        </label>
-                      )
-                    })}
-                  </div>
+                  <FitOneLine
+                    row={
+                      <div style={{ display: 'flex', gap: 12 }}>
+                        {conds.map((c) => (
+                          <label
+                            key={c}
+                            style={{ ...styles.checkRow, marginBottom: 0, whiteSpace: 'nowrap' }}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={cleanupBy.includes(c)}
+                              onChange={(e) =>
+                                setCleanupBy(
+                                  e.target.checked
+                                    ? [...cleanupBy, c]
+                                    : cleanupBy.filter((k) => k !== c)
+                                )
+                              }
+                            />
+                            {condLabel(c)}
+                          </label>
+                        ))}
+                      </div>
+                    }
+                    fallback={
+                      <ValueMultiSelect
+                        members
+                        values={conds}
+                        selected={cleanupBy}
+                        labelOf={(c) => condLabel(c as ConditionKey)}
+                        noun="condition"
+                        onChange={setCleanupBy}
+                      />
+                    }
+                  />
                 </Field>
               </>
             )}
@@ -500,7 +571,7 @@ export function StandardizePanel({ id, config }: { id: string; config: Standardi
           ((std.cleanup?.droppedGenes ?? 0) > 0 || (std.cleanup?.removedValues ?? 0) > 0) && (
             <StatusNote kind="ok" style={styles.doneNote}>
               Dropped {std.cleanup.droppedGenes.toLocaleString()} of{' '}
-              {(std.cleanup.droppedGenes + geneTotal).toLocaleString()} genes
+              {(std.cleanup.droppedGenes + geneTotal).toLocaleString()} proteins
               {(std.cleanup.removedValues ?? 0) > 0 &&
                 `; removed ${std.cleanup.removedValues!.toLocaleString()} values`}
             </StatusNote>
@@ -549,13 +620,11 @@ export function StandardizePanel({ id, config }: { id: string; config: Standardi
               />
             </Field>
             {config.normalizeReference === 'protein' ? (
-              <Field label="Protein">
-                <ProteinPicker
-                  value={config.normalizeProtein}
-                  names={std?.displayMap}
-                  onChange={(uid) => update(id, { normalizeProtein: uid })}
-                />
-              </Field>
+              <RefProteinFields
+                config={config}
+                proteins={inputProteins ?? ownProteins ?? undefined}
+                update={(patch) => update(id, patch)}
+              />
             ) : (
               // (one protein has no spread to equalise: median only)
               <Field label="Method">
@@ -576,17 +645,28 @@ export function StandardizePanel({ id, config }: { id: string; config: Standardi
           (() => {
             const nz = std.normalization
             if (nz.used === 'protein') {
-              const name = nz.protein ? (std.displayMap[nz.protein] ?? nz.protein) : ''
-              return !nz.protein ? (
-                <StatusNote kind="warn">Pick the reference protein.</StatusNote>
-              ) : nz.samples === 0 ? (
-                <StatusNote kind="warn">
-                  {name} wasn't measured in any sample (or was dropped in clean-up): nothing was
-                  normalised.
-                </StatusNote>
-              ) : (
-                <StatusNote kind="ok" style={styles.doneNote}>
-                  {`Divided ${nz.samples.toLocaleString()} sample${nz.samples === 1 ? '' : 's'} by ${name}: values are fractions of it`}
+              const refs = (nz.proteins ?? (nz.protein ? [nz.protein] : [])).map(
+                (u) => std.displayMap[u] ?? u
+              )
+              if (!refs.length || nz.samples === 0) return null // (the run stops: its error says why)
+              const n = nz.samples
+              const by =
+                refs.length === 1
+                  ? refs[0]
+                  : `the ${nz.combine === 'mean' ? 'geometric mean' : 'median'} of ${refs.join(', ')}`
+              const dropped = nz.droppedSamples ?? 0
+              return (
+                <StatusNote
+                  kind={dropped ? 'warn' : 'ok'}
+                  style={dropped ? undefined : styles.doneNote}
+                >
+                  {`Divided ${n.toLocaleString()} sample${n === 1 ? '' : 's'} by ${by}: values are fractions of ${refs.length === 1 ? 'it' : 'them'}`}
+                  {nz.partialSamples
+                    ? `; ${nz.partialSamples.toLocaleString()} by only the references they measured`
+                    : ''}
+                  {dropped
+                    ? `. Dropped ${dropped.toLocaleString()} sample${dropped === 1 ? '' : 's'} missing references (${(nz.droppedLabels ?? []).join(', ')}${dropped > (nz.droppedLabels?.length ?? 0) ? ', …' : ''})`
+                    : ''}
                 </StatusNote>
               )
             }

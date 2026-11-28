@@ -2,6 +2,7 @@ import type { Progress } from '../../engine'
 import { engine } from '../../engine/client'
 import { STEP_RUNS } from '../../nodes/runs'
 import { reportError } from '../../shared/diagnostics'
+import { viewedResult } from '../modelView'
 import { runPlot } from '../plotRun'
 import { axisAvailFor, categoryOf, runsIn } from '../registry'
 import { downstreamOf, runPlan } from '../runOrder'
@@ -14,6 +15,7 @@ import {
   type NodeResult,
   type PlotChild,
   type PlotGroupConfig,
+  type StepNode,
   type StepStatus
 } from '../types'
 import { withChildStatuses } from './shared'
@@ -52,6 +54,10 @@ export async function waitForInputs(
     waitingRuns.delete(key)
   }
 }
+/** Whether a run shown as running is only queued — waiting its turn in a run, or on its input —
+ *  not running yet (by node id, or a group's plot by plotResultKey). Read with the status: a mark
+ *  changes along with a status change, so a render sees it. */
+export const isQueuedRun = (key: string): boolean => waitingRuns.has(key)
 /** Each plot's latest run (by node id, or a group's subcard key): an older run that finishes after
  *  a newer one started — a tile's switch flipped twice in a row — drops its result. */
 export const plotRunSeq = new Map<string, number>()
@@ -128,6 +134,99 @@ export function runSlice(
       )
     }))
   }
+  /** A group tile's plots its run will run: those not done — or, when all are (Re-run), every one. */
+  const groupTodo = (n: StepNode): PlotChild[] => {
+    const kids = (n.data.config as PlotGroupConfig).children
+    return kids.some((c) => c.status !== 'done') ? kids.filter((c) => c.status !== 'done') : kids
+  }
+  /** Queue these plots' runs: each shown as running while it waits its turn (as a step queued by
+   *  Run shows), so it reads as part of the run and offers no Run of its own — a click on one would
+   *  run it now and again when its turn came. A group tile: each plot its run will run. Not those
+   *  running already, nor those done (their charts stay up until their turn re-runs them). Returns
+   *  how to put back what's still queued at the end (never reached: stopped, or below a failure) —
+   *  as it was. */
+  const queueRuns = (
+    ids: string[]
+  ): { unqueue: () => void; groups: Set<string>; steps: Set<string> } => {
+    const steps: string[] = []
+    const plots = new Map<string, Map<string, { status: StepStatus; error?: string }>>()
+    for (const id of ids) {
+      const n = get().nodes.find((x) => x.id === id)
+      if (!n || !isStep(n) || !runsIn(get(), id)) continue
+      if (n.data.kind === 'plotGroup') {
+        const prev = new Map<string, { status: StepStatus; error?: string }>()
+        for (const c of groupTodo(n)) {
+          const k = plotResultKey(id, c.id)
+          // running, or queued already (by the run that reaches this group: it puts those back);
+          // or done — its chart stays up until its turn re-runs it
+          if (c.status === 'running' || c.status === 'done' || waitingRuns.has(k)) continue
+          waitingRuns.add(k)
+          prev.set(c.id, { status: c.status ?? 'idle', error: c.error })
+        }
+        if (prev.size) plots.set(id, prev)
+      } else if (
+        categoryOf(n.data.kind) === 'plotting' &&
+        n.data.status !== 'running' &&
+        n.data.status !== 'done'
+      ) {
+        waitingRuns.add(id)
+        steps.push(id)
+      }
+    }
+    if (steps.length || plots.size)
+      set((s) => ({
+        nodes: s.nodes.map((n) => {
+          if (!isStep(n)) return n
+          if (steps.includes(n.id))
+            return { ...n, data: { ...n.data, status: 'running', error: undefined } }
+          const prev = plots.get(n.id)
+          return prev
+            ? withChildStatuses(n, (c) =>
+                prev.has(c.id)
+                  ? { status: 'running' }
+                  : { status: c.status ?? 'idle', error: c.error }
+              )
+            : n
+        })
+      }))
+    const unqueue = (): void => {
+      const backSteps = steps.filter((id) => waitingRuns.delete(id))
+      const backPlots = new Map<string, Map<string, { status: StepStatus; error?: string }>>()
+      for (const [gid, prev] of plots) {
+        const left = new Map(
+          [...prev].filter(([cid]) => waitingRuns.delete(plotResultKey(gid, cid)))
+        )
+        if (left.size) backPlots.set(gid, left)
+      }
+      if (!backSteps.length && !backPlots.size) return
+      set((s) => ({
+        nodes: s.nodes.map((n) => {
+          if (!isStep(n)) return n
+          if (backSteps.includes(n.id) && n.data.status === 'running')
+            return { ...n, data: { ...n.data, status: 'idle', error: undefined } }
+          const prev = backPlots.get(n.id)
+          return prev
+            ? withChildStatuses(n, (c) =>
+                prev.has(c.id) && c.status === 'running'
+                  ? prev.get(c.id)!
+                  : { status: c.status ?? 'idle', error: c.error }
+              )
+            : n
+        })
+      }))
+    }
+    return { unqueue, groups: new Set(plots.keys()), steps: new Set(steps) }
+  }
+  /** Whether a queued run is still queued — not taken out of the run by its Stop meanwhile. */
+  const stillQueued = (id: string): boolean => {
+    const n = get().nodes.find((x) => x.id === id)
+    if (!n || !isStep(n)) return false
+    return n.data.kind === 'plotGroup'
+      ? (n.data.config as PlotGroupConfig).children.some(
+          (c) => c.status === 'running' && waitingRuns.has(plotResultKey(id, c.id))
+        )
+      : n.data.status === 'running'
+  }
   return {
     runNode: async (id) => {
       // An input still running: wait for it (a group's plots each wait in runPlotChild).
@@ -186,20 +285,27 @@ export function runSlice(
       // Plots: a group runs each of its plots (each with its own status); a plot computes what it
       // needs to be viewed (plotRun.ts).
       if (kind === 'plotGroup') {
-        // The plots not done yet — or, when all are (Re-run), every one.
-        const kids = (node.data.config as PlotGroupConfig).children
-        const todo = kids.some((c) => c.status !== 'done')
-          ? kids.filter((c) => c.status !== 'done')
-          : kids
-        for (const c of todo) {
-          await get().runPlotChild(id, c.id)
-          // Stopped (the plot was set back to idle): leave the rest as they are.
+        // The plots not done yet — or, when all are (Re-run), every one — run one after another,
+        // the ones not reached yet queued meanwhile (queueRuns): waiting, not "not run".
+        const todo = groupTodo(node)
+        const { unqueue } = queueRuns([id])
+        const childNow = (cid: string): PlotChild | undefined => {
           const g = get().nodes.find((n) => n.id === id)
-          const now =
-            g && isStep(g)
-              ? (g.data.config as PlotGroupConfig).children.find((x) => x.id === c.id)
-              : undefined
-          if (!now || (now.status ?? 'idle') === 'idle') return
+          return g && isStep(g)
+            ? (g.data.config as PlotGroupConfig).children.find((x) => x.id === cid)
+            : undefined
+        }
+        try {
+          for (const c of todo) {
+            // its turn: no longer queued — unless its Stop took it (and the rest) out meanwhile
+            const k = plotResultKey(id, c.id)
+            if (waitingRuns.delete(k) && childNow(c.id)?.status !== 'running') return
+            await get().runPlotChild(id, c.id)
+            // Stopped (the plot was set back to idle): leave the rest as they are.
+            if ((childNow(c.id)?.status ?? 'idle') === 'idle') return
+          }
+        } finally {
+          unqueue()
         }
         return
       }
@@ -210,7 +316,10 @@ export function runSlice(
           const r = await runPlot(
             kind,
             node.data.config,
-            upId ? get().results[upId] : undefined,
+            viewedResult(
+              upId ? get().results[upId] : undefined,
+              get().nodes.find((n) => n.id === upId)
+            ),
             () => get().nodes.find((n) => n.id === id)?.data.status !== 'running',
             axisAvailFor(get(), upId)
           )
@@ -244,8 +353,9 @@ export function runSlice(
         (!!n0 &&
           isStep(n0) &&
           n0.data.kind === 'plotGroup' &&
-          (n0.data.config as PlotGroupConfig).children.some(
-            (c) => c.status === 'running' && waitingRuns.has(plotResultKey(id, c.id))
+          ((running) =>
+            running.length > 0 && running.every((c) => waitingRuns.has(plotResultKey(id, c.id))))(
+            (n0.data.config as PlotGroupConfig).children.filter((c) => c.status === 'running')
           ))
       if (!onlyWaiting) engine.cancel()
       set((s) => ({
@@ -339,7 +449,10 @@ export function runSlice(
         const r = await runPlot(
           child.kind,
           child.config,
-          upId ? get().results[upId] : undefined,
+          viewedResult(
+            upId ? get().results[upId] : undefined,
+            get().nodes.find((n) => n.id === upId)
+          ),
           () => childOf()?.status !== 'running',
           axisAvailFor(get(), upId)
         )
@@ -401,16 +514,30 @@ export function runSlice(
         // Below a failed step, steps would only fail too, so they're skipped — but a failed plot
         // skips nothing (nothing reads from it), and the other branches still run (as runAll).
         const skipped = new Set<string>()
-        for (const n of get().nodes) {
-          if (!downstream.has(n.id) || skipped.has(n.id)) continue
-          const kind = get().nodeKind(n.id)
-          if (!kind || !runsIn(get(), n.id)) continue
-          await get().runNode(n.id)
-          if (
-            categoryOf(kind) !== 'plotting' &&
-            get().nodes.find((x) => x.id === n.id && isStep(x))?.data.status === 'error'
-          )
-            for (const d of downstreamOf(n.id, get().edges)) skipped.add(d)
+        // The plots it will reach shown as queued meanwhile (queueRuns) — not "not run yet" with a
+        // Run that would run them now and again when their turn came.
+        const order = get()
+          .nodes.filter((n) => downstream.has(n.id))
+          .map((n) => n.id)
+        const q = queueRuns(order)
+        try {
+          for (const nid of order) {
+            if (skipped.has(nid)) continue
+            const kind = get().nodeKind(nid)
+            if (!kind || !runsIn(get(), nid)) continue
+            // a plot queued here: its turn — unless its Stop took it out meanwhile (a group's plots
+            // leave their marks for its own run, which takes them in turn)
+            if (q.steps.has(nid) && waitingRuns.delete(nid) && !stillQueued(nid)) continue
+            if (q.groups.has(nid) && !stillQueued(nid)) continue
+            await get().runNode(nid)
+            if (
+              categoryOf(kind) !== 'plotting' &&
+              get().nodes.find((x) => x.id === nid && isStep(x))?.data.status === 'error'
+            )
+              for (const d of downstreamOf(nid, get().edges)) skipped.add(d)
+          }
+        } finally {
+          q.unqueue()
         }
       }
     },
@@ -446,6 +573,15 @@ export function runSlice(
       )
       for (const id of queued) waitingRuns.add(id)
       setStatuses(queued, 'running')
+      // …and every plot it will run (a group tile's each), not queued above: waiting, not "not run"
+      const plotQ = queueRuns(
+        order.filter(
+          (id) =>
+            run.targets.has(id) &&
+            !queued.includes(id) &&
+            categoryOf(get().nodeKind(id) ?? 'table') === 'plotting'
+        )
+      )
       // Steps below a failed one: they'd only fail too, so they're skipped — but a failed plot
       // skips nothing (nothing reads from it), and the other branches still run.
       const skipped = new Set<string>()
@@ -455,6 +591,9 @@ export function runSlice(
           const target = run.targets.has(id)
           // (only its own queue mark: another run's wait on this id isn't this run's to clear)
           const wasQueued = queued.includes(id) && waitingRuns.delete(id)
+          // a plot queued by plotQ, taken out by its Stop meanwhile: skipped
+          if (plotQ.steps.has(id) && waitingRuns.delete(id) && !stillQueued(id)) continue
+          if (plotQ.groups.has(id) && !stillQueued(id)) continue
           if (skipped.has(id)) continue
           const kind = get().nodeKind(id)
           if (!kind || !runsIn(get(), id)) continue
@@ -474,6 +613,7 @@ export function runSlice(
             for (const d of downstreamOf(id, get().edges)) skipped.add(d)
         }
       } finally {
+        plotQ.unqueue()
         targetRuns.delete(run)
         // targets never reached (stopped, or below a failure): no longer queued
         const left = queued.filter((id) => waitingRuns.delete(id) || skipped.has(id))

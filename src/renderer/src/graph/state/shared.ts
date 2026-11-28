@@ -5,11 +5,19 @@ import {
   classifyCompareRow,
   thresholdLabel
 } from '../../engine'
+import { lazyCopy } from '../../engine/lazyRows'
+import { recallTable } from '../../engine/recall'
 import { useAppSettings } from '../../ui/useAppSettings'
 import { dataRootOf, withDiskNames, workflowDirOf } from '../diskNames'
 import { hiddenGeneIds } from '../geneMask'
 import { HistoryCache } from '../historyCache'
-import { type ProjectWorkflow, geneMaskKey, packedResultsChunks, unpackParked } from '../project'
+import {
+  type ProjectWorkflow,
+  geneMaskKey,
+  packedResultsChunks,
+  packedResultsChunksSliced,
+  unpackParked
+} from '../project'
 import { NODE_SPECS } from '../registry'
 import { restampScales } from '../resultScales'
 import { type Getter, type GraphState, type Setter } from '../store'
@@ -42,6 +50,10 @@ export function reclassify(
   threshold: ThresholdConfig,
   hidden: Set<string>
 ): NodeResult {
+  // Off the columns when it's columnar and its calls need only fold change and p-values (recall.ts)
+  const tab = recallTable(res.cmp, threshold, hidden)
+  const fast = tab && lazyCopy(res.cmp, { threshold, curveFdr: undefined, ccAlpha: undefined }, tab)
+  if (fast) return { ...res, cmp: fast }
   const label = thresholdLabel(threshold)
   // A curve fit's target–decoy q-values and FDR follow CurveCurator's alpha and fold-change
   // limits — re-derived from the decoys kept with the result (absent under other thresholds)
@@ -69,7 +81,7 @@ export const resultHistory = new HistoryCache({
   write: (key, pieces) => window.api.parkWrite(key, pieces),
   read: (key) => window.api.parkRead(key),
   drop: (key) => window.api.parkDrop(key),
-  pack: packedResultsChunks,
+  pack: packedResultsChunksSliced,
   unpack: unpackParked
 })
 /** What a NEW tile of `op` starts with: the kind's built-in defaults, then the user's own for that
@@ -160,6 +172,13 @@ export function reapplyGeneMask(get: Getter, set: Setter): void {
     const res = results[n.id]
     if (res?.kind !== 'compare') continue
     const threshold = (n.data.config as CompareConfig).threshold
+    // off the columns where it can be (recall.ts)
+    const tab = recallTable(res.cmp, threshold, hidden)
+    const fast = tab && lazyCopy(res.cmp, { threshold }, tab)
+    if (fast) {
+      results[n.id] = { ...res, cmp: fast }
+      continue
+    }
     const label = thresholdLabel(threshold)
     const rows = res.cmp.rows.map((r) => {
       const cls = classifyCompareRow(r, threshold)

@@ -74,6 +74,15 @@ import { PreviewTable } from '../../graph/selectorParts'
 import { useGraph } from '../../graph/store'
 import { describesAll, thresholdForDetection, type CompareConfig } from '../../graph/types'
 
+/** The curve choice's joint curve (its other options are the axes' condition keys). */
+const JOINT = '\u0000joint'
+
+/** What each intent tests, for the curve choice's hovers. */
+const INTENT_TITLE = Object.fromEntries(INTENT_OPTIONS.map((o) => [o.value, o.title])) as Record<
+  (typeof INTENT_OPTIONS)[number]['value'],
+  string
+>
+
 export function CurveDialog({
   id,
   rows,
@@ -162,7 +171,6 @@ export function CurveDialog({
         drop: { ...s.drop },
         base: { ...s.base },
         scales: { ...s.scales },
-        baselines: { ...s.baselines },
         ...(s.fits ? { fits: { ...s.fits } } : null)
       }
       f(n)
@@ -232,7 +240,7 @@ export function CurveDialog({
     m.surface &&
     state.intent === 'changes' &&
     !(state.responseAxis && m.axisConds.includes(state.responseAxis))
-      ? 'Pick the axis the curves run along.'
+      ? 'Pick which curves to fit.'
       : null
   const warnings = [
     ...m.warnings,
@@ -277,8 +285,9 @@ export function CurveDialog({
         : {}),
       // only the scales the user set against the detection: the rest follow the data
       axisScale: Object.keys(state.scales ?? {}).length ? state.scales : undefined,
-      // …and the baseline kinds set against an axis's preset
-      axisBaseline: Object.keys(state.baselines ?? {}).length ? state.baselines : undefined,
+      // what the baseline is to each axis: as the Baseline pick makes it (baselinesOfPick) — kept
+      // for the run, never set apart from the pick
+      axisBaseline: m.baselines,
       // any baseline the user picks runs (a treated one too): no confirmation to store
       controlBackground: undefined,
       ...(next ? { threshold: next } : {})
@@ -333,6 +342,8 @@ export function CurveDialog({
         edit((s) => {
           const cur = s.base[c] ?? []
           s.base[c] = h.on ? cur.filter((x) => x !== h.v) : [...cur, h.v]
+          // the pick decides each axis's baseline: a drift picked under the old one follows anew
+          s.fits = driftFollowsBaselines(s.fits, m.axisConds)
         })
       }
     />
@@ -590,44 +601,49 @@ export function CurveDialog({
             onChange={pickAxis}
           />
         </Field>
-        <Field layout="grid" label="intent">
-          <ToggleSwitch
-            size="sm"
-            label="What the fit is for"
-            value={state.intent}
-            disabled={!m.surface}
-            options={INTENT_OPTIONS.map((o) => ({
-              ...o,
-              title: m.surface ? o.title : 'Only for a surface (two axes)'
-            }))}
-            onChange={(v) => v !== state.intent && edit((s) => void (s.intent = v))}
-          />
-        </Field>
-        {m.surface && state.intent === 'changes' && (
-          <Field layout="grid" label="axis">
+        {/* A surface's curve: one joint surface over both axes (capture shape), or curves along one
+            axis at each level of the other, compared across them (test changes). */}
+        {m.surface && (
+          <Field layout="grid" label="curve">
             <ToggleSwitch
               size="sm"
-              label="The axis the curves run along"
-              value={response ?? ''}
-              options={pairAxes.map((a) => ({
-                value: a,
-                label: condLabel(a),
-                title: `${condLabel(a)} curves at each ${condLabel(pairAxes.find((b) => b !== a)!)} level, compared across them`
-              }))}
-              onChange={(v) => v && edit((s) => void (s.responseAxis = v))}
+              label="Curve"
+              value={state.intent === 'shape' ? JOINT : (response ?? '')}
+              options={[
+                {
+                  value: JOINT,
+                  label: `joint ${pairAxes.map(condLabel).join(' × ')} surface`,
+                  title: INTENT_TITLE.shape
+                },
+                ...pairAxes.map((a) => ({
+                  value: a,
+                  label: `${condLabel(a)} curves at each ${condLabel(pairAxes.find((b) => b !== a)!)}`,
+                  title: INTENT_TITLE.changes
+                }))
+              ]}
+              onChange={(v) =>
+                edit((s) => {
+                  const axis = pairAxes.find((a) => a === v)
+                  if (axis) {
+                    s.intent = 'changes'
+                    s.responseAxis = axis
+                  } else if (v === JOINT) s.intent = 'shape'
+                })
+              }
             />
           </Field>
         )}
         {/* Each axis's models — detector, descriptor, what its baseline is to it and (a surface)
             its 4PL midpoint's drift: the method preset's, faded, until one is picked (then the
             method is custom). */}
-        <Field layout="grid" label="models">
+        <Field layout="grid" top label="models">
           <AxisModelRows
             axes={m.axisConds}
             surface={m.surface}
             detection={state.detection}
             fits={custom ? state.fits : undefined}
-            baselines={state.baselines}
+            baselines={m.baselines}
+            pins={m.pin}
             locked={!custom}
             joint={m.surface && state.intent === 'shape'}
             onFit={(i, field, value) => {
@@ -641,18 +657,10 @@ export function CurveDialog({
                   field,
                   value,
                   s.detection,
-                  s.baselines
+                  m.baselines
                 )
               })
             }}
-            onBaseline={(a, v) =>
-              edit((s) => {
-                const b = (s.baselines ??= {})
-                if (v == null) delete b[a]
-                else b[a] = v
-                s.fits = driftFollowsBaselines(s.fits, m.axisConds)
-              })
-            }
           />
         </Field>
         {/* Which genes get a description (EC50, top): every one, or the responders only. */}

@@ -10,8 +10,6 @@ import {
   HEATMAP_LINKAGES,
   type HeatmapConfig,
   SAMPLE_ORDERS,
-  heatmapCapOn,
-  topCountOf,
   heatmapCondBar,
   primaryColorLevels,
   sampleOrderOf
@@ -22,6 +20,7 @@ import { type ViewContext, cmpOfKind } from '../kit/views/context'
 import { styles } from '../kit/views/styles'
 import { FcHeatmapTile } from './FcHeatmapTile'
 import { HeatmapTile } from './HeatmapTile'
+import { fcHeatmapRunKey, fcHeatmapRunOpts } from './runKey'
 
 /** The fold-change heatmap's linkage and leaf-order choices, as switch-bar options. */
 export const HEATMAP_LINKAGE_KEYS = Object.keys(HEATMAP_LINKAGES)
@@ -39,7 +38,8 @@ export function heatmapView(v: ViewContext): ReactNode {
     paletteOf,
     quantityScale,
     plainScale,
-    numeric
+    numeric,
+    plotRun
   } = v
   const cfg = cfgSource as HeatmapConfig
   // Compare upstream → log2FC heatmap (every comparison/context is a column, no faceting).
@@ -75,6 +75,13 @@ export function heatmapView(v: ViewContext): ReactNode {
           ? 'factors'
           : 'overall'
     const heatRows = cmpOfKind(upstream.cmp, fcRows).rows
+    // the clustering settings, as the plot's run built its heatmap under (runKey) — drawn from
+    // that run while they still match
+    const runOpts = fcHeatmapRunOpts(cfg)
+    const fcRun =
+      plotRun?.kind === 'heatmap' && plotRun.fc?.key === fcHeatmapRunKey(cfg)
+        ? plotRun.fc
+        : undefined
     // the comparisons' condition tracks: on unless switched off
     const fcCondBar = cfg.condBar ?? true
     const quickCondBar = quickOn(cfg, 'condBar', 'heatmap')
@@ -145,7 +152,7 @@ export function heatmapView(v: ViewContext): ReactNode {
               rows={heatRows}
               unsigned={fcRows === 'factors'}
               displayMap={upstream.displayMap}
-              maxGenes={heatmapCapOn(cfg) ? topCountOf(cfg, cfg.maxGenes) : 0}
+              maxGenes={runOpts.maxGenes}
               topSplit={cfg.topSplit}
               topUp={cfg.topUp}
               topDown={cfg.topDown}
@@ -156,9 +163,10 @@ export function heatmapView(v: ViewContext): ReactNode {
               key={cfg.orient ?? 'auto'}
               orient={cfg.orient}
               palette={paletteOf(cfg, 'fc')}
-              linkage={linkage}
-              leafOrder={leafOrder}
-              colPattern={condDistance === 'pattern'}
+              linkage={runOpts.linkage}
+              leafOrder={runOpts.leafOrder}
+              colPattern={runOpts.colPattern}
+              prebuilt={fcRows === 'factors' ? fcRun?.factors : fcRun?.overall}
               geneMax={cfg.dendroClades ?? DENDRO_CLADES_DEFAULT}
               geneModules={!!cfg.geneModules}
               geneTree={!!cfg.geneTree}
@@ -212,6 +220,11 @@ export function heatmapView(v: ViewContext): ReactNode {
             palette={paletteOf(cfg, 'data', 'valuePalette')}
             sampleOrder={sampleOrderOf(cfg)}
             plainScale={plainScale}
+            // the run's clustering, when it was on the scale shown (a log flip re-stamps the
+            // scale without one)
+            runGroups={
+              plotRun?.kind === 'heatmap' && plotRun.std?.scale === scale ? plotRun.std : undefined
+            }
           />
         </div>
       </div>

@@ -660,10 +660,12 @@ export const styles: Record<string, CSSProperties> = {
   // Settings dialog (centred modal) + its dark scrim.
   dialogScrim: { position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', zIndex: 60 },
   settingsModal: {
+    // Centred by its margins, not translate(-50%, -50%): a transform can leave the window on half a
+    // pixel (88vh is rarely whole), and on a 1× screen everything drawn in its own layer there — a
+    // pane scrolling a sticky table header — goes blurry. Layout positions snap to whole pixels.
     position: 'fixed',
-    top: '50%',
-    left: '50%',
-    transform: 'translate(-50%, -50%)',
+    inset: 0,
+    margin: 'auto',
     // Roomy enough for the widest pane — Plots holds a whole tile config panel (group table,
     // highlight blocks, axes), which was cramped in the old 540×380 card.
     width: 760,

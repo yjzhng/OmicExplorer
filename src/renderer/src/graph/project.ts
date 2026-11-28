@@ -8,8 +8,11 @@
 import type { GeneSet, NodeResult } from './types'
 import { dirOf, relativeTo, resolveFrom } from './relPath'
 import { compactResults } from './compactResults'
-import { packResults, unpackResults as unpackStored } from './resultPack'
+import { packResults, packResultsSteps, unpackResults as unpackStored } from './resultPack'
+import { runStepsSliced, type Steps } from './steps'
 import { MIGRATED_THROUGH, upgradeProjectFile, type RawProject } from './upgrades'
+import { dropUnknownKinds } from './unknownKinds'
+import { SPECS } from '../nodes/specs'
 import { emptyWorkflowDoc, type WorkflowDoc } from './workflowDoc'
 
 /** Re-exported from where they live now, for existing callers. */
@@ -370,6 +373,89 @@ export function packedResultsChunks(results: Record<string, NodeResult>): string
   return parts
 }
 
+/** packedResultsChunks a slice at a time, with pauses for the page between (steps.ts): for the
+ *  undo history's copies of replaced results, made in the background — at once, a large Clean data
+ *  table held the main thread for a second or more after any setting change. The same text. */
+export async function packedResultsChunksSliced(
+  results: Record<string, NodeResult>
+): Promise<string[]> {
+  return runStepsSliced(
+    (function* (): Steps<string[]> {
+      const packed = yield* packResultsSteps(results)
+      const out = new Joined()
+      yield* stringifySteps(packed, out)
+      return out.done()
+    })()
+  )
+}
+
+/** Pieces merged as they come, up to about a million characters each (few to send, none huge). */
+class Joined {
+  private out: string[] = []
+  private buf: string[] = []
+  private size = 0
+  push(s: string): void {
+    this.buf.push(s)
+    this.size += s.length
+    if (this.size >= 1_000_000) this.flush()
+  }
+  private flush(): void {
+    if (this.buf.length) this.out.push(this.buf.join(''))
+    this.buf = []
+    this.size = 0
+  }
+  done(): string[] {
+    this.flush()
+    return this.out
+  }
+}
+
+/** Lists longer than this are written by one JSON.stringify (a column of values), shorter ones
+ *  item by item. */
+const STEP_LIST = 256
+
+/** JSON for `value` in steps, a step per value written — exactly JSON.stringify's (compact) text.
+ *  Objects are walked to any depth, long lists written whole. */
+function* stringifySteps(value: unknown, out: Joined): Steps<void> {
+  if (
+    value === null ||
+    typeof value !== 'object' ||
+    (Array.isArray(value) && value.length > STEP_LIST)
+  ) {
+    out.push(JSON.stringify(value) ?? 'null')
+    yield
+    return
+  }
+  // (as JSON.stringify: a value's own toJSON, e.g. a Date's)
+  if (typeof (value as { toJSON?: unknown }).toJSON === 'function') {
+    out.push(JSON.stringify(value) ?? 'null')
+    yield
+    return
+  }
+  if (Array.isArray(value)) {
+    out.push('[')
+    for (let i = 0; i < value.length; i++) {
+      if (i) out.push(',')
+      const v = value[i]
+      yield* stringifySteps(
+        v === undefined || typeof v === 'function' || typeof v === 'symbol' ? null : v,
+        out
+      )
+    }
+    out.push(']')
+    return
+  }
+  out.push('{')
+  let first = true
+  for (const [k, v] of Object.entries(value)) {
+    if (v === undefined || typeof v === 'function' || typeof v === 'symbol') continue
+    out.push(`${first ? '' : ','}${JSON.stringify(k)}:`)
+    first = false
+    yield* stringifySteps(v, out)
+  }
+  out.push('}')
+}
+
 /** Results as a project file stores them (already packed) as park text in pieces — parking a
  *  workflow straight from the file, without unpacking it first. */
 export function storedResultsChunks(stored: unknown): string[] {
@@ -416,6 +502,9 @@ function coerceWorkflows(
   return { workflows, activeWorkflowId: active }
 }
 
+/** Every step and plot kind this build has. */
+const KNOWN_KINDS: ReadonlySet<string> = new Set(Object.keys(SPECS))
+
 /** Parse + validate a project file of any release: brought to the current form first
  *  (upgrades.ts — every upgrade the file format has had, in one place), then read. */
 export function deserializeProject(
@@ -427,6 +516,9 @@ export function deserializeProject(
   // Reserve every existing id so parse-time and later-minted ids can't collide with saved ones.
   reserveIds(raw)
   upgradeProjectFile(raw as RawProject, { nextFolderId })
+  // Tiles of a kind this build doesn't have (a removed plot) can't be drawn or run: left out.
+  const unknown = dropUnknownKinds(raw as RawProject, KNOWN_KINDS)
+  if (unknown.length) console.warn(`Left out tiles of unknown kind: ${unknown.join(', ')}`)
   const folders: ProjectFolder[] = (raw.folders ?? []).map((f, i) => {
     const { workflows, activeWorkflowId } = coerceWorkflows(
       f.workflows,

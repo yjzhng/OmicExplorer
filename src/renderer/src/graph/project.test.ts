@@ -7,6 +7,7 @@ import {
   newProjectFile,
   nextWorkflowId,
   packedResultsChunks,
+  packedResultsChunksSliced,
   ParkedRef,
   MIGRATED_THROUGH,
   PROJECT_VERSION,
@@ -745,3 +746,32 @@ describe('parked workflows in a saved project', () => {
 })
 
 type ProjectWorkflowResults = Parameters<typeof packedResultsChunks>[0]
+
+describe('packedResultsChunksSliced (the undo history copies)', () => {
+  it('writes exactly the text packedResultsChunks does', async () => {
+    const rows = Array.from({ length: 300 }, (_, i) => ({
+      gene: `g${i}`,
+      value: i % 7 === 0 ? NaN : i / 3,
+      flag: i % 2 === 0,
+      fit: i % 5 ? { a: i, b: [i, null] } : null,
+      ...(i % 11 ? { note: 'x' } : {})
+    }))
+    const results = {
+      s1: {
+        kind: 'standardize',
+        std: {
+          rows,
+          annotationMap: { g0: { desc: 'one' }, g1: { desc: 'two' } },
+          list: Array.from({ length: 1000 }, (_, i) => i),
+          short: [1, undefined, 'a', { b: undefined, c: 2 }],
+          when: new Date(0),
+          typed: new Float64Array([1, 2])
+        }
+      },
+      s2: { kind: 'plot', note: 'é "q"\n', empty: {}, none: [] }
+    } as unknown as Record<string, NodeResult>
+    const sliced = await packedResultsChunksSliced(results)
+    expect(sliced.join('')).toBe(packedResultsChunks(results).join(''))
+    expect(JSON.parse(sliced.join(''))).toBeTruthy()
+  })
+})

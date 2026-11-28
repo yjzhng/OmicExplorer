@@ -1,6 +1,12 @@
 import { useContext, useMemo } from 'react'
 
-import { buildBubble, condLabel, type CompareResultRow, type ConditionKey } from '../../engine'
+import {
+  bubbleBase,
+  bubbleWith,
+  condLabel,
+  type CompareResultRow,
+  type ConditionKey
+} from '../../engine'
 import { topSplitOf } from '../../graph/types'
 import type { TopSplit } from '../../engine'
 import { tooltip } from '../../ui/condTooltip'
@@ -17,6 +23,7 @@ import {
 import { axisBase, PALETTES, PLOT_TEXT, plotBase } from '../../ui/theme'
 import { useSelection } from '../../ui/useSelection'
 import { useUiTheme } from '../../ui/useUiTheme'
+import { usePlotCached } from '../../ui/plotCache'
 
 /** Bubble grid: genes (x) × dose/time (y). Each bubble's size, colour and outline width show
  *  its log₂FC or its significance (−log₁₀ of the Compare's P or Q) as configured — by default a
@@ -226,20 +233,29 @@ export function BubbleView({
   // The tile's legend switched off: no size key (PlotlyChart drops the colour bar).
   const legendOff = useContext(PlotAxesContext)?.legend === false
 
+  // The part read off every row (each gene's rows and score, top-N picked), kept app-wide
+  // (ui/plotCache): a pin only adds its genes to it (bubbleWith), never scans the rows again.
+  const split = topSplitOf({ topSplit, topUp, topDown })
+  const base = usePlotCached(
+    'bubble',
+    [
+      rows,
+      axis,
+      topGenes,
+      split.by,
+      split.up,
+      split.down,
+      rank,
+      over,
+      (focus ?? []).join('\u0000')
+    ],
+    () => bubbleBase(rows, { axis, topGenes, split, rank, over, focus })
+  )
+
   const { data, layout, boldTicks } = useMemo(() => {
     const p = PALETTES[mode]
     const extra = [...pinnedIds]
-    const bubble = buildBubble(rows, {
-      axis,
-      topGenes,
-      split: topSplitOf({ topSplit, topUp, topDown }),
-      rank,
-      over,
-      stat,
-      displayMap,
-      focus,
-      extra
-    })
+    const bubble = bubbleWith(base, { axis, extra, stat, displayMap })
     const pts = bubble.points
     const maxAbsFC = Math.max(1e-9, ...pts.map((pt) => Math.abs(pt.log2FC)))
     const maxSig = Math.max(1e-9, ...pts.map((pt) => pt.sig))
@@ -435,15 +451,8 @@ export function BubbleView({
         : []
     return { data: [trace, ...stars], layout: lay, boldTicks }
   }, [
-    rows,
     axis,
     axisLabel,
-    topGenes,
-    topSplit,
-    topUp,
-    topDown,
-    rank,
-    over,
     stat,
     sizeBy,
     colorBy,
@@ -452,13 +461,13 @@ export function BubbleView({
     asterisk,
     sigPalette,
     displayMap,
-    focus,
     orient,
     pinnedIds,
     legendOff,
     title,
     mode,
-    palette
+    palette,
+    base
   ])
 
   return <PlotlyChart data={data} layout={layout} boldTicks={boldTicks} />

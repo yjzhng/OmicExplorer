@@ -4,9 +4,20 @@
  * layer is over the canvas, so the canvas can't be panned by hand, and a tile placed near an edge
  * must still be brought into sight. Unset while the canvas isn't on screen.
  */
+export interface ScreenBox {
+  x: number
+  y: number
+  w: number
+  h: number
+}
 export interface CanvasNav {
-  /** fit every tile into view */
-  fit: () => void
+  /** set the view: pan (screen pixels) and zoom */
+  setView: (v: { x: number; y: number; zoom: number }) => void
+  /** the view's zoom */
+  zoom: () => number
+  /** bring `box` (screen pixels) into `pane` (the canvas's box on screen) at full size: zoomed to
+   *  1 (or kept, if closer), panned no more than needed */
+  reveal: (box: ScreenBox, pane: ScreenBox) => void
   /** pan the view by screen pixels (as a scroll would) */
   panBy: (dx: number, dy: number) => void
 }

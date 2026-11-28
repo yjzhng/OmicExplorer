@@ -14,9 +14,10 @@ const group = (kinds: PlotChild['kind'][], status = 'done') => ({
 
 describe('nothingToRerun', () => {
   it('a done group of live plots has nothing to re-run', () => {
-    expect(nothingToRerun(group(['volcano', 'qc', 'heatmap']))).toBe(true)
+    expect(nothingToRerun(group(['volcano', 'qc', 'scatter']))).toBe(true)
   })
-  it('a group holding a computing plot (enrichment / STRING / cluster) can re-run', () => {
+  it('a group holding a computing plot (enrichment / STRING / cluster / heatmap) can re-run', () => {
+    expect(nothingToRerun(group(['volcano', 'heatmap']))).toBe(false)
     expect(nothingToRerun(group(['volcano', 'enrich']))).toBe(false)
     expect(nothingToRerun(group(['string']))).toBe(false)
     expect(nothingToRerun(group(['qc', 'pca']))).toBe(false)

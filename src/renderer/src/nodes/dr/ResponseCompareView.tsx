@@ -375,7 +375,7 @@ export function ResponseCompareView({
       </Center>
     )
 
-  return <PlotlyChart data={data} layout={layout} />
+  return <PlotlyChart controls="zoom" data={data} layout={layout} />
 }
 
 /** Centered empty-state message. */

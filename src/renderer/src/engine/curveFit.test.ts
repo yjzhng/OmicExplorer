@@ -15,6 +15,7 @@ import {
   curveResidualPoints,
   curveMetrics,
   curveDescribed,
+  curveIsFlat,
   curveLackOfFit,
   curveResidualMad,
   curveDofs,
@@ -699,5 +700,40 @@ describe('lack-of-fit test', () => {
     const m = curveMetrics(fit.log2FC, { ...older, x, y }, undefined)
     expect(m.F_lof).toBeCloseTo(lofF!, 9)
     expect(m.pP_lof).toBeCloseTo(-Math.log10(lofP!), 9)
+  })
+})
+
+describe('a flat curve’s potency', () => {
+  // dosed points a little below the control and flat across 0.1 nM … 1 µM (log₁₀ nM)
+  const x = [-1, -1, 0, 0, 1, 1, 2, 2, 3, 3]
+  const y = [0.97, 0.972, 0.968, 0.971, 0.969, 0.97, 0.972, 0.968, 0.97, 0.971]
+  const fit = fitCurve(x, y)!
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  const { log2FC, pVal, ...curve } = fit
+  const t = { ...DEFAULT_THRESHOLD, statMin: -Math.log10(0.05) } as ThresholdConfig
+
+  it('is flat by its final model, else by its p at the threshold', () => {
+    expect(curveIsFlat({ model: 'M0', pP: 99 })).toBe(true)
+    expect(curveIsFlat({ model: '4PL', pP: 0 })).toBe(false)
+    expect(curveIsFlat({ pP: 0.5, curve: {} }, t)).toBe(true)
+    expect(curveIsFlat({ pP: 5, curve: {} }, t)).toBe(false)
+    // no curve, or no threshold to judge by: not called flat
+    expect(curveIsFlat({ pP: 0.5 }, t)).toBe(false)
+    expect(curveIsFlat({ pP: 0.5, curve: {} })).toBe(false)
+  })
+
+  it('has no pEC50 (or 0 on request) — not the bound its fit ran to', () => {
+    // the fit's midpoint: below the lowest dose (the most potent the bounds allow)
+    expect(curve.pec50).toBeGreaterThan(1)
+    const raw = curveMetrics(log2FC, curve, t, 1e-9)
+    expect(raw.pEC50).toBeGreaterThan(10)
+    const na = curveMetrics(log2FC, curve, t, 1e-9, 'na')
+    expect(na.pEC50).toBeUndefined()
+    expect(na.EC50).toBeUndefined()
+    const zero = curveMetrics(log2FC, curve, t, 1e-9, 'zero')
+    expect(zero.pEC50).toBe(0)
+    expect(zero.EC50).toBeUndefined()
+    // its test stands either way
+    expect(na.F).toBe(curve.f)
   })
 })

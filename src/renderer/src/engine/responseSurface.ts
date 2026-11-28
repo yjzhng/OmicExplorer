@@ -7,10 +7,18 @@
  * threshold's calls work as for any comparison, and its fit in `rs`: the levels, the spline, and —
  * for curves within the describe cutoff — the 4PL description.
  */
-import { axisModelFor, baseLevelOf, driftsByDefault, toX, type AxisShape } from './axisModel'
+import {
+  axisModelFor,
+  baseLevelOf,
+  driftsByDefault,
+  surfacePinsOf,
+  toX,
+  type AxisShape
+} from './axisModel'
 import { NO_PROGRESS, type ProgressTracker } from './progress'
 import { condValue, finaliseCompare, numValue, setCond, type RawStatRow } from './compare'
 import { condLabel, numericConds } from './types'
+import { descPeakOf } from './modelView'
 import {
   applyCurveFdr,
   ccEquivalentF,
@@ -137,7 +145,7 @@ export function* responseSurfaceSteps(
   const changes = !!plan && input.intent === 'changes'
   // the axis the curves run along is the user's pick — nothing is assumed
   if (changes && (!input.responseAxis || ![plan.a, plan.b].includes(input.responseAxis)))
-    throw new Error('Pick the axis the curves run along (Configure curve fit › axis).')
+    throw new Error('Pick which curves to fit (Configure curve fit › curve).')
   // a surface is detected by the joint model (non-linear: its adjusted F) when an axis's detector
   // is the 4PL; by the tensor-product spline / line / constant (moderated F) otherwise. Testing
   // response changes: the slices against their shared curve (runSliceShift).
@@ -196,7 +204,10 @@ export function* responseSurfaceSteps(
       for (const [c, v] of Object.entries({ ...context, ...r.context }))
         setCond(row, c as ConditionKey, v)
       raw.push(row)
-      const fit = fitOf(r, input, detected, plan)
+      const desc = fitOf(r, input, detected, plan)
+      // the descriptor's fold change, kept with the fit (the model switch reads it)
+      const descPeak = descPeakOf(desc)
+      const fit = descPeak != null ? { ...desc, descPeak } : desc
       if (describes(r)) progress.add(1)
       fits.push(r.baseline ? { ...fit, baseline: r.baseline } : fit)
       qs.push(r.q)
@@ -260,20 +271,18 @@ function surfacePlanOf(input: ResponseInput): SurfacePlan {
   }
   const det = planDetect(input, { a, b } as SurfacePlan)
   const basis = (sh: AxisShape): AxisShape => (sh === '4pl' ? 'spline' : sh)
-  // One position: the control pinned on both axes (dose 0 at the lowest temperature) — every
-  // other cell is measured against it. Else the second axis's first point over the whole dataset
-  // (a pin may filter t₀ out of the runs).
-  const position = !!input.den[a]?.length && !!input.den[b]?.length
-  const bBase = position
-    ? Number(input.den[b]![0])
-    : baseLevelOf(input.rows.map((r) => numValue(r, b)))
+  // The baseline (surfacePinsOf): the level the pick pins on each axis, or none. The second
+  // axis's base (its log offset): its first point over the whole dataset (a pin may filter t₀ out
+  // of the runs).
+  const pins = surfacePinsOf(input.den, a, b)
+  const bBase = baseLevelOf(input.rows.map((r) => numValue(r, b)))
   return {
     a,
     b,
     models: [model(a), model(b)],
     detect: [basis(det[0]), basis(det[1])],
     bBase,
-    ...(position ? { position: true } : null)
+    pins
   }
 }
 /** Each surface axis's detector shape, as set, else the method's. */
@@ -335,21 +344,26 @@ function surfaceParts(
 ): Part[] {
   const { a: A, b: B } = plan
   const active = input.activeConditions
-  const zeroRef = (input.den[A]?.length ?? 0) > 0
-  // Testing changes compares the vehicle's whole curve (dose 0 at every level of the other axis)
-  // with the treated ones', so a picked position only sets where the plot is drawn from: the
-  // control is taken at every level, as against the vehicle at each.
-  const position = !!plan.position && changes === undefined
-  // The surface spans both axes, so their pins don't select rows — except the control's own: its
-  // level of the first axis (dose 0), and against one position its level of the second too. The
-  // curves keep the first axis's pins only while the control is each level's own (against one
-  // position its base level is a cell too).
+  // The control is the compound's own wherever the baseline pins a level of the pair (dose 0,
+  // dose 100, time 360): then each compound is its own run, against its own.
+  const zeroRef = !!(input.den[A]?.length || input.den[B]?.length)
+  const position = !!plan.pins && plan.pins.a != null && plan.pins.b != null
+  // The surface spans both axes, so their pins don't select the curves' rows — the control's are
+  // its own pins (the baseline picked). Testing changes takes a vehicle compound's whole curve (its
+  // level at every level of the pair: the reference slice). The curves keep the first axis's pins
+  // (their filter) only while the control is a level of it at each level of the second.
   const free = (sel: CondSelector, control: boolean): CondSelector => {
     const rest: CondSelector = { ...sel }
+    if (control) {
+      if (changes !== undefined && sel.cmpd?.length) {
+        delete rest[A]
+        delete rest[B]
+      }
+      return rest
+    }
     delete rest[A]
     delete rest[B]
-    if (control && position && sel[B]) rest[B] = sel[B]
-    return zeroRef && sel[A] && (control || !position) ? { ...rest, [A]: sel[A] } : rest
+    return input.den[A]?.length && sel[A] && !position ? { ...rest, [A]: sel[A] } : rest
   }
   const kept = input.num[B]?.length ? new Set(input.num[B]!.map(String)) : null
   const inTime = (r: StandardRow): boolean => !kept || kept.has(String(condValue(r, B) ?? ''))
@@ -375,8 +389,11 @@ function surfaceParts(
     if (g) g.push(r)
     else groups.set(k, [r])
   }
-  const denLabel = zeroRef
-    ? `${condLabel(A)} ${input.den[A]![0]}`
+  // the baseline's name: its pins on the pair (dose 100, time 360, dose 0 · time 30), else the
+  // control compound
+  const pinned = [A, B].filter((c) => input.den[c]?.length === 1)
+  const denLabel = pinned.length
+    ? pinned.map((c) => `${condLabel(c)} ${input.den[c]![0]}`).join(' · ')
     : [...new Set(denRows.map((r) => r.cmpd))].join('/') || 'control'
   const out: Part[] = []
   const genes = [...groups.values()].map((g) => new Set(g.map((r) => r.uniqID)).size)
@@ -396,11 +413,21 @@ function surfaceParts(
   const ctlVaries = splitOn.filter(
     (c) => new Set(denRows.map((x) => String(condValue(x, c) ?? ''))).size > 1
   )
+  // The control's samples at every level of the second axis, not only the baseline's (its pinned
+  // level there): against one position (dose 0 at t₀) the control compound's own dose 0 at every
+  // other time is a cell like the rest — the vehicle's response against that one position. Which
+  // of them are the reference is the fit's to say (surfaceFrame), not the row selection's.
+  const ctlCmpds = new Set(denRows.map((r) => r.cmpd))
+  const denAcross: CondSelector = { ...free(input.den, true) }
+  delete denAcross[B]
+  const ctlRows = input.rows.filter(
+    (r) => ctlCmpds.has(r.cmpd) && inTime(r) && selectorMatch(denAcross, r, active)
+  )
   for (const grp of groups.values()) {
     const rep = grp[0]
     // The control at this context where it varies with it; all of it where it doesn't.
     const want = ctlVaries.map((c) => String(condValue(rep, c) ?? ''))
-    const ctl = denRows.filter((d) =>
+    const ctl = ctlRows.filter((d) =>
       ctlVaries.every((c, i) => String(condValue(d, c) ?? '') === want[i])
     )
     if (ctl.length === 0) continue
@@ -535,6 +562,7 @@ function surfaceAxesOf(
   if (!ax) return null
   const [ma, mb] = surfaceMaps(s)
   const legacy =
+    !s.pins &&
     !s.position &&
     ax[0].axis === 'dose' &&
     ax[1].axis === 'time' &&
@@ -700,7 +728,16 @@ function* scoreJoint4pl(
   JointFit[]
 > {
   // each surface's cells on its own axes (dose × time: log₁₀ dose, log₁₀(t + offset)) and its model
-  const specs: JointSpec[] = rows.map((r) => jointSpecOf(r.curve.surface!, how)!)
+  const specs: JointSpec[] = rows.map((r) => {
+    const spec = jointSpecOf(r.curve.surface!, how)
+    // the 4PL surface's response is 0 at its baseline along each axis (a control off it, or its
+    // first point): a baseline among the levels (dose 100) it can't model
+    if (!spec)
+      throw new Error(
+        'The 4PL surface detector needs the baseline at the start of each axis (dose 0, or its first point) — use the spline detector for this baseline.'
+      )
+    return spec
+  })
   const ks = specs.map(jointParamCount)
   const cellsOf = rows.map((r) => {
     const c = r.curve

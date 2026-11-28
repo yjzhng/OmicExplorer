@@ -1,6 +1,11 @@
 import { useMemo } from 'react'
 
-import { buildDumbbell, type ContrastResultRow, type DumbbellOrder } from '../../engine'
+import {
+  dumbbellBase,
+  dumbbellWith,
+  type ContrastResultRow,
+  type DumbbellOrder
+} from '../../engine'
 import { topSplitOf } from '../../graph/types'
 import type { TopSplit, ValueScale } from '../../engine'
 import { tooltip } from '../../ui/condTooltip'
@@ -9,6 +14,7 @@ import { fmtQuantity, plainTicks, rangeOf } from '../../ui/quantityAxis'
 import { axisBase, CATEGORICAL, PALETTES, PLOT_TEXT, plotBase } from '../../ui/theme'
 import { useSelection } from '../../ui/useSelection'
 import { useUiTheme } from '../../ui/useUiTheme'
+import { usePlotCached } from '../../ui/plotCache'
 
 /** Dumbbell: per gene, FC1 and FC2 dots joined by a line; sorted by |FCdiff| (or either side). The base
  *  set is top-N (or the selected subset); hovered/pinned genes are appended so a linked
@@ -53,6 +59,15 @@ export function DumbbellView({
   const hoverId = useSelection((s) => s.hoverId)
   const pinnedIds = useSelection((s) => s.pinnedIds)
 
+  // The part read off every row (sorted, top-N picked), kept app-wide (ui/plotCache): a hover or a
+  // pin only appends its genes to it (dumbbellWith), never sorts the rows again.
+  const split = topSplitOf({ topSplit, topUp, topDown })
+  const base = usePlotCached(
+    'dumbbell',
+    [rows, topGenes, split.by, split.up, split.down, (focus ?? []).join('\u0000')],
+    () => dumbbellBase(rows, { topGenes, split, focus })
+  )
+
   const { data, layout, boldTicks } = useMemo(() => {
     const p = PALETTES[mode]
     // `#rrggbb` → `rgba` so the connector can be a softened (lighter) grey.
@@ -62,14 +77,7 @@ export function DumbbellView({
     }
     const extra = new Set(pinnedIds)
     if (hoverId) extra.add(hoverId)
-    const dumbbell = buildDumbbell(rows, {
-      topGenes,
-      split: topSplitOf({ topSplit, topUp, topDown }),
-      displayMap,
-      focus,
-      extra: [...extra],
-      order
-    })
+    const dumbbell = dumbbellWith(base, { displayMap, extra: [...extra], order })
     const genes = dumbbell.rows.map((r) => r.label)
     // uniqIDs parallel to `genes` — what the selection store keys on, so the bold restyle can
     // match a hovered/pinned gene to its tick.
@@ -175,13 +183,7 @@ export function DumbbellView({
       boldTicks
     }
   }, [
-    rows,
-    topGenes,
-    topSplit,
-    topUp,
-    topDown,
     displayMap,
-    focus,
     orient,
     order,
     valueKind,
@@ -190,8 +192,9 @@ export function DumbbellView({
     pinnedIds,
     title,
     mode,
-    plainScale
+    plainScale,
+    base
   ])
 
-  return <PlotlyChart data={data} layout={layout} boldTicks={boldTicks} />
+  return <PlotlyChart controls="none" data={data} layout={layout} boldTicks={boldTicks} />
 }

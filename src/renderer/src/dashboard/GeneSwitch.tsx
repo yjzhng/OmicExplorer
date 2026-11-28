@@ -26,7 +26,7 @@ export function GeneSwitch({
   controls?: ReactNode
   genes: string[]
   /** uniqIDs that actually have data — a hovered/pinned gene only shows if present */
-  present: Set<string>
+  present: ReadonlySet<string>
   displayMap: Record<string, string>
   children: (gene: string) => ReactNode
 }): ReactNode {

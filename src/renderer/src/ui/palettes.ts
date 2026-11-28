@@ -388,7 +388,16 @@ const LEGACY: Record<string, PaletteId> = {
 /** A stored palette value (current or legacy) as a PaletteRef, else undefined. */
 export function toPaletteRef(v: unknown, reverse?: boolean): PaletteRef | undefined {
   if (v && typeof v === 'object' && isPaletteId((v as PaletteRef).id)) return v as PaletteRef
-  if (isPaletteId(v)) return { id: v, reverse }
-  if (typeof v === 'string' && LEGACY[v]) return { id: LEGACY[v], reverse }
+  if (isPaletteId(v)) return refOf(v, reverse)
+  if (typeof v === 'string' && LEGACY[v]) return refOf(LEGACY[v], reverse)
   return undefined
+}
+/** A palette by id as one object per id and direction: a fresh one per call is a fresh prop every
+ *  render, and the plot it colours is rebuilt and redrawn for it. */
+const refs = new Map<string, PaletteRef>()
+function refOf(id: PaletteRef['id'], reverse: boolean | undefined): PaletteRef {
+  const k = `${id}\u0000${reverse}`
+  let r = refs.get(k)
+  if (!r) refs.set(k, (r = { id, reverse }))
+  return r
 }

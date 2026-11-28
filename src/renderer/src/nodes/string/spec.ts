@@ -1,7 +1,9 @@
 /** string: its node contract (see nodes/contract.ts). */
 import type { StringConfig } from '../../graph/types'
 import { defineSpec } from '../contract'
-import { stringTaxon } from '../kit/requirements'
+import { resultStringTaxon } from '../kit/requirements'
+
+const NO_ANN: Record<string, Record<string, string>> = {}
 
 export const stringSpec = defineSpec<'string'>({
   kind: 'string',
@@ -28,7 +30,7 @@ export const stringSpec = defineSpec<'string'>({
     if (u.result?.kind !== 'compare') return null
     const species = (cfg as StringConfig)?.species
     if (species && species > 0) return null
-    return stringTaxon(u.result.annotationMap ?? {}) > 0
+    return resultStringTaxon(u.result.annotationMap ?? NO_ANN) > 0
       ? null
       : 'No species detected — fetch annotations in the interactive import (Metadata step), which reads the organism, then re-run Standardize and the Compare / Curve fit.'
   },

@@ -22,7 +22,8 @@ export function Field({
   children
 }: {
   label: string
-  /** top-align the label (for a multi-line control, e.g. the effect-size rows) */
+  /** top-align the label (for a multi-line control, e.g. the effect-size rows; in a grid, level
+   *  with the control's first line) */
   top?: boolean
   /** a small control right of the field (e.g. the quick-access toggle) */
   aside?: ReactNode
@@ -49,7 +50,11 @@ export function Field({
   if (layout === 'grid')
     return (
       <>
-        <span style={FORM.fieldGridLabel}>{name}</span>
+        <span
+          style={top ? { ...FORM.fieldGridLabel, ...FORM.fieldGridLabelTop } : FORM.fieldGridLabel}
+        >
+          {name}
+        </span>
         <span style={FORM.fieldGridBody}>
           {children}
           {aside}

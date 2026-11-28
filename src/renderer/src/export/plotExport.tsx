@@ -35,6 +35,7 @@ import { cleanSvgForEditors } from './svgClean'
 import { deriveTabs, tabTitles } from '../graph/groups'
 import { pathSeg } from '../graph/diskNames'
 import { clipShapesToRanges } from './clipShapes'
+import { extendPaperDown, legendOverflow } from './legendOverflow'
 import { exportPath } from './paths'
 import { comparisonText, contextText, fileTitle, uniqueNames } from './fileNames'
 import { collectSpecs, type ExportSpec } from './specs'
@@ -186,7 +187,11 @@ const glPixelRatio = (dpi: number): number => Math.min(8, Math.max(2, dpi / DPI_
  *  title shown (geneTitle) and 3-D scenes at `dpi` (glPixelRatio). A 3-D scene's lines and text
  *  are left out of the clone and come back as vector (`scenes`, see sceneVector). Returns the div
  *  plus a cleanup to run once the capture is done. */
-async function lightCapture(gd: Element, dpi: number): Promise<Capture> {
+async function lightCapture(
+  gd: Element,
+  dpi: number,
+  size?: { w: number; h: number }
+): Promise<Capture> {
   const live = gd as unknown as {
     data?: unknown[]
     layout?: Record<string, unknown>
@@ -202,13 +207,16 @@ async function lightCapture(gd: Element, dpi: number): Promise<Capture> {
   // bounds and an editor pastes the plot far off its page (see clipShapes).
   const shapes = clipShapesToRanges(live.layout?.shapes, live._fullLayout)
   const cut = shapes !== live.layout?.shapes
-  if (!dark && !gl && !geneTitle && !scenes && !cut)
-    return { el: gd, sceneEl: null, done: () => {}, scenes: [] }
-  const { w, h } = liveSize(gd)
+  // A legend too long for the plot scrolls: the capture gets room under the plot for all of it,
+  // the plot itself as drawn (extendPaperDown).
+  const grow = legendOverflow(live._fullLayout)
+  const { w, h: liveH } = size ?? liveSize(gd)
+  if (!dark && !gl && !geneTitle && !scenes && !cut && !grow)
+    return { el: gd, sceneEl: null, done: () => {}, scenes: [], w, h: liveH }
   const sub = dark ? lightSubstitutions() : new Map<string, string>()
   // Back to SVG first: recolor drops our private keys, which toSvgTraces still reads.
-  const data = recolor(toSvgTraces(live.data ?? []), sub)
-  const layout = revealGeneTitle(
+  let data = recolor(toSvgTraces(live.data ?? []), sub) as Record<string, unknown>[]
+  let layout = revealGeneTitle(
     recolor({ ...(live.layout ?? {}), ...(cut ? { shapes } : null) }, sub) as Record<
       string,
       unknown
@@ -233,7 +241,7 @@ async function lightCapture(gd: Element, dpi: number): Promise<Capture> {
     if (camera) layout[key] = { ...((layout[key] as Record<string, unknown>) ?? {}), camera }
   }
   layout.width = w
-  layout.height = h
+  layout.height = liveH
   layout.autosize = false
   // Dark mode prints on the export ground; a light clone (WebGL → SVG only) keeps the live colours.
   if (dark) {
@@ -241,6 +249,20 @@ async function lightCapture(gd: Element, dpi: number): Promise<Capture> {
     layout.paper_bgcolor = ground
     layout.plot_bgcolor = ground
   }
+  // Room for a long legend: the paper runs on under the plot, the plot where it was — margins
+  // pinned to the live plot's, so its plot area is exactly the live one plus the room.
+  const base = { layout, data }
+  const extend = (extra: number): void => {
+    layout = { ...base.layout }
+    data = [...base.data]
+    const m = live._fullLayout?._size as Record<string, number> | undefined
+    if (m) layout.margin = { l: m.l, r: m.r, t: m.t, b: m.b, pad: m.p ?? 0, autoexpand: false }
+    extendPaperDown(layout, data, live._fullLayout, extra)
+    layout.height = liveH + extra
+  }
+  let room = grow
+  if (room) extend(room)
+  let h = layout.height as number
   const mounted: HTMLElement[] = []
   const mount = async (d: unknown[], l: Record<string, unknown>): Promise<HTMLElement> => {
     const el = document.createElement('div')
@@ -265,6 +287,17 @@ async function lightCapture(gd: Element, dpi: number): Promise<Capture> {
     }
   }
   const main = await mount(data as unknown[], layout)
+  // Taller, a legend beside the plot may still fall short (the margins can shift as it redraws):
+  // grow again until none scrolls.
+  for (let i = 0; i < 3 && grow; i++) {
+    const more = legendOverflow((main as { _fullLayout?: Record<string, unknown> })._fullLayout)
+    if (!more) break
+    room += more
+    extend(room)
+    h = layout.height as number
+    main.style.height = `${h}px`
+    await plotlyReact(main, data, layout)
+  }
   // 3-D scenes: lines and text are redrawn as vector over a bitmap of just the surfaces and
   // markers, read from the live scene (which the clones match: same size, camera, ranges and
   // aspect). That bitmap comes from a second clone with the rest hidden — its plot area pinned to
@@ -299,7 +332,7 @@ async function lightCapture(gd: Element, dpi: number): Promise<Capture> {
       reportError(e, { where: 'export-3d-vector' })
     }
   }
-  return { el: main, sceneEl, scenes: plans, done }
+  return { el: main, sceneEl, scenes: plans, done, w, h }
 }
 
 /** A capture clone: the div to snapshot, and for 3-D scenes the bitmap-only twin and overlays. */
@@ -308,6 +341,9 @@ interface Capture {
   sceneEl: Element | null
   scenes: ScenePlan[]
   done: () => void
+  /** the size it's drawn at: the live plot's, taller when a legend needed the room */
+  w: number
+  h: number
 }
 
 /**
@@ -353,6 +389,12 @@ export interface PngResult {
   widthIn: number
   heightIn: number
 }
+
+const plotlyReact = (
+  Plotly as unknown as {
+    react: (el: unknown, data: unknown[], layout: Record<string, unknown>) => Promise<unknown>
+  }
+).react
 
 /** The size a live graph div is drawn at right now (Plotly's full layout, falling back to the
  *  element box). A per-tile copy/download snapshots at THIS size, not a fixed export layout, so
@@ -452,19 +494,31 @@ const svgDataUrl = (svg: string): string =>
  *  `data:image/svg+xml,<url-encoded>` URL, decoded here. `dpi` only sets the resolution of a 3-D
  *  scene's bitmap; everything else is vector. */
 export async function gdToSvg(gd: Element, dpi: number): Promise<string> {
+  return (await gdToSvgSized(gd, dpi)).svg
+}
+
+/** gdToSvg, with the size it was drawn at (taller than the view when a legend needed it). */
+async function gdToSvgSized(
+  gd: Element,
+  dpi: number
+): Promise<{ svg: string; w: number; h: number }> {
   await syncSize(gd)
-  const { w, h } = liveSize(gd)
   const cap = await lightCapture(gd, dpi)
+  const { w, h } = cap
   try {
     // Stripped of Plotly's browser-only scaffolding so it imports cleanly into an editor.
     const svg = cleanSvgForEditors(await captureSvg(cap, w, h), plotFontName())
     // The paper is transparent; on a white ground, give the file a first rect so it reads anywhere.
     const ground = exportGround()
-    if (!ground) return svg
-    return svg.replace(
-      /<svg\b[^>]*>/,
-      (open) => `${open}<rect width="100%" height="100%" fill="${ground}"/>`
-    )
+    if (!ground) return { svg, w, h }
+    return {
+      svg: svg.replace(
+        /<svg\b[^>]*>/,
+        (open) => `${open}<rect width="100%" height="100%" fill="${ground}"/>`
+      ),
+      w,
+      h
+    }
   } finally {
     cap.done()
   }
@@ -489,12 +543,11 @@ export async function gdToExportItem(
   dpi: number
 ): Promise<ExportItem> {
   if (format === 'svg') {
-    await syncSize(gd)
-    const { w, h } = liveSize(gd)
+    const { svg, w, h } = await gdToSvgSized(gd, dpi)
     return {
       relPath,
       format,
-      base64: utf8ToBase64(await gdToSvg(gd, dpi)),
+      base64: utf8ToBase64(svg),
       widthIn: w / DPI_BASE,
       heightIn: h / DPI_BASE
     }
@@ -510,8 +563,8 @@ export async function gdToExportItem(
  */
 export async function rasterizeGd(gd: Element, dpi = 300): Promise<PngResult> {
   await syncSize(gd)
-  const { w, h } = liveSize(gd)
   const cap = await lightCapture(gd, dpi)
+  const { w, h } = cap
   try {
     const svgUrl = svgDataUrl(await captureSvg(cap, w, h))
     const scale = dpi / DPI_BASE
@@ -563,7 +616,8 @@ export async function copyGd(gd: Element, format: 'png' | 'svg', dpi: number): P
 }
 
 /**
- * Render one plot off-screen and return its PNG bytes (base64, no data: prefix), or null
+ * Render one plot off-screen and return its PNG (base64, no data: prefix) and size — taller than
+ * the export layout when a legend needed the room — or null
  * if it produced no plot (a table, or an empty "connect a tile" state).
  */
 async function renderSpecToPng(
@@ -573,7 +627,7 @@ async function renderSpecToPng(
   dpi: number,
   selectedOnly = false,
   facetSel?: Record<string, string>
-): Promise<string | null> {
+): Promise<PngResult | null> {
   const container = document.createElement('div')
   container.style.cssText = `position:fixed;left:-100000px;top:0;width:${BASE_W}px;height:${BASE_H}px;pointer-events:none;`
   document.body.appendChild(container)
@@ -592,11 +646,12 @@ async function renderSpecToPng(
     const gd = await waitForPlot(container)
     if (!gd) return null
     // Exports are light-on-white like the per-tile capture, whatever theme the app is in.
-    const cap = await lightCapture(gd, dpi)
+    const cap = await lightCapture(gd, dpi, { w: BASE_W, h: BASE_H })
     try {
-      const svgUrl = svgDataUrl(await captureSvg(cap, BASE_W, BASE_H))
+      const svgUrl = svgDataUrl(await captureSvg(cap, cap.w, cap.h))
       const scale = dpi / DPI_BASE
-      return await svgUrlToPng(svgUrl, Math.round(BASE_W * scale), Math.round(BASE_H * scale))
+      const base64 = await svgUrlToPng(svgUrl, Math.round(cap.w * scale), Math.round(cap.h * scale))
+      return { base64, widthIn: cap.w / DPI_BASE, heightIn: cap.h / DPI_BASE }
     } finally {
       cap.done()
     }
@@ -649,8 +704,6 @@ export async function runExport(
   let written = 0
   let skipped = 0
   let done = 0
-  const dims = { widthIn: BASE_W / DPI_BASE, heightIn: BASE_H / DPI_BASE }
-
   // Plots: render each job off-screen, then write in one batch. Selected-only variants are filed
   // under a `selected` subfolder; each facet tuple gets its own file (suffix names the facet).
   // Named as a tile's Download names it (export/fileNames.ts): the tab, the plot, then the facet —
@@ -685,7 +738,7 @@ export async function runExport(
     const fold = plotFolder(job.spec)
     const fileBase = fileBaseOf(job)
     onProgress(done, total)
-    const base64 = await renderSpecToPng(
+    const png = await renderSpecToPng(
       job.spec,
       edges,
       results,
@@ -694,12 +747,11 @@ export async function runExport(
       job.facetSel
     )
     done++
-    if (base64) {
+    if (png) {
       plotItems.push({
         relPath: exportPath(fold, fileBase, opts.structure, opts.plotFormat, job.selectedOnly),
         format: opts.plotFormat,
-        base64,
-        ...dims
+        ...png
       })
     } else {
       skipped++

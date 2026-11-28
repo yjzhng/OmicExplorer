@@ -23,6 +23,7 @@ import { PagerTrigger } from './PagerTrigger'
 import { placeMenu } from './placeMenu'
 import { PALETTES } from './theme'
 import { ToggleSwitch, type ToggleOption } from './ToggleSwitch'
+import { useAppView } from './useAppView'
 import { useUiTheme } from './useUiTheme'
 import { VirtualList } from './VirtualRows'
 
@@ -94,7 +95,10 @@ export function ChoiceSwitch<V extends string>({
  *    tile's visible right edge (the nearest box that scrolls or clips sideways), less that row's
  *    right padding and what the row's item holds beside this (label, gaps, padding). So it's the
  *    room the switch has on a line of its own, whichever of the two is showing — it can't flip
- *    back and forth. */
+ *    back and forth.
+ *  - Never mid-slide (the Workflow ⇄ Results slide, useAppView `paging`): the slide is only a
+ *    transition, so the switch is measured on the page at rest, once it settles — not on a page
+ *    still off to the side, whose reading would stick, as nothing resizes when it lands. */
 function FitChoice<V extends string>(props: {
   value: V
   options: readonly ToggleOption<V>[]
@@ -108,10 +112,12 @@ function FitChoice<V extends string>(props: {
   const slotRef = useRef<HTMLSpanElement>(null)
   const pillsRef = useRef<HTMLSpanElement>(null)
   const [fits, setFits] = useState(true)
+  // the page sliding in or out: hold the last reading until it settles
+  const paging = useAppView((s) => s.paging)
   useLayoutEffect(() => {
     const slot = slotRef.current
     const pills = pillsRef.current
-    if (!slot || !pills) return
+    if (paging || !slot || !pills) return
     // the row this switch wraps in, and its child holding the switch
     let item: HTMLElement = slot
     let line = slot.parentElement
@@ -151,7 +157,7 @@ function FitChoice<V extends string>(props: {
     ro.observe(port)
     ro.observe(pills)
     return () => ro.disconnect()
-  }, [])
+  }, [paging])
   return (
     <span ref={slotRef} style={fitStyles.slot}>
       <span style={fitStyles.clip} aria-hidden>

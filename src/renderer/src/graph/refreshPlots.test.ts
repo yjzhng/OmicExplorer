@@ -13,6 +13,7 @@ vi.stubGlobal('window', {
 vi.stubGlobal('localStorage', { getItem: () => null, setItem: noop, removeItem: noop })
 
 const { useGraph } = await import('./store')
+const { isQueuedRun } = await import('./state/run')
 import type { GraphNode, PlotGroupConfig } from './types'
 
 const group = (id: string, kinds: string[]): GraphNode =>
@@ -64,5 +65,42 @@ describe('refreshing the plots below a step', () => {
     await useGraph.getState().refreshDownstream('cmp')
     expect(plotStatuses('a')).toEqual(['error'])
     expect(plotStatuses('b')).toEqual(['done'])
+  })
+})
+
+describe('plots waiting their turn', () => {
+  it('show as queued — not "not run yet" — until their turn, then run', async () => {
+    wire([group('a', ['volcano', 'heatmap']), group('b', ['volcano'])])
+    const run = useGraph.getState().refreshDownstream('cmp')
+    // the first plot under way; the rest waiting their turn
+    expect(plotStatuses('a')).toEqual(['running', 'running'])
+    expect(plotStatuses('b')).toEqual(['running'])
+    expect(isQueuedRun('a/a-0')).toBe(false)
+    expect(isQueuedRun('a/a-1')).toBe(true)
+    expect(isQueuedRun('b/b-0')).toBe(true)
+    await run
+    expect(plotStatuses('a')).toEqual(['done', 'done'])
+    expect(plotStatuses('b')).toEqual(['done'])
+    expect(['a/a-0', 'a/a-1', 'b/b-0'].some(isQueuedRun)).toBe(false)
+  })
+
+  it("a queued plot's Stop takes it out of the run", async () => {
+    wire([group('a', ['volcano']), group('b', ['volcano'])])
+    const run = useGraph.getState().refreshDownstream('cmp')
+    useGraph.getState().cancelNode('b')
+    expect(plotStatuses('b')).toEqual(['idle'])
+    await run
+    expect(plotStatuses('a')).toEqual(['done'])
+    expect(plotStatuses('b')).toEqual(['idle'])
+    expect(isQueuedRun('b/b-0')).toBe(false)
+  })
+
+  it('a done plot keeps its chart (not queued) until its turn re-runs it', async () => {
+    wire([group('a', ['volcano'])])
+    await useGraph.getState().refreshDownstream('cmp')
+    const run = useGraph.getState().refreshDownstream('cmp')
+    expect(isQueuedRun('a/a-0')).toBe(false)
+    await run
+    expect(plotStatuses('a')).toEqual(['done'])
   })
 })

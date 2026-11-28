@@ -2,7 +2,7 @@
 import { type LoadConfig, type SubsetConfig } from '../../graph/types'
 import { wiredKindOf, loadAbove } from '../../graph/registry'
 import { rowCount } from '../../engine/lazyRows'
-import { subsetStandardize } from '../../engine'
+import { engine } from '../../engine/client'
 import type { StepRunContext } from '../runContext'
 
 export async function run(ctx: StepRunContext): Promise<void> {
@@ -27,7 +27,10 @@ export async function run(ctx: StepRunContext): Promise<void> {
     return
   }
   const sc = node.data.config as SubsetConfig
-  const std = subsetStandardize(up.std, sc.keep ?? {}, { reps: sc.reps, drop: sc.drop })
+  setStatus('running')
+  // filtered in the worker
+  const std = await engine.subset(up.std, sc.keep ?? {}, { reps: sc.reps, drop: sc.drop })
+  if (get().nodes.find((n) => n.id === id)?.data.status !== 'running') return // cancelled
   if (rowCount(std) === 0) {
     setStatus('error', 'No samples match the chosen values.')
     return

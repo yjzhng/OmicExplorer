@@ -29,6 +29,8 @@ import { tdrSpec } from './tdr/spec'
 import { geneBarSpec } from './geneBar/spec'
 import { pcaSpec } from './pca/spec'
 import { enrichSpec } from './enrich/spec'
+import { enrichMapSpec } from './enrichMap/spec'
+import { setCompareSpec } from './setCompare/spec'
 import { stringSpec } from './string/spec'
 import { qcSpec } from './qc/spec'
 import { corrSpec } from './corr/spec'
@@ -60,6 +62,8 @@ export const SPECS: { readonly [K in NodeKind]: NodeSpec<K> } = {
   geneBar: geneBarSpec,
   pca: pcaSpec,
   enrich: enrichSpec,
+  enrichMap: enrichMapSpec,
+  setCompare: setCompareSpec,
   string: stringSpec,
   qc: qcSpec,
   corr: corrSpec,

@@ -1,24 +1,28 @@
-import { type ReactNode, useMemo } from 'react'
+import { type ReactNode, useId } from 'react'
 import type { StepStatus } from '../../../graph/types'
+import { usePlotCached } from '../../../ui/plotCache'
 import { StatusIcon } from '../../../ui/StatusNote'
 import { styles } from './styles'
 
-/** Memoizes a plot-data build inside a FacetedPlot render prop. The render prop runs on every
- *  PanelBody render (a pin click, a status tick anywhere), and an inline `buildX(rows, …)` there
- *  hands the view a FRESH data object each time — which is a full Plotly redraw of the chart, on
- *  every tile, hidden tabs included. `deps` are the build's actual inputs. */
+/** A plot-data build inside a FacetedPlot render prop, from the app-wide plot cache (ui/plotCache).
+ *  The render prop runs on every PanelBody render (a pin click, a status tick anywhere), and an
+ *  inline `buildX(rows, …)` there hands the view a FRESH data object each time — which is a full
+ *  Plotly redraw of the chart, on every tile, hidden tabs included; and a remount (a facet or tab
+ *  switched back) takes the one built before. `name` tells the build apart from another on the
+ *  same inputs (unnamed: kept for this mount only); `deps` are the build's actual inputs. */
 export function Built<T>({
+  name,
   build,
   deps,
   children
 }: {
+  name?: string
   build: () => T
   deps: unknown[]
   children: (built: T) => ReactNode
 }): ReactNode {
-  // A generic helper can't hand the hooks lint a literal deps array; the deps ARE the memo key.
-  // eslint-disable-next-line react-hooks/exhaustive-deps, react-hooks/use-memo
-  const built = useMemo(build, deps)
+  const own = useId()
+  const built = usePlotCached(name ?? own, deps, build)
   return children(built)
 }
 export type StdView = 'matrix' | 'long' | 'qc'
@@ -31,6 +35,10 @@ export interface PivotSource<T> {
   ctx: (i: number) => T
   value: (i: number) => unknown
 }
+/** What a plot of the description's parameters (potency, slope, plateaus) says under the detector
+ *  model view: the spline has none. */
+export const DETECTOR_NO_PARAMS =
+  'The detector (spline) has no EC50 or plateaus — switch the model to descriptor.'
 export function Empty({ text }: { text: string }): ReactNode {
   return <div style={styles.empty}>{text}</div>
 }
@@ -38,12 +46,23 @@ export function Empty({ text }: { text: string }): ReactNode {
 export function PlotNotRun({
   status,
   error,
+  queued = false,
   onRun
 }: {
   status: StepStatus
   error?: string
+  /** running, but only waiting its turn (in its group's run, a Run, a re-run below a step) or on
+   *  its input: said so, with no Run — one would run it now, and again when its turn came */
+  queued?: boolean
   onRun: () => void
 }): ReactNode {
+  if (status === 'running' && queued)
+    return (
+      <div style={{ ...styles.empty, gap: 8 }}>
+        <StatusIcon kind="progress" />
+        Waiting to run…
+      </div>
+    )
   if (status === 'running')
     return (
       // The progress spinner turns on the compositor, so it keeps going while the UI thread is busy.

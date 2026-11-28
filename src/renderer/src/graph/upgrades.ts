@@ -10,7 +10,8 @@
  *   2. never edit or remove an earlier step — files from before it still need it (a step that
  *      turns out wrong is corrected by a later one);
  *   3. make it idempotent: files saved before 0.3.5 don't say which app wrote them, so every step
- *      runs on every file, and must leave an already-upgraded file as it is.
+ *      runs on those, and must leave an already-upgraded file as it is. A file that says which
+ *      release saved it skips the steps from earlier releases (upgradeProjectFile).
  * MIGRATED_THROUGH follows from the last step, so files saved before it are offered Fix.
  *
  * An upgrade changes how a file is written down, never what was computed: results from an older
@@ -482,6 +483,23 @@ export const MIGRATED_THROUGH = UPGRADES[UPGRADES.length - 1].since
 /** Bring a parsed project file, of any release, to the current form — in place, every step in
  *  order (each one idempotent). */
 export function upgradeProjectFile(raw: RawProject, ctx: UpgradeContext): RawProject {
-  for (const u of UPGRADES) u.run(raw, ctx)
+  // A file that names the release that saved it skips the steps from before that release: it was
+  // written in their form already. (Some walk the whole file, results included — a quarter of a
+  // second on a large project, at every open.) A step from the saving release itself still runs —
+  // a development build may have saved before the step was added — and so does every step on a
+  // file from before 0.3.5, which names none.
+  const savedBy = typeof raw.appVersion === 'string' ? raw.appVersion : null
+  for (const u of UPGRADES) if (!savedBy || !newerThan(savedBy, u.since)) u.run(raw, ctx)
   return raw
+}
+
+/** Whether release `a` is later than release `b` (as project.ts's isNewerVersion). */
+function newerThan(a: string, b: string): boolean {
+  const pa = a.split('.').map((n) => parseInt(n, 10) || 0)
+  const pb = b.split('.').map((n) => parseInt(n, 10) || 0)
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const d = (pa[i] || 0) - (pb[i] || 0)
+    if (d !== 0) return d > 0
+  }
+  return false
 }

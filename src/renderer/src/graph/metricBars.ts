@@ -6,7 +6,9 @@
  */
 import {
   curveDescribed,
+  curveIsFlat,
   curveMetrics,
+  type FlatPotency,
   responseMetrics,
   type CompareResultRow,
   type ConditionKey
@@ -17,13 +19,14 @@ import { isSurfaceRow, surfaceSlicing } from './contrastPair'
 export const METRIC_IDS = ['potency', 'slope', 'front', 'back'] as const
 export type MetricId = (typeof METRIC_IDS)[number]
 
-/** A metric's name as the switch lists it (the potency's own name — EC50 / pEC50 — comes with the
- *  data: see metricBarsOf). */
+/** A metric's name as the switch lists it — the name alone: its scale is the axis title's (the
+ *  potency's own name — EC50 / pEC50 — and a plateau's scale come with the data: see
+ *  metricBarsOf). */
 export const METRIC_NAMES: Record<MetricId, string> = {
   potency: 'potency',
   slope: 'slope',
-  front: 'front (log₂)',
-  back: 'back (log₂)'
+  front: 'front',
+  back: 'back'
 }
 
 /** One metric's bars for a gene: one bar (a curve), or one per slice level (`by` names the condition the levels are of). */
@@ -45,6 +48,9 @@ export interface MetricCtx {
    *  axis's control level as the Curve fit set it (dose 0: the vehicle's curve) — e.g. a melt's ΔTm
    *  per dose. A curve has no reference: its values as they are. */
   delta?: boolean
+  /** how a flat curve's potency reads (see FlatPotency; unset: none — the plot's force pEC50 makes
+   *  it 0) */
+  flat?: FlatPotency
 }
 
 const finite = (v: unknown): number | null =>
@@ -102,7 +108,13 @@ export function metricBarsOf(
   // a curve: CurveCurator's 4PL, or the response surface method's description
   const m: Partial<Record<string, number | string | undefined>> = r.curve
     ? curveDescribed(r.curve)
-      ? curveMetrics(r.log2FC ?? NaN, r.curve, undefined, ctx.scale)
+      ? curveMetrics(
+          r.log2FC ?? NaN,
+          r.curve,
+          undefined,
+          ctx.scale,
+          curveIsFlat(r) ? (ctx.flat ?? 'na') : undefined
+        )
       : {}
     : r.rs
       ? responseMetrics(r, ctx.scale)
@@ -110,8 +122,11 @@ export function metricBarsOf(
   const linear = r.curve?.scale === 'linear' || r.rs?.scale === 'linear'
   one('potency', potencyName(linear, ctx.unit), finite(linear ? m.EC50 : m.pEC50))
   one('slope', 'slope', finite(m.slope))
-  one('front', 'front (log₂)', finite(m.front))
-  one('back', 'back (log₂)', finite(m.back))
+  // plateaus on the scale they're kept on: a 4PL curve's as ratios to the control (1 = no change),
+  // the response surface method's as log₂ ratios to the baseline (0 = no change)
+  const plateau = r.curve ? 'ratio' : 'log₂'
+  one('front', `front (${plateau})`, finite(m.front))
+  one('back', `back (${plateau})`, finite(m.back))
   return order(out)
 }
 

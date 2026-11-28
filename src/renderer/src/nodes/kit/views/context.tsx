@@ -2,7 +2,6 @@ import type { Edge } from '@xyflow/react'
 import { useCallback, useMemo, useState } from 'react'
 import type { FacetSource } from '../../../dashboard/FacetedPlot'
 import {
-  type CompareResultRow,
   type ConditionKey,
   type ContextRow,
   type ContrastResultRow,
@@ -11,17 +10,18 @@ import {
   plainLogOf,
   presentScaleOf,
   rowsWhere,
-  showKindOf,
   type ValueScale,
   type ValueUnit,
   valueUnitOf,
   withBatchCond
 } from '../../../engine'
+import { viewedResult } from '../../../graph/modelView'
 import { useGraph } from '../../../graph/store'
 import {
   axisTitle,
   type CompareConfig,
   type FcPaletteConfig,
+  type GeneSet,
   isComparisonKind,
   isStep,
   type NodeResult,
@@ -47,6 +47,7 @@ import { useSelection } from '../../../ui/useSelection'
  *  defeat every memo downstream (a new object is a new dependency, hence a full chart rebuild). */
 export const NO_GENES: string[] = []
 export const NO_IDS: ReadonlySet<string> = new Set()
+const NO_GENE_SETS: GeneSet[] = []
 export const NO_DOSE = { scale: 1 }
 /** The Clean data step a plot reads, walking up from its input (through a Compare, a Contrast…):
  *  the nearest step upstream whose result is a Clean data one, or undefined. */
@@ -75,18 +76,11 @@ export const SIGNED_KINDS: ReadonlySet<string> = new Set([
   'bubble',
   'tdr',
   'enrich',
+  'enrichMap',
+  'setCompare',
   'string'
 ])
-/** A Compare's rows of one `show` kind (rowsOfKind) as a result of their own (holderWhere): the
- *  same result when it has only one kind. */
-export function cmpOfKind<H extends { rows: readonly CompareResultRow[] }>(
-  cmp: H,
-  show?: string
-): H {
-  if (!hasTermRows(cmp)) return cmp
-  const want = show === 'factors' ? 'factors' : 'overall'
-  return holderWhere(cmp, `show¦${want}`, (c) => showKindOf(c) === want)
-}
+export { cmpOfKind } from '../cmpOfKind'
 /** One term-free copy per Compare result, so memos keyed on the result hold across renders. */
 export const termFree = new WeakMap<object, NodeResult>()
 export function signedFor(kind: string, r: NodeResult | undefined): NodeResult | undefined {
@@ -133,16 +127,17 @@ export function usePlotContext({
   }
   const result = results[node.id]
   const upId = edges.find((e) => e.target === node.id)?.source
+  // Only the UPSTREAM node is needed (its config: effect names, threshold fallback, a Curve fit's
+  // model view). Subscribing to the whole node list would re-render every tile on any node change
+  // anywhere (a status tick, a config edit, a canvas drag).
+  const upNode = useGraph((s) => (upId ? s.nodes.find((n) => n.id === upId) : undefined))
   // The plots that read a direction (DR, bubble, dose × time, enrichment, STRING) or per-group means
-  // (MA, intensity scatter) see a Compare without a two-way ANOVA's unsigned term rows.
-  const upstream = upId ? signedFor(kind, results[upId]) : undefined
+  // (MA, intensity scatter) see a Compare without a two-way ANOVA's unsigned term rows — and a Curve
+  // fit through its model view (the descriptor's fold changes, or the detector's).
+  const upstream = upId ? signedFor(kind, viewedResult(results[upId], upNode)) : undefined
   // The upstream dataset's numeric conditions — its schema (dose, time, any declared numeric):
   // ordered facets, right-aligned columns, response axes.
   const numeric = useMemo(() => numericOfResult(upstream), [upstream])
-  // Only the UPSTREAM node is needed (its config: effect names, threshold fallback). Subscribing to
-  // the whole node list would re-render every tile on any node change anywhere (a status tick,
-  // a config edit, a canvas drag).
-  const upNode = useGraph((s) => (upId ? s.nodes.find((n) => n.id === upId) : undefined))
   const upStep = upNode && isStep(upNode) ? upNode : undefined
   // The upstream Compare's config, for the effect colours its plots inherit.
   const upCompareCfg =
@@ -232,6 +227,9 @@ export function usePlotContext({
   // read; null until known, or with interactors on) — greys out the empty levels, resolves "auto".
   const [stringLevels, setStringLevels] = useState<Set<StringLevel> | null>(null)
   const genes = useMemo(() => (pinnedIds.size ? [...pinnedIds] : NO_GENES), [pinnedIds])
+  // The saved gene sets, for the plot that draws them as sets of its own (the rest read a stable
+  // empty list, so an edit to a set doesn't re-render them).
+  const geneSets = useGraph((s) => (kind === 'setCompare' ? s.geneSets : NO_GENE_SETS))
   const focus = selectedOnly ? genes : NO_GENES
   // Selected-only mode: a faceted plot is fed only the rows whose feature is selected — read off
   // the uniqID column, only those built — else the whole result to facet (FacetSource). Guarded
@@ -280,6 +278,7 @@ export function usePlotContext({
     stringLevels,
     setStringLevels,
     genes,
+    geneSets,
     focus,
     subSource
   }

@@ -131,5 +131,5 @@ export function InteractionHeatmap({
     displayMap,
     plainScale
   ])
-  return <PlotlyChart data={data} layout={layout} />
+  return <PlotlyChart controls="none" data={data} layout={layout} />
 }

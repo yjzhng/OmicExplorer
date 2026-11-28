@@ -2,7 +2,8 @@
  *  it runs in the UI worker lane (engineUi), off the UI thread: the tile pivots the comparison,
  *  hands each clustering out, and draws when they're back, keeping the previous heatmap up
  *  meanwhile. The result is cached on the comparison rows + display options (not every parent
- *  re-render, nor every mount). */
+ *  re-render, nor every mount). With no gene picked, the plot's run has built it already
+ *  (heatmap/run.ts): it's drawn from that at once. */
 import { useEffect, useMemo, useState } from 'react'
 
 import {
@@ -63,7 +64,8 @@ export function FcHeatmapTile({
   condColors = CATEGORICAL,
   unsigned = false,
   condBar = false,
-  numeric
+  numeric,
+  prebuilt
 }: {
   rows: CompareResultRow[]
   /** the rows are a two-way ANOVA's terms (unsigned effect sizes; see FcHeatmapView) */
@@ -99,6 +101,9 @@ export function FcHeatmapTile({
   condBar?: boolean
   /** the dataset's numeric conditions: their tracks run along a level palette */
   numeric?: NumericConds
+  /** the plot's run's heatmap of these rows under these settings (heatmap/run.ts), shown in place
+   *  of building one here — not for a gene pick, which clusters just those genes */
+  prebuilt?: FcHeatmapData
 }) {
   // The tracks' level palettes: the dose and time roles' global ones, as Clean data's heatmap.
   const dosePalette = useRolePalette('dose')
@@ -109,12 +114,14 @@ export function FcHeatmapTile({
   )
   const focusKey = focus.join(',')
   const key = `${maxGenes}\u0000${topSplit ?? ''}:${topUp ?? ''}:${topDown ?? ''}\u0000${focusKey}\u0000${linkage ?? ''}\u0000${leafOrder ?? ''}\u0000${colPattern}`
-  const cached = cacheFor(rows, displayMap).get(key)
+  const fromRun = focus.length === 0 ? prebuilt : undefined
+  const cached = fromRun ?? cacheFor(rows, displayMap).get(key)
   // the last one built here — shown, while a new one clusters, until it's in
   const [last, setLast] = useState<FcHeatmapData | null>(null)
   // a cached one counts as shown (so it stays up while a later change clusters)
   if (cached && cached !== last) setLast(cached)
   useEffect(() => {
+    if (fromRun) return
     const cache = cacheFor(rows, displayMap)
     if (cache.get(key)) return
     let live = true
@@ -150,7 +157,7 @@ export function FcHeatmapTile({
     }
     // key stands in for maxGenes, the split, focus's contents, linkage, leafOrder and colPattern
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rows, displayMap, key])
+  }, [rows, displayMap, key, fromRun])
   // Each side's look, kept while its settings hold (so the view's layout isn't redone per render).
   const geneSide = useMemo<ClusterSide>(
     () => ({ max: geneMax, modules: geneModules, tree: geneTree, colors: geneColors }),

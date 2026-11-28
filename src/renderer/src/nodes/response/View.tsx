@@ -7,6 +7,7 @@ import {
   condLabel,
   distinctOf,
   holderWhereNested,
+  shiftReference,
   someNested
 } from '../../engine'
 import { firstRow, rowCount } from '../../engine/lazyRows'
@@ -16,6 +17,7 @@ import {
   CURVE_OF_SLICE,
   SLICE_OF_CURVE,
   axisTitle,
+  modelViewOf,
   responseDim,
   responseLook,
   responseShow,
@@ -34,6 +36,12 @@ import { ResponseSurfaceView } from './ResponseSurfaceView'
  *  (`only`, the genes the pager steps through). Cached per Compare result (`all`), facet and
  *  selection, so the same range object comes back each render and the plot
  *  doesn't redraw for it. */
+/** A range cache's entry kept — the latest few (a facet each, and each pinned set it was drawn
+ *  for), so picking through many selections doesn't keep every one. */
+function keepFew<V>(m: Map<string, V>, key: string, v: V): void {
+  m.set(key, v)
+  while (m.size > 16) m.delete(m.keys().next().value as string)
+}
 export const surfaceRanges = new WeakMap<object, Map<string, [number, number] | undefined>>()
 export function surfaceValueRange(
   all: object,
@@ -59,14 +67,14 @@ export function surfaceValueRange(
   // padded more than the measured plot's: a description's curve can run a little past its means
   const pad = (hi - lo) * 0.08 || 0.1
   const range: [number, number] | undefined = lo <= hi ? [lo - pad, hi + pad] : undefined
-  byFacet.set(key, range)
+  keepFew(byFacet, key, range)
   return range
 }
 /** The largest shift from the reference curve the genes' surfaces show in a facet — surfaces
  *  tested for response changes, coloured by it (see ResponseSurfaceView) — padded: their colour
  *  scale under the global scale, as surfaceValueRange is the values'. A cell's shift is its mean
- *  less the reference curve's at its response level: the compared axis's base level (dose 0) there,
- *  or the position itself (the reference's first point: 0). Cached alike. */
+ *  less the reference curve's at its response level (engine shiftReference — as the view reads it).
+ *  Cached alike. */
 export const shiftRanges = new WeakMap<object, Map<string, number | undefined>>()
 export function surfaceShiftRange(
   all: object,
@@ -87,25 +95,22 @@ export function surfaceShiftRange(
     if (!cells.length) continue
     // the curves along the second axis (compared across the first), or the reverse
     const alongB = rs.shift.response === (rs.pair?.[1] ?? 'time')
-    // the reference slice: the compared axis's control level as the Curve fit set it (else lowest)
-    const ctl = alongB ? rs.maps?.[0]?.base : rs.maps?.[1]?.base
-    const base = cells.some((c) => (alongB ? c.dose : c.time) === ctl)
-      ? ctl!
-      : Math.min(...cells.map((c) => (alongB ? c.dose : c.time)))
-    const pos = alongB ? (rs.maps?.[1]?.base ?? 0) : (rs.maps?.[0]?.base ?? 0)
-    const ref = new Map(
-      cells
-        .filter((c) => (alongB ? c.dose : c.time) === base)
-        .map((c) => [alongB ? c.time : c.dose, c.y])
+    // the reference curve: the compared axis's control level as the Curve fit set it (else its
+    // lowest) — its cell at a cell's response level, or a control there (0)
+    const ref = shiftReference(
+      cells,
+      rs.controls ?? [],
+      alongB,
+      // (stored without its axes: dose × time against dose 0 at each time)
+      (alongB ? (rs.maps?.[0]?.base ?? 0) : rs.maps?.[1]?.base) ?? NaN
     )
     for (const c of cells) {
-      const level = alongB ? c.time : c.dose
-      const r0 = ref.get(level) ?? (level === pos ? 0 : undefined)
+      const r0 = ref.at(c)
       if (r0 != null && Number.isFinite(c.y)) m = Math.max(m, Math.abs(c.y - r0))
     }
   }
   const range = m > 0 ? m * 1.08 : undefined
-  byFacet.set(key, range)
+  keepFew(byFacet, key, range)
   return range
 }
 /** The distinct surface descriptions (each `rs.surface`'s method, or none) among a Compare's
@@ -134,7 +139,17 @@ export function surfaceMethodsOf(cmp: {
 /** The response result body (nodes/views.ts). Plain render function: it runs inside
  *  PanelBody, so it must not call hooks — derive what needs a hook in usePlotContext. */
 export function responseView(v: ViewContext): ReactNode {
-  const { upstream, cfgSource, genes, patchConfig, numeric, facetSel, responseRoles, units } = v
+  const {
+    upstream,
+    upCompareCfg,
+    cfgSource,
+    genes,
+    patchConfig,
+    numeric,
+    facetSel,
+    responseRoles,
+    units
+  } = v
   if (upstream?.kind !== 'compare') return <Empty text="Connect a Curve fit tile and run it." />
   const cfg = cfgSource as ResponseConfig
   const dim = responseDim(cfg)
@@ -151,7 +166,8 @@ export function responseView(v: ViewContext): ReactNode {
   if (!rowCount(surfaces))
     return <Empty text="Needs surfaces — set the Curve fit’s axis to a pair (e.g. dose × time)." />
   const [sa, sb] = firstRow(surfaces)?.rs?.pair ?? (['dose', 'time'] as const)
-  const present = new Set(distinctOf(surfaces, 'uniqID') as ReadonlySet<string>)
+  // the result's cached distinct ids (distinctOf): the same set render to render, not a copy
+  const present = distinctOf(surfaces, 'uniqID') as ReadonlySet<string>
   // The view by time or by dose slices (see responseSliceable / responseSlice).
   const methods = surfaceMethodsOf(surfaces)
   const sliceable = responseSliceable(dim, show, methods)
@@ -230,6 +246,7 @@ export function responseView(v: ViewContext): ReactNode {
                 {(rows, facetKey) => (
                   <ResponseSurfaceView
                     row={rows.find((r) => r.uniqID === gene)}
+                    model={modelViewOf(upCompareCfg)}
                     dim={dim}
                     show={show}
                     look={look}

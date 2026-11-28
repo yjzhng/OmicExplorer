@@ -17,10 +17,19 @@ import {
 import { styles } from '../kit/settings/styles'
 import { OnOffSwitch } from '../../ui/ToggleSwitch'
 import { type PlotSettingsProps } from '../settings'
+import { SIGNIFICANT_FDR } from './termCut'
 
-/** Enrichment: test method, term source, plot style and the term cap. The same fields as the
- *  tile's quick switch bars, so either place edits the one config. */
-export function EnrichPanel({ config, update, edgeNodeId }: PlotPanelProps<EnrichConfig>) {
+/** The term-set picker the enrichment plots share (the plot and its map): every offered set under
+ *  its heading, those the genes don't carry greyed. */
+export function SourceField({
+  config,
+  update,
+  edgeNodeId
+}: {
+  config: { source?: EnrichConfig['source']; quick?: EnrichConfig['quick'] }
+  update: (patch: Record<string, unknown>) => void
+  edgeNodeId?: string
+}): ReactNode {
   // Select the (stable) upstream result, then derive the source list in a memo — a freshly-built
   // array straight from the selector would fail Zustand's reference equality and loop forever.
   const upstream = useGraph((s) => {
@@ -59,6 +68,20 @@ export function EnrichPanel({ config, update, edgeNodeId }: PlotPanelProps<Enric
       }
     })
   ])
+  return (
+    <Field label="terms" aside={<QuickToggle config={config} field="source" update={update} />}>
+      <Select
+        value={source}
+        onChange={(v) => update({ source: v as EnrichConfig['source'] })}
+        options={sourceOptions}
+      />
+    </Field>
+  )
+}
+
+/** Enrichment: test method, term source, plot style and the term cap. The same fields as the
+ *  tile's quick switch bars, so either place edits the one config. */
+export function EnrichPanel({ config, update, edgeNodeId }: PlotPanelProps<EnrichConfig>) {
   const method = config.method ?? 'ora'
   // 'ridge' is GSEA-only; a persisted ridge style under ORA reads (and re-saves) as dot.
   const style = config.style === 'ridge' && method !== 'gsea' ? 'dot' : (config.style ?? 'dot')
@@ -78,13 +101,7 @@ export function EnrichPanel({ config, update, edgeNodeId }: PlotPanelProps<Enric
           ]}
         />
       </Field>
-      <Field label="terms" aside={<QuickToggle config={config} field="source" update={update} />}>
-        <Select
-          value={source}
-          onChange={(v) => update({ source: v as EnrichConfig['source'] })}
-          options={sourceOptions}
-        />
-      </Field>
+      <SourceField config={config} update={update} edgeNodeId={edgeNodeId} />
       <Field label="style" aside={<QuickToggle config={config} field="style" update={update} />}>
         <Select
           value={style}
@@ -134,8 +151,37 @@ export function EnrichPanel({ config, update, edgeNodeId }: PlotPanelProps<Enric
     </>
   )
 }
-/** How many terms are drawn — this plot's "how many" (General's genes rows). */
+/** Which terms are drawn: those below an FDR cut (none: every term), at most Max terms each way. */
 function EnrichTerms({ config, update }: PlotPanelProps<EnrichConfig>): ReactNode {
+  return (
+    <>
+      <Field
+        label="FDR below"
+        info="Only terms with an FDR (BH-adjusted p) below this are drawn. Empty: the top terms, whatever their FDR."
+        aside={<QuickToggle config={config} field="termFdr" update={update} />}
+      >
+        <div style={{ width: 90 }}>
+          <NumberInput
+            optional
+            value={config.termFdr}
+            step={0.01}
+            min={0}
+            max={1}
+            ladderFrom={SIGNIFICANT_FDR}
+            placeholder="none"
+            onChange={(v) => update({ termFdr: v == null || !(v > 0 && v <= 1) ? undefined : v })}
+          />
+        </div>
+      </Field>
+      <EnrichCap config={config} update={update} />
+    </>
+  )
+}
+/** The most terms drawn each way. */
+function EnrichCap({
+  config,
+  update
+}: Pick<PlotPanelProps<EnrichConfig>, 'config' | 'update'>): ReactNode {
   return (
     <Field
       label="Max terms"
