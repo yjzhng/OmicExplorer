@@ -7,11 +7,9 @@ import {
   clusterByCluster,
   clusterColoring,
   clusterColorWrite,
-  type ClusterConfig,
-  clusterFadeScheme,
-  clusterLook,
-  clusterStyle
-} from '../../graph/types'
+  clusterFadeScheme
+} from '../../graph/config/coloring'
+import { type ClusterConfig, clusterLook, clusterStyle } from '../../graph/config/cluster'
 import { Empty, PlotNotRun } from '../kit/views/common'
 import { type ViewContext } from '../kit/views/context'
 import { styles } from '../kit/views/styles'

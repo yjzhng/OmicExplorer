@@ -1,7 +1,7 @@
 /** Styles for the tile popovers (TileDialog shell, settings and download windows). */
 import type { CSSProperties } from 'react'
 
-import { UI } from '../ui/theme'
+import { UI } from '../ui/app/theme'
 
 export const styles: Record<string, CSSProperties> = {
   // Invisible click-away layer under the popover (no dimming — the tile stays in view).

@@ -3,13 +3,12 @@ import { useGraph } from '../../graph/store'
 import {
   conditionColoring,
   conditionColorWrite,
-  numericOfResult,
-  primaryColorLevels,
-  qcColorBy,
-  type QcConfig
-} from '../../graph/types'
-import { QC_FILL } from '../../ui/theme'
-import { ToggleSwitch } from '../../ui/ToggleSwitch'
+  primaryColorLevels
+} from '../../graph/config/coloring'
+import { numericOfResult } from '../../graph/types'
+import { qcColorBy, type QcConfig } from '../../graph/config/qc'
+import { QC_FILL } from '../../ui/app/theme'
+import { ToggleSwitch } from '../../ui/controls/ToggleSwitch'
 import { ColorChip, Field, QuickToggle, SampleOrderField, Select } from '../kit/settings/controls'
 import { CONDS } from '../kit/settings/hooks'
 import {

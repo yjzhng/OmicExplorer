@@ -2,7 +2,7 @@
 import type { ReactNode } from 'react'
 
 import type { TileContext } from '../tiles'
-import { PILL_CAP } from '../../ui/ChoiceSwitch'
+import { PILL_CAP } from '../../ui/controls/ChoiceSwitch'
 import { muted, stat } from '../kit/tile'
 
 export function tile(t: TileContext): ReactNode {

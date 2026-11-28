@@ -12,8 +12,8 @@ vi.stubGlobal('window', {
 vi.stubGlobal('localStorage', { getItem: () => null, setItem: noop, removeItem: noop })
 
 const { useGraph } = await import('./store')
-const { declaredNumeric } = await import('./types')
-type LoadConfig = import('./types').LoadConfig
+const { declaredNumeric } = await import('./config/load')
+type LoadConfig = import('./config/load').LoadConfig
 
 // The seed pipeline's Load tile.
 const load = (): LoadConfig =>

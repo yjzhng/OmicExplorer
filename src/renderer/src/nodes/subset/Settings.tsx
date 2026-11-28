@@ -18,8 +18,8 @@ import {
   loadCustomConditions,
   loadNumericConditions,
   type SubsetConfig
-} from '../../graph/types'
-import { ValueMultiSelect } from '../../ui/ValueMultiSelect'
+} from '../../graph/config/load'
+import { ValueMultiSelect } from '../../ui/controls/ValueMultiSelect'
 import { Field, Section } from '../kit/settings/controls'
 import { useInputText } from '../kit/settings/hooks'
 import { styles } from '../kit/settings/styles'

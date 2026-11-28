@@ -1,10 +1,10 @@
 /** QC plot panel body. buildQc scans every standardized row (O(rows)), so it's kept app-wide by
- *  the result + metric (ui/plotCache) — a plot-type toggle, an unrelated re-render or a remount
+ *  the result + metric (ui/plot/plotCache) — a plot-type toggle, an unrelated re-render or a remount
  *  won't rebuild it. */
-import { usePlotCached } from '../../ui/plotCache'
+import { usePlotCached } from '../../ui/plot/plotCache'
 
-import type { ConditionColoring } from '../../graph/types'
-import { colorerArgs } from '../../ui/condColor'
+import type { ConditionColoring } from '../../graph/config/coloring'
+import { colorerArgs } from '../../ui/color/condColor'
 import {
   buildQc,
   numericOf,
@@ -29,7 +29,7 @@ export function QcTile({
   sampleOrder = 'natural',
   plainScale
 }: {
-  /** intensity shown plain on a log axis (ui/quantityAxis): `scale`, when it is */
+  /** intensity shown plain on a log axis (ui/plot/quantityAxis): `scale`, when it is */
   plainScale?: ValueScale
   /** a condition's legend heading, with its unit (see QcPlotView) */
   condTitle?: (c: ConditionKey) => string

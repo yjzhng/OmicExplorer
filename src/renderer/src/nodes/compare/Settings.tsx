@@ -12,15 +12,15 @@ import {
   condLabel,
   dataShape
 } from '../../engine'
-import { analysisChoice, stdSampleRows } from '../../graph/compareModel'
+import { analysisChoice, stdSampleRows } from '../../graph/models/compareModel'
 import {
   curveAxisOptions,
   curveSurfaceWhy,
   readAxisValue,
   surfacePairs,
   surfaceValue
-} from '../../graph/curveSettings'
-import { useConfigWindowOpen } from '../../graph/dialogDock'
+} from '../../graph/models/curveSettings'
+import { useConfigWindowOpen } from '../../graph/dialogs/dialogDock'
 import { useGraph } from '../../graph/store'
 import {
   type CompareConfig,
@@ -28,9 +28,9 @@ import {
   normalizeCompareConfig,
   thresholdForAnalysis,
   thresholdForDetection
-} from '../../graph/types'
-import { StatusNote } from '../../ui/StatusNote'
-import { OnOffSwitch, ToggleSwitch } from '../../ui/ToggleSwitch'
+} from '../../graph/config/compare'
+import { StatusNote } from '../../ui/controls/StatusNote'
+import { OnOffSwitch, ToggleSwitch } from '../../ui/controls/ToggleSwitch'
 import { CompareStatisticSection } from '../kit/settings/compareSections'
 import { ConfigureButton, Field, Section } from '../kit/settings/controls'
 import { styles } from '../kit/settings/styles'

@@ -41,6 +41,46 @@ const VARIANTS: Record<string, string[]> = {
   // its terms are the enrichment plot's run, picked with its term-set picker
   setCompare: ['enrich']
 }
+/** Past this many lines a file is doing too much: split it by what its parts do. */
+const MAX_LINES = 800
+/** The files already past it, each capped near its size today: they may shrink, not grow. Split
+ *  one and take it off the list (the test below fails while a listed file is back under the cap). */
+const OVERSIZED: Record<string, number> = {
+  'app/Canvas.tsx': 1300,
+  'app/NavBar.tsx': 950,
+  'app/styles.ts': 1050,
+  'dashboard/PanelTile.tsx': 850,
+  'dashboard/ResultsView.tsx': 850,
+  'engine/compare/anova.ts': 950,
+  'engine/compare/contrast.ts': 1100,
+  'engine/compare/direct.ts': 1050,
+  'engine/curves/curveFit.ts': 1600,
+  'engine/curves/responseSurface.ts': 950,
+  'engine/data/ingest.ts': 1000,
+  'export/plotExport.tsx': 850,
+  'export/sceneVector.ts': 1050,
+  'form/FormWorkflow.tsx': 1050,
+  'graph/canvas/GraphNode.tsx': 1350,
+  'graph/dialogs/NodeConfigPanel.tsx': 1050,
+  'graph/state/canvas.ts': 1050,
+  'graph/state/project.ts': 850,
+  'nodes/compare/CurveDialog.tsx': 1200,
+  'nodes/contrast/ComparisonDialog.tsx': 1400,
+  'nodes/curveMad/CurveMadView.tsx': 1150,
+  'nodes/enrich/EnrichView.tsx': 1050,
+  'nodes/enrichMap/layout.ts': 1050,
+  'nodes/heatmap/FcHeatmapView.tsx': 850,
+  'nodes/kit/settings/plotSections.tsx': 1350,
+  'nodes/kit/views/tableData.tsx': 850,
+  'nodes/load/InteractiveImportDialog.tsx': 1000,
+  'nodes/load/import/styles.ts': 1000,
+  'nodes/pca/ClusterView.tsx': 850,
+  'nodes/standardize/Settings.tsx': 1050,
+  'nodes/string/StringView.tsx': 1350,
+  'ui/app/AnnotationCache.tsx': 1100,
+  'ui/plot/PlotlyChart.tsx': 1350,
+  'ui/table/DataTableView.tsx': 950
+}
 /** What the rest of the app may import from nodes/: the registries, the contract, the kit. */
 const NODES_PUBLIC = /^nodes\/(contract|specs|settings|views|tiles|runs|runContext|kit\/)/
 
@@ -129,25 +169,25 @@ describe('architecture', () => {
       const file = relative(ROOT, p)
       const text = readFileSync(p, 'utf8')
       const out: string[] = []
-      if (file !== 'ui/NumberInput.tsx' && text.includes('type="number"'))
-        out.push(`${file}: a number box of its own (use ui/NumberInput)`)
-      if (file !== 'ui/Chevron.tsx' && text.includes('3.5,1.5 7,5 3.5,8.5'))
-        out.push(`${file}: a chevron of its own (use ui/Chevron)`)
+      if (file !== 'ui/controls/NumberInput.tsx' && text.includes('type="number"'))
+        out.push(`${file}: a number box of its own (use ui/controls/NumberInput)`)
+      if (file !== 'ui/controls/Chevron.tsx' && text.includes('3.5,1.5 7,5 3.5,8.5'))
+        out.push(`${file}: a chevron of its own (use ui/controls/Chevron)`)
       for (const name of PRIMITIVES) {
-        if (file === `ui/${name}.tsx`) continue
+        if (file === `ui/controls/${name}.tsx`) continue
         // a wrapper (the frame a dialog gives it, say) builds on the one in ui/
-        const wraps = new RegExp(`from '(\\.\\./)*(\\./)?(ui/)?${name}'`).test(text)
+        const wraps = new RegExp(`from '(\\.\\./)*(\\./)?(ui/)?(controls/)?${name}'`).test(text)
         if (new RegExp(`function ${name}\\b`).test(text) && !wraps)
-          out.push(`${file}: a ${name} of its own (use ui/${name})`)
+          out.push(`${file}: a ${name} of its own (use ui/controls/${name})`)
       }
       return out
     })
     expect(bad).toEqual([])
   })
 
-  it('long content renders through ui/VirtualRows: no capped lists, no "+N more", no paging', () => {
+  it('long content renders through ui/table/VirtualRows: no capped lists, no "+N more", no paging', () => {
     // A list drawn from the first N of something (`xs.slice(0, CAP).map(… key= …)`) hides the rest
-    // behind a cap; ui/VirtualRows windows any length instead (see ui/useVirtualRows).
+    // behind a cap; ui/table/VirtualRows windows any length instead (see ui/table/useVirtualRows).
     const CAPPED = /\.slice\(0,\s*([A-Za-z_][\w.]*|[2-9]\d|\d{3,})\)\s*\.map\(/g
     const bad = sources(ROOT).flatMap((p) => {
       const file = relative(ROOT, p)
@@ -158,7 +198,7 @@ describe('architecture', () => {
         const after = text.slice(m.index + m[0].length, m.index + 400)
         // drawn rows (keyed elements), not data mapped to objects
         if (/^[^=]*=>\s*\(\{/.test(after) || !/\bkey=/.test(after)) continue
-        out.push(`${file}: renders the first ${m[1]} of a list (use ui/VirtualRows)`)
+        out.push(`${file}: renders the first ${m[1]} of a list (use ui/table/VirtualRows)`)
       }
       if (/refine search/i.test(text)) out.push(`${file}: a "+N more — refine search" cap`)
       return out
@@ -168,7 +208,7 @@ describe('architecture', () => {
 
   it("a table's scrollbars span only what scrolls: every sticky-header table uses the gutter", () => {
     // A table with pinned header rows (a sticky <th>) scrolls in a TableScroll or a ScrollFade, or
-    // a scroller of its own with useStickyGutter (ui/useStickyGutter) — so its gutter runs beside
+    // a scroller of its own with useStickyGutter (ui/table/useStickyGutter) — so its gutter runs beside
     // the rows only.
     const bad = sources(ROOT).flatMap((p) => {
       const file = relative(ROOT, p)
@@ -176,7 +216,7 @@ describe('architecture', () => {
       const text = readFileSync(p, 'utf8')
       const sticky = text.includes('<thead') && text.includes("position: 'sticky'")
       return sticky && !/useStickyGutter\(|<TableScroll\b|<ScrollFade\b/.test(text)
-        ? [`${file}: a sticky-header table without ui/useStickyGutter`]
+        ? [`${file}: a sticky-header table without ui/table/useStickyGutter`]
         : []
     })
     expect(bad).toEqual([])
@@ -194,7 +234,7 @@ describe('architecture', () => {
         if (m[0].includes('onAuto=') && !m[0].includes('autoColor='))
           out.push(`${file}: an Automatic colour square without its colour (autoColor)`)
       if (/opacity \(%\)|title=\{?["'`][^"'`]*opacity["'`]/i.test(text))
-        out.push(`${file}: an opacity number box (use ui/OpacitySlider)`)
+        out.push(`${file}: an opacity number box (use ui/controls/OpacitySlider)`)
       return out
     })
     expect(bad).toEqual([])
@@ -216,6 +256,24 @@ describe('architecture', () => {
       'No enriched'
     ].filter((t) => view.includes(t))
     expect(own).toEqual([])
+  })
+
+  it(`no file grows past ${MAX_LINES} lines (the oversized ones only shrink)`, () => {
+    const bad = sources(ROOT).flatMap((p) => {
+      const file = relative(ROOT, p)
+      const lines = readFileSync(p, 'utf8').split('\n').length - 1
+      const cap = OVERSIZED[file] ?? MAX_LINES
+      return lines > cap ? [`${file}: ${lines} lines (cap ${cap})`] : []
+    })
+    expect(bad).toEqual([])
+    const stale = Object.keys(OVERSIZED).filter((file) => {
+      try {
+        return readFileSync(join(ROOT, file), 'utf8').split('\n').length - 1 <= MAX_LINES
+      } catch {
+        return true
+      }
+    })
+    expect(stale, 'split or gone: take these off OVERSIZED').toEqual([])
   })
 
   it("each spec's kind is its key", () => {

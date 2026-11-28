@@ -20,30 +20,28 @@ import { comparisonText, contextText, fileTitle } from '../export/fileNames'
 import { shownTableExport, tableOnShow } from './tableOnShow'
 import { exportPlotData, plotDataTarget } from '../export/plotData'
 import { collectTableExports, sampleQcExport, stdMatrixExport } from '../export/tables'
-import { deriveTabs, tabTitles } from '../graph/groups'
-import { pathSeg } from '../graph/diskNames'
+import { deriveTabs, tabTitles } from '../graph/results/groups'
+import { pathSeg } from '../graph/project/diskNames'
 import { accentOf, categoryOf, PLOT_CONFIG_KINDS, plotLabel } from '../graph/registry'
-import { IconGear } from '../ui/icons'
-import { PlotAxesContext, swapAxes, type AxisDefaults } from '../ui/plotAxes'
+import { IconGear } from '../ui/controls/icons'
+import { PlotAxesContext, swapAxes, type AxisDefaults } from '../ui/plot/plotAxes'
 import { useGraph } from '../graph/store'
-import { NOTICE_MS, UI } from '../ui/theme'
-import { useAppSettings } from '../ui/useAppSettings'
-import { createDrawTracker, TileDrawContext, type DrawTracker } from '../ui/tileDraw'
+import { NOTICE_MS, UI } from '../ui/app/theme'
+import { useAppSettings } from '../ui/app/useAppSettings'
+import { createDrawTracker, TileDrawContext, type DrawTracker } from '../ui/plot/tileDraw'
+import { condUnitsFor } from '../graph/config/units'
 import {
-  condUnitsFor,
-  numericOfResult,
-  plotResultKey,
-  tdrPair,
   type NodeResult,
-  type TdrConfig,
-  type LegendConfig,
-  type PlotAxes,
+  numericOfResult,
   type PlotChild,
   type PlotOrient,
-  type StepNode,
-  type TableConfig
+  plotResultKey,
+  type StepNode
 } from '../graph/types'
-import { Spinner } from '../ui/Spinner'
+import { type TdrConfig, tdrPair } from '../graph/config/response'
+import type { LegendConfig, PlotAxes } from '../graph/config/plotStyle'
+import type { TableConfig } from '../graph/config/genePlots'
+import { Spinner } from '../ui/controls/Spinner'
 import { EMPTY_SEL, resolveFacets } from './facet'
 import { SUBSET_TOGGLE_KINDS } from './subset'
 import { PanelBody } from './PanelBody'
@@ -428,7 +426,7 @@ export const PanelTile = memo(function PanelTile({
     const fmt = isPlot ? downloadFormat : tableFormat
     const dpi = downloadDpi
     // Native save-as: the OS window names the file and picks its folder. It opens in the workflow's
-    // output/ subfolder for this tile's processing step (graph/diskNames.ts) — a plot's in its plot
+    // output/ subfolder for this tile's processing step (graph/project/project/diskNames.ts) — a plot's in its plot
     // group's own folder there (plotGroupDir); a table's in the step's.
     const g = useGraph.getState()
     // …unless the data folder was deleted meanwhile: then the window opens wherever the OS picks,

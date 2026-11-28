@@ -1,7 +1,7 @@
-/** The canvas tile summary styles (graph/GraphNode.tsx and nodes/<kind>/Tile.tsx). */
+/** The canvas tile summary styles (graph/canvas/GraphNode.tsx and nodes/<kind>/Tile.tsx). */
 
 import { type CSSProperties } from 'react'
-import { UI } from '../../ui/theme'
+import { UI } from '../../ui/app/theme'
 
 export const muted: CSSProperties = {
   color: UI.textMuted,

@@ -13,7 +13,7 @@ export const CONDS: ConditionKey[] = ['cell', 'cmpd', 'dose', 'time']
  *  tile itself (outside a panel) still follows the canvas zoom. */
 export const ScreenScale = createContext(false)
 
-/** The sections the settings window itself supplies to a plot's settings (graph/NodeConfigPanel):
+/** The sections the settings window itself supplies to a plot's settings (graph/dialogs/NodeConfigPanel):
  *  the legend switch (General's last row), and the shared Axes and lines section — built with the plot's own
  *  whole-plot rows (an axis scale, a reference line) in it. PlotSections places them in the one
  *  order every plot follows. */

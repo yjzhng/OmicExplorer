@@ -27,21 +27,21 @@ import {
 } from 'react'
 import { setBackgroundPaused } from '../dashboard/renderQueue'
 import { ResultsView } from '../dashboard/ResultsView'
-import { useFrameEdit } from '../graph/frameEdit'
-import { FRAME_LABEL_H, FRAME_PAD, type FrameData } from '../graph/FrameNode'
+import { useFrameEdit } from '../graph/canvas/frameEdit'
+import { FRAME_LABEL_H, FRAME_PAD, type FrameData } from '../graph/canvas/FrameNode'
 import {
   editMembers,
   frameLayers,
   frameTiles,
   outermostFrame,
   topFullFrames
-} from '../graph/frames'
-import { edgeTypes } from '../graph/GraphEdge'
-import { nodeTypes } from '../graph/GraphNode'
+} from '../graph/canvas/frames'
+import { edgeTypes } from '../graph/canvas/GraphEdge'
+import { nodeTypes } from '../graph/canvas/GraphNode'
 import { accentOf, ALL_OPS, canConnect, categoryOf, wiredKindOf } from '../graph/registry'
 import { SELECTED_Z } from '../graph/state/canvas'
 import { useGraph } from '../graph/store'
-import { clipCorner, parseClip, type TileClip } from '../graph/tileClipboard'
+import { clipCorner, parseClip, type TileClip } from '../graph/canvas/tileClipboard'
 import {
   type GraphNode,
   isStep,
@@ -49,10 +49,10 @@ import {
   type PlotGroupConfig,
   type StepNode
 } from '../graph/types'
-import { DOT_GRID, EASE, MOTION_MS, NOTICE_MS, PALETTES, UI } from '../ui/theme'
-import { useAppView, type AppView } from '../ui/useAppView'
+import { DOT_GRID, EASE, MOTION_MS, NOTICE_MS, PALETTES, UI } from '../ui/app/theme'
+import { useAppView, type AppView } from '../ui/app/useAppView'
 import { setCanvasNav } from '../ui/tutorial/canvasNav'
-import { useUiTheme } from '../ui/useUiTheme'
+import { useUiTheme } from '../ui/app/useUiTheme'
 import {
   ACT_DONE,
   CONNECTION_LINE,

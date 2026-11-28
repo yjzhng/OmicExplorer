@@ -8,7 +8,7 @@
 import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 
 import { useGraph } from '../../graph/store'
-import { CATEGORICAL, EASE, LOOP_MS, motion, MOTION_MS, NOTICE_MS, UI } from '../theme'
+import { CATEGORICAL, EASE, LOOP_MS, motion, MOTION_MS, NOTICE_MS, UI } from '../app/theme'
 import { canvasNav } from './canvasNav'
 import { tutorialOffered } from './firstRun'
 import { STOPS, type TourStop } from './stops'

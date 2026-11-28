@@ -4,11 +4,11 @@
 import { useMemo, useState, type CSSProperties, type ReactNode } from 'react'
 
 import { useGraph } from '../graph/store'
-import { Checkbox } from '../ui/Checkbox'
-import { Field } from '../ui/Field'
-import { motion, UI } from '../ui/theme'
-import { ToggleSwitch } from '../ui/ToggleSwitch'
-import { useSelection } from '../ui/useSelection'
+import { Checkbox } from '../ui/controls/Checkbox'
+import { Field } from '../ui/controls/Field'
+import { motion, UI } from '../ui/app/theme'
+import { ToggleSwitch } from '../ui/controls/ToggleSwitch'
+import { useSelection } from '../ui/plot/useSelection'
 import {
   collectSpecs,
   collectTableExports,

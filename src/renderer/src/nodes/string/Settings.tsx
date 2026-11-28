@@ -1,8 +1,8 @@
 import type { ReactNode } from 'react'
-import { STRING_OUTLINE, type StringConfig } from '../../graph/types'
-import { AUTO } from '../../ui/ColorPicker'
-import { STRING_LEVEL_ORDER, stringLevelScore } from '../../ui/stringModel'
-import { UI } from '../../ui/theme'
+import { STRING_OUTLINE, type StringConfig } from '../../graph/config/enrich'
+import { AUTO } from '../../ui/color/ColorPicker'
+import { STRING_LEVEL_ORDER, stringLevelScore } from '../../ui/plot/stringModel'
+import { UI } from '../../ui/app/theme'
 import {
   Checkbox,
   ColorChip,

@@ -6,7 +6,7 @@ import {
   previewCompare,
   previewFactorAnova
 } from '../../engine'
-import { type CompareConfig, anovaFactorsOf } from '../../graph/types'
+import { anovaFactorsOf, type CompareConfig } from '../../graph/config/compare'
 
 /** How many comparisons the configured comparison would run (a dry-run count for the ready
  *  message): distinct num|den labels for an explicit compare; an ANOVA's overall comparisons and

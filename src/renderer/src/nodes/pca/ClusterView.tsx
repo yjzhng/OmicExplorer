@@ -11,15 +11,16 @@ import {
   type ConditionKey,
   type NumericConds
 } from '../../engine'
-import { clusterStyle, type AxisStyle, type ClusterStyle, type PlotAxes } from '../../graph/types'
-import { AUTO } from '../../ui/ColorPicker'
-import { condsOf, planAesthetics, type PlanOverrides } from '../../ui/clusterPlan'
-import { condTooltip, valueLine } from '../../ui/condTooltip'
-import { bindSampleLink, sampleKey, sampleMeta } from '../../ui/sampleLink'
-import { territoryRing, type TerritoryShape } from '../../ui/territory'
-import { shade } from '../../ui/condColor'
-import { PlotlyChart } from '../../ui/PlotlyChart'
-import { AXIS_LINE_WIDTH, PlotAxesContext, type PlotAxesCtx } from '../../ui/plotAxes'
+import { clusterStyle, type ClusterStyle } from '../../graph/config/cluster'
+import type { AxisStyle, PlotAxes } from '../../graph/config/plotStyle'
+import { AUTO } from '../../ui/color/ColorPicker'
+import { condsOf, planAesthetics, type PlanOverrides } from '../../ui/plot/clusterPlan'
+import { condTooltip, valueLine } from '../../ui/plot/condTooltip'
+import { bindSampleLink, sampleKey, sampleMeta } from '../../ui/plot/sampleLink'
+import { territoryRing, type TerritoryShape } from '../../ui/plot/territory'
+import { shade } from '../../ui/color/condColor'
+import { PlotlyChart } from '../../ui/plot/PlotlyChart'
+import { AXIS_LINE_WIDTH, PlotAxesContext, type PlotAxesCtx } from '../../ui/plot/plotAxes'
 import {
   axisBase,
   CATEGORICAL,
@@ -29,11 +30,11 @@ import {
   plotBase,
   UI,
   withAlpha
-} from '../../ui/theme'
-import { useUiTheme } from '../../ui/useUiTheme'
-import { sectionKey, SECTIONED_LEGEND } from '../../ui/legendSections'
-import { groupMeta } from '../../ui/traceFocus'
-import { DEFAULT_OUTLINE } from '../../ui/pointStyle'
+} from '../../ui/app/theme'
+import { useUiTheme } from '../../ui/app/useUiTheme'
+import { sectionKey, SECTIONED_LEGEND } from '../../ui/plot/legendSections'
+import { groupMeta } from '../../ui/plot/traceFocus'
+import { DEFAULT_OUTLINE } from '../../ui/plot/pointStyle'
 
 /** What marks the data: every replicate, or one centroid per condition. */
 type Mode = 'replicate' | 'centroid'

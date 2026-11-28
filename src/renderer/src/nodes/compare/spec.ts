@@ -1,5 +1,5 @@
 /** compare: its node contract (see nodes/contract.ts). */
-import type { CompareConfig } from '../../graph/types'
+import type { CompareConfig } from '../../graph/config/compare'
 import { DEFAULT_THRESHOLD } from '../../engine'
 import { defineSpec } from '../contract'
 

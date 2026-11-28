@@ -1,7 +1,8 @@
 /** setCompare: its node contract (see nodes/contract.ts) — sets read from whatever it hangs off
  *  (Clean data's measured genes, a Compare's or Curve fit's significant genes or enriched terms),
  *  compared as an UpSet or a proportional Venn. */
-import type { NodeResult, SetCompareConfig } from '../../graph/types'
+import type { NodeResult } from '../../graph/types'
+import type { SetCompareConfig } from '../../graph/config/enrich'
 import { defineSpec } from '../contract'
 import { enrichSpec } from '../enrich/spec'
 

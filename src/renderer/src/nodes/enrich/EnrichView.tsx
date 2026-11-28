@@ -4,11 +4,11 @@ import { GridPitchContext } from '../../dashboard/gridPitch'
 import { useElementSize } from '../../dashboard/useElementSize'
 
 import { type EnrichData, type EnrichTerm, moduleParts } from '../../engine'
-import { measureText } from '../../ui/legendChips'
-import { tooltip } from '../../ui/condTooltip'
-import { PlotlyChart, type PlotLabel } from '../../ui/PlotlyChart'
-import { effectHalves } from '../../ui/palettes'
-import { PlotAxesContext } from '../../ui/plotAxes'
+import { measureText } from '../../ui/plot/legendChips'
+import { tooltip } from '../../ui/plot/condTooltip'
+import { PlotlyChart, type PlotLabel } from '../../ui/plot/PlotlyChart'
+import { effectHalves } from '../../ui/color/palettes'
+import { PlotAxesContext } from '../../ui/plot/plotAxes'
 import {
   axisBase,
   CATEGORICAL,
@@ -16,9 +16,9 @@ import {
   PALETTES,
   PLOT_TEXT,
   plotFontCss
-} from '../../ui/theme'
-import { useUiTheme } from '../../ui/useUiTheme'
-import type { EffectColors } from '../../graph/types'
+} from '../../ui/app/theme'
+import { useUiTheme } from '../../ui/app/useUiTheme'
+import type { EffectColors } from '../../graph/config/plotStyle'
 import {
   axisTitle,
   categoryLegend,

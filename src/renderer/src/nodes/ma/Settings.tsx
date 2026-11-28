@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react'
-import type { MAConfig } from '../../graph/types'
+import type { MAConfig } from '../../graph/config/pointPlots'
 import { CapRow } from '../kit/settings/controls'
 import { legendShown, useEffectColors, useEffectNames } from '../kit/settings/plotHooks'
 import {

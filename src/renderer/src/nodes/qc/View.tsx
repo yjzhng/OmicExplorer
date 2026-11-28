@@ -2,13 +2,8 @@ import type { ReactNode } from 'react'
 import { SwitchBar } from '../../dashboard/SwitchBar'
 import type { QcMetric } from '../../engine'
 import { quickOn } from '../../graph/registry'
-import {
-  type QcConfig,
-  SAMPLE_ORDERS,
-  primaryColorLevels,
-  qcColoring,
-  sampleOrderOf
-} from '../../graph/types'
+import { qcColoring, type QcConfig } from '../../graph/config/qc'
+import { primaryColorLevels, SAMPLE_ORDERS, sampleOrderOf } from '../../graph/config/coloring'
 import { Empty } from '../kit/views/common'
 import { type ViewContext } from '../kit/views/context'
 import { styles } from '../kit/views/styles'

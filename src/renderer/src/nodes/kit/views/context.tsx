@@ -15,33 +15,35 @@ import {
   valueUnitOf,
   withBatchCond
 } from '../../../engine'
-import { viewedResult } from '../../../graph/modelView'
+import { viewedResult } from '../../../graph/results/modelView'
 import { useGraph } from '../../../graph/store'
+import { axisTitle } from '../../../graph/config/units'
+import type { CompareConfig } from '../../../graph/config/compare'
 import {
-  axisTitle,
-  type CompareConfig,
   type FcPaletteConfig,
+  plotEffectColors,
+  type PlotEffectColors
+} from '../../../graph/config/plotStyle'
+import {
   type GeneSet,
   isComparisonKind,
   isStep,
   type NodeResult,
   numericOfResult,
   type PlotChild,
-  type PlotEffectColors,
-  plotEffectColors,
   type StepNode
 } from '../../../graph/types'
-import { useCondUnits } from '../../../graph/useUpstreamFacts'
+import { useCondUnits } from '../../../graph/run/useUpstreamFacts'
 import {
   CATEGORICAL_SCHEMES,
   type PaletteRef,
   type PaletteRole,
   toCategoricalId,
   toPaletteRef
-} from '../../../ui/palettes'
-import type { StringLevel } from '../../../ui/stringModel'
-import { useAppSettings } from '../../../ui/useAppSettings'
-import { useSelection } from '../../../ui/useSelection'
+} from '../../../ui/color/palettes'
+import type { StringLevel } from '../../../ui/plot/stringModel'
+import { useAppSettings } from '../../../ui/app/useAppSettings'
+import { useSelection } from '../../../ui/plot/useSelection'
 
 /** Stable empties for props that are "nothing selected" — a fresh `[]` / `{}` per render would
  *  defeat every memo downstream (a new object is a new dependency, hence a full chart rebuild). */
@@ -193,7 +195,7 @@ export function usePlotContext({
   // the word every abundance axis and legend uses ("log fraction").
   const quantityUnit: ValueUnit =
     cleanResult?.kind === 'standardize' ? valueUnitOf(cleanResult.std) : 'abundance'
-  // …and whether its logged values are shown plain on a log axis (ui/quantityAxis): the positions
+  // …and whether its logged values are shown plain on a log axis (ui/plot/quantityAxis): the positions
   // stay on quantityScale, only the labels and hovers read as values
   const quantityPlain = cleanResult?.kind === 'standardize' && plainLogOf(cleanResult.std)
   /** the logged scale an abundance axis is relabelled from when shown plain; undefined as logs */
@@ -285,7 +287,7 @@ export function usePlotContext({
 }
 /** The context a kind's result body (nodes/<kind>/View.tsx) renders from. */
 export type ViewContext = ReturnType<typeof usePlotContext> & {
-  /** the plot's own run (graph/plotRun.ts), for a plot */
+  /** the plot's own run (graph/run/plotRun.ts), for a plot */
   plotRun: NodeResult | undefined
   /** the upstream's result as stored (before signedFor) */
   rawUp: NodeResult | undefined

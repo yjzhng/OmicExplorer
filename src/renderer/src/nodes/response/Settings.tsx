@@ -2,9 +2,8 @@ import type { CSSProperties, ReactNode } from 'react'
 import { type ConditionKey, condLabel } from '../../engine'
 import { useGraph } from '../../graph/store'
 import {
-  type ResponseConfig,
-  type TdrConfig,
   CURVE_OF_SLICE,
+  type ResponseConfig,
   responseDim,
   responseLook,
   responseShow,
@@ -13,14 +12,15 @@ import {
   responseSliceable,
   responseSurfaceRows,
   SLICE_OF_CURVE,
+  type TdrConfig,
   tdrPair
-} from '../../graph/types'
-import { useUpstreamFacts } from '../../graph/useUpstreamFacts'
-import { AUTO } from '../../ui/ColorPicker'
-import { OpacitySlider } from '../../ui/OpacitySlider'
-import { UI } from '../../ui/theme'
-import { OnOffSwitch, ToggleSwitch } from '../../ui/ToggleSwitch'
-import { useRolePalette } from '../../ui/useAppSettings'
+} from '../../graph/config/response'
+import { useUpstreamFacts } from '../../graph/run/useUpstreamFacts'
+import { AUTO } from '../../ui/color/ColorPicker'
+import { OpacitySlider } from '../../ui/controls/OpacitySlider'
+import { UI } from '../../ui/app/theme'
+import { OnOffSwitch, ToggleSwitch } from '../../ui/controls/ToggleSwitch'
+import { useRolePalette } from '../../ui/app/useAppSettings'
 import {
   ColorChip,
   Field,

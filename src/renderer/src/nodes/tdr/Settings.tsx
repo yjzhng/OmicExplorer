@@ -1,5 +1,5 @@
 import { type ReactNode } from 'react'
-import { type TdrConfig } from '../../graph/types'
+import type { TdrConfig } from '../../graph/config/response'
 import { ResponsePanel } from '../response/Settings'
 import { type PlotSettingsProps } from '../settings'
 

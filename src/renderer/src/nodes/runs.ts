@@ -2,7 +2,7 @@
  * Every step's run, by kind (nodes/<kind>/run.ts) — what the store's runNode calls once the run's
  * inputs are ready. A Curve fit runs a Compare's run (the same num / den model, fitting curves); a
  * kind with no run of its own is null (Load data is ready once configured; plots run through
- * graph/plotRun.ts — PLOT_RUNS below). A kind added to NodeKind without an entry here fails the type check.
+ * graph/run/plotRun.ts — PLOT_RUNS below). A kind added to NodeKind without an entry here fails the type check.
  */
 import type { NodeKind } from '../graph/types'
 import { run as compare } from './compare/run'

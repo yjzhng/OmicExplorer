@@ -1,10 +1,10 @@
 import { useMemo } from 'react'
 
 import type { ClusterData } from '../../engine'
-import { tooltip } from '../../ui/condTooltip'
-import { PlotlyChart } from '../../ui/PlotlyChart'
-import { axisBase, PALETTES, PLOT_TEXT, plotBase } from '../../ui/theme'
-import { useUiTheme } from '../../ui/useUiTheme'
+import { tooltip } from '../../ui/plot/condTooltip'
+import { PlotlyChart } from '../../ui/plot/PlotlyChart'
+import { axisBase, PALETTES, PLOT_TEXT, plotBase } from '../../ui/app/theme'
+import { useUiTheme } from '../../ui/app/useUiTheme'
 
 /**
  * PCA loadings: the most influential features in the PC1/PC2 plane, each drawn as a vector from the

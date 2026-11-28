@@ -4,11 +4,10 @@ import { DEFAULT_THRESHOLD, buildMA } from '../../engine'
 import { useGraph } from '../../graph/store'
 import {
   type CompareConfig,
-  type MAConfig,
   effectLabelsOf,
-  labelCapOn,
   normalizeCompareConfig
-} from '../../graph/types'
+} from '../../graph/config/compare'
+import { labelCapOn, type MAConfig } from '../../graph/config/pointPlots'
 import { Built, Empty } from '../kit/views/common'
 import { type ViewContext } from '../kit/views/context'
 import { styles } from '../kit/views/styles'

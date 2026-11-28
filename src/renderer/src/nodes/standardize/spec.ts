@@ -1,5 +1,5 @@
 /** standardize: its node contract (see nodes/contract.ts). */
-import type { StandardizeConfig } from '../../graph/types'
+import type { StandardizeConfig } from '../../graph/config/standardize'
 import { defineSpec } from '../contract'
 
 export const standardizeSpec = defineSpec<'standardize'>({

@@ -8,8 +8,8 @@
  */
 import { create } from 'zustand'
 
-import { useAppSettings } from '../useAppSettings'
-import { useSelection } from '../useSelection'
+import { useAppSettings } from '../app/useAppSettings'
+import { useSelection } from '../plot/useSelection'
 import { openDemoProject, restoreProject, setProjectAside, type SetAside } from './demo'
 import { markTutorialOffered } from './firstRun'
 import { STOPS } from './stops'

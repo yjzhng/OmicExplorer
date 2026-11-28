@@ -4,9 +4,9 @@ import type { SampleFilter, StandardizeInput } from '../../engine'
 import {
   type LoadConfig,
   loadCustomConditions,
-  loadNumericConditions,
-  type StandardizeConfig
-} from '../../graph/types'
+  loadNumericConditions
+} from '../../graph/config/load'
+import type { StandardizeConfig } from '../../graph/config/standardize'
 
 /** The import's reading options: the conditions in play, the Subsets above, the custom
  *  conditions (and which are numeric) and the KEGG categories. */

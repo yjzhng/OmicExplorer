@@ -3,8 +3,8 @@
 import { useEffect, type CSSProperties, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 
-import { cssVars, PALETTES } from '../ui/theme'
-import { useUiTheme } from '../ui/useUiTheme'
+import { cssVars, PALETTES } from '../ui/app/theme'
+import { useUiTheme } from '../ui/app/useUiTheme'
 import { styles } from './tileDialogStyles'
 
 /** Where a popover hangs from, in viewport coordinates: the TILE's box. The window opens beside

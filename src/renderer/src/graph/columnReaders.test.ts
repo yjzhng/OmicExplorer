@@ -15,9 +15,15 @@ import {
   surfaceSliceCondOf,
   toContrastSide,
   type CompareFeatureCtx
-} from './contrastPair'
-import { curvesReplicatedOf, responseSlice, responseSliceable, responseSurfaceRows } from './types'
-import { isMolar, unitOf, type CondUnits, type GraphNode, type NodeResult } from './types'
+} from './models/contrastPair'
+import {
+  curvesReplicatedOf,
+  responseSlice,
+  responseSliceable,
+  responseSurfaceRows
+} from './config/response'
+import { type CondUnits, isMolar, unitOf } from './config/units'
+import type { GraphNode, NodeResult } from './types'
 import {
   condLabel,
   condPresent,
@@ -37,11 +43,11 @@ import {
   type ContrastFeatureId,
   type StandardRow
 } from '../engine'
-import { attachLazyRows, holderTable } from '../engine/lazyRows'
-import { decodeTable, encodeTable, withoutColumns } from '../engine/wire'
+import { attachLazyRows, holderTable } from '../engine/columns/lazyRows'
+import { decodeTable, encodeTable, withoutColumns } from '../engine/columns/wire'
 import { facetViews } from '../export/facets'
 import { collectTableExports } from '../export/tables'
-import { stringQueryGenes, stringQueryGenesAt } from '../ui/stringModel'
+import { stringQueryGenes, stringQueryGenesAt } from '../ui/plot/stringModel'
 
 type Obj = Record<string, unknown>
 

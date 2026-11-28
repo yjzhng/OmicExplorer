@@ -3,7 +3,7 @@
  *  hold up the UI. The tile's metric, clustering and sample order arrange it. */
 import { analysisScaleOf } from '../../engine'
 import { engine } from '../../engine/client'
-import { holderTable } from '../../engine/lazyRows'
+import { holderTable } from '../../engine/columns/lazyRows'
 import type { NodeResult } from '../../graph/types'
 import type { PlotRunContext } from '../runContext'
 import { NotReady } from '../../shared/diagnostics'

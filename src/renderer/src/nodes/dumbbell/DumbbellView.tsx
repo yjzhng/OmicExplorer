@@ -6,15 +6,15 @@ import {
   type ContrastResultRow,
   type DumbbellOrder
 } from '../../engine'
-import { topSplitOf } from '../../graph/types'
+import { topSplitOf } from '../../graph/config/plotStyle'
 import type { TopSplit, ValueScale } from '../../engine'
-import { tooltip } from '../../ui/condTooltip'
-import { PlotlyChart } from '../../ui/PlotlyChart'
-import { fmtQuantity, plainTicks, rangeOf } from '../../ui/quantityAxis'
-import { axisBase, CATEGORICAL, PALETTES, PLOT_TEXT, plotBase } from '../../ui/theme'
-import { useSelection } from '../../ui/useSelection'
-import { useUiTheme } from '../../ui/useUiTheme'
-import { usePlotCached } from '../../ui/plotCache'
+import { tooltip } from '../../ui/plot/condTooltip'
+import { PlotlyChart } from '../../ui/plot/PlotlyChart'
+import { fmtQuantity, plainTicks, rangeOf } from '../../ui/plot/quantityAxis'
+import { axisBase, CATEGORICAL, PALETTES, PLOT_TEXT, plotBase } from '../../ui/app/theme'
+import { useSelection } from '../../ui/plot/useSelection'
+import { useUiTheme } from '../../ui/app/useUiTheme'
+import { usePlotCached } from '../../ui/plot/plotCache'
 
 /** Dumbbell: per gene, FC1 and FC2 dots joined by a line; sorted by |FCdiff| (or either side). The base
  *  set is top-N (or the selected subset); hovered/pinned genes are appended so a linked
@@ -35,7 +35,7 @@ export function DumbbellView({
   plainScale
 }: {
   rows: ContrastResultRow[]
-  /** abundance sides shown plain on a log axis (ui/quantityAxis): the logged scale they're on */
+  /** abundance sides shown plain on a log axis (ui/plot/quantityAxis): the logged scale they're on */
   plainScale?: ValueScale
   topGenes: number
   /** how the top-N splits between up and down (TopSplitConfig) */
@@ -59,7 +59,7 @@ export function DumbbellView({
   const hoverId = useSelection((s) => s.hoverId)
   const pinnedIds = useSelection((s) => s.pinnedIds)
 
-  // The part read off every row (sorted, top-N picked), kept app-wide (ui/plotCache): a hover or a
+  // The part read off every row (sorted, top-N picked), kept app-wide (ui/plot/plotCache): a hover or a
   // pin only appends its genes to it (dumbbellWith), never sorts the rows again.
   const split = topSplitOf({ topSplit, topUp, topDown })
   const base = usePlotCached(

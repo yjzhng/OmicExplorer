@@ -21,16 +21,16 @@ import {
   tabTitles,
   topoStepOrder,
   type AnalysisGroup
-} from '../graph/groups'
+} from '../graph/results/groups'
 import { safeTileName } from '../graph/registry'
 import { useGraph } from '../graph/store'
 import { isStep, type NodeResult, type PlotGroupConfig, type StepNode } from '../graph/types'
 import type { PanelLayoutItem } from '../graph/types'
-import { Chevron } from '../ui/Chevron'
-import { EASE, NOTICE_MS, UI } from '../ui/theme'
-import { useUiTheme } from '../ui/useUiTheme'
-import { useAppSettings } from '../ui/useAppSettings'
-import { useAppView } from '../ui/useAppView'
+import { Chevron } from '../ui/controls/Chevron'
+import { EASE, NOTICE_MS, UI } from '../ui/app/theme'
+import { useUiTheme } from '../ui/app/useUiTheme'
+import { useAppSettings } from '../ui/app/useAppSettings'
+import { useAppView } from '../ui/app/useAppView'
 import { DashboardGrid } from './DashboardGrid'
 import { useGroupFacets } from './facet'
 import { FacetContextBar } from './FacetContextBar'

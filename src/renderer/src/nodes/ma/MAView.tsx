@@ -1,17 +1,13 @@
 import { useMemo } from 'react'
 
 import type { MAData, MAPoint, ThresholdConfig, ValueScale } from '../../engine'
-import {
-  DEFAULT_EFFECT_LABELS,
-  type EffectColors,
-  type EffectLabels,
-  type PointStyle
-} from '../../graph/types'
+import { DEFAULT_EFFECT_LABELS, type EffectLabels } from '../../graph/config/compare'
+import type { EffectColors, PointStyle } from '../../graph/config/plotStyle'
 import { useGraph } from '../../graph/store'
-import { tooltip } from '../../ui/condTooltip'
-import { fmtQuantity, plainTicks } from '../../ui/quantityAxis'
-import { PlotlyChart, type GuideDrag } from '../../ui/PlotlyChart'
-import { labelColorOf, legendOn, resolveGroups, resolveHighlight } from '../../ui/pointStyle'
+import { tooltip } from '../../ui/plot/condTooltip'
+import { fmtQuantity, plainTicks } from '../../ui/plot/quantityAxis'
+import { PlotlyChart, type GuideDrag } from '../../ui/plot/PlotlyChart'
+import { labelColorOf, legendOn, resolveGroups, resolveHighlight } from '../../ui/plot/pointStyle'
 import {
   axisBase,
   EFFECT_COLOR,
@@ -21,9 +17,9 @@ import {
   PALETTES,
   PLOT_TEXT,
   plotBase
-} from '../../ui/theme'
-import { useSelectedGeneSets } from '../../ui/useSelection'
-import { useUiTheme } from '../../ui/useUiTheme'
+} from '../../ui/app/theme'
+import { useSelectedGeneSets } from '../../ui/plot/useSelection'
+import { useUiTheme } from '../../ui/app/useUiTheme'
 
 type Eff = 'up' | 'down' | 'none'
 const ORDER: Eff[] = ['none', 'down', 'up']
@@ -44,7 +40,7 @@ export function MAView({
   plainScale
 }: {
   ma: MAData
-  /** the mean-abundance axis shown as plain values on a log axis (ui/quantityAxis): the logged
+  /** the mean-abundance axis shown as plain values on a log axis (ui/plot/quantityAxis): the logged
    *  scale its positions are on */
   plainScale?: ValueScale
   /** label only the top-N genes by |log₂FC|; 0 offers every labelled gene and lets the placement

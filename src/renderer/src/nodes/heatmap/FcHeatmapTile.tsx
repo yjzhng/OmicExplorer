@@ -15,13 +15,14 @@ import {
   type NumericConds
 } from '../../engine'
 import { engineUi } from '../../engine/client'
-import { topSplitOf, type HeatmapLinkage } from '../../graph/types'
+import { topSplitOf } from '../../graph/config/plotStyle'
+import type { HeatmapLinkage } from '../../graph/config/heatmap'
 import type { TopSplit } from '../../engine'
 import { FcHeatmapView, type ClusterSide } from './FcHeatmapView'
-import type { PaletteRef } from '../../ui/palettes'
-import { Spinner } from '../../ui/Spinner'
-import { CATEGORICAL } from '../../ui/theme'
-import { useRolePalette } from '../../ui/useAppSettings'
+import type { PaletteRef } from '../../ui/color/palettes'
+import { Spinner } from '../../ui/controls/Spinner'
+import { CATEGORICAL } from '../../ui/app/theme'
+import { useRolePalette } from '../../ui/app/useAppSettings'
 
 /** Built heatmaps by rows, display map and options key, app-wide: a remount (a tab, facet or
  *  show switch back) shows the heatmap at once rather than clustering again. */

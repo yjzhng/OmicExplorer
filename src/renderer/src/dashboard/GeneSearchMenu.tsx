@@ -5,12 +5,12 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react'
 import { createPortal } from 'react-dom'
 
-import { IconSearch } from '../ui/GeneSelectMenu'
-import { GENE_LIST_STYLES } from '../ui/geneListStyles'
-import { PALETTES } from '../ui/theme'
-import { useUiTheme } from '../ui/useUiTheme'
-import { useVirtualRows } from '../ui/useVirtualRows'
-import { VirtualList } from '../ui/VirtualRows'
+import { IconSearch } from '../ui/genes/GeneSelectMenu'
+import { GENE_LIST_STYLES } from '../ui/genes/geneListStyles'
+import { PALETTES } from '../ui/app/theme'
+import { useUiTheme } from '../ui/app/useUiTheme'
+import { useVirtualRows } from '../ui/table/useVirtualRows'
+import { VirtualList } from '../ui/table/VirtualRows'
 import { useGeneDescriptions } from './useGeneMenuTabs'
 
 /** The dropdown's width — room for a gene's name and its description, as the nav's menu. */

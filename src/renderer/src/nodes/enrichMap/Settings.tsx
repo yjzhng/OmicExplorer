@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react'
-import type { EnrichMapConfig } from '../../graph/types'
-import { OnOffSwitch } from '../../ui/ToggleSwitch'
+import type { EnrichMapConfig } from '../../graph/config/enrich'
+import { OnOffSwitch } from '../../ui/controls/ToggleSwitch'
 import { Field, NumberInput, QuickToggle, Select } from '../kit/settings/controls'
 import { CategoricalSelect, type PlotPanelProps, PlotSections } from '../kit/settings/plotSections'
 import { SourceField } from '../enrich/Settings'

@@ -1,5 +1,5 @@
 /** tdr: its node contract (see nodes/contract.ts). */
-import { type TdrConfig, tdrPair } from '../../graph/types'
+import { type TdrConfig, tdrPair } from '../../graph/config/response'
 import { condLabel } from '../../engine'
 import { defineSpec } from '../contract'
 import { tdrVariants } from '../kit/variants'

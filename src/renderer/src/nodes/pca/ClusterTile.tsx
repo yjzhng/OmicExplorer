@@ -1,12 +1,12 @@
 /** Cluster (embedding) panel body: draws a sample embedding its plot's run computed (in the
- *  worker — see graph/plotRun.ts), so a large dataset's PCA / UMAP / t-SNE never runs on the UI
+ *  worker — see graph/run/plotRun.ts), so a large dataset's PCA / UMAP / t-SNE never runs on the UI
  *  thread. Colouring by a condition — or by the condition groups (every combination of the chosen
  *  conditions) — regroups the stored points here; colouring by cluster uses the groups the run
  *  computed (a different clustering is another run — the tile's staleOn). */
 import { useMemo } from 'react'
 
-import type { ClusterStyle } from '../../graph/types'
-import type { PlanOverrides } from '../../ui/clusterPlan'
+import type { ClusterStyle } from '../../graph/config/cluster'
+import type { PlanOverrides } from '../../ui/plot/clusterPlan'
 
 import {
   CLUSTER_COLOR,

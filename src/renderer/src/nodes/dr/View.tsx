@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react'
-import { plotCached } from '../../ui/plotCache'
+import { plotCached } from '../../ui/plot/plotCache'
 import { FacetedPlot } from '../../dashboard/FacetedPlot'
 import { GeneSwitch } from '../../dashboard/GeneSwitch'
 import { SwitchBar, SwitchStrip } from '../../dashboard/SwitchBar'
@@ -19,21 +19,15 @@ import {
   distinctOf,
   stdLookupOf
 } from '../../engine'
-import { firstRow } from '../../engine/lazyRows'
-import { contrastCurveSides } from '../../graph/contrastPair'
+import { firstRow } from '../../engine/columns/lazyRows'
+import { contrastCurveSides } from '../../graph/models/contrastPair'
 import { quickOn } from '../../graph/registry'
-import {
-  axisTitle,
-  type ContrastConfig,
-  DR_DETAIL_CAP,
-  type DRConfig,
-  drLook,
-  drYScale,
-  geneCapOn,
-  modelViewOf,
-  topCountOf,
-  topSplitOf
-} from '../../graph/types'
+import { axisTitle } from '../../graph/config/units'
+import type { ContrastConfig } from '../../graph/config/contrast'
+import { DR_DETAIL_CAP, type DRConfig, drLook, drYScale } from '../../graph/config/dr'
+import { geneCapOn } from '../../graph/config/genePlots'
+import { modelViewOf } from '../../graph/config/compare'
+import { topCountOf, topSplitOf } from '../../graph/config/plotStyle'
 import { Built, Empty } from '../kit/views/common'
 import { type ViewContext } from '../kit/views/context'
 import { axisChoices, pagerGenes } from '../kit/views/helpers'
@@ -44,7 +38,7 @@ import { ResponseCompareView } from './ResponseCompareView'
 
 /** A rows array as a result (one per array, so a memo keyed on it holds across renders). */
 export const holders = new WeakMap<readonly object[], { rows: readonly object[] }>()
-/** A facet's rows of one gene, kept by the rows (ui/plotCache): the same array render to render,
+/** A facet's rows of one gene, kept by the rows (ui/plot/plotCache): the same array render to render,
  *  so a focused view isn't rebuilt and redrawn on every render (a pin anywhere). */
 const geneRows = <T extends { uniqID: string }>(rows: T[], gene: string): T[] =>
   plotCached('geneRows', [rows, gene], () => rows.filter((r) => r.uniqID === gene))
@@ -96,7 +90,7 @@ export function drView(v: ViewContext): ReactNode {
     [a, b]: [CompareResultRow[], CompareResultRow[]],
     dm: Record<string, string>
   ): ReactNode => {
-    // kept by the two sides (ui/plotCache, the sides are the same arrays each render): the same
+    // kept by the two sides (ui/plot/plotCache, the sides are the same arrays each render): the same
     // rows and sets render to render, so the plot below isn't rebuilt and redrawn for nothing
     const { both, present, disjoint, responseFit } = plotCached('contrastBoth', [a, b], () => {
       const both = [...a, ...b]

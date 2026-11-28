@@ -11,17 +11,17 @@ import {
   type QcGroup,
   type ValueScale
 } from '../../engine'
-import { condsOf } from '../../ui/clusterPlan'
-import { condTooltip } from '../../ui/condTooltip'
-import { bindSampleLink, sampleKey, sampleMeta } from '../../ui/sampleLink'
-import { groupMeta } from '../../ui/traceFocus'
-import { conditionColorer } from '../../ui/condColor'
-import { PlotlyChart } from '../../ui/PlotlyChart'
-import { fmtQuantity, plainTicks, rangeOf } from '../../ui/quantityAxis'
-import { sectionKey, SECTIONED_LEGEND } from '../../ui/legendSections'
-import { axisBase, PALETTES, PLOT_TEXT, plotBase, QC_FILL, withAlpha } from '../../ui/theme'
-import { useUiTheme } from '../../ui/useUiTheme'
-import { usePlotCached } from '../../ui/plotCache'
+import { condsOf } from '../../ui/plot/clusterPlan'
+import { condTooltip } from '../../ui/plot/condTooltip'
+import { bindSampleLink, sampleKey, sampleMeta } from '../../ui/plot/sampleLink'
+import { groupMeta } from '../../ui/plot/traceFocus'
+import { conditionColorer } from '../../ui/color/condColor'
+import { PlotlyChart } from '../../ui/plot/PlotlyChart'
+import { fmtQuantity, plainTicks, rangeOf } from '../../ui/plot/quantityAxis'
+import { sectionKey, SECTIONED_LEGEND } from '../../ui/plot/legendSections'
+import { axisBase, PALETTES, PLOT_TEXT, plotBase, QC_FILL, withAlpha } from '../../ui/app/theme'
+import { useUiTheme } from '../../ui/app/useUiTheme'
+import { usePlotCached } from '../../ui/plot/plotCache'
 
 /** How opaque the imputed share of a protein-count bar is: its bar's colour, solid, on top
  *  of the stack… */
@@ -56,7 +56,7 @@ export function QcPlotView({
   condTitle = condLabel,
   plainScale
 }: {
-  /** intensity shown plain on a log axis (ui/quantityAxis): the logged scale it's on */
+  /** intensity shown plain on a log axis (ui/plot/quantityAxis): the logged scale it's on */
   plainScale?: ValueScale
   /** a condition's legend heading — with its unit for dose / time (default: its name) */
   condTitle?: (c: ConditionKey) => string
@@ -93,7 +93,7 @@ export function QcPlotView({
   const catTag = colorCats.join('×')
   // Only intensity is an abundance (counts and CV % are their own numbers)
   const plain = data.metric === 'intensity' ? plainScale : undefined
-  // Each group's distribution worked out once per QC data (engine/distShape) and kept app-wide:
+  // Each group's distribution worked out once per QC data (engine/plot/distShape) and kept app-wide:
   // its box's statistics and a violin's points, so Plotly is never handed every value
   const shapes = usePlotCached('qcShapes', [data], () =>
     data.summary === 'count' ? [] : data.groups.map((g) => distShape(g.values))
@@ -207,7 +207,7 @@ export function QcPlotView({
       // One trace per sample (a violin/box trace takes one colour, and is dimmed whole by the
       // sample link), overlaid so each keeps its own category's slot. A box is handed its
       // statistics (no points shown, so its whiskers run to the min and max); a violin its
-      // distribution's quantiles with the bandwidth for all its values (engine/distShape) — the
+      // distribution's quantiles with the bandwidth for all its values (engine/plot/distShape) — the
       // same shapes, without Plotly sorting and smoothing every value at each draw. The shapes
       // don't answer hovers — a box/violin hover is one label per statistic, each repeating the
       // sample — an invisible bar over each sample's span does, with one label (hoverBars below).

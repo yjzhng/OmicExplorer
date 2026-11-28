@@ -1,13 +1,13 @@
 import { useMemo } from 'react'
 
 import type { InteractionGene, ValueScale } from '../../engine'
-import { tooltip } from '../../ui/condTooltip'
-import { paletteScale } from '../../ui/palettes'
-import { PlotlyChart } from '../../ui/PlotlyChart'
-import { fmtQuantity, plainTicks, rangeOf } from '../../ui/quantityAxis'
-import { axisBase, PALETTES, plotBase } from '../../ui/theme'
-import { useRolePalette } from '../../ui/useAppSettings'
-import { useUiTheme } from '../../ui/useUiTheme'
+import { tooltip } from '../../ui/plot/condTooltip'
+import { paletteScale } from '../../ui/color/palettes'
+import { PlotlyChart } from '../../ui/plot/PlotlyChart'
+import { fmtQuantity, plainTicks, rangeOf } from '../../ui/plot/quantityAxis'
+import { axisBase, PALETTES, plotBase } from '../../ui/app/theme'
+import { useRolePalette } from '../../ui/app/useAppSettings'
+import { useUiTheme } from '../../ui/app/useUiTheme'
 
 /**
  * The interaction plot as a grid, one gene: the x factor's levels across, the line factor's down,
@@ -27,7 +27,7 @@ export function InteractionHeatmap({
   plainScale
 }: {
   gene?: InteractionGene
-  /** the abundance shown plain on a log colour scale (ui/quantityAxis): the logged scale it's on */
+  /** the abundance shown plain on a log colour scale (ui/plot/quantityAxis): the logged scale it's on */
   plainScale?: ValueScale
   xName: string
   xLevels: string[]

@@ -33,17 +33,17 @@ import {
   type StandardRow,
   type ThresholdConfig
 } from '../../engine'
-import { Field } from '../../ui/Field'
-import { Formula } from '../../ui/Formula'
-import { SURFACE_FNS } from '../../ui/formulaModel'
-import { StatusNote } from '../../ui/StatusNote'
-import { OnOffSwitch, ToggleSwitch } from '../../ui/ToggleSwitch'
-import { ValueMultiSelect } from '../../ui/ValueMultiSelect'
-import { UI } from '../../ui/theme'
-import { POPOVER_PROPS, usePopover } from '../../ui/usePopover'
-import { cv, sampleRows, valuesOf } from '../../graph/compareModel'
-import { Section, SelectorShell, ValChip } from '../../graph/condRows'
-import { AxisModelRows } from '../../graph/AxisModelRows'
+import { Field } from '../../ui/controls/Field'
+import { Formula } from '../../ui/controls/Formula'
+import { SURFACE_FNS } from '../../ui/controls/formulaModel'
+import { StatusNote } from '../../ui/controls/StatusNote'
+import { OnOffSwitch, ToggleSwitch } from '../../ui/controls/ToggleSwitch'
+import { ValueMultiSelect } from '../../ui/controls/ValueMultiSelect'
+import { UI } from '../../ui/app/theme'
+import { POPOVER_PROPS, usePopover } from '../../ui/controls/usePopover'
+import { cv, sampleRows, valuesOf } from '../../graph/models/compareModel'
+import { Section, SelectorShell, ValChip } from '../../graph/dialogs/condRows'
+import { AxisModelRows } from '../../graph/dialogs/AxisModelRows'
 import {
   detectionOf,
   driftFollowsBaselines,
@@ -51,7 +51,7 @@ import {
   jointWhy,
   SHAPE_LABEL,
   setFit
-} from '../../graph/axisFits'
+} from '../../graph/models/axisFits'
 import {
   baselineLine,
   curveModel,
@@ -61,7 +61,7 @@ import {
   scaleOf,
   type CurveState,
   type HeadChip
-} from '../../graph/curveModel'
+} from '../../graph/models/curveModel'
 import {
   CURVE_METHOD_OPTIONS,
   INTENT_OPTIONS,
@@ -69,10 +69,10 @@ import {
   readAxisValue,
   surfacePairs,
   surfaceValue
-} from '../../graph/curveSettings'
-import { PreviewTable } from '../../graph/selectorParts'
+} from '../../graph/models/curveSettings'
+import { PreviewTable } from '../../graph/dialogs/selectorParts'
 import { useGraph } from '../../graph/store'
-import { describesAll, thresholdForDetection, type CompareConfig } from '../../graph/types'
+import { type CompareConfig, describesAll, thresholdForDetection } from '../../graph/config/compare'
 
 /** The curve choice's joint curve (its other options are the axes' condition keys). */
 const JOINT = '\u0000joint'

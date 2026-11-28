@@ -7,18 +7,18 @@ import {
   type GeneBarData,
   type ValueScale
 } from '../../engine'
-import { condsOf } from '../../ui/clusterPlan'
-import { condTooltip, geneLine, valueLine } from '../../ui/condTooltip'
-import { bindSampleLink, sampleKey, sampleMeta } from '../../ui/sampleLink'
-import { groupMeta } from '../../ui/traceFocus'
-import { valueColor, type ValueRange } from '../../ui/colormap'
-import { conditionColorer } from '../../ui/condColor'
-import { PlotlyChart } from '../../ui/PlotlyChart'
-import { fmtQuantity, plainTicks, rangeOf } from '../../ui/quantityAxis'
-import { ROLE_DEFAULTS, type PaletteRef } from '../../ui/palettes'
-import { sectionKey, SECTIONED_LEGEND } from '../../ui/legendSections'
-import { axisBase, CATEGORICAL, PALETTES, PLOT_TEXT, plotBase } from '../../ui/theme'
-import { useUiTheme } from '../../ui/useUiTheme'
+import { condsOf } from '../../ui/plot/clusterPlan'
+import { condTooltip, geneLine, valueLine } from '../../ui/plot/condTooltip'
+import { bindSampleLink, sampleKey, sampleMeta } from '../../ui/plot/sampleLink'
+import { groupMeta } from '../../ui/plot/traceFocus'
+import { valueColor, type ValueRange } from '../../ui/color/colormap'
+import { conditionColorer } from '../../ui/color/condColor'
+import { PlotlyChart } from '../../ui/plot/PlotlyChart'
+import { fmtQuantity, plainTicks, rangeOf } from '../../ui/plot/quantityAxis'
+import { ROLE_DEFAULTS, type PaletteRef } from '../../ui/color/palettes'
+import { sectionKey, SECTIONED_LEGEND } from '../../ui/plot/legendSections'
+import { axisBase, CATEGORICAL, PALETTES, PLOT_TEXT, plotBase } from '../../ui/app/theme'
+import { useUiTheme } from '../../ui/app/useUiTheme'
 
 /** How opaque a bar coloured by category is — a little fainter than the category's colour. */
 const BAR_FADE = 0.7
@@ -55,7 +55,7 @@ export function GeneBarView({
   condTitle = condLabel,
   plainScale
 }: {
-  /** the values shown plain on a log value axis (ui/quantityAxis): the logged scale they're on */
+  /** the values shown plain on a log value axis (ui/plot/quantityAxis): the logged scale they're on */
   plainScale?: ValueScale
   /** a condition's legend heading — with its unit for dose / time (default: its name) */
   condTitle?: (c: ConditionKey) => string

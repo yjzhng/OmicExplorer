@@ -8,7 +8,9 @@ import { engine } from '../../engine/client'
 import { loadAbove, wiredKindOf } from '../../graph/registry'
 import { locationOf } from '../../graph/state/shared'
 import type { GraphState } from '../../graph/store'
-import { isStep, type LoadConfig, type StandardizeConfig } from '../../graph/types'
+import { isStep } from '../../graph/types'
+import type { LoadConfig } from '../../graph/config/load'
+import type { StandardizeConfig } from '../../graph/config/standardize'
 import { importOptions } from './importOptions'
 
 /** step id → what was read, by the inputs it was read from (a run drops its step's: the files

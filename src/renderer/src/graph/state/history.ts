@@ -1,8 +1,8 @@
 import type { ThresholdConfig } from '../../engine'
-import { hiddenGeneIds } from '../geneMask'
+import { hiddenGeneIds } from '../project/geneMask'
 import { type Getter, type GraphState, type Setter, type StoreSet } from '../store'
-import { type PlotGroupConfig, type GraphNode, isStep, type NodeResult } from '../types'
-import { type PendingLoad, restoreResults, underConfig } from '../undoResults'
+import { type GraphNode, isStep, type NodeResult, type PlotGroupConfig } from '../types'
+import { type PendingLoad, restoreResults, underConfig } from '../results/undoResults'
 import { reclassify, withChildStatuses, type Snapshot, resultHistory } from './shared'
 
 /** undo/redo's re-call of a Compare under the threshold being restored. */

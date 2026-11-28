@@ -1,4 +1,4 @@
-import { multiLevelAxes } from '../../graph/axisAvail'
+import { multiLevelAxes } from '../../graph/models/axisAvail'
 import { type ConditionKey, condLabel, someNested } from '../../engine'
 import type { UpstreamFacts } from '../contract'
 

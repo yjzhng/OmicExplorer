@@ -5,16 +5,14 @@ import { quickOn } from '../../graph/registry'
 import {
   DENDRO_CLADES_DEFAULT,
   HEATMAP_COND_DISTANCES,
-  type HeatmapCondDistance,
   HEATMAP_LEAF_ORDERS,
   HEATMAP_LINKAGES,
-  type HeatmapConfig,
-  SAMPLE_ORDERS,
   heatmapCondBar,
-  primaryColorLevels,
-  sampleOrderOf
-} from '../../graph/types'
-import { CATEGORICAL_SCHEMES, toCategoricalId } from '../../ui/palettes'
+  type HeatmapCondDistance,
+  type HeatmapConfig
+} from '../../graph/config/heatmap'
+import { primaryColorLevels, SAMPLE_ORDERS, sampleOrderOf } from '../../graph/config/coloring'
+import { CATEGORICAL_SCHEMES, toCategoricalId } from '../../ui/color/palettes'
 import { Empty } from '../kit/views/common'
 import { type ViewContext, cmpOfKind } from '../kit/views/context'
 import { styles } from '../kit/views/styles'

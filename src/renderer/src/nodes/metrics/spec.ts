@@ -1,5 +1,5 @@
 /** metrics: its node contract (see nodes/contract.ts). */
-import type { MetricsConfig } from '../../graph/types'
+import type { MetricsConfig } from '../../graph/config/dr'
 import { contextOf } from '../../engine'
 import { defineSpec } from '../contract'
 

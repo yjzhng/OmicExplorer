@@ -3,9 +3,9 @@
  *  colour-by condition. Sits at the top of the plot body, below the tile header. */
 import { type CSSProperties, type ReactNode } from 'react'
 
-import { UI } from '../ui/theme'
-import { ChoiceSwitch } from '../ui/ChoiceSwitch'
-import { OnOffSwitch } from '../ui/ToggleSwitch'
+import { UI } from '../ui/app/theme'
+import { ChoiceSwitch } from '../ui/controls/ChoiceSwitch'
+import { OnOffSwitch } from '../ui/controls/ToggleSwitch'
 
 export function SwitchBar({
   label,

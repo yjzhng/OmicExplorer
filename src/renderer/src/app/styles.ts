@@ -1,5 +1,5 @@
 import type { CSSProperties } from 'react'
-import { UI } from '../ui/theme'
+import { UI } from '../ui/app/theme'
 import { ROW_MENU_W } from './shared'
 
 export const styles: Record<string, CSSProperties> = {

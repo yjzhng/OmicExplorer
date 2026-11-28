@@ -1,5 +1,5 @@
 /** response: its node contract (see nodes/contract.ts). */
-import type { ResponseConfig } from '../../graph/types'
+import type { ResponseConfig } from '../../graph/config/response'
 import { condLabel, type ConditionKey } from '../../engine'
 import { defineSpec } from '../contract'
 import { responsePairVariants } from '../kit/variants'

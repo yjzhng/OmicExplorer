@@ -5,7 +5,7 @@
  * "Dose & Time response").
  */
 import { condLabel, type ConditionKey } from '../../engine'
-import { tdrPair, type TdrConfig } from '../../graph/types'
+import { type TdrConfig, tdrPair } from '../../graph/config/response'
 import type { PlotVariants } from '../contract'
 
 /** A numeric condition as a Response plot's title names it: capitalised (`Dose`, `Temperature`). */

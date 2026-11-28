@@ -7,7 +7,7 @@ import {
   plotEntriesFor,
   PLOT_SECTIONS
 } from '../graph/registry'
-import { type NodeKind } from '../graph/types'
+import type { NodeKind } from '../graph/types'
 
 /** The process steps a plot can be added after, in the editor's order — the Plot defaults page's
  *  first pick. */

@@ -12,13 +12,13 @@ import {
   type MetricBars,
   type MetricCtx,
   type MetricId
-} from '../../graph/metricBars'
-import { tooltip } from '../../ui/condTooltip'
-import { paletteSeries } from '../../ui/palettes'
-import { PlotlyChart } from '../../ui/PlotlyChart'
-import { axisBase, CATEGORICAL, PALETTES, plotBase, UI } from '../../ui/theme'
-import { useRolePalette } from '../../ui/useAppSettings'
-import { useUiTheme } from '../../ui/useUiTheme'
+} from '../../graph/results/metricBars'
+import { tooltip } from '../../ui/plot/condTooltip'
+import { paletteSeries } from '../../ui/color/palettes'
+import { PlotlyChart } from '../../ui/plot/PlotlyChart'
+import { axisBase, CATEGORICAL, PALETTES, plotBase, UI } from '../../ui/app/theme'
+import { useRolePalette } from '../../ui/app/useAppSettings'
+import { useUiTheme } from '../../ui/app/useUiTheme'
 
 /** One-axis curves' bars for a gene: one per context (a comparison at a level of the other
  *  conditions), named as the fold-change heatmap names its columns — what varies ("Bortezomib ·

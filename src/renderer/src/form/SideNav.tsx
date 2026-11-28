@@ -12,7 +12,7 @@
  */
 import { useState, type CSSProperties, type ReactNode } from 'react'
 
-import { UI } from '../ui/theme'
+import { UI } from '../ui/app/theme'
 import type { Wiring } from './outline'
 
 export interface SideNavItem {

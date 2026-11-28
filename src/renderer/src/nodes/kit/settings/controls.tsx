@@ -4,31 +4,35 @@
 import { useStore } from '@xyflow/react'
 import { type ReactNode, useContext, useEffect, useState, type CSSProperties } from 'react'
 import { roundP, type SampleOrder } from '../../../engine'
-import { ApplyStageContext } from '../../../graph/applyStage'
+import { ApplyStageContext } from '../../../graph/dialogs/applyStage'
 import { quickOn } from '../../../graph/registry'
+import { SAMPLE_ORDER_HINT, SAMPLE_ORDERS, sampleOrderOf } from '../../../graph/config/coloring'
 import {
-  SAMPLE_ORDERS,
-  SAMPLE_ORDER_HINT,
   capOn,
-  sampleOrderOf,
+  type QuickAccess,
   TOP_SIDE_DEFAULT,
   topCountOf,
-  type TopSplitConfig,
-  type NodeKind,
-  type QuickAccess
-} from '../../../graph/types'
-import { AUTO, AUTO_BACKGROUND, AutoCorner, CLEAR, ColorPicker } from '../../../ui/ColorPicker'
-import { IconGear } from '../../../ui/icons'
-import type { ResolvedGroup } from '../../../ui/pointStyle'
-import { Select as AppSelect, type SelectOption } from '../../../ui/Select'
-import { slashBackground } from '../../../ui/slash'
-import { PALETTES, UI } from '../../../ui/theme'
-import { OnOffSwitch } from '../../../ui/ToggleSwitch'
-import { useUiTheme } from '../../../ui/useUiTheme'
+  type TopSplitConfig
+} from '../../../graph/config/plotStyle'
+import type { NodeKind } from '../../../graph/types'
+import {
+  AUTO,
+  AUTO_BACKGROUND,
+  AutoCorner,
+  CLEAR,
+  ColorPicker
+} from '../../../ui/color/ColorPicker'
+import { IconGear } from '../../../ui/controls/icons'
+import type { ResolvedGroup } from '../../../ui/plot/pointStyle'
+import { Select as AppSelect, type SelectOption } from '../../../ui/controls/Select'
+import { slashBackground } from '../../../ui/color/slash'
+import { PALETTES, UI } from '../../../ui/app/theme'
+import { OnOffSwitch } from '../../../ui/controls/ToggleSwitch'
+import { useUiTheme } from '../../../ui/app/useUiTheme'
 import { ScreenScale } from './hooks'
-import { Field } from '../../../ui/Field'
-import { NumberInput } from '../../../ui/NumberInput'
-import { Section } from '../../../ui/Section'
+import { Field } from '../../../ui/controls/Field'
+import { NumberInput } from '../../../ui/controls/NumberInput'
+import { Section } from '../../../ui/controls/Section'
 import { PREVIEW_DOT } from './layout'
 import { styles } from './styles'
 
@@ -387,7 +391,7 @@ export function PValueInput({
     />
   )
 }
-/** The app's Select (ui/Select) on a config panel: its menu drawn at the canvas zoom, closing when
+/** The app's Select (ui/controls/Select) on a config panel: its menu drawn at the canvas zoom, closing when
  *  the canvas moves — unless `unscaled`, for a fixed-position window such as the selector dialog. */
 export function Select({
   unscaled,
@@ -486,6 +490,6 @@ export function ColorChip({
 
 // The form primitives live in ui/ (one per job, shared with the dialogs and windows); the node
 // settings import them from here with the rest of their kit.
-export { Chevron } from '../../../ui/Chevron'
-export { Checkbox } from '../../../ui/Checkbox'
+export { Chevron } from '../../../ui/controls/Chevron'
+export { Checkbox } from '../../../ui/controls/Checkbox'
 export { Field, NumberInput, Section }

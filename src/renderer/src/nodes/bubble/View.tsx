@@ -3,14 +3,11 @@ import { FacetedPlot } from '../../dashboard/FacetedPlot'
 import { SwitchBar, SwitchStrip } from '../../dashboard/SwitchBar'
 import { condLabel, contextOf, type ConditionKey } from '../../engine'
 import { quickOn, seriesAxes } from '../../graph/registry'
-import {
-  axisTitle,
-  geneCapOn,
-  topCountOf,
-  type BubbleConfig,
-  type CompareConfig
-} from '../../graph/types'
-import { BUBBLE_SIG_PALETTE, toPaletteRef } from '../../ui/palettes'
+import { axisTitle } from '../../graph/config/units'
+import { type BubbleConfig, geneCapOn } from '../../graph/config/genePlots'
+import { topCountOf } from '../../graph/config/plotStyle'
+import type { CompareConfig } from '../../graph/config/compare'
+import { BUBBLE_SIG_PALETTE, toPaletteRef } from '../../ui/color/palettes'
 import { Empty } from '../kit/views/common'
 import { type ViewContext } from '../kit/views/context'
 import { axisChoices } from '../kit/views/helpers'

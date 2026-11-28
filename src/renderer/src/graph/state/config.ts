@@ -13,27 +13,27 @@ import { resultHistory } from './shared'
 import { reclassify } from './shared'
 import { locationOf } from './shared'
 import {
+  isComparisonKind,
   isStep,
   type NodeConfig,
-  type LoadConfig,
-  resolveLoadMode,
-  isComparisonKind,
-  type CompareConfig,
-  type EffectLabels,
-  DEFAULT_EFFECT_LABELS,
-  type CondUnits,
-  declaredNumeric,
-  type StandardizeConfig,
-  type ContrastConfig,
   type PlotGroupConfig,
-  modelViewOf,
   plotResultKey
 } from '../types'
+import { declaredNumeric, type LoadConfig, resolveLoadMode } from '../config/load'
+import {
+  type CompareConfig,
+  DEFAULT_EFFECT_LABELS,
+  type EffectLabels,
+  modelViewOf
+} from '../config/compare'
+import type { CondUnits } from '../config/units'
+import type { StandardizeConfig } from '../config/standardize'
+import type { ContrastConfig } from '../config/contrast'
 import { type StoreSet, type Getter, type GraphState } from '../store'
 import { NODE_SPECS, categoryOf, runsIn, wiredKindOf, loadAbove } from '../registry'
 import { PLOT_RUNS } from '../../nodes/runs'
-import { scalePreviews } from '../loadFiles'
-import { hiddenGeneIds } from '../geneMask'
+import { scalePreviews } from '../run/loadFiles'
+import { hiddenGeneIds } from '../project/geneMask'
 import { engine } from '../../engine/client'
 
 /** …and per Clean data result, for a Clean data step fed by one (previewOfResult). */

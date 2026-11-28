@@ -2,11 +2,12 @@
  * The steps' canvas tile summaries, by kind (nodes/<kind>/Tile.tsx): what a tile on the canvas says
  * about its node — its files, its table's size, its comparisons. A plot's tile shows its spec's
  * `plot.tileHint` instead (null here). Render functions over TileContext, called inside
- * graph/GraphNode.tsx's NodeSummary — they call no hooks of their own.
+ * graph/canvas/GraphNode.tsx's NodeSummary — they call no hooks of their own.
  */
 import type { ReactNode } from 'react'
 
-import type { LoadCheck, NodeData, NodeKind, NodeResult } from '../graph/types'
+import type { LoadCheck } from '../graph/config/load'
+import type { NodeData, NodeKind, NodeResult } from '../graph/types'
 import { tile as compare } from './compare/Tile'
 import { tile as contrast } from './contrast/Tile'
 import { tile as load } from './load/Tile'

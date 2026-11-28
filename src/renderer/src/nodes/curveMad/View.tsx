@@ -8,15 +8,15 @@ import {
   nestedCol,
   stdLookupOf
 } from '../../engine'
-import { rowCount } from '../../engine/lazyRows'
+import { rowCount } from '../../engine/columns/lazyRows'
 import { quickOn } from '../../graph/registry'
 import {
   type CompareConfig,
-  type CurveMadConfig,
-  curveDoseUnit,
   effectLabelsOf,
   normalizeCompareConfig
-} from '../../graph/types'
+} from '../../graph/config/compare'
+import type { CurveMadConfig } from '../../graph/config/qc'
+import { curveDoseUnit } from '../../graph/config/units'
 import { Empty } from '../kit/views/common'
 import { type ViewContext } from '../kit/views/context'
 import { styles } from '../kit/views/styles'

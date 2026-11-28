@@ -17,7 +17,7 @@ export {
   type RecleanInput,
   type ScalePreview,
   type SheetIssue
-} from './ingest'
+} from './data/ingest'
 export {
   canonicalAccession,
   groupMembers,
@@ -25,8 +25,8 @@ export {
   pairsOf,
   unionRecords,
   unionValues
-} from './accession'
-export { combineStandardize } from './combine'
+} from './data/accession'
+export { combineStandardize } from './data/combine'
 export {
   BATCH_COND,
   batchesOf,
@@ -35,8 +35,8 @@ export {
   withBatchCond,
   type BatchSpec,
   type BatchSummary
-} from './batch'
-export { sampleLabel, sampleName } from './sampleLabel'
+} from './data/batch'
+export { sampleLabel, sampleName } from './data/sampleLabel'
 export {
   contextIndices,
   contextOf,
@@ -52,8 +52,8 @@ export {
   rowsWhere,
   type ContextIndex,
   type FacetIndexGroup
-} from './contextIndex'
-export { descPeakOf, hasResponseFits, withModelView, type ModelView } from './modelView'
+} from './columns/contextIndex'
+export { descPeakOf, hasResponseFits, withModelView, type ModelView } from './curves/modelView'
 export {
   fittedSurfaceModel,
   linearJoin,
@@ -65,8 +65,8 @@ export {
   type SurfaceAxes,
   type SurfaceKind,
   type SurfaceModel
-} from './surfaceModel'
-export { rowsAt } from './lazyRows'
+} from './curves/surfaceModel'
+export { rowsAt } from './columns/lazyRows'
 export {
   arrayView,
   nestedCol,
@@ -76,15 +76,15 @@ export {
   someNested,
   valuesOf,
   type RowView
-} from './rowView'
-export { distShape, VIOLIN_CAP, type DistShape } from './distShape'
+} from './columns/rowView'
+export { distShape, VIOLIN_CAP, type DistShape } from './plot/distShape'
 export {
   sampleIndex,
   isSampleIndex,
   stdLookupOf,
   type SampleIndex,
   type StdLookup
-} from './sampleIndex'
+} from './data/sampleIndex'
 export {
   conditionLevels,
   filterActive,
@@ -93,10 +93,10 @@ export {
   samplePasses,
   subsetStandardize,
   type SampleFilter
-} from './subset'
-export { jointAt, jointPredict } from './surfaceJoint'
-export { descValue } from './splineFit'
-export type { Progress } from './progress'
+} from './data/subset'
+export { jointAt, jointPredict } from './curves/surfaceJoint'
+export { descValue } from './curves/splineDescribe'
+export type { Progress } from './runtime/progress'
 export {
   axisModelFor,
   detectAxisScale,
@@ -109,7 +109,7 @@ export {
   type AxisShape,
   type ScaleGuess,
   type StoredScale
-} from './axisModel'
+} from './curves/axisModel'
 export {
   parseMatrix,
   guessRoles,
@@ -132,8 +132,8 @@ export {
   type MatrixInfo,
   type MatrixPreset,
   type FieldRule
-} from './interactive'
-export { runVehNorm } from './compare'
+} from './data/interactive'
+export { runVehNorm } from './compare/compare'
 export {
   runDirect,
   runCompare,
@@ -144,7 +144,7 @@ export {
   classifyConditions,
   controlIsBaseline,
   curveControlIsBaseline
-} from './direct'
+} from './compare/direct'
 export {
   applyCurveFdr,
   classifyCompareRow,
@@ -174,12 +174,17 @@ export {
   PEC50_DELTA,
   Y_LIMITS_LOG2,
   type CurveFit
-} from './curveFit'
-export { samBoundary } from './sam'
-export { curvePointsFromStd, replicateLog2FCs, stdByGene, type CurvePoints } from './curvePoints'
-export type { ComparePreview } from './direct'
-export { runFactorAnova, previewFactorAnova, crossPairs, slopePositions } from './twoWay'
-export type { FactorAnovaPreview } from './twoWay'
+} from './curves/curveFit'
+export { samBoundary } from './compare/sam'
+export {
+  curvePointsFromStd,
+  replicateLog2FCs,
+  stdByGene,
+  type CurvePoints
+} from './curves/curvePoints'
+export type { ComparePreview } from './compare/direct'
+export { runFactorAnova, previewFactorAnova, crossPairs, slopePositions } from './compare/twoWay'
+export type { FactorAnovaPreview } from './compare/twoWay'
 export {
   runContrast,
   runContrastPair,
@@ -198,7 +203,7 @@ export {
   CURVE_FC_FEATURE,
   rowsOfFeature,
   rowsOfFeatureNamed
-} from './contrast'
+} from './compare/contrast'
 export type {
   ContrastSideRow,
   ContrastPairInput,
@@ -209,9 +214,9 @@ export type {
   PairFix,
   PairValueAlignment,
   ContrastFeatureId
-} from './contrast'
+} from './compare/contrast'
+export { BUBBLE_DUMBBELL_CAP, buildDR, drBase, drPick, responseCurve, buildTdr } from './plot/dr'
 export {
-  BUBBLE_DUMBBELL_CAP,
   enrichTermsOf,
   cogAreasOf,
   goAspectsOf,
@@ -226,52 +231,56 @@ export {
   ENRICH_FALLBACK,
   ENRICH_GROUPS,
   ENRICH_SOURCE_LABEL,
-  resolveEnrichSource,
-  buildVolcano,
-  buildHeatmap,
-  buildHeatmapSteps,
-  buildFcHeatmap,
-  buildFcHeatmapSteps,
+  resolveEnrichSource
+} from './enrich/terms'
+export { buildVolcano, comparisonOf, fcName, fcMeasure } from './plot/volcano'
+export { buildHeatmap, buildHeatmapSteps, sortSamples } from './plot/heatmap'
+export { buildFcHeatmap, buildFcHeatmapSteps } from './plot/fcHeatmap'
+export {
   buildScatter,
   bandEdgePath,
   bandConfAt,
   cutoffOnScale,
   cutoffFromScale,
-  buildIntensityScatter,
-  buildMA,
-  buildDR,
-  drBase,
-  drPick,
-  responseCurve,
-  comparisonOf,
-  fcName,
-  fcMeasure,
-  buildBubble,
-  bubbleBase,
-  bubbleWith,
+  buildIntensityScatter
+} from './plot/scatter'
+export { buildMA } from './plot/ma'
+export { buildBubble, bubbleBase, bubbleWith } from './plot/bubble'
+export {
   buildDumbbell,
   dumbbellBase,
   dumbbellWith,
+  DUMBBELL_ORDERS,
+  dumbbellOrderLabel
+} from './plot/dumbbell'
+export {
   thinPoints,
   RESIDUAL_DOT_CAP,
-  DUMBBELL_ORDERS,
-  dumbbellOrderLabel,
-  buildTdr,
-  buildGeneBar,
-  buildCluster,
-  buildResponseCluster,
   buildQc,
   sampleQc,
   buildStdMatrix,
   type StdMatrixSample,
-  type SampleQc,
+  type SampleQc
+} from './plot/qc'
+export { buildGeneBar } from './plot/geneBar'
+export {
+  buildCluster,
+  buildResponseCluster,
+  metaValue,
+  CLUSTER_COLOR,
+  GROUP_COLOR,
+  colorByCond
+} from './plot/cluster'
+export {
   buildSampleCorr,
   buildSampleCorrAll,
   arrangeSampleCorr,
   CORR_METRICS,
   corrMetricOf,
-  CORR_METRIC_LABEL,
-  buildEnrichment,
+  CORR_METRIC_LABEL
+} from './plot/corr'
+export { buildEnrichment } from './enrich/ora'
+export {
   facetContextDims,
   responseColorDims,
   facetDims,
@@ -280,25 +289,20 @@ export {
   facetSides,
   ctxValue,
   ctxNum,
-  metaValue,
   facetKeyLabel,
   rowsOfKind,
   showKindOf,
-  SHOW_KINDS,
-  sortSamples,
-  CLUSTER_COLOR,
-  GROUP_COLOR,
-  colorByCond
-} from './plotData'
-export type { ClusterMethod } from './embed'
-export { recommendedPlots } from './plotChoice'
+  SHOW_KINDS
+} from './plot/facet'
+export type { ClusterMethod } from './stats/embed'
+export { recommendedPlots } from './plot/plotChoice'
 export {
   DEFAULT_THRESHOLD,
   thresholdLabel,
   welchTTest,
   benjaminiHochberg,
   applyThreshold
-} from './stats'
+} from './stats/stats'
 export {
   VALID_CONDITIONS,
   RESERVED_COND_NAMES,
@@ -326,20 +330,20 @@ export {
   type CleanupMode,
   type CleanupRule,
   type CleanupThreshold
-} from './cleanup'
+} from './data/cleanup'
 export type { CustomConditionKey, NumericConds, PresetConditionKey } from './types'
-export { condValue, condPresent, numValue } from './compare'
+export { condValue, condPresent, numValue } from './compare/compare'
 export {
   analysisUnmet,
   CURVE_MIN_TREATED,
   dataShape,
   type CompareAnalysis,
   type DataShape
-} from './dataShape'
-export { detectCustomConditions } from './ingest'
-export type { ProteinList } from './ingest'
+} from './data/dataShape'
+export { detectCustomConditions } from './data/ingest'
+export type { ProteinList } from './data/ingest'
 
-export type { ThresholdConfig, Effect, FdrMethod } from './stats'
+export type { ThresholdConfig, Effect, FdrMethod } from './stats/stats'
 export {
   FDR_LABEL,
   fdrMethodOf,
@@ -351,7 +355,7 @@ export {
   SAM_S0,
   snapStatMin,
   normalPpf
-} from './stats'
+} from './stats/stats'
 export type {
   ConditionKey,
   StandardRow,
@@ -364,72 +368,42 @@ export type {
   VehNormResult,
   CompareResultRow
 } from './types'
-export type { DirectInput, CompareTableResult } from './direct'
-export type { FactorAnovaInput, AnovaFactorPick } from './twoWay'
-export type { ContrastInput, ContrastResult, ContrastResultRow } from './contrast'
+export type { DirectInput, CompareTableResult } from './compare/direct'
+export type { FactorAnovaInput, AnovaFactorPick } from './compare/twoWay'
+export type { ContrastInput, ContrastResult, ContrastResultRow } from './compare/contrast'
+export type { VolcanoData, VolcanoPoint, VolcanoOptions } from './plot/volcano'
+export type { HeatmapData, HeatmapOptions, SampleOrder, SampleOrdering } from './plot/heatmap'
+export type { FcHeatmapData, FcHeatmapOptions } from './plot/fcHeatmap'
+export type { ScatterData, ScatterPoint, ScatterOptions, ScatterGuide } from './plot/scatter'
+export type { MAData, MAPoint, MAOptions } from './plot/ma'
+export type { DRData, DRSeries, DROptions, TdrData, TdrSeries } from './plot/dr'
+export type { BubbleData, BubblePoint, BubbleOptions } from './plot/bubble'
+export type { DumbbellData, DumbbellRow, DumbbellOptions, DumbbellOrder } from './plot/dumbbell'
+export type { GeneBarData, GeneBarValue } from './plot/geneBar'
 export type {
-  VolcanoData,
-  VolcanoPoint,
-  VolcanoOptions,
-  HeatmapData,
-  HeatmapOptions,
-  FcHeatmapData,
-  FcHeatmapOptions,
-  ScatterData,
-  ScatterPoint,
-  ScatterOptions,
-  ScatterGuide,
-  MAData,
-  MAPoint,
-  MAOptions,
-  DRData,
-  DRSeries,
-  DROptions,
-  BubbleData,
-  BubblePoint,
-  BubbleOptions,
-  DumbbellData,
-  DumbbellRow,
-  DumbbellOptions,
-  DumbbellOrder,
-  TdrData,
-  TdrSeries,
-  GeneBarData,
-  GeneBarValue,
   ClusterData,
   ClusterPoint,
   ClusterMeta,
   ClusterOptions,
-  QcData,
-  QcGroup,
-  QcMetric,
-  SampleOrder,
-  SampleOrdering,
-  EnrichData,
-  EnrichTerm,
-  EnrichOptions,
-  EnrichSource,
-  EnrichMethod,
-  CorrData,
-  SampleCorrAll,
-  CorrMetric,
-  FacetGroup,
-  FacetKey,
-  ContextRow,
   ClusterColorBy
-} from './plotData'
-export type { Analysis, PlotOption } from './plotChoice'
-export { IMPUTE_DEFAULTS, IMPUTE_LABEL } from './impute'
-export { MIN_SHARED_GENES, NORMALIZE_REFERENCE_LABEL } from './normalize'
-export { proteinDescOf, proteinDescs } from './proteinDesc'
+} from './plot/cluster'
+export type { QcData, QcGroup, QcMetric } from './plot/qc'
+export type { EnrichData, EnrichTerm, EnrichOptions } from './enrich/ora'
+export type { EnrichSource, EnrichMethod } from './enrich/terms'
+export type { CorrData, SampleCorrAll, CorrMetric } from './plot/corr'
+export type { FacetGroup, FacetKey, ContextRow } from './plot/facet'
+export type { Analysis, PlotOption } from './plot/plotChoice'
+export { IMPUTE_DEFAULTS, IMPUTE_LABEL } from './data/impute'
+export { MIN_SHARED_GENES, NORMALIZE_REFERENCE_LABEL } from './data/normalize'
+export { proteinDescOf, proteinDescs } from './data/proteinDesc'
 export type {
   NormalizeOptions,
   NormalizeReference,
   NormalizeSummary,
   RefCombine,
   RefMissing
-} from './normalize'
-export type { ImputeMethod, ImputeOptions, ImputeSummary } from './impute'
+} from './data/normalize'
+export type { ImputeMethod, ImputeOptions, ImputeSummary } from './data/impute'
 export {
   defaultTransform,
   detectScale,
@@ -457,25 +431,31 @@ export {
   type ValueScale,
   type ValueUnit,
   valueUnitOf
-} from './scale'
-export { clusterRowGroups, clusterRowTree } from './cluster'
-export type { DendroLink, Linkage, LeafOrder } from './cluster'
+} from './data/scale'
+export { clusterRowGroups, clusterRowTree } from './stats/cluster'
+export type { DendroLink, Linkage, LeafOrder } from './stats/cluster'
 export {
   DESCRIBE_Q,
   RESPONSE_METRICS,
   RESPONSE_THRESHOLD,
   responseMetrics,
   runResponseSurface
-} from './responseSurface'
-export type { ResponseInput } from './responseSurface'
-export { anovaSliceFor, geneShares, interactionAxes, interactionGene, rankByQ } from './anovaPlots'
-export type { AnovaSliceResult, GeneShares, InteractionGene } from './anovaPlots'
-export type { AnovaFactor, AnovaResult } from './anova'
-export { pickTop } from './topPick'
-export type { TopSplit, TopSplitSpec } from './topPick'
-export { MODULE_OVERLAP, moduleParts, termModules } from './enrichModules'
-export { termLevelsOf, type TermLevels } from './enrichLevels'
-export type { ModuleTerm, TermModules } from './enrichModules'
+} from './curves/responseSurface'
+export type { ResponseInput } from './curves/responseSurface'
+export {
+  anovaSliceFor,
+  geneShares,
+  interactionAxes,
+  interactionGene,
+  rankByQ
+} from './plot/anovaPlots'
+export type { AnovaSliceResult, GeneShares, InteractionGene } from './plot/anovaPlots'
+export type { AnovaFactor, AnovaResult } from './compare/anova'
+export { pickTop } from './stats/topPick'
+export type { TopSplit, TopSplitSpec } from './stats/topPick'
+export { MODULE_OVERLAP, moduleParts, termModules } from './enrich/enrichModules'
+export { termLevelsOf, type TermLevels } from './enrich/enrichLevels'
+export type { ModuleTerm, TermModules } from './enrich/enrichModules'
 export {
   callSets,
   directedSets,
@@ -498,4 +478,4 @@ export {
   type SampleOf,
   type SetDef,
   type SetDirection
-} from './sets'
+} from './stats/sets'

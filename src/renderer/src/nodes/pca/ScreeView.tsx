@@ -1,10 +1,10 @@
 import { useMemo } from 'react'
 
 import type { ClusterData } from '../../engine'
-import { tooltip } from '../../ui/condTooltip'
-import { PlotlyChart } from '../../ui/PlotlyChart'
-import { axisBase, CATEGORICAL, PALETTES, PLOT_TEXT, plotBase } from '../../ui/theme'
-import { useUiTheme } from '../../ui/useUiTheme'
+import { tooltip } from '../../ui/plot/condTooltip'
+import { PlotlyChart } from '../../ui/plot/PlotlyChart'
+import { axisBase, CATEGORICAL, PALETTES, PLOT_TEXT, plotBase } from '../../ui/app/theme'
+import { useUiTheme } from '../../ui/app/useUiTheme'
 
 /** How many components the plot shows at most — past this the bars are unreadable and the tail
  *  carries no decision. */

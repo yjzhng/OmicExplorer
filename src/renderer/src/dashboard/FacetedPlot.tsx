@@ -24,11 +24,11 @@ import {
   type NumericConds,
   type ValueScale
 } from '../engine'
-import { UI } from '../ui/theme'
-import { ChoiceSwitch, PILL_CAP } from '../ui/ChoiceSwitch'
+import { UI } from '../ui/app/theme'
+import { ChoiceSwitch, PILL_CAP } from '../ui/controls/ChoiceSwitch'
 import { facetBarLabel, facetChoice, isNumericFacet, pickFacet, resolveFacets } from './facet'
-import { PlotScopeContext } from '../ui/plotly/selectRegion'
-import { plotCached } from '../ui/plotCache'
+import { PlotScopeContext } from '../ui/plot/plotly/selectRegion'
+import { plotCached } from '../ui/plot/plotCache'
 
 /** A result to facet without building all of its rows: the facets resolve over its context tuples
  *  (contextIndex.ts) and only the facet on show is built. The options narrow it as the readers of
@@ -101,7 +101,7 @@ export function FacetedPlot<T extends ContextRow>({
     key: facetKey
   } = useMemo(() => resolveFacets(rows, dims, sel, numeric), [rows, dims, sel, numeric])
   // the facet on show's rows (every row when unfaceted) — the only ones built from a source, and
-  // kept app-wide by the result and the facet (ui/plotCache): the same array when the facet, or
+  // kept app-wide by the result and the facet (ui/plot/plotCache): the same array when the facet, or
   // the plot, comes back, so its plot data is taken from the cache too rather than built again
   const groupRows = useMemo(
     () => {

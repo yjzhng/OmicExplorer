@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react'
 import { type ConditionKey, orderConds, customCond, type Shape } from '../../engine'
-import { StatusNote } from '../../ui/StatusNote'
+import { StatusNote } from '../../ui/controls/StatusNote'
 import type { SampleConds } from '../../engine/types'
 import { CONDS } from '../kit/settings/hooks'
 

@@ -2,29 +2,24 @@
  * Promise-based client for the engine Web Worker. React nodes call `engine.*`
  * and await results; compute runs off the UI thread.
  */
-import type { ContrastStackPart } from './contrastStack'
-import type { ContrastSelectInput } from './contrastSelect'
-import type { ClusterOrderOptions, DendroLink } from './cluster'
+import type { ContrastStackPart } from './compare/contrastStack'
+import type { ContrastSelectInput } from './compare/contrastSelect'
+import type { ClusterOrderOptions, DendroLink } from './stats/cluster'
 import { EngineError } from './engineError'
-import type { ContrastInput, ContrastPairInput, ContrastResult } from './contrast'
-import type { CompareTableResult, DirectInput } from './direct'
-import type { FactorAnovaInput } from './twoWay'
-import type { ProteinList, RecleanInput, ScalePreview } from './ingest'
-import type {
-  ClusterData,
-  ClusterOptions,
-  SampleCorrAll,
-  EnrichData,
-  enrichmentAll,
-  enrichmentTable,
-  FcHeatmapData,
-  FcHeatmapOptions
-} from './plotData'
+import type { ContrastInput, ContrastPairInput, ContrastResult } from './compare/contrast'
+import type { CompareTableResult, DirectInput } from './compare/direct'
+import type { FactorAnovaInput } from './compare/twoWay'
+import type { ProteinList, RecleanInput, ScalePreview } from './data/ingest'
+import type { ClusterData, ClusterOptions } from './plot/cluster'
+import type { SampleCorrAll } from './plot/corr'
+import type { EnrichData } from './enrich/ora'
+import type { enrichmentAll, enrichmentTable } from './enrich/terms'
+import type { FcHeatmapData, FcHeatmapOptions } from './plot/fcHeatmap'
 import type { EngineRequest, EngineResponse } from './worker'
-import type { Progress } from './progress'
-import type { ValueScale } from './scale'
-import type { ResponseInput } from './responseSurface'
-import type { MeasuredSets } from './sets'
+import type { Progress } from './runtime/progress'
+import type { ValueScale } from './data/scale'
+import type { ResponseInput } from './curves/responseSurface'
+import type { MeasuredSets } from './stats/sets'
 import type {
   CompareInput,
   CompareResultRow,
@@ -36,8 +31,8 @@ import type {
   VehNormInput,
   VehNormResult
 } from './types'
-import { rowsTable } from './lazyRows'
-import { decodeTable, decodeValue, encodeValue, isTable, type Table } from './wire'
+import { rowsTable } from './columns/lazyRows'
+import { decodeTable, decodeValue, encodeValue, isTable, type Table } from './columns/wire'
 
 let worker: Worker | null = null
 let seq = 0

@@ -34,11 +34,12 @@ import {
 /** No Clean data: no gene's replicates. */
 const NO_STD: StdLookup = new Map()
 import { useGraph } from '../../graph/store'
-import { drLook, type DRLook, type EffectColors } from '../../graph/types'
-import { AUTO } from '../../ui/ColorPicker'
-import { tooltip } from '../../ui/condTooltip'
-import { errorTraces } from '../../ui/errorTraces'
-import { PlotlyChart } from '../../ui/PlotlyChart'
+import { drLook, type DRLook } from '../../graph/config/dr'
+import type { EffectColors } from '../../graph/config/plotStyle'
+import { AUTO } from '../../ui/color/ColorPicker'
+import { tooltip } from '../../ui/plot/condTooltip'
+import { errorTraces } from '../../ui/plot/errorTraces'
+import { PlotlyChart } from '../../ui/plot/PlotlyChart'
 import {
   axisBase,
   CATEGORICAL,
@@ -47,9 +48,9 @@ import {
   PLOT_TEXT,
   plotBase,
   withAlpha
-} from '../../ui/theme'
-import { useGeneSetColors } from '../../ui/useSelection'
-import { useUiTheme } from '../../ui/useUiTheme'
+} from '../../ui/app/theme'
+import { useGeneSetColors } from '../../ui/plot/useSelection'
+import { useUiTheme } from '../../ui/app/useUiTheme'
 
 /** Evenly spaced points along a fitted curve (more are added at its turns — curveSampleX). */
 const SAMPLES = 60

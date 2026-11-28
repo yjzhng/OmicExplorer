@@ -9,18 +9,19 @@
  * render it for that reason.
  *
  * A Curve fit by the response surface method adds its model view (detector / descriptor) — a
- * context every plot below it follows, as the conditions are (engine/modelView.ts).
+ * context every plot below it follows, as the conditions are (engine/curves/modelView.ts).
  *
  * Renders nothing for a non-faceted group (e.g. a Clean data tile's heatmap or cluster).
  */
 import { type CSSProperties, type ReactNode } from 'react'
 
 import { hasResponseFits, type ModelView } from '../engine'
-import type { AnalysisGroup } from '../graph/groups'
+import type { AnalysisGroup } from '../graph/results/groups'
 import { useGraph } from '../graph/store'
-import { type CompareConfig, isStep, modelViewOf, type NodeResult } from '../graph/types'
-import { UI } from '../ui/theme'
-import { ChoiceSwitch, PILL_CAP } from '../ui/ChoiceSwitch'
+import { type CompareConfig, modelViewOf } from '../graph/config/compare'
+import { isStep, type NodeResult } from '../graph/types'
+import { UI } from '../ui/app/theme'
+import { ChoiceSwitch, PILL_CAP } from '../ui/controls/ChoiceSwitch'
 import {
   facetBarLabel,
   facetChoice,
@@ -93,7 +94,7 @@ export function FacetContextBar({
   )
 }
 
-/** The model switch's two views (see engine/modelView.ts). */
+/** The model switch's two views (see engine/curves/modelView.ts). */
 const MODEL_OPTIONS: ReadonlyArray<{ value: ModelView; label: string; title: string }> = [
   {
     value: 'detector',

@@ -20,8 +20,8 @@ import {
   type FacetKey,
   type NumericConds
 } from '../engine'
-import type { AnalysisGroup } from '../graph/groups'
-import { numericOfResult, type NodeResult } from '../graph/types'
+import type { AnalysisGroup } from '../graph/results/groups'
+import { type NodeResult, numericOfResult } from '../graph/types'
 
 export interface FacetOption {
   value: string | number

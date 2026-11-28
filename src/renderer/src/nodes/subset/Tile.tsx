@@ -3,9 +3,9 @@ import type { ReactNode } from 'react'
 
 import type { TileContext } from '../tiles'
 import { condLabel, type ConditionKey } from '../../engine'
-import { rowCount } from '../../engine/lazyRows'
-import { type SubsetConfig } from '../../graph/types'
-import { PILL_CAP } from '../../ui/ChoiceSwitch'
+import { rowCount } from '../../engine/columns/lazyRows'
+import type { SubsetConfig } from '../../graph/config/load'
+import { PILL_CAP } from '../../ui/controls/ChoiceSwitch'
 import { muted, stat } from '../kit/tile'
 
 export function tile(t: TileContext): ReactNode {

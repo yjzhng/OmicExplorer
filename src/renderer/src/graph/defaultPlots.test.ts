@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest'
 // The picker's rule for default plots (TilePicker's `picked`): of the ticked plots, only those the
 // upstream offers are added.
 import { entryKey, plotEntriesFor } from './registry'
-import { gatePlotEntries } from './requirements'
+import { gatePlotEntries } from './run/requirements'
 
 describe('default plots', () => {
   it('drops a ticked default the data can’t support', () => {

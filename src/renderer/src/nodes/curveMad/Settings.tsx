@@ -6,11 +6,11 @@ import {
   CURVE_QC_DEFAULT_Y,
   type CurveMadConfig,
   type CurveQcAxis,
-  curveQcAxisOptions,
-  curvesReplicatedOf
-} from '../../graph/types'
-import { useUpstreamFacts } from '../../graph/useUpstreamFacts'
-import { OnOffSwitch } from '../../ui/ToggleSwitch'
+  curveQcAxisOptions
+} from '../../graph/config/qc'
+import { curvesReplicatedOf } from '../../graph/config/response'
+import { useUpstreamFacts } from '../../graph/run/useUpstreamFacts'
+import { OnOffSwitch } from '../../ui/controls/ToggleSwitch'
 import { CapRow, Field, QuickToggle, Select } from '../kit/settings/controls'
 import { legendShown } from '../kit/settings/plotHooks'
 import { type PlotPanelProps, PlotSections, PointStyleSections } from '../kit/settings/plotSections'

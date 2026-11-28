@@ -22,15 +22,10 @@ import {
   plotTableTargets,
   tileKey,
   type PlotTableTarget
-} from '../graph/plotTables'
+} from '../graph/results/plotTables'
 import { useGraph } from '../graph/store'
-import {
-  isStep,
-  numericOfResult,
-  type EnrichConfig,
-  type NodeResult,
-  type StringConfig
-} from '../graph/types'
+import { isStep, type NodeResult, numericOfResult } from '../graph/types'
+import type { EnrichConfig, StringConfig } from '../graph/config/enrich'
 import {
   autoStringLevel,
   buildStringModel,
@@ -40,7 +35,7 @@ import {
   stringNetFromResponse,
   stringQueryGenesAt,
   stringSendLimit
-} from '../ui/stringModel'
+} from '../ui/plot/stringModel'
 
 type Target = PlotTableTarget
 

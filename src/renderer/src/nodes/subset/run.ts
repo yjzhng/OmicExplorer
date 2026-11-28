@@ -1,7 +1,7 @@
 /** Subset's run: keep the samples whose conditions take the chosen values. */
-import { type LoadConfig, type SubsetConfig } from '../../graph/types'
+import type { LoadConfig, SubsetConfig } from '../../graph/config/load'
 import { wiredKindOf, loadAbove } from '../../graph/registry'
-import { rowCount } from '../../engine/lazyRows'
+import { rowCount } from '../../engine/columns/lazyRows'
 import { engine } from '../../engine/client'
 import type { StepRunContext } from '../runContext'
 

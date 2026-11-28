@@ -13,13 +13,9 @@ import {
   type ContrastResultRow
 } from '../../engine'
 import { useGraph } from '../../graph/store'
-import {
-  effectLabelsOf,
-  labelCapOn,
-  type CompareConfig,
-  type ContrastConfig,
-  type ScatterConfig
-} from '../../graph/types'
+import { type CompareConfig, effectLabelsOf } from '../../graph/config/compare'
+import { labelCapOn, type ScatterConfig } from '../../graph/config/pointPlots'
+import type { ContrastConfig } from '../../graph/config/contrast'
 import { Built, Empty } from '../kit/views/common'
 import { type ViewContext } from '../kit/views/context'
 import { styles } from '../kit/views/styles'

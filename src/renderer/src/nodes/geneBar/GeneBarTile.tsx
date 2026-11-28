@@ -5,8 +5,8 @@
  *  and errors of those values — rather than guessing a log axis of their own. The look comes from
  *  the tile's BarConfig: the error type, the colouring, the replicate dots. */
 import { useMemo, type ReactNode } from 'react'
-import { CATEGORICAL_SCHEMES, toCategoricalId, type PaletteRef } from '../../ui/palettes'
-import { useAppSettings, useRolePalette } from '../../ui/useAppSettings'
+import { CATEGORICAL_SCHEMES, toCategoricalId, type PaletteRef } from '../../ui/color/palettes'
+import { useAppSettings, useRolePalette } from '../../ui/app/useAppSettings'
 
 import {
   quantityLabel,
@@ -20,9 +20,10 @@ import {
   type StandardizeResult,
   type ValueScale
 } from '../../engine'
-import { barColoring, primaryColorLevels, sampleOrderOf, type BarConfig } from '../../graph/types'
-import { colorerArgs } from '../../ui/condColor'
-import { type ValueRange } from '../../ui/colormap'
+import { barColoring, primaryColorLevels, sampleOrderOf } from '../../graph/config/coloring'
+import type { BarConfig } from '../../graph/config/genePlots'
+import { colorerArgs } from '../../ui/color/condColor'
+import { type ValueRange } from '../../ui/color/colormap'
 import { pagerGenes, stdValueRange } from '../kit/views/helpers'
 import { GeneBarView, type ReplicateLook } from './GeneBarView'
 import { GeneSwitch } from '../../dashboard/GeneSwitch'
@@ -104,7 +105,7 @@ export function GeneBarTile({
   condTitle,
   plainScale
 }: {
-  /** its values shown plain on a log axis (ui/quantityAxis): `scale`, when they are */
+  /** its values shown plain on a log axis (ui/plot/quantityAxis): `scale`, when they are */
   plainScale?: ValueScale
   /** a condition's legend heading, with its unit (see GeneBarView) */
   condTitle?: (c: ConditionKey) => string

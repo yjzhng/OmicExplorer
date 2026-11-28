@@ -7,7 +7,7 @@ import {
   setBackgroundPaused,
   type RevealJob
 } from './renderQueue'
-import { createDrawTracker } from '../ui/tileDraw'
+import { createDrawTracker } from '../ui/plot/tileDraw'
 
 // Frames and idle moments are driven by hand: `frame()` runs the pending rAF callbacks, `idle()`
 // the pending idle callbacks.

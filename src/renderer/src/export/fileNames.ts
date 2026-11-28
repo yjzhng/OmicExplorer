@@ -1,7 +1,7 @@
 /** Download and export file names, as a person reads them: the results tab, the plot, then what's
  *  on show — `AU28 r3 - Volcano - AU-28 vs DMSO - 0.16 µM, 72 h`. No internal ids. Pure. */
 import { condLabel, type ConditionKey } from '../engine'
-import { unitOf, type CondUnits } from '../graph/types'
+import { type CondUnits, unitOf } from '../graph/config/units'
 
 /** Characters no file system takes in a name (and control characters). */
 // eslint-disable-next-line no-control-regex -- control characters are exactly what's refused

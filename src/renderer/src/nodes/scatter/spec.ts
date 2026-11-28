@@ -1,5 +1,5 @@
 /** scatter: its node contract (see nodes/contract.ts). */
-import type { ScatterConfig } from '../../graph/types'
+import type { ScatterConfig } from '../../graph/config/pointPlots'
 import { defineSpec } from '../contract'
 import { anova, NO_GROUP_MEANS } from '../kit/requirements'
 

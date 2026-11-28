@@ -19,10 +19,10 @@ import {
   type PairFix,
   type StandardRow
 } from '../../engine'
-import { StatusNote } from '../../ui/StatusNote'
-import { OnOffSwitch, ToggleSwitch } from '../../ui/ToggleSwitch'
-import { UI } from '../../ui/theme'
-import { sampleRows } from '../../graph/compareModel'
+import { StatusNote } from '../../ui/controls/StatusNote'
+import { OnOffSwitch, ToggleSwitch } from '../../ui/controls/ToggleSwitch'
+import { UI } from '../../ui/app/theme'
+import { sampleRows } from '../../graph/models/compareModel'
 import {
   CondRow,
   NodeTable,
@@ -32,14 +32,14 @@ import {
   SidesBox,
   Tag,
   ValChip
-} from '../../graph/condRows'
-import { useCondUnits } from '../../graph/useUpstreamFacts'
+} from '../../graph/dialogs/condRows'
+import { useCondUnits } from '../../graph/run/useUpstreamFacts'
 import {
   comparedLabelsOf,
   pairSides,
   selectorRowsOf,
   toContrastSide
-} from '../../graph/contrastPair'
+} from '../../graph/models/contrastPair'
 import {
   compileInter,
   compileIntra,
@@ -50,10 +50,11 @@ import {
   type ContrastModel,
   type ContrastState,
   type SliceInfo
-} from '../../graph/contrastModel'
+} from '../../graph/models/contrastModel'
 import { DatasetPick, type PairInput } from './PairContrastDialog'
 import { useGraph } from '../../graph/store'
-import { numericOfResult, numericUnion, type ContrastConfig } from '../../graph/types'
+import { numericOfResult, numericUnion } from '../../graph/types'
+import type { ContrastConfig } from '../../graph/config/contrast'
 
 type Source = 'select' | 'pair'
 

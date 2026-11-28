@@ -8,21 +8,21 @@ import {
 } from '../engine'
 import { CONTRACT_PRODUCER, type PlotMenuEntry } from '../nodes/contract'
 import { SPECS } from '../nodes/specs'
-import { AxisAvail, axisAvailFromResult, DEFAULT_AXES, multiLevelAxes } from './axisAvail'
+import { AxisAvail, axisAvailFromResult, DEFAULT_AXES, multiLevelAxes } from './models/axisAvail'
 import type {
   GraphNode,
-  LoadConfig,
   NodeCategory,
   NodeConfig,
   NodeKind,
   NodeResult,
   PlotGroupConfig,
-  QuickAccess,
-  StandardizeConfig,
-  StepNode,
-  SubsetConfig
+  StepNode
 } from './types'
-import { isStep, loadNumericConditions } from './types'
+import type { LoadConfig, SubsetConfig } from './config/load'
+import type { QuickAccess } from './config/plotStyle'
+import type { StandardizeConfig } from './config/standardize'
+import { isStep } from './types'
+import { loadNumericConditions } from './config/load'
 
 export type { NodeSpec } from '../nodes/contract'
 export { responseLabel } from '../nodes/kit/variants'
@@ -144,7 +144,7 @@ export const PLOT_CONFIG_KINDS: ReadonlySet<NodeKind> = new Set<NodeKind>(
 export function categoryOf(op: NodeKind): NodeCategory {
   return NODE_SPECS[op].category
 }
-/** The plots whose run computes something of their own (graph/plotRun.ts): enrichment's term
+/** The plots whose run computes something of their own (graph/run/plotRun.ts): enrichment's term
  *  tests, STRING's network read and the cluster's embedding. Every other plot draws live from its
  *  upstream's result — its run only marks it ready, so there's nothing for a Re-run to redo. */
 export const plotComputes = (kind: NodeKind): boolean => !!NODE_SPECS[kind].plot?.computes

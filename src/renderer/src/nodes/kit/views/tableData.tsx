@@ -40,17 +40,18 @@ import {
   type StandardizeResult,
   type ThresholdConfig
 } from '../../../engine'
-import { holderTable } from '../../../engine/lazyRows'
+import { holderTable } from '../../../engine/columns/lazyRows'
+import { axisTitle, type CondUnits } from '../../../graph/config/units'
+import type { CompareConfig, EffectLabels } from '../../../graph/config/compare'
+import { divergeStyle, heatStyle, valueRange } from '../../../ui/color/colormap'
 import {
-  axisTitle,
-  type CompareConfig,
-  type CondUnits,
-  type EffectLabels
-} from '../../../graph/types'
-import { divergeStyle, heatStyle, valueRange } from '../../../ui/colormap'
-import { type Column, fixed, type HeaderLine, type TableSource } from '../../../ui/DataTableView'
-import { fmtPlain } from '../../../ui/quantityAxis'
-import { type PaletteRef, ROLE_DEFAULTS } from '../../../ui/palettes'
+  type Column,
+  fixed,
+  type HeaderLine,
+  type TableSource
+} from '../../../ui/table/DataTableView'
+import { fmtPlain } from '../../../ui/plot/quantityAxis'
+import { type PaletteRef, ROLE_DEFAULTS } from '../../../ui/color/palettes'
 import { type PivotSource } from './common'
 import {
   contrastValueName,

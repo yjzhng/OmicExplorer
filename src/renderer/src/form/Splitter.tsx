@@ -12,7 +12,7 @@
  */
 import { useRef, useState, type CSSProperties, type ReactNode } from 'react'
 
-import { motion, UI } from '../ui/theme'
+import { motion, UI } from '../ui/app/theme'
 
 /** Hit area; the visible line is 1px of it, centred. */
 const GRAB = 7

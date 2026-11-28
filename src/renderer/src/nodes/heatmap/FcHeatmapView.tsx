@@ -1,19 +1,19 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 
 import { condLabel, type DendroLink, type FcHeatmapData } from '../../engine'
-import { ROLE_DEFAULTS, paletteRange, paletteScale, type PaletteRef } from '../../ui/palettes'
-import { tooltip } from '../../ui/condTooltip'
-import { PlotlyChart } from '../../ui/PlotlyChart'
-import { truncatedTicks } from '../../ui/plotAxes'
+import { ROLE_DEFAULTS, paletteRange, paletteScale, type PaletteRef } from '../../ui/color/palettes'
+import { tooltip } from '../../ui/plot/condTooltip'
+import { PlotlyChart } from '../../ui/plot/PlotlyChart'
+import { truncatedTicks } from '../../ui/plot/plotAxes'
 import {
   bindHeatmapFocus,
   type PickedSamples,
   GENE_TICK_PX,
   LINK_DELAY
-} from '../../ui/heatmapFocus'
-import { axisBase, CATEGORICAL, PALETTES, PLOT_TEXT, plotBase, withAlpha } from '../../ui/theme'
-import { useSelection } from '../../ui/useSelection'
-import { useUiTheme } from '../../ui/useUiTheme'
+} from '../../ui/plot/heatmapFocus'
+import { axisBase, CATEGORICAL, PALETTES, PLOT_TEXT, plotBase, withAlpha } from '../../ui/app/theme'
+import { useSelection } from '../../ui/plot/useSelection'
+import { useUiTheme } from '../../ui/app/useUiTheme'
 import { levelPalette, type LevelPalettes, trackColours } from './trackColours'
 
 /** How strongly a hovered heatmap veils the cells outside the hovered row and column. */

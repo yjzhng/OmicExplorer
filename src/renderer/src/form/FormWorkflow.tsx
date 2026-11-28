@@ -16,7 +16,7 @@
  * The pipeline is a DAG, not a script, so a step states its inputs explicitly at the top of its
  * settings rather than implying "the one above": a Merge pools several, a Contrast pairs two.
  * Order is the USER's — newest at the bottom, rearranged by dragging a tile — constrained only by
- * the rule that a step never precedes its own input (see graph/sequence).
+ * the rule that a step never precedes its own input (see graph/canvas/sequence).
  */
 import {
   lazy,
@@ -47,26 +47,26 @@ import {
   safeTileName,
   stepTitle
 } from '../graph/registry'
-import { pendingInputs } from '../graph/runGate'
-import { frameTiles, topFullFrames } from '../graph/frames'
-import { dropOrder, formTree, type DropSlot, type FormItem } from '../graph/frameOrder'
+import { pendingInputs } from '../graph/run/runGate'
+import { frameTiles, topFullFrames } from '../graph/canvas/frames'
+import { dropOrder, formTree, type DropSlot, type FormItem } from '../graph/canvas/frameOrder'
 import { useGraph } from '../graph/store'
-import { useUpstreamFacts } from '../graph/useUpstreamFacts'
+import { useUpstreamFacts } from '../graph/run/useUpstreamFacts'
 import {
-  isStep,
   type CanvasFrame,
   type GraphNode,
-  type LoadConfig,
+  isStep,
   type NodeKind,
   type StepNode
 } from '../graph/types'
-import { DialogDock, hasDetailsWindow } from '../graph/dialogDock'
-import { LoadRunControl, RunControl, StatusDot, useStepStatus } from '../graph/StatusDot'
-import { NodeConfigPanel } from '../graph/NodeConfigPanel'
-import { TilePicker } from '../graph/TilePicker'
-import { Chevron } from '../ui/Chevron'
-import { UI } from '../ui/theme'
-import { clampWidth, CONFIG_WIDTH, NAV_WIDTH, useAppSettings } from '../ui/useAppSettings'
+import type { LoadConfig } from '../graph/config/load'
+import { DialogDock, hasDetailsWindow } from '../graph/dialogs/dialogDock'
+import { LoadRunControl, RunControl, StatusDot, useStepStatus } from '../graph/canvas/StatusDot'
+import { NodeConfigPanel } from '../graph/dialogs/NodeConfigPanel'
+import { TilePicker } from '../graph/canvas/TilePicker'
+import { Chevron } from '../ui/controls/Chevron'
+import { UI } from '../ui/app/theme'
+import { clampWidth, CONFIG_WIDTH, NAV_WIDTH, useAppSettings } from '../ui/app/useAppSettings'
 import { resolveSelection, wiredTo } from './outline'
 import { Inputs } from './Inputs'
 import { Splitter } from './Splitter'

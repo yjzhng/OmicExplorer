@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react'
-import type { LoadConfig } from '../../graph/types'
+import type { LoadConfig } from '../../graph/config/load'
 import { Empty } from '../kit/views/common'
 import { type ViewContext } from '../kit/views/context'
 import { styles } from '../kit/views/styles'

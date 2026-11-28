@@ -1,19 +1,19 @@
 import { buildStandardInputs, guessRolesPreset, parseMatrix } from '../../engine'
-import { matrixColumns, missingImportColumns } from '../../engine/interactive'
+import { matrixColumns, missingImportColumns } from '../../engine/data/interactive'
 import { reportError } from '../../shared/diagnostics'
-import { diskWrite } from '../diskWrites'
-import { againstStamp, stampOf, type FileStat } from '../loadCheck'
-import { patchLoadStamps, putCheck, statFiles } from '../loadFiles'
+import { diskWrite } from '../project/diskWrites'
+import { againstStamp, stampOf, type FileStat } from '../run/loadCheck'
+import { patchLoadStamps, putCheck, statFiles } from '../run/loadFiles'
 import { type Getter, type GraphState, type Setter, type StoreSet } from '../store'
-import { fitTemplateSpec, isTemplateSpec } from '../template'
+import { fitTemplateSpec, isTemplateSpec } from '../project/template'
+import { isStep } from '../types'
 import {
-  isStep,
-  type LoadCheck,
-  resolveLoadMode,
   type InteractiveImport,
+  type LoadCheck,
   type LoadConfig,
+  resolveLoadMode,
   unconfiguredLoad
-} from '../types'
+} from '../config/load'
 import { locationOf } from './shared'
 
 export const loadCheckRuns = new Map<string, Promise<LoadCheck | undefined>>()

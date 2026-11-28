@@ -8,8 +8,8 @@ import {
   sampleIndex
 } from '../../engine'
 import { quickOn } from '../../graph/registry'
-import { factsOf, unmetRequirement } from '../../graph/requirements'
-import type { SetCompareConfig } from '../../graph/types'
+import { factsOf, unmetRequirement } from '../../graph/run/requirements'
+import type { SetCompareConfig } from '../../graph/config/enrich'
 import { Built, Empty } from '../kit/views/common'
 import { type ViewContext } from '../kit/views/context'
 import { styles } from '../kit/views/styles'

@@ -1,9 +1,9 @@
-import { useAppView } from '../../ui/useAppView'
-import { dataRootOf } from '../diskNames'
-import { exclusiveDisk } from '../diskWrites'
-import { newFolder, emptyWorkflow, type ProjectFolder } from '../project'
+import { useAppView } from '../../ui/app/useAppView'
+import { dataRootOf } from '../project/diskNames'
+import { exclusiveDisk } from '../project/diskWrites'
+import { newFolder, emptyWorkflow, type ProjectFolder } from '../project/project'
 import { type Getter, type GraphState, type StoreSet } from '../store'
-import type { LoadConfig } from '../types'
+import type { LoadConfig } from '../config/load'
 import { graphOf, syncActiveSlot, loadSlot } from './shared'
 
 export const activeFolder = (s: GraphState): ProjectFolder | undefined =>

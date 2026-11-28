@@ -37,7 +37,7 @@ export function PanelBody(props: PanelBodyProps): ReactNode {
 
   if (SUBSET_TOGGLE_KINDS.has(kind) && selectedOnly && genes.length === 0)
     return <Empty text="No genes selected — pick genes in the gene menu or click them in a plot." />
-  // A plot is viewed from its run (graph/plotRun.ts) — what the canvas shows green. Until it has
+  // A plot is viewed from its run (graph/run/plotRun.ts) — what the canvas shows green. Until it has
   // run, the tile says why it isn't drawn: not run yet, running, or the reason its run failed (a
   // requirement the upstream data doesn't meet, no species …).
   const plotRun =

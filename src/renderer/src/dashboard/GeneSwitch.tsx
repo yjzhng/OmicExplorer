@@ -9,10 +9,10 @@
  *  `children(gene)` for the currently-shown gene. */
 import { useCallback, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 
-import { GeneTitleContext } from '../ui/geneTitle'
-import { PagerTrigger } from '../ui/PagerTrigger'
-import { UI } from '../ui/theme'
-import { useSelection } from '../ui/useSelection'
+import { GeneTitleContext } from '../ui/plot/geneTitle'
+import { PagerTrigger } from '../ui/controls/PagerTrigger'
+import { UI } from '../ui/app/theme'
+import { useSelection } from '../ui/plot/useSelection'
 import { GeneSearchMenu } from './GeneSearchMenu'
 
 export function GeneSwitch({

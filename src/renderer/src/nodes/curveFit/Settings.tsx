@@ -1,5 +1,5 @@
 import { type ReactNode } from 'react'
-import { type CompareConfig } from '../../graph/types'
+import type { CompareConfig } from '../../graph/config/compare'
 import { ComparePanel } from '../compare/Settings'
 import { type StepSettingsProps } from '../settings'
 

@@ -1,5 +1,5 @@
 /** dumbbell: its node contract (see nodes/contract.ts). */
-import type { DumbbellConfig } from '../../graph/types'
+import type { DumbbellConfig } from '../../graph/config/genePlots'
 import { defineSpec } from '../contract'
 
 export const dumbbellSpec = defineSpec<'dumbbell'>({

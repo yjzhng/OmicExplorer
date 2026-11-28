@@ -11,7 +11,7 @@
  */
 import { Component, type ErrorInfo, type ReactNode } from 'react'
 
-import { UI } from '../ui/theme'
+import { UI } from '../ui/app/theme'
 import { diagnosticsText, reportError } from './diagnostics'
 
 interface Props {

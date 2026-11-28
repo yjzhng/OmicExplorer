@@ -1,5 +1,5 @@
 /** enrich: its node contract (see nodes/contract.ts). */
-import type { EnrichConfig } from '../../graph/types'
+import type { EnrichConfig } from '../../graph/config/enrich'
 import {
   enrichSourcesPresent,
   resolveEnrichSource,

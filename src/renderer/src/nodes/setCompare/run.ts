@@ -1,14 +1,15 @@
 /** The set comparison's run: every set its upstream can give, for the tile to pick from and draw.
  *
- *  - Clean data: which genes each sample measured (engine/sets measuredSets, in the worker — a pass
+ *  - Clean data: which genes each sample measured (engine/stats/sets measuredSets, in the worker — a pass
  *    over every row); the tile groups the samples and applies its share rule.
  *  - a Compare / Curve fit: each facet's significant genes up and down (callSets — off the result's
  *    columns, per facet); comparing terms, the enrichment plot's run as well (every method × term
  *    set, per facet). */
 import { callSets, holderWhere } from '../../engine'
 import { engine } from '../../engine/client'
-import { holderTable } from '../../engine/lazyRows'
-import { numericOfResult, type NodeResult, type SetCompareConfig } from '../../graph/types'
+import { holderTable } from '../../engine/columns/lazyRows'
+import { type NodeResult, numericOfResult } from '../../graph/types'
+import type { SetCompareConfig } from '../../graph/config/enrich'
 import { NotReady } from '../../shared/diagnostics'
 import { run as enrichRun } from '../enrich/run'
 import type { PlotRunContext } from '../runContext'

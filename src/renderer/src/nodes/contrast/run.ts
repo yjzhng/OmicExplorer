@@ -1,16 +1,13 @@
 /** Contrast's run: FC1 vs FC2 per feature × context, from one split Compare or two inputs. */
 import {
   type ContrastConfig,
-  type NodeResult,
-  isStep,
-  type CompareConfig,
-  curveDoseUnit,
-  condUnitsFor,
-  resolveContrastSource,
   isContrastConfigured,
-  numericUnion
-} from '../../graph/types'
-import { hiddenGeneIds, maskSignf } from '../../graph/geneMask'
+  resolveContrastSource
+} from '../../graph/config/contrast'
+import { isStep, type NodeResult, numericUnion } from '../../graph/types'
+import type { CompareConfig } from '../../graph/config/compare'
+import { condUnitsFor, curveDoseUnit } from '../../graph/config/units'
+import { hiddenGeneIds, maskSignf } from '../../graph/project/geneMask'
 import {
   type CompareFeatureCtx,
   type ContrastFeature,
@@ -21,7 +18,7 @@ import {
   toContrastSide,
   cutoffDefaults,
   selectSource
-} from '../../graph/contrastPair'
+} from '../../graph/models/contrastPair'
 import { engine } from '../../engine/client'
 import {
   type StandardRow,
@@ -34,7 +31,7 @@ import {
   type ContrastPairInput,
   valueUnitOf
 } from '../../engine'
-import { holderTable, lazyCopy, rowsArg } from '../../engine/lazyRows'
+import { holderTable, lazyCopy, rowsArg } from '../../engine/columns/lazyRows'
 import type { StepRunContext } from '../runContext'
 
 export async function run(ctx: StepRunContext): Promise<void> {

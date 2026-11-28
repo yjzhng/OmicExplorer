@@ -2,7 +2,7 @@
  *  makes of a facet's enrichment (mapTerms). Kept apart from the view, so the settings panel can
  *  read the cut without loading the chart (and Plotly with it). */
 import type { EnrichData, EnrichTerm } from '../../engine'
-import type { EnrichMapConfig } from '../../graph/types'
+import type { EnrichMapConfig } from '../../graph/config/enrich'
 import { cutTerms } from '../enrich/termCut'
 import type { MapTermIn } from './layout'
 

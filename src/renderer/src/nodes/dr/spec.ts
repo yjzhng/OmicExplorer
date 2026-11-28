@@ -1,5 +1,5 @@
 /** dr: its node contract (see nodes/contract.ts). */
-import type { DRConfig } from '../../graph/types'
+import type { DRConfig } from '../../graph/config/dr'
 import { type ConditionKey, condLabel, contextOf } from '../../engine'
 import { defineSpec } from '../contract'
 import { responseAxisVariants } from '../kit/variants'

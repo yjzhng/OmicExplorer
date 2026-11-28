@@ -11,7 +11,7 @@ vi.stubGlobal('window', {
 vi.stubGlobal('localStorage', { getItem: () => null, setItem: noop, removeItem: noop })
 
 const { useGraph } = await import('./store')
-const { childPanelId } = await import('./groups')
+const { childPanelId } = await import('./results/groups')
 import type { GraphNode, PlotGroupConfig } from './types'
 
 describe('duplicating a plot group', () => {

@@ -6,7 +6,7 @@ import {
   resolveEnrichSource
 } from '../../engine'
 import { useGraph } from '../../graph/store'
-import type { EnrichConfig } from '../../graph/types'
+import type { EnrichConfig } from '../../graph/config/enrich'
 import { Field, NumberInput, QuickToggle, Select } from '../kit/settings/controls'
 import {
   CategoricalSelect,
@@ -15,7 +15,7 @@ import {
   PlotSections
 } from '../kit/settings/plotSections'
 import { styles } from '../kit/settings/styles'
-import { OnOffSwitch } from '../../ui/ToggleSwitch'
+import { OnOffSwitch } from '../../ui/controls/ToggleSwitch'
 import { type PlotSettingsProps } from '../settings'
 import { SIGNIFICANT_FDR } from './termCut'
 

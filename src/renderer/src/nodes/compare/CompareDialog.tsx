@@ -25,10 +25,10 @@ import {
   type StandardRow,
   type ThresholdConfig
 } from '../../engine'
-import { StatusNote } from '../../ui/StatusNote'
-import { Formula } from '../../ui/Formula'
-import { OnOffSwitch, ToggleSwitch } from '../../ui/ToggleSwitch'
-import { UI } from '../../ui/theme'
+import { StatusNote } from '../../ui/controls/StatusNote'
+import { Formula } from '../../ui/controls/Formula'
+import { OnOffSwitch, ToggleSwitch } from '../../ui/controls/ToggleSwitch'
+import { UI } from '../../ui/app/theme'
 import {
   anovaSelectors,
   compareModel,
@@ -42,7 +42,7 @@ import {
   valuesOf,
   type CompareState,
   type CtxMode
-} from '../../graph/compareModel'
+} from '../../graph/models/compareModel'
 import {
   CondRow,
   NodeTable,
@@ -52,11 +52,15 @@ import {
   SidesBox,
   Tag,
   ValChip
-} from '../../graph/condRows'
-import { useCondUnits } from '../../graph/useUpstreamFacts'
-import { PreviewTable } from '../../graph/selectorParts'
+} from '../../graph/dialogs/condRows'
+import { useCondUnits } from '../../graph/run/useUpstreamFacts'
+import { PreviewTable } from '../../graph/dialogs/selectorParts'
 import { useGraph } from '../../graph/store'
-import { anovaFactorsOf, thresholdForAnalysis, type CompareConfig } from '../../graph/types'
+import {
+  anovaFactorsOf,
+  type CompareConfig,
+  thresholdForAnalysis
+} from '../../graph/config/compare'
 
 type Analysis = 'compare' | 'anova'
 

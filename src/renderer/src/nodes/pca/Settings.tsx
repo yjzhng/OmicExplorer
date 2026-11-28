@@ -1,19 +1,13 @@
 import { type CSSProperties, type ReactNode, useMemo } from 'react'
 import { CLUSTER_COLOR } from '../../engine'
 import { useGraph } from '../../graph/store'
-import {
-  clusterByCluster,
-  clusterColoring,
-  clusterColorWrite,
-  type ClusterConfig,
-  clusterLook,
-  clusterStyle,
-  numericOfResult
-} from '../../graph/types'
-import { AUTO } from '../../ui/ColorPicker'
-import { OpacitySlider } from '../../ui/OpacitySlider'
-import { DEFAULT_OUTLINE } from '../../ui/pointStyle'
-import { UI } from '../../ui/theme'
+import { clusterByCluster, clusterColoring, clusterColorWrite } from '../../graph/config/coloring'
+import { type ClusterConfig, clusterLook, clusterStyle } from '../../graph/config/cluster'
+import { numericOfResult } from '../../graph/types'
+import { AUTO } from '../../ui/color/ColorPicker'
+import { OpacitySlider } from '../../ui/controls/OpacitySlider'
+import { DEFAULT_OUTLINE } from '../../ui/plot/pointStyle'
+import { UI } from '../../ui/app/theme'
 import {
   ColorChip,
   Field,

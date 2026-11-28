@@ -12,13 +12,20 @@ import {
   type IntersectionOrder,
   vennLayout
 } from '../../engine'
-import { tooltip } from '../../ui/condTooltip'
-import { fitText, measureText } from '../../ui/legendChips'
-import { PlotlyChart } from '../../ui/PlotlyChart'
-import { useSelection } from '../../ui/useSelection'
-import { FADE, useScrollEdges } from '../../ui/scrollEdges'
-import { PALETTES, type Palette, PLOT_TEXT, plotBase, plotFontCss, withAlpha } from '../../ui/theme'
-import { useUiTheme } from '../../ui/useUiTheme'
+import { tooltip } from '../../ui/plot/condTooltip'
+import { fitText, measureText } from '../../ui/plot/legendChips'
+import { PlotlyChart } from '../../ui/plot/PlotlyChart'
+import { useSelection } from '../../ui/plot/useSelection'
+import { FADE, useScrollEdges } from '../../ui/table/scrollEdges'
+import {
+  PALETTES,
+  type Palette,
+  PLOT_TEXT,
+  plotBase,
+  plotFontCss,
+  withAlpha
+} from '../../ui/app/theme'
+import { useUiTheme } from '../../ui/app/useUiTheme'
 
 /** The figure's inset, px. */
 const PAD = 10
@@ -559,7 +566,7 @@ export function UpSetView({
   )
 }
 
-/** An area-proportional Venn of two or three sets (engine/sets vennLayout): each circle's area its
+/** An area-proportional Venn of two or three sets (engine/stats/sets vennLayout): each circle's area its
  *  set's size, each pair's overlap the members they share. Each region carries its own count (the
  *  members in exactly its sets); hovering it lights it, a click selects its genes. A region the
  *  circles can't draw is listed under them. */

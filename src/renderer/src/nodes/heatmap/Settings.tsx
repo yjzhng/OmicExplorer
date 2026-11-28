@@ -9,15 +9,14 @@ import {
   heatmapCondBar,
   type HeatmapCondDistance,
   type HeatmapConfig,
-  type HeatmapLinkage,
-  isComparisonKind,
-  isStep,
-  primaryColorLevels
-} from '../../graph/types'
-import { useUpstreamFacts } from '../../graph/useUpstreamFacts'
-import { toPaletteRef } from '../../ui/palettes'
-import { OnOffSwitch } from '../../ui/ToggleSwitch'
-import { useRolePalette } from '../../ui/useAppSettings'
+  type HeatmapLinkage
+} from '../../graph/config/heatmap'
+import { isComparisonKind, isStep } from '../../graph/types'
+import { primaryColorLevels } from '../../graph/config/coloring'
+import { useUpstreamFacts } from '../../graph/run/useUpstreamFacts'
+import { toPaletteRef } from '../../ui/color/palettes'
+import { OnOffSwitch } from '../../ui/controls/ToggleSwitch'
+import { useRolePalette } from '../../ui/app/useAppSettings'
 import {
   CapRow,
   Field,

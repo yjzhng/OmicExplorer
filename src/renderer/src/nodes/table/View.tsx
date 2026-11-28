@@ -1,14 +1,10 @@
 import type { ReactNode } from 'react'
 import { presentStd, tableScaleOf } from '../../engine'
-import {
-  type CompareConfig,
-  type TableConfig,
-  TABLE_GENE_MAX,
-  curveDoseUnit,
-  effectLabelsOf,
-  plotResultKey
-} from '../../graph/types'
-import { toPaletteRef } from '../../ui/palettes'
+import { type CompareConfig, effectLabelsOf } from '../../graph/config/compare'
+import { TABLE_GENE_MAX, type TableConfig } from '../../graph/config/genePlots'
+import { curveDoseUnit } from '../../graph/config/units'
+import { plotResultKey } from '../../graph/types'
+import { toPaletteRef } from '../../ui/color/palettes'
 import { Empty } from '../kit/views/common'
 import { type ViewContext, cmpOfKind } from '../kit/views/context'
 import { contrastTableData } from '../kit/views/tableData'

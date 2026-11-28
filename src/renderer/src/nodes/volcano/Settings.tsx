@@ -1,16 +1,12 @@
 import { type ReactNode } from 'react'
 import { stepTitle } from '../../graph/registry'
-import {
-  isComparisonKind,
-  isStep,
-  normalizeCompareConfig,
-  type CompareConfig,
-  type VolcanoConfig
-} from '../../graph/types'
+import { isComparisonKind, isStep } from '../../graph/types'
+import { type CompareConfig, normalizeCompareConfig } from '../../graph/config/compare'
+import type { VolcanoConfig } from '../../graph/config/pointPlots'
 import { CompareStatisticSection } from '../kit/settings/compareSections'
 import { CapRow, Field } from '../kit/settings/controls'
-import { UI } from '../../ui/theme'
-import { OnOffSwitch } from '../../ui/ToggleSwitch'
+import { UI } from '../../ui/app/theme'
+import { OnOffSwitch } from '../../ui/controls/ToggleSwitch'
 import {
   legendShown,
   useEffectColors,

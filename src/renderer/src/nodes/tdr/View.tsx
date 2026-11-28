@@ -6,16 +6,16 @@ import { condLabel, ctxNum, idsWhere, stdLookupOf } from '../../engine'
 import { quickOn } from '../../graph/registry'
 import {
   CURVE_OF_SLICE,
-  SLICE_OF_CURVE,
-  type TdrConfig,
-  axisTitle,
   responseDim,
   responseLook,
   responseShow,
   responseShowWhy,
+  SLICE_OF_CURVE,
+  type TdrConfig,
   tdrPair
-} from '../../graph/types'
-import { plotCached } from '../../ui/plotCache'
+} from '../../graph/config/response'
+import { axisTitle } from '../../graph/config/units'
+import { plotCached } from '../../ui/plot/plotCache'
 import { Empty } from '../kit/views/common'
 import { type ViewContext } from '../kit/views/context'
 import { pagerGenes } from '../kit/views/helpers'
@@ -45,7 +45,7 @@ export function tdrView(v: ViewContext): ReactNode {
   const dim = responseDim(cfg)
   const show = responseShow(cfg)
   const look = responseLook(cfg)
-  // kept by the result and the pair (ui/plotCache): a scan of every row, and the same set render to
+  // kept by the result and the pair (ui/plot/plotCache): a scan of every row, and the same set render to
   // render
   const present = plotCached('tdrPresent', [upstream.cmp, ax, ay], () =>
     idsWhere(upstream.cmp, (c) => ctxNum(c, ax) != null && ctxNum(c, ay) != null)

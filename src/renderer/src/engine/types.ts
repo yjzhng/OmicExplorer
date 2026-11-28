@@ -1,6 +1,6 @@
-import type { LogTransform, ScaleEvidence, ValueHistogram, ValueScale } from './scale'
-import type { ImputeOptions, ImputeSummary } from './impute'
-import type { NormalizeOptions, NormalizeSummary } from './normalize'
+import type { LogTransform, ScaleEvidence, ValueHistogram, ValueScale } from './data/scale'
+import type { ImputeOptions, ImputeSummary } from './data/impute'
+import type { NormalizeOptions, NormalizeSummary } from './data/normalize'
 /** Shared types for the analysis engine. */
 
 /** The four built-in condition axes. `cell`/`cmpd` are categorical, `dose`/`time` numeric. */
@@ -11,7 +11,7 @@ export type PresetConditionKey = 'cell' | 'cmpd' | 'dose' | 'time'
  *  strings either way (a numeric one read through numValue).
  *
  *  The sigil is `@`, not `:`, because a result row's `cmp_cond` joins the compared condition keys
- *  with `:` and `comparisonDims` splits them back apart on it (see plotData.ts); a `:` in the key
+ *  with `:` and `comparisonDims` splits them back apart on it (see plot/facet.ts); a `:` in the key
  *  itself would be torn in half there. The slug after the sigil is both the samplesheet column
  *  name and the display label. */
 export type CustomConditionKey = `@${string}`
@@ -146,7 +146,7 @@ export interface StandardizeInput {
   /** Subset steps between Load data and Clean data: only the samples every filter keeps are read
    *  (conditions, replicates, samples left out — subset.ts SampleFilter), so the clean-up below
    *  sees just those. Unset = every sample. */
-  subsets?: import('./subset').SampleFilter[]
+  subsets?: import('./data/subset').SampleFilter[]
   /** samplesheet columns to read as custom conditions. The interactive import passes what the
    *  user defined; when omitted (a hand-written samplesheet) they're auto-detected — see
    *  `detectCustomConditions` in ingest.ts. */
@@ -162,12 +162,12 @@ export interface StandardizeInput {
   minSamplePctBy?: ConditionKey[]
   /** clean-up as its parts (cleanup.ts) — in place of `minSamplePct` / `minSamplePctBy`, the
    *  older shorthand (a % overall, or a % kept in at least one group) */
-  cleanupRule?: import('./cleanup').CleanupRule
+  cleanupRule?: import('./data/cleanup').CleanupRule
   /** median-normalise the samples after clean-up, before imputation (see normalize.ts);
    *  undefined = leave them as they arrived */
   normalize?: NormalizeOptions
   /** remove batch effects after normalisation, before imputation (see batch.ts); undefined = none */
-  batch?: import('./batch').BatchSpec
+  batch?: import('./data/batch').BatchSpec
   /** fill missing values after clean-up (see impute.ts); undefined = leave them missing */
   impute?: ImputeOptions
   /** pathway name → KEGG category (global; from the interactive import). Passed straight through to
@@ -177,7 +177,7 @@ export interface StandardizeInput {
    *  detected input scale (log₁₀ for linear input, none for logged) */
   logTransform?: LogTransform
   /** how the logged values are shown (see scale.ts LogDisplay); unset = the unit's default */
-  logDisplay?: import('./scale').LogDisplay
+  logDisplay?: import('./data/scale').LogDisplay
 }
 
 /** One sample as the samplesheet gave it: its conditions and replicate. */
@@ -220,7 +220,7 @@ export interface StandardizeResult {
     minSamplePct: number
     by?: ConditionKey[]
     /** the rule applied (absent = none) */
-    rule?: import('./cleanup').CleanupRule
+    rule?: import('./data/cleanup').CleanupRule
     /** remove 'group': the values removed from the groups their gene fell short in */
     removedValues?: number
   }
@@ -233,7 +233,7 @@ export interface StandardizeResult {
    *  Compare below blocks on them. A Merge doesn't pass them on: its datasets are new batches. */
   batches?: Record<string, string>
   /** batch correction summary when this step corrected (absent = it didn't) */
-  batchCorrection?: import('./batch').BatchSummary
+  batchCorrection?: import('./data/batch').BatchSummary
   /** A Merge's: which of its inputs each sample came from (sampleLabel → the input's name) — what
    *  a Clean data below offers to fill its batches from. */
   sources?: Record<string, string>
@@ -241,7 +241,7 @@ export interface StandardizeResult {
    *  always linear (see scale.ts). Absent on results from before scales existed = linear. */
   scale?: ValueScale
   /** how logged values are shown (see scale.ts LogDisplay); absent = the default for the unit */
-  logDisplay?: import('./scale').LogDisplay
+  logDisplay?: import('./data/scale').LogDisplay
   /** the scale the input arrived on, as detected (its rows were converted from it to linear) */
   inputScale?: ValueScale
   /** what that detection saw, for the message beside it */
@@ -283,28 +283,28 @@ export interface CompareInput {
   numericConditions: readonly CustomConditionKey[]
   method?: 'ttest'
   transform?: boolean
-  threshold?: import('./stats').ThresholdConfig
+  threshold?: import('./stats/stats').ThresholdConfig
   /** curve fit only: the numeric condition the curve runs over (dose). It is the fit's x-axis, so
    *  neither a facet nor matched — each numerator group pools every level of it into one curve. */
   curveAxis?: ConditionKey
   /** curve fit: the axis's scale as the Curve fit confirmed it (log / linear). Absent = the one its
    *  levels' spacing shows (detectScale), else the axis's preset. Both methods follow it. */
-  axisScale?: import('./axisModel').AxisScale
+  axisScale?: import('./curves/axisModel').AxisScale
   /** curve fit: what the baseline is to the curve, as the Curve fit set it — 'reference' (a control
    *  off the curve, the vehicle) or 'matched' (the curve's own first point: t₀, the lowest
    *  temperature). Absent = the axis's preset (dose reference, time matched, any other reference).
    *  Both methods follow it. */
-  axisBaseline?: import('./axisModel').AxisBaseline
+  axisBaseline?: import('./curves/axisModel').AxisBaseline
   /** curve fit: each axis's scale / baseline as set, per condition — every axis a surface runs over
    *  (a one-axis curve: `axisScale` / `axisBaseline` win). Absent: detected / the preset. */
-  axisScales?: Partial<Record<ConditionKey, import('./axisModel').AxisScale>>
-  axisBaselines?: Partial<Record<ConditionKey, import('./axisModel').AxisBaseline>>
+  axisScales?: Partial<Record<ConditionKey, import('./curves/axisModel').AxisScale>>
+  axisBaselines?: Partial<Record<ConditionKey, import('./curves/axisModel').AxisBaseline>>
   /** curve fit: each axis's models — detector, descriptor, a surface's coupling (AxisFit). Absent:
    *  the method's. */
-  axisFits?: Partial<Record<ConditionKey, import('./axisModel').AxisFit>>
+  axisFits?: Partial<Record<ConditionKey, import('./curves/axisModel').AxisFit>>
   /** curve fit: the whole axis model, overriding `axisScale`, `axisBaseline` and the preset
    *  (axisModel.ts) — for tests; the app sets `axisScale` / `axisBaseline` only */
-  axisModel?: import('./axisModel').AxisModel
+  axisModel?: import('./curves/axisModel').AxisModel
   /** curve fit, every model and axis: CurveCurator's interpolation (`interpolation = true`) — every
    *  4PL fit also sees points midway between the measured levels (a surface: one per grid cell),
    *  read off straight lines between the measured values; SSEs stay on the real points. 4PL: the
@@ -326,7 +326,7 @@ export interface VehNormInput {
   method?: 'ttest'
   /** ttest only: log2-transform before testing (omicViz default true) */
   transform?: boolean
-  threshold?: import('./stats').ThresholdConfig
+  threshold?: import('./stats/stats').ThresholdConfig
 }
 
 /** A curve's final model: the fitted 4-parameter logistic, or M0 — flat, the mean ratio — when
@@ -394,7 +394,7 @@ export interface CompareResultRow {
   model?: CurveModel
   /** curve fit only: the fitted dose–response curve behind the row (log2FC is its curve fold
    *  change, pP its recalibrated F-test). x is log₁₀ of the curve axis, in its own units. */
-  curve?: Omit<import('./curveFit').CurveFit, 'log2FC' | 'pVal'> & {
+  curve?: Omit<import('./curves/curveFit').CurveFit, 'log2FC' | 'pVal'> & {
     axis: ConditionKey
     /** the baseline in words (baselineText): "DMSO · dose 0", "dose 0 · time 60" */
     baseline?: string
@@ -438,7 +438,7 @@ export interface SurfaceAxisMap {
   scale?: 'linear'
   step?: number
   timeOffset?: number
-  baseline: import('./axisModel').AxisBaseline
+  baseline: import('./curves/axisModel').AxisBaseline
   base: number
   /** a log axis's place for its base level at 0 when that level is a cell (a surface against one
    *  position: dose 0 at a higher temperature) — see AxisMap.zeroX */
@@ -457,7 +457,7 @@ export interface ResponseFit {
   /** a 4PL surface's CurveCurator test, for its relevance score and target–decoy FDR (as a 4PL
    *  curve's `curve`): its F on CurveCurator's scale and n (see scoreJoint4pl), its decoy q and
    *  settled α */
-  cc?: import('./curveFit').CcTest
+  cc?: import('./curves/curveFit').CcTest
   /** the moderated F-test of spline vs flat: statistic and its two df */
   F: number
   df1: number
@@ -494,11 +494,11 @@ export interface ResponseFit {
   /** a surface tested for response changes: the response axis, the axis compared across, and how
    *  the slices differ from the base slice — the largest consistent offset (drift) and departure
    *  beyond it (shape), log₂; the offset's share of the difference and what it mostly is */
-  shift?: import('./splineFit').SliceShift & { kind: 'drift' | 'shape' | 'both' }
+  shift?: import('./curves/splineCurve').SliceShift & { kind: 'drift' | 'shape' | 'both' }
   /** the description, for curves with q within the describe cutoff: a one-axis curve's 4PL, or a
    *  surface's (per time slice, or joint) */
-  desc?: import('./splineFit').CurveDescription
-  surface?: import('./splineFit').SurfaceDescription
+  desc?: import('./curves/splineDescribe').CurveDescription
+  surface?: import('./curves/splineDescribe').SurfaceDescription
   /** the description's peak at the tested levels (cells), signed, log₂ — the fold change under the
    *  descriptor model (modelView.ts descPeakOf); absent without a description, or on results fitted
    *  before it was kept */
@@ -511,12 +511,12 @@ export interface VehNormResult {
   comparisons: string[]
   /** the threshold the rows' calls were made with (see CompareTableResult; absent on results
    *  saved before it existed) */
-  threshold?: import('./stats').ThresholdConfig
+  threshold?: import('./stats/stats').ThresholdConfig
   /** curve fit only: decoy curves per comparison group, and the calls' estimated FDR (see
    *  CompareTableResult) */
-  decoys?: Record<string, import('./curveFit').DecoyCurve[]>
+  decoys?: Record<string, import('./curves/curveFit').DecoyCurve[]>
   curveFdr?: number
   ccAlpha?: Record<string, number>
   /** two-way ANOVA: the model behind the rows (see CompareTableResult) */
-  anova?: import('./anova').AnovaResult
+  anova?: import('./compare/anova').AnovaResult
 }

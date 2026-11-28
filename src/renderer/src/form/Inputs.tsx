@@ -5,10 +5,10 @@
 import type { CSSProperties, ReactNode } from 'react'
 
 import { canConnect, maxInputsFor, plotLabel, wiredKindOf } from '../graph/registry'
-import { eligibleInputs } from '../graph/sequence'
+import { eligibleInputs } from '../graph/canvas/sequence'
 import { useGraph } from '../graph/store'
 import { isStep, type StepNode } from '../graph/types'
-import { UI } from '../ui/theme'
+import { UI } from '../ui/app/theme'
 import { Select } from '../nodes/kit/settings/controls'
 
 export /** A step's upstream wiring, stated rather than implied — the reason a form can represent a DAG.

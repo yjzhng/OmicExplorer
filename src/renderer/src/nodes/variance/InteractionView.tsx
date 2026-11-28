@@ -1,14 +1,14 @@
 import { useMemo } from 'react'
 
 import type { InteractionGene, ValueScale } from '../../engine'
-import type { DRLook } from '../../graph/types'
-import { AUTO } from '../../ui/ColorPicker'
-import { tooltip } from '../../ui/condTooltip'
-import { errorTraces } from '../../ui/errorTraces'
-import { PlotlyChart } from '../../ui/PlotlyChart'
-import { fmtQuantity, plainTicks, rangeOf } from '../../ui/quantityAxis'
-import { axisBase, CATEGORICAL, PALETTES, plotBase, withAlpha } from '../../ui/theme'
-import { useUiTheme } from '../../ui/useUiTheme'
+import type { DRLook } from '../../graph/config/dr'
+import { AUTO } from '../../ui/color/ColorPicker'
+import { tooltip } from '../../ui/plot/condTooltip'
+import { errorTraces } from '../../ui/plot/errorTraces'
+import { PlotlyChart } from '../../ui/plot/PlotlyChart'
+import { fmtQuantity, plainTicks, rangeOf } from '../../ui/plot/quantityAxis'
+import { axisBase, CATEGORICAL, PALETTES, plotBase, withAlpha } from '../../ui/app/theme'
+import { useUiTheme } from '../../ui/app/useUiTheme'
 
 /**
  * An ANOVA's interaction plot, one gene: its cell means — the model's fit, in abundance —
@@ -33,7 +33,7 @@ export function InteractionView({
   plainScale
 }: {
   gene?: InteractionGene
-  /** the abundance shown plain on a log axis (ui/quantityAxis): the logged scale it's on */
+  /** the abundance shown plain on a log axis (ui/plot/quantityAxis): the logged scale it's on */
   plainScale?: ValueScale
   xName: string
   xLevels: string[]

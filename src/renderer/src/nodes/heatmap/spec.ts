@@ -1,5 +1,5 @@
 /** heatmap: its node contract (see nodes/contract.ts). */
-import type { HeatmapConfig } from '../../graph/types'
+import type { HeatmapConfig } from '../../graph/config/heatmap'
 import { defineSpec } from '../contract'
 import { fcHeatmapRunKey } from './runKey'
 

@@ -10,21 +10,21 @@ import {
   shiftReference,
   someNested
 } from '../../engine'
-import { firstRow, rowCount } from '../../engine/lazyRows'
+import { firstRow, rowCount } from '../../engine/columns/lazyRows'
 import { quickOn } from '../../graph/registry'
 import {
-  type ResponseConfig,
   CURVE_OF_SLICE,
-  SLICE_OF_CURVE,
-  axisTitle,
-  modelViewOf,
+  type ResponseConfig,
   responseDim,
   responseLook,
   responseShow,
   responseShowWhy,
   responseSlice,
-  responseSliceable
-} from '../../graph/types'
+  responseSliceable,
+  SLICE_OF_CURVE
+} from '../../graph/config/response'
+import { axisTitle } from '../../graph/config/units'
+import { modelViewOf } from '../../graph/config/compare'
 import { Empty } from '../kit/views/common'
 import { type ViewContext } from '../kit/views/context'
 import { pagerGenes } from '../kit/views/helpers'

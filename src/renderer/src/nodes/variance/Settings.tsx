@@ -1,5 +1,5 @@
 import { type ReactNode } from 'react'
-import type { VarianceConfig } from '../../graph/types'
+import type { VarianceConfig } from '../../graph/config/anovaPlots'
 import { Field, NumberInput, QuickToggle, Select } from '../kit/settings/controls'
 import { type PlotPanelProps, PlotSections } from '../kit/settings/plotSections'
 import { styles } from '../kit/settings/styles'

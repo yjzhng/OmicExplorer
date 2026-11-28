@@ -2,15 +2,15 @@ import type { ReactNode } from 'react'
 import { FacetedPlot } from '../../dashboard/FacetedPlot'
 import { SwitchBar } from '../../dashboard/SwitchBar'
 import { quickOn } from '../../graph/registry'
-import { factsOf, unmetRequirement } from '../../graph/requirements'
-import type { StringConfig } from '../../graph/types'
+import { factsOf, unmetRequirement } from '../../graph/run/requirements'
+import type { StringConfig } from '../../graph/config/enrich'
 import {
   STRING_LEVEL_ORDER,
   type StringLevel,
   autoStringLevel,
   stringCapOptions,
   stringLevelScore
-} from '../../ui/stringModel'
+} from '../../ui/plot/stringModel'
 import { resultStringTaxon } from '../kit/requirements'
 import { Empty } from '../kit/views/common'
 import { type ViewContext } from '../kit/views/context'
@@ -98,7 +98,7 @@ export function stringView(v: ViewContext): ReactNode {
           rows={rows}
           displayMap={upstream.displayMap}
           annotationMap={ann}
-          // From the plot's run: this facet's network for every setting (graph/plotRun.ts).
+          // From the plot's run: this facet's network for every setting (graph/run/plotRun.ts).
           all={plotRun?.kind === 'string' ? plotRun.facets[facetKey] : undefined}
           level={confidence}
           maxGenes={maxGenes}

@@ -29,9 +29,10 @@ import {
   type ThresholdConfig,
   type StandardRow
 } from '../../engine'
-import { DOCKED_CARD, DOCKED_WRAP, useDialogDock } from '../../graph/dialogDock'
+import { DOCKED_CARD, DOCKED_WRAP, useDialogDock } from '../../graph/dialogs/dialogDock'
 import { useGraph } from '../../graph/store'
-import { thresholdForAnalysis, thresholdForDetection, type ContrastConfig } from '../../graph/types'
+import { thresholdForAnalysis, thresholdForDetection } from '../../graph/config/compare'
+import type { ContrastConfig } from '../../graph/config/contrast'
 import {
   CURVE_MODEL_OPTIONS,
   SURFACE_FIT_OPTIONS,
@@ -39,19 +40,19 @@ import {
   curveAxisOptions,
   type CurveModel,
   type SurfaceFit
-} from '../../graph/curveSettings'
-import { cssVars, PALETTES, UI } from '../../ui/theme'
-import { OnOffSwitch, ToggleSwitch } from '../../ui/ToggleSwitch'
-import { Formula } from '../../ui/Formula'
-import { DOSE_TIME_4PL } from '../../ui/formulaModel'
-import { StatusNote } from '../../ui/StatusNote'
-import type { ChipItem } from '../../graph/ChipSet'
-import { SideRows, type RowRole, type SideRow } from '../../graph/SideRows'
-import { picksOf, readSides, type Picks, type SideKey } from '../../graph/sides'
-import { PreviewTable, selectorStyles } from '../../graph/selectorParts'
-import { pairSides, selectorRowsOf, toContrastSide } from '../../graph/contrastPair'
+} from '../../graph/models/curveSettings'
+import { cssVars, PALETTES, UI } from '../../ui/app/theme'
+import { OnOffSwitch, ToggleSwitch } from '../../ui/controls/ToggleSwitch'
+import { Formula } from '../../ui/controls/Formula'
+import { DOSE_TIME_4PL } from '../../ui/controls/formulaModel'
+import { StatusNote } from '../../ui/controls/StatusNote'
+import type { ChipItem } from '../../graph/dialogs/ChipSet'
+import { SideRows, type RowRole, type SideRow } from '../../graph/dialogs/SideRows'
+import { picksOf, readSides, type Picks, type SideKey } from '../../graph/dialogs/sides'
+import { PreviewTable, selectorStyles } from '../../graph/dialogs/selectorParts'
+import { pairSides, selectorRowsOf, toContrastSide } from '../../graph/models/contrastPair'
 import { DatasetPick, PairContrastBody, type PairInput } from './PairContrastDialog'
-import { useUiTheme } from '../../ui/useUiTheme'
+import { useUiTheme } from '../../ui/app/useUiTheme'
 
 /** The two steps that share this window: Compare (t-test / two-way) and Contrast (divergence). */
 export type SelectVariant = 'compare' | 'contrast'

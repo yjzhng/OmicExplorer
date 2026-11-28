@@ -1,5 +1,5 @@
 /** interaction: its node contract (see nodes/contract.ts). */
-import type { InteractionConfig } from '../../graph/types'
+import type { InteractionConfig } from '../../graph/config/anovaPlots'
 import { defineSpec } from '../contract'
 import { needsAnova } from '../kit/requirements'
 

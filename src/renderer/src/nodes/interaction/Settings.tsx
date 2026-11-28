@@ -8,14 +8,14 @@ import {
 } from '../../engine'
 import { useGraph } from '../../graph/store'
 import {
+  type InteractionConfig,
   interactionDim,
   interactionDimWhy,
+  type InteractionShape,
   interactionShow,
-  interactionShowWhy,
-  type InteractionConfig,
-  type InteractionShape
-} from '../../graph/types'
-import { ToggleSwitch } from '../../ui/ToggleSwitch'
+  interactionShowWhy
+} from '../../graph/config/anovaPlots'
+import { ToggleSwitch } from '../../ui/controls/ToggleSwitch'
 import { Field, QuickToggle, Select } from '../kit/settings/controls'
 import { DRStyleSection, type PlotPanelProps, PlotSections } from '../kit/settings/plotSections'
 import { type PlotSettingsProps } from '../settings'

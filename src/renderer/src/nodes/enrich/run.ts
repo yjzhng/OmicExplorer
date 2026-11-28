@@ -1,7 +1,8 @@
 /** Enrichment's run: every method × term source the genes carry, per facet, every tested term
  *  (engine/enrichmentAll, in the worker). */
 import type { PlotRunContext } from '../runContext'
-import type { EnrichConfig, NodeResult } from '../../graph/types'
+import type { EnrichConfig } from '../../graph/config/enrich'
+import type { NodeResult } from '../../graph/types'
 import {
   enrichSourcesPresent,
   resolveEnrichSource,
@@ -9,9 +10,9 @@ import {
   type EnrichSource
 } from '../../engine'
 import { engine } from '../../engine/client'
-import { holderTable } from '../../engine/lazyRows'
-import { withoutColumns } from '../../engine/wire'
-import { unmetRequirement, factsOf } from '../../graph/requirements'
+import { holderTable } from '../../engine/columns/lazyRows'
+import { withoutColumns } from '../../engine/columns/wire'
+import { unmetRequirement, factsOf } from '../../graph/run/requirements'
 import { NotReady } from '../../shared/diagnostics'
 
 export async function run(ctx: PlotRunContext): Promise<NodeResult> {

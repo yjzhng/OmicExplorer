@@ -8,7 +8,7 @@
  *  parent re-render. `std` comes already on the scale Clean data's log-transform setting picks
  *  (presentStd), so it's drawn as given. */
 import { useEffect, useState } from 'react'
-import type { PaletteRef } from '../../ui/palettes'
+import type { PaletteRef } from '../../ui/color/palettes'
 
 import {
   quantityLabel,
@@ -23,8 +23,8 @@ import {
   type ValueScale
 } from '../../engine'
 import { engineUi } from '../../engine/client'
-import { groupsAt } from '../../engine/heatmapGroups'
-import { Spinner } from '../../ui/Spinner'
+import { groupsAt } from '../../engine/plot/heatmapGroups'
+import { Spinner } from '../../ui/controls/Spinner'
 import { HeatmapView } from './HeatmapView'
 
 /** Built heatmaps by result and options key, app-wide: a remount (Results opened again, a tab,
@@ -49,7 +49,7 @@ export function HeatmapTile({
   plainScale,
   runGroups
 }: {
-  /** its values shown plain on a log colour scale (ui/quantityAxis): `scale`, when they are */
+  /** its values shown plain on a log colour scale (ui/plot/quantityAxis): `scale`, when they are */
   plainScale?: ValueScale
   /** on its presented scale (see presentStd) */
   std: StandardizeResult

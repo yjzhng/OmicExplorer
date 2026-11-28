@@ -7,20 +7,19 @@ import {
   isNumericCond,
   orderConds
 } from '../../../engine'
-import {
-  type AxisStyle,
-  type DRConfig,
-  type EffectColors,
-  type GroupStyle,
-  type HighlightStyle,
-  type LineStyle,
-  type PlotAxes,
-  type PlotEffectColors,
-  type PointStyle,
-  drLook,
-  type LegendConfig
-} from '../../../graph/types'
-import { AUTO, CLEAR } from '../../../ui/ColorPicker'
+import type {
+  AxisStyle,
+  EffectColors,
+  GroupStyle,
+  HighlightStyle,
+  LegendConfig,
+  LineStyle,
+  PlotAxes,
+  PlotEffectColors,
+  PointStyle
+} from '../../../graph/config/plotStyle'
+import { type DRConfig, drLook } from '../../../graph/config/dr'
+import { AUTO, CLEAR } from '../../../ui/color/ColorPicker'
 import {
   type CategoricalId,
   type PaletteRole,
@@ -28,21 +27,21 @@ import {
   type PaletteRef,
   toCategoricalId,
   toPaletteRef
-} from '../../../ui/palettes'
-import { CategoricalLabel, PaletteSelect } from '../../../ui/PaletteSelect'
-import { type AxisDefaults, AXIS_LINE_WIDTH } from '../../../ui/plotAxes'
+} from '../../../ui/color/palettes'
+import { CategoricalLabel, PaletteSelect } from '../../../ui/color/PaletteSelect'
+import { type AxisDefaults, AXIS_LINE_WIDTH } from '../../../ui/plot/plotAxes'
 import {
   type PointPlotKind,
   type ResolvedGroup,
   defaultGroups,
   resolveGroup
-} from '../../../ui/pointStyle'
-import { guideLook, PALETTES, PLOT_TEXT, UI } from '../../../ui/theme'
-import { OpacitySlider } from '../../../ui/OpacitySlider'
-import { OnOffSwitch } from '../../../ui/ToggleSwitch'
-import { useAppSettings, useRolePalette } from '../../../ui/useAppSettings'
-import { useUiTheme } from '../../../ui/useUiTheme'
-import { ValueMultiSelect } from '../../../ui/ValueMultiSelect'
+} from '../../../ui/plot/pointStyle'
+import { guideLook, PALETTES, PLOT_TEXT, UI } from '../../../ui/app/theme'
+import { OpacitySlider } from '../../../ui/controls/OpacitySlider'
+import { OnOffSwitch } from '../../../ui/controls/ToggleSwitch'
+import { useAppSettings, useRolePalette } from '../../../ui/app/useAppSettings'
+import { useUiTheme } from '../../../ui/app/useUiTheme'
+import { ValueMultiSelect } from '../../../ui/controls/ValueMultiSelect'
 import {
   ColorChip,
   EffectLabelInput,

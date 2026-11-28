@@ -9,16 +9,16 @@ import {
   type NumericConds,
   type ValueScale
 } from '../../engine'
-import { ROLE_DEFAULTS, paletteScale, type PaletteRef } from '../../ui/palettes'
-import { condTooltip, geneLine, valueLine } from '../../ui/condTooltip'
-import { PlotlyChart } from '../../ui/PlotlyChart'
-import { fmtQuantity, plainTicks, rangeOf } from '../../ui/quantityAxis'
-import { truncatedTicks } from '../../ui/plotAxes'
-import { bindHeatmapFocus, GENE_TICK_PX, LINK_DELAY } from '../../ui/heatmapFocus'
-import { sampleKey } from '../../ui/sampleLink'
-import { axisBase, PALETTES, PLOT_TEXT, plotBase, withAlpha } from '../../ui/theme'
-import { useRolePalette } from '../../ui/useAppSettings'
-import { useUiTheme } from '../../ui/useUiTheme'
+import { ROLE_DEFAULTS, paletteScale, type PaletteRef } from '../../ui/color/palettes'
+import { condTooltip, geneLine, valueLine } from '../../ui/plot/condTooltip'
+import { PlotlyChart } from '../../ui/plot/PlotlyChart'
+import { fmtQuantity, plainTicks, rangeOf } from '../../ui/plot/quantityAxis'
+import { truncatedTicks } from '../../ui/plot/plotAxes'
+import { bindHeatmapFocus, GENE_TICK_PX, LINK_DELAY } from '../../ui/plot/heatmapFocus'
+import { sampleKey } from '../../ui/plot/sampleLink'
+import { axisBase, PALETTES, PLOT_TEXT, plotBase, withAlpha } from '../../ui/app/theme'
+import { useRolePalette } from '../../ui/app/useAppSettings'
+import { useUiTheme } from '../../ui/app/useUiTheme'
 import { levelPalette, type LevelPalettes, trackColours } from './trackColours'
 
 /** Pixel gap between adjacent condition tracks (along the condition axis). */
@@ -204,7 +204,7 @@ export function HeatmapView({
   plainScale
 }: {
   heatmap: HeatmapData
-  /** the values shown plain on a log colour scale (ui/quantityAxis): the logged scale `z` is on */
+  /** the values shown plain on a log colour scale (ui/plot/quantityAxis): the logged scale `z` is on */
   plainScale?: ValueScale
   /** the dataset's numeric conditions (numericOf its Clean data): their tracks are ordered */
   numeric: NumericConds

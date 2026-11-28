@@ -1,5 +1,5 @@
 /** load: its node contract (see nodes/contract.ts). */
-import type { LoadConfig } from '../../graph/types'
+import type { LoadConfig } from '../../graph/config/load'
 import { defineSpec } from '../contract'
 
 export const loadSpec = defineSpec<'load'>({

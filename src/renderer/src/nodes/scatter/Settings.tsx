@@ -1,13 +1,9 @@
 import { type ReactNode } from 'react'
 import { stepTitle } from '../../graph/registry'
-import {
-  isComparisonKind,
-  isStep,
-  normalizeCompareConfig,
-  type CompareConfig,
-  type ContrastConfig,
-  type ScatterConfig
-} from '../../graph/types'
+import { isComparisonKind, isStep } from '../../graph/types'
+import { type CompareConfig, normalizeCompareConfig } from '../../graph/config/compare'
+import type { ContrastConfig } from '../../graph/config/contrast'
+import type { ScatterConfig } from '../../graph/config/pointPlots'
 import { CompareStatisticSection } from '../kit/settings/compareSections'
 import { ContrastStatPanel } from '../kit/settings/contrastSections'
 import { CapRow } from '../kit/settings/controls'

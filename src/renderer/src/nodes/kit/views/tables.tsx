@@ -1,5 +1,5 @@
 import { type ReactNode, useEffect, useMemo, useState } from 'react'
-import { plotCached } from '../../../ui/plotCache'
+import { plotCached } from '../../../ui/plot/plotCache'
 import { SwitchBar, SwitchBarToggle } from '../../../dashboard/SwitchBar'
 import { showTable } from '../../../dashboard/tableOnShow'
 import {
@@ -14,10 +14,11 @@ import {
   numericOf,
   rowView
 } from '../../../engine'
-import { type CompareConfig, type CondUnits, type EffectLabels } from '../../../graph/types'
-import { DataTableView } from '../../../ui/DataTableView'
-import { type PaletteRef } from '../../../ui/palettes'
-import { useRolePalette } from '../../../ui/useAppSettings'
+import type { CompareConfig, EffectLabels } from '../../../graph/config/compare'
+import type { CondUnits } from '../../../graph/config/units'
+import { DataTableView } from '../../../ui/table/DataTableView'
+import { type PaletteRef } from '../../../ui/color/palettes'
+import { useRolePalette } from '../../../ui/app/useAppSettings'
 import { type StdView } from './common'
 import { NO_DOSE } from './context'
 import { contrastValueName, makeValueHeat, valueLabel } from './helpers'
@@ -82,7 +83,7 @@ export function StdTable({
   // Abundance cells on the value palette (default viridis, as the Clean data heatmap).
   const dataPalette = useRolePalette('data')
   const palette = colour?.palette ?? dataPalette
-  // Only the view on show is built, and kept app-wide by the result (ui/plotCache): the matrix is a
+  // Only the view on show is built, and kept app-wide by the result (ui/plot/plotCache): the matrix is a
   // full pivot, the long view's colours a scan of every value — switching back takes the one built.
   const long =
     view === 'long'

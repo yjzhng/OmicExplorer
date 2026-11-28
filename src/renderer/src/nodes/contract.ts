@@ -32,14 +32,8 @@
  * `requirement`, checked against the upstream's facts (`UpstreamFacts`).
  */
 import type { ConditionKey } from '../engine'
-import type {
-  CompareConfig,
-  NodeCategory,
-  NodeConfig,
-  NodeConfigMap,
-  NodeKind,
-  NodeResult
-} from '../graph/types'
+import type { CompareConfig } from '../graph/config/compare'
+import type { NodeCategory, NodeConfig, NodeConfigMap, NodeKind, NodeResult } from '../graph/types'
 
 /** The kinds of data that flow along an edge (see the table above). */
 export type DataContract = 'import' | 'quantity' | 'comparison' | 'curves' | 'contrast'
@@ -113,7 +107,7 @@ export interface PlotFacts {
   axes?: boolean
   /** it draws threshold / reference guide lines (the cutoffs): shown / style / width set in the
    *  Axes and lines section like its other lines, kept in its point style (`style.guideShow`,
-   *  `guideStyle`, `guideWidth`; read through ui/theme guideLook) */
+   *  `guideStyle`, `guideWidth`; read through ui/app/theme guideLook) */
   guides?: boolean
   /** its run computes something of its own (enrichment's tests, STRING's network, the cluster's
    *  embedding); every other plot draws live from its upstream, its run only marking it ready */
@@ -138,7 +132,7 @@ export interface NodeSpec<K extends NodeKind = NodeKind> {
   /** the data it hands downstream; null for a plot (a sink) */
   output: DataContract | null
   /** whether the op has a Run action: a step computes its data; a plot computes what it needs to
-   *  be viewed (graph/plotRun.ts) — green on the canvas then means ready to view */
+   *  be viewed (graph/run/plotRun.ts) — green on the canvas then means ready to view */
   hasRun: boolean
   /** a runnable op's config change: whether it makes the result stale (it must run again). Unset =
    *  every change does (the steps). Plots never do unless they say so (defineSpec) — their view
@@ -146,14 +140,14 @@ export interface NodeSpec<K extends NodeKind = NodeKind> {
   staleOn?: (next: NodeConfig, prev: NodeConfig, result: NodeResult | undefined) => boolean
   defaultConfig: () => NodeConfigMap[K]
   /** what the upstream DATA must carry for the tile to mean anything, beyond its contract: null
-   *  when met, else the reason (see graph/requirements.ts) */
+   *  when met, else the reason (see graph/run/requirements.ts) */
   requirement?(u: UpstreamFacts, config: unknown): string | null
   /** a plot's facts (plots only) */
   plot?: PlotFacts
 }
 
 /** Declare a kind's spec. A plot's settings never make its result stale unless it says so (a
- *  plot's run covers every setting its tile offers — see graph/plotRun.ts). */
+ *  plot's run covers every setting its tile offers — see graph/run/plotRun.ts). */
 export function defineSpec<K extends NodeKind>(spec: NodeSpec<K>): NodeSpec<K> {
   if (spec.category === 'plotting' && !spec.staleOn) spec.staleOn = () => false
   return spec

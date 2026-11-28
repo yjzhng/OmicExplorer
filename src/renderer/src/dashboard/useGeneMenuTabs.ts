@@ -23,7 +23,7 @@ import { useShallow } from 'zustand/react/shallow'
 
 import { useGraph } from '../graph/store'
 import { isDataResult, type NodeResult } from '../graph/types'
-import type { GeneCategory, GeneGroupTab } from '../ui/GeneSelectMenu'
+import type { GeneCategory, GeneGroupTab } from '../ui/genes/GeneSelectMenu'
 
 /** Essentiality classes, in menu order. */
 const ESS_CLASSES = ['Essential', 'Non-essential', 'NA'] as const

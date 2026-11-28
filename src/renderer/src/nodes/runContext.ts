@@ -38,7 +38,7 @@ export interface StepRunContext {
 export type StepRun = (ctx: StepRunContext) => Promise<void>
 
 /** What a plot's own run (nodes/<kind>/run.ts — the plots that compute something: the cluster's
- *  embedding, enrichment, STRING) is handed by graph/plotRun.ts. It returns the plot's run result,
+ *  embedding, enrichment, STRING) is handed by graph/run/plotRun.ts. It returns the plot's run result,
  *  or throws with the reason it can't be viewed. */
 export interface PlotRunContext {
   kind: NodeKind
@@ -52,6 +52,6 @@ export interface PlotRunContext {
 }
 export interface PlotRun {
   run: (ctx: PlotRunContext) => Promise<NodeResult>
-  /** run only once the plot's requirement holds (graph/plotRun.ts checks it first) */
+  /** run only once the plot's requirement holds (graph/run/plotRun.ts checks it first) */
   afterRequirement?: boolean
 }

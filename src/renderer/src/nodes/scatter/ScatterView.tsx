@@ -8,16 +8,12 @@ import {
   type ScatterPoint,
   type ValueScale
 } from '../../engine'
-import {
-  DEFAULT_EFFECT_LABELS,
-  type EffectColors,
-  type EffectLabels,
-  type PointStyle
-} from '../../graph/types'
+import { DEFAULT_EFFECT_LABELS, type EffectLabels } from '../../graph/config/compare'
+import type { EffectColors, PointStyle } from '../../graph/config/plotStyle'
 import { useGraph } from '../../graph/store'
-import { tooltip } from '../../ui/condTooltip'
-import { plainRows, plainTicks } from '../../ui/quantityAxis'
-import { PlotlyChart, type GuideDrag } from '../../ui/PlotlyChart'
+import { tooltip } from '../../ui/plot/condTooltip'
+import { plainRows, plainTicks } from '../../ui/plot/quantityAxis'
+import { PlotlyChart, type GuideDrag } from '../../ui/plot/PlotlyChart'
 import {
   labelColorOf,
   legendOn,
@@ -25,7 +21,7 @@ import {
   resolveGroups,
   resolveHighlight,
   type ResolvedGroup
-} from '../../ui/pointStyle'
+} from '../../ui/plot/pointStyle'
 import {
   axisBase,
   CATEGORICAL,
@@ -36,9 +32,9 @@ import {
   PALETTES,
   PLOT_TEXT,
   plotBase
-} from '../../ui/theme'
-import { useSelectedGeneSets } from '../../ui/useSelection'
-import { useUiTheme } from '../../ui/useUiTheme'
+} from '../../ui/app/theme'
+import { useSelectedGeneSets } from '../../ui/plot/useSelection'
+import { useUiTheme } from '../../ui/app/useUiTheme'
 
 type Eff = 'up' | 'down' | 'none'
 const twoDecimals = (v: number): string => String(Math.round(v * 100) / 100)
@@ -64,7 +60,7 @@ export function ScatterView({
   plainScale
 }: {
   scatter: ScatterData
-  /** both abundance axes shown as plain values on a log axis (ui/quantityAxis): the logged scale
+  /** both abundance axes shown as plain values on a log axis (ui/plot/quantityAxis): the logged scale
    *  their positions are on */
   plainScale?: ValueScale
   title?: string

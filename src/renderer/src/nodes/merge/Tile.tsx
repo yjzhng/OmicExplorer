@@ -2,7 +2,7 @@
 import type { ReactNode } from 'react'
 
 import type { TileContext } from '../tiles'
-import { rowCount } from '../../engine/lazyRows'
+import { rowCount } from '../../engine/columns/lazyRows'
 import { condLabel } from '../../engine/types'
 import { muted, stat } from '../kit/tile'
 

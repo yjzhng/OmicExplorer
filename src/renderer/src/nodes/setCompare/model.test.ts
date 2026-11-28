@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { numericConds, type StandardRow } from '../../engine'
-import { measuredSets } from '../../engine/sets'
+import { measuredSets } from '../../engine/stats/sets'
 import type { GeneSet, NodeResult } from '../../graph/types'
 import { setsOf } from './model'
 

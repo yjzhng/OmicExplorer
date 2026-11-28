@@ -5,10 +5,10 @@
  */
 import { describe, expect, it } from 'vitest'
 
-import { paletteAt, paletteEffectColors } from '../ui/palettes'
-import { resolveGroups } from '../ui/pointStyle'
-import { EFFECT_COLOR } from '../ui/theme'
-import { plotEffectColors } from './types'
+import { paletteAt, paletteEffectColors } from '../ui/color/palettes'
+import { resolveGroups } from '../ui/plot/pointStyle'
+import { EFFECT_COLOR } from '../ui/app/theme'
+import { plotEffectColors } from './config/plotStyle'
 
 describe('effect colours', () => {
   it('a plot with nothing set takes the default colours', () => {

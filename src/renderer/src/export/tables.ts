@@ -29,16 +29,10 @@ import {
   sampleQc,
   type RowView
 } from '../engine'
-import { deriveGroups } from '../graph/groups'
-import {
-  condUnitsFor,
-  curveDoseUnit,
-  isStep,
-  type CompareConfig,
-  type GraphNode,
-  type NodeResult,
-  type StepNode
-} from '../graph/types'
+import { deriveGroups } from '../graph/results/groups'
+import { condUnitsFor, curveDoseUnit } from '../graph/config/units'
+import { type GraphNode, isStep, type NodeResult, type StepNode } from '../graph/types'
+import type { CompareConfig } from '../graph/config/compare'
 
 /** A cell is a raw string/number, or null for a blank. */
 export type Cell = string | number | null

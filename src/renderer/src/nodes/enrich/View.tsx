@@ -13,8 +13,9 @@ import {
   termModules
 } from '../../engine'
 import { quickOn } from '../../graph/registry'
-import { factsOf, unmetRequirement } from '../../graph/requirements'
-import { type EnrichConfig, normalizeCompareConfig } from '../../graph/types'
+import { factsOf, unmetRequirement } from '../../graph/run/requirements'
+import type { EnrichConfig } from '../../graph/config/enrich'
+import { normalizeCompareConfig } from '../../graph/config/compare'
 import { Built, Empty } from '../kit/views/common'
 import { type ViewContext } from '../kit/views/context'
 import { styles } from '../kit/views/styles'
@@ -43,7 +44,7 @@ function significantOf(e: EnrichData, fdr: number): EnrichData {
   return out
 }
 
-/** With modules on, each term's gene module (engine/enrichModules), over every term computed — so
+/** With modules on, each term's gene module (engine/enrich/enrichModules), over every term computed — so
  *  a module is the same whatever the plot draws of it. */
 function moduleView(all: EnrichData, modules: boolean): ReadonlyMap<string, string> | undefined {
   if (!modules) return undefined

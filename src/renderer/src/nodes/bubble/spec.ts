@@ -1,5 +1,5 @@
 /** bubble: its node contract (see nodes/contract.ts). */
-import type { BubbleConfig } from '../../graph/types'
+import type { BubbleConfig } from '../../graph/config/genePlots'
 import { defineSpec } from '../contract'
 import { seriesIn } from '../kit/requirements'
 

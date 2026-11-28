@@ -1,16 +1,12 @@
 import { type ReactNode, useMemo } from 'react'
 import { useGraph } from '../../graph/store'
-import {
-  barColoring,
-  type BarConfig,
-  conditionColorWrite,
-  numericOfResult,
-  primaryColorLevels
-} from '../../graph/types'
-import { AUTO } from '../../ui/ColorPicker'
-import { OpacitySlider } from '../../ui/OpacitySlider'
-import { UI } from '../../ui/theme'
-import { OnOffSwitch } from '../../ui/ToggleSwitch'
+import { barColoring, conditionColorWrite, primaryColorLevels } from '../../graph/config/coloring'
+import type { BarConfig } from '../../graph/config/genePlots'
+import { numericOfResult } from '../../graph/types'
+import { AUTO } from '../../ui/color/ColorPicker'
+import { OpacitySlider } from '../../ui/controls/OpacitySlider'
+import { UI } from '../../ui/app/theme'
+import { OnOffSwitch } from '../../ui/controls/ToggleSwitch'
 import {
   ColorChip,
   Field,

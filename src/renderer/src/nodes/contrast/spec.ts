@@ -1,5 +1,5 @@
 /** contrast: its node contract (see nodes/contract.ts). */
-import type { ContrastConfig } from '../../graph/types'
+import type { ContrastConfig } from '../../graph/config/contrast'
 import { defineSpec } from '../contract'
 
 export const contrastSpec = defineSpec<'contrast'>({

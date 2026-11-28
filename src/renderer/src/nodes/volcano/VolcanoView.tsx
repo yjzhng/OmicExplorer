@@ -8,16 +8,12 @@ import {
   type VolcanoData,
   type VolcanoPoint
 } from '../../engine'
-import {
-  DEFAULT_EFFECT_LABELS,
-  type EffectColors,
-  type EffectLabels,
-  type PointStyle
-} from '../../graph/types'
+import { DEFAULT_EFFECT_LABELS, type EffectLabels } from '../../graph/config/compare'
+import type { EffectColors, PointStyle } from '../../graph/config/plotStyle'
 import { useGraph } from '../../graph/store'
-import { tooltip } from '../../ui/condTooltip'
-import { PlotlyChart, type GuideDrag } from '../../ui/PlotlyChart'
-import { labelColorOf, legendOn, resolveGroups, resolveHighlight } from '../../ui/pointStyle'
+import { tooltip } from '../../ui/plot/condTooltip'
+import { PlotlyChart, type GuideDrag } from '../../ui/plot/PlotlyChart'
+import { labelColorOf, legendOn, resolveGroups, resolveHighlight } from '../../ui/plot/pointStyle'
 import {
   axisBase,
   EFFECT_COLOR,
@@ -27,9 +23,9 @@ import {
   PALETTES,
   PLOT_TEXT,
   plotBase
-} from '../../ui/theme'
-import { useSelectedGeneSets } from '../../ui/useSelection'
-import { useUiTheme } from '../../ui/useUiTheme'
+} from '../../ui/app/theme'
+import { useSelectedGeneSets } from '../../ui/plot/useSelection'
+import { useUiTheme } from '../../ui/app/useUiTheme'
 
 type Eff = 'up' | 'down' | 'none'
 const ORDER: Eff[] = ['none', 'down', 'up']

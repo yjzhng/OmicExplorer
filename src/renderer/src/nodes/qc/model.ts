@@ -1,4 +1,4 @@
-import { type QcConfig } from '../../graph/types'
+import type { QcConfig } from '../../graph/config/qc'
 
 // Plot types valid per metric: distributions (intensity/CV) → violin/box; a per-sample count
 // (proteins) → bar only.

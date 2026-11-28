@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react'
-import type { PotencyConfig } from '../../graph/types'
-import { OnOffSwitch } from '../../ui/ToggleSwitch'
+import type { PotencyConfig } from '../../graph/config/dr'
+import { OnOffSwitch } from '../../ui/controls/ToggleSwitch'
 import { CapRow, Field, QuickToggle, Select } from '../kit/settings/controls'
 import { legendShown, useEffectColors, useEffectNames } from '../kit/settings/plotHooks'
 import {

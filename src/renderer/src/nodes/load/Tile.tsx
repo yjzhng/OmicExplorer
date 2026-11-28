@@ -2,8 +2,8 @@
 import type { ReactNode } from 'react'
 
 import type { TileContext } from '../tiles'
-import { loadCheckInfo } from '../../graph/loadCheck'
-import { type LoadConfig, resolveLoadMode } from '../../graph/types'
+import { loadCheckInfo } from '../../graph/run/loadCheck'
+import { type LoadConfig, resolveLoadMode } from '../../graph/config/load'
 import { muted } from '../kit/tile'
 
 export function tile(t: TileContext): ReactNode {

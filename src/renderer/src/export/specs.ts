@@ -3,15 +3,15 @@
 import type { Edge } from '@xyflow/react'
 
 import { SUBSET_TOGGLE_KINDS } from '../dashboard/subset'
-import { deriveGroups } from '../graph/groups'
+import { deriveGroups } from '../graph/results/groups'
 import { categoryOf, NODE_SPECS } from '../graph/registry'
 import {
-  isStep,
-  plotResultKey,
   type GraphNode,
+  isStep,
   type NodeResult,
   type PlotChild,
   type PlotGroupConfig,
+  plotResultKey,
   type StepNode
 } from '../graph/types'
 
@@ -66,7 +66,7 @@ export function collectSpecs(
       if (!node || !isStep(node) || categoryOf(node.data.kind) !== 'plotting') continue
       if (node.data.kind === 'plotGroup') {
         for (const c of (node.data.config as PlotGroupConfig).children) {
-          // Only a plot that has run can be drawn (graph/plotRun.ts) — the rest would export as
+          // Only a plot that has run can be drawn (graph/run/plotRun.ts) — the rest would export as
           // a "not run" note.
           if (!results[plotResultKey(node.id, c.id)]) continue
           specs.push({

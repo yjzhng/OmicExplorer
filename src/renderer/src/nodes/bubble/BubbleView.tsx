@@ -7,23 +7,23 @@ import {
   type CompareResultRow,
   type ConditionKey
 } from '../../engine'
-import { topSplitOf } from '../../graph/types'
+import { topSplitOf } from '../../graph/config/plotStyle'
 import type { TopSplit } from '../../engine'
-import { tooltip } from '../../ui/condTooltip'
-import { sizeKeyLevels } from '../../ui/sizeKey'
-import { PlotlyChart } from '../../ui/PlotlyChart'
-import { PlotAxesContext, truncateLabel } from '../../ui/plotAxes'
+import { tooltip } from '../../ui/plot/condTooltip'
+import { sizeKeyLevels } from '../../ui/plot/sizeKey'
+import { PlotlyChart } from '../../ui/plot/PlotlyChart'
+import { PlotAxesContext, truncateLabel } from '../../ui/plot/plotAxes'
 import {
   BUBBLE_SIG_PALETTE,
   ROLE_DEFAULTS,
   paletteAt,
   paletteScale,
   type PaletteRef
-} from '../../ui/palettes'
-import { axisBase, PALETTES, PLOT_TEXT, plotBase } from '../../ui/theme'
-import { useSelection } from '../../ui/useSelection'
-import { useUiTheme } from '../../ui/useUiTheme'
-import { usePlotCached } from '../../ui/plotCache'
+} from '../../ui/color/palettes'
+import { axisBase, PALETTES, PLOT_TEXT, plotBase } from '../../ui/app/theme'
+import { useSelection } from '../../ui/plot/useSelection'
+import { useUiTheme } from '../../ui/app/useUiTheme'
+import { usePlotCached } from '../../ui/plot/plotCache'
 
 /** Bubble grid: genes (x) × dose/time (y). Each bubble's size, colour and outline width show
  *  its log₂FC or its significance (−log₁₀ of the Compare's P or Q) as configured — by default a
@@ -234,7 +234,7 @@ export function BubbleView({
   const legendOff = useContext(PlotAxesContext)?.legend === false
 
   // The part read off every row (each gene's rows and score, top-N picked), kept app-wide
-  // (ui/plotCache): a pin only adds its genes to it (bubbleWith), never scans the rows again.
+  // (ui/plot/plotCache): a pin only adds its genes to it (bubbleWith), never scans the rows again.
   const split = topSplitOf({ topSplit, topUp, topDown })
   const base = usePlotCached(
     'bubble',

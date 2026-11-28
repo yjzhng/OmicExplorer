@@ -1,5 +1,5 @@
 /** variance: its node contract (see nodes/contract.ts). */
-import type { VarianceConfig } from '../../graph/types'
+import type { VarianceConfig } from '../../graph/config/anovaPlots'
 import { defineSpec } from '../contract'
 import { needsAnova } from '../kit/requirements'
 

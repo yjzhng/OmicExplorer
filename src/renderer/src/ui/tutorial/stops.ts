@@ -9,9 +9,10 @@
  */
 import { categoryOf, hasSourceHandle } from '../../graph/registry'
 import { useGraph } from '../../graph/store'
-import { isStep, type LoadConfig, type NodeKind, type StepNode } from '../../graph/types'
-import { useAppView } from '../useAppView'
-import { useSelection } from '../useSelection'
+import { isStep, type NodeKind, type StepNode } from '../../graph/types'
+import type { LoadConfig } from '../../graph/config/load'
+import { useAppView } from '../app/useAppView'
+import { useSelection } from '../plot/useSelection'
 import { DEMO, DEMO_PROJECT_NAME, EXAMPLE_COMPARE, TOUR_LOAD_CONFIG } from './demo'
 
 export interface TourStop {

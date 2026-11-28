@@ -2,7 +2,7 @@
  *  so its Download writes exactly that (the same columns, headed the same, in the same order),
  *  rather than a separate export of the result that can drift from it. A tile's table registers it
  *  while on show (tableOnShow below); the download reads it back by the tile's key. */
-import type { Column, TableSource } from '../ui/DataTableView'
+import type { Column, TableSource } from '../ui/table/DataTableView'
 
 export interface ShownTable {
   columns: Column[]

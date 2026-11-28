@@ -18,13 +18,9 @@ import {
   type SetDef,
   termGroups
 } from '../../engine'
-import {
-  type CondUnits,
-  type GeneSet,
-  type NodeResult,
-  type SetCompareConfig,
-  unitOf
-} from '../../graph/types'
+import { type CondUnits, unitOf } from '../../graph/config/units'
+import type { GeneSet, NodeResult } from '../../graph/types'
+import type { SetCompareConfig } from '../../graph/config/enrich'
 
 /** The sets drawn when none are picked: the first this many. */
 export const DEFAULT_SETS = 5

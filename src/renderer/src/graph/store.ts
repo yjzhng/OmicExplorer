@@ -3,17 +3,17 @@ import { type Connection, type Edge, type EdgeChange, type NodeChange } from '@x
 import { create, type StoreApi } from 'zustand'
 
 import type { ContrastStat, ModelView, Progress, ScalePreview, ThresholdConfig } from '../engine'
-import { type MatrixPreset } from '../engine/interactive'
-import { useAppSettings } from '../ui/useAppSettings'
-import { useAppView } from '../ui/useAppView'
-import { compactResult } from './compactResults'
-import { dataFolderName, pathSeg, planRenames } from './diskNames'
-import { EXAMPLE_LOAD_CONFIG } from './example'
-import { type DropSlot } from './frameOrder'
-import { saveLastView } from './lastView'
-import { wrapPlot } from './plotGroups'
-import { type ProjectFolder, type ProjectHeader } from './project'
-import { type RecentProject } from './recents'
+import { type MatrixPreset } from '../engine/data/interactive'
+import { useAppSettings } from '../ui/app/useAppSettings'
+import { useAppView } from '../ui/app/useAppView'
+import { compactResult } from './results/compactResults'
+import { dataFolderName, pathSeg, planRenames } from './project/diskNames'
+import { EXAMPLE_LOAD_CONFIG } from './project/example'
+import { type DropSlot } from './canvas/frameOrder'
+import { saveLastView } from './project/lastView'
+import { wrapPlot } from './results/plotGroups'
+import { type ProjectFolder, type ProjectHeader } from './project/project'
+import { type RecentProject } from './project/recents'
 import { canvasSlice } from './state/canvas'
 import { configSlice } from './state/config'
 import { historySlice } from './state/history'
@@ -30,26 +30,25 @@ import {
   withChildStatuses
 } from './state/shared'
 import { workspaceSlice } from './state/workspace'
-import { type TemplateSections } from './template'
-import { type TileClip } from './tileClipboard'
+import { type TemplateSections } from './project/template'
+import { type TileClip } from './canvas/tileClipboard'
 import {
-  isStep,
-  plotResultKey,
   type CanvasFrame,
-  type CondUnits,
-  type EffectLabels,
   type FavGene,
   type GeneSet,
   type GraphNode,
   type GroupMeta,
-  type InteractiveImport,
-  type LoadCheck,
+  isStep,
   type NodeKind,
   type NodeResult,
   type PanelLayoutItem,
   type PlotGroupConfig,
+  plotResultKey,
   type StepStatus
 } from './types'
+import type { CondUnits } from './config/units'
+import type { EffectLabels } from './config/compare'
+import type { InteractiveImport, LoadCheck } from './config/load'
 
 export interface GraphState {
   nodes: GraphNode[]
@@ -249,7 +248,7 @@ export interface GraphState {
   /** active folder's path, scanned for input files (kept in sync from folders) */
   dataDir: string | null
   /** this app run's scratch folder: an unsaved project's files live under it until the first save
-   *  moves them into the data folder (see graph/diskNames.ts). null until fetched at launch. */
+   *  moves them into the data folder (see graph/project/project/diskNames.ts). null until fetched at launch. */
   scratchRoot: string | null
   /** A processing step's output/ folder (absolute) in the active workflow — where its downloads go.
    *  Pins the folder's name on first use. null without a data folder. */
@@ -313,7 +312,7 @@ export interface GraphState {
   /** returns true if written (false if cancelled at the save-as dialog) */
   saveProject: () => Promise<boolean>
   saveProjectAs: () => Promise<boolean>
-  /** Save a template of the project (see graph/template.ts) keeping `sections`, at a path picked
+  /** Save a template of the project (see graph/project/project/template.ts) keeping `sections`, at a path picked
    *  in the save window; true once written. The project itself is untouched. */
   saveTemplate: (sections: TemplateSections) => Promise<boolean>
   /** Start a new (unsaved) project from a template picked in the open window. */

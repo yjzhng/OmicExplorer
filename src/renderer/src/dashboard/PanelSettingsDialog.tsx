@@ -10,8 +10,8 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { createPortal } from 'react-dom'
 
 import { Field, Section } from '../nodes/kit/settings/controls'
-import { ApplyStageContext, type ApplyStage } from '../graph/applyStage'
-import { PlotConfig } from '../graph/NodeConfigPanel'
+import { ApplyStageContext, type ApplyStage } from '../graph/dialogs/applyStage'
+import { PlotConfig } from '../graph/dialogs/NodeConfigPanel'
 import { plotLabel } from '../graph/registry'
 import { useGraph } from '../graph/store'
 import {
@@ -21,10 +21,10 @@ import {
   type PlotGroupConfig,
   type PlotOrient
 } from '../graph/types'
-import type { AxisDefaults } from '../ui/plotAxes'
-import { cssVars, NOTICE_MS, PALETTES } from '../ui/theme'
-import { ToggleSwitch } from '../ui/ToggleSwitch'
-import { useUiTheme } from '../ui/useUiTheme'
+import type { AxisDefaults } from '../ui/plot/plotAxes'
+import { cssVars, NOTICE_MS, PALETTES } from '../ui/app/theme'
+import { ToggleSwitch } from '../ui/controls/ToggleSwitch'
+import { useUiTheme } from '../ui/app/useUiTheme'
 import { TileDialog, type Anchor } from './TileDialog'
 import { styles } from './tileDialogStyles'
 

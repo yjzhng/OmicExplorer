@@ -10,13 +10,13 @@ import {
 import { quickOn } from '../../graph/registry'
 import {
   type CompareConfig,
-  type PotencyConfig,
-  curveAxisUnit,
   effectLabelsOf,
-  labelCapOn,
   modelViewOf,
   normalizeCompareConfig
-} from '../../graph/types'
+} from '../../graph/config/compare'
+import type { PotencyConfig } from '../../graph/config/dr'
+import { curveAxisUnit } from '../../graph/config/units'
+import { labelCapOn } from '../../graph/config/pointPlots'
 import { DETECTOR_NO_PARAMS, Empty } from '../kit/views/common'
 import { type ViewContext } from '../kit/views/context'
 import { curvePointCounts, facetAlpha } from '../kit/views/helpers'

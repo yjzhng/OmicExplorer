@@ -1,14 +1,14 @@
 import { useMemo } from 'react'
 
 import { CORR_METRIC_LABEL, type CorrData } from '../../engine'
-import { condsOf } from '../../ui/clusterPlan'
-import { condTooltip, valueLine } from '../../ui/condTooltip'
-import { ROLE_DEFAULTS, paletteScale, type PaletteRef } from '../../ui/palettes'
-import { bindCorrFocus } from '../../ui/heatmapFocus'
-import { PlotlyChart } from '../../ui/PlotlyChart'
-import { sampleKey } from '../../ui/sampleLink'
-import { axisBase, PALETTES, PLOT_TEXT, plotBase, withAlpha } from '../../ui/theme'
-import { useUiTheme } from '../../ui/useUiTheme'
+import { condsOf } from '../../ui/plot/clusterPlan'
+import { condTooltip, valueLine } from '../../ui/plot/condTooltip'
+import { ROLE_DEFAULTS, paletteScale, type PaletteRef } from '../../ui/color/palettes'
+import { bindCorrFocus } from '../../ui/plot/heatmapFocus'
+import { PlotlyChart } from '../../ui/plot/PlotlyChart'
+import { sampleKey } from '../../ui/plot/sampleLink'
+import { axisBase, PALETTES, PLOT_TEXT, plotBase, withAlpha } from '../../ui/app/theme'
+import { useUiTheme } from '../../ui/app/useUiTheme'
 
 /** How strongly a hovered matrix veils the cells outside the hovered row and column. */
 const HOVER_VEIL = 0.65

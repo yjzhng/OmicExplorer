@@ -1,5 +1,5 @@
 /** geneBar: its node contract (see nodes/contract.ts). */
-import type { BarConfig } from '../../graph/types'
+import type { BarConfig } from '../../graph/config/genePlots'
 import { defineSpec } from '../contract'
 
 export const geneBarSpec = defineSpec<'geneBar'>({

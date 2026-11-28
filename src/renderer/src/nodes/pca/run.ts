@@ -2,8 +2,9 @@
  *  settings, in the worker — its view settings draw from it without another run. */
 import { analysisScaleOf } from '../../engine'
 import { engine } from '../../engine/client'
-import { holderTable } from '../../engine/lazyRows'
-import { clusterRunOf, type ClusterConfig, type NodeResult } from '../../graph/types'
+import { holderTable } from '../../engine/columns/lazyRows'
+import { type ClusterConfig, clusterRunOf } from '../../graph/config/cluster'
+import type { NodeResult } from '../../graph/types'
 import { CLUSTER_LOADINGS_MAX } from '../kit/runConstants'
 import type { PlotRunContext } from '../runContext'
 import { NotReady } from '../../shared/diagnostics'

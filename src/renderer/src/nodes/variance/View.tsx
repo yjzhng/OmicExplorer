@@ -20,17 +20,16 @@ import {
 } from '../../engine'
 import { quickOn } from '../../graph/registry'
 import {
+  type InteractionConfig,
   interactionDim,
   interactionDimWhy,
+  type InteractionShape,
   interactionShow,
   interactionShowWhy,
-  type InteractionShape,
-  type InteractionConfig,
-  type TdrConfig,
-  type VarianceConfig,
-  drLook,
-  responseLook
-} from '../../graph/types'
+  type VarianceConfig
+} from '../../graph/config/anovaPlots'
+import { responseLook, type TdrConfig } from '../../graph/config/response'
+import { drLook } from '../../graph/config/dr'
 import { Empty } from '../kit/views/common'
 import { type ViewContext } from '../kit/views/context'
 import { pagerGenes } from '../kit/views/helpers'
@@ -39,7 +38,7 @@ import { InteractionHeatmap } from './InteractionHeatmap'
 import { InteractionSurface } from './InteractionSurface'
 import { InteractionView } from './InteractionView'
 import { VarianceView } from './VarianceView'
-import { plotCached } from '../../ui/plotCache'
+import { plotCached } from '../../ui/plot/plotCache'
 
 const NO_SHARES: GeneShares[] = []
 /** factor 2's one level with no factor 2 (the rest averaged) */
@@ -67,7 +66,7 @@ export function varianceView(v: ViewContext): ReactNode {
   const anova = rawUp.cmp.anova
   if (!anova) return <Empty text="Needs an ANOVA — re-run the Compare." />
   const dm = rawUp.displayMap
-  // kept by the ANOVA (ui/plotCache), so the plots below get the same arrays render to render —
+  // kept by the ANOVA (ui/plot/plotCache), so the plots below get the same arrays render to render —
   // a fresh one is a rebuild and a redraw, on every pin
   const terms = plotCached('anovaTerms', [anova], () => anova.terms.map((t) => t.label))
   // The context pick (dose …) chooses the model's slice: one term's rows carry the contexts.
@@ -266,7 +265,7 @@ export function varianceView(v: ViewContext): ReactNode {
                   // the same cell means either way: as lines, or as a grid of tiles
                   // 3-D: log₂ against the control cell, whatever the abundance scale
                   const scale = as3d ? 'log2' : quantityScale
-                  // kept by the gene's fit (ui/plotCache): the same object render to render, so a
+                  // kept by the gene's fit (ui/plot/plotCache): the same object render to render, so a
                   // pin elsewhere doesn't redraw it
                   const ig =
                     slice && g

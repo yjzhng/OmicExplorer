@@ -2,7 +2,7 @@
  *  (NavBar.tsx) and the User guide, which draws the same button. */
 import type { CSSProperties } from 'react'
 
-import { UI } from '../ui/theme'
+import { UI } from '../ui/app/theme'
 import { styles } from './styles'
 
 /** What the Run button does next (see RunButton). */

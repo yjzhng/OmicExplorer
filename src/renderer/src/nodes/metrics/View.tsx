@@ -17,17 +17,13 @@ import {
   rowView,
   someNested
 } from '../../engine'
-import { rowCount } from '../../engine/lazyRows'
-import { type MetricId, METRIC_IDS, METRIC_NAMES } from '../../graph/metricBars'
+import { rowCount } from '../../engine/columns/lazyRows'
+import { type MetricId, METRIC_IDS, METRIC_NAMES } from '../../graph/results/metricBars'
 import { quickOn } from '../../graph/registry'
-import { factsOf, unmetRequirement } from '../../graph/requirements'
-import {
-  type CompareConfig,
-  type MetricsConfig,
-  curveAxisUnit,
-  modelViewOf,
-  normalizeCompareConfig
-} from '../../graph/types'
+import { factsOf, unmetRequirement } from '../../graph/run/requirements'
+import { type CompareConfig, modelViewOf, normalizeCompareConfig } from '../../graph/config/compare'
+import type { MetricsConfig } from '../../graph/config/dr'
+import { curveAxisUnit } from '../../graph/config/units'
 import { DETECTOR_NO_PARAMS, Empty } from '../kit/views/common'
 import { type ViewContext } from '../kit/views/context'
 import { pagerGenes } from '../kit/views/helpers'

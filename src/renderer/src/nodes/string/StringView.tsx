@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { usePlotCached } from '../../ui/plotCache'
+import { usePlotCached } from '../../ui/plot/plotCache'
 import { createPortal } from 'react-dom'
 import Plotly, { type PlotlyGraphDiv } from 'plotly.js-strict-dist-min'
 
@@ -15,18 +15,18 @@ import {
   stringVariant,
   type StringAll,
   type StringLevel
-} from '../../ui/stringModel'
+} from '../../ui/plot/stringModel'
 import { useElementSize } from '../../dashboard/useElementSize'
-import { fitText, flowChips, measureText } from '../../ui/legendChips'
-import { tooltip } from '../../ui/condTooltip'
-import { PlotlyChart, type PlotLabel } from '../../ui/PlotlyChart'
-import { useSelection } from '../../ui/useSelection'
-import { ROLE_DEFAULTS, paletteScale, type PaletteRef } from '../../ui/palettes'
-import { axisBase, CATEGORICAL, PALETTES, PLOT_TEXT, plotBase, UI } from '../../ui/theme'
-import { useUiTheme } from '../../ui/useUiTheme'
-import { VirtualList } from '../../ui/VirtualRows'
-import { AUTO } from '../../ui/ColorPicker'
-import { STRING_OUTLINE, type StringConfig } from '../../graph/types'
+import { fitText, flowChips, measureText } from '../../ui/plot/legendChips'
+import { tooltip } from '../../ui/plot/condTooltip'
+import { PlotlyChart, type PlotLabel } from '../../ui/plot/PlotlyChart'
+import { useSelection } from '../../ui/plot/useSelection'
+import { ROLE_DEFAULTS, paletteScale, type PaletteRef } from '../../ui/color/palettes'
+import { axisBase, CATEGORICAL, PALETTES, PLOT_TEXT, plotBase, UI } from '../../ui/app/theme'
+import { useUiTheme } from '../../ui/app/useUiTheme'
+import { VirtualList } from '../../ui/table/VirtualRows'
+import { AUTO } from '../../ui/color/ColorPicker'
+import { STRING_OUTLINE, type StringConfig } from '../../graph/config/enrich'
 
 /** A cluster's own id — its hull's, as the hover and a click's selection see it (apart from any
  *  gene's id). */
@@ -145,7 +145,7 @@ export function StringView({
   rows: CompareResultRow[]
   displayMap?: Record<string, string>
   annotationMap?: Record<string, Record<string, string>>
-  /** this facet's network for every setting, from the plot's run (graph/plotRun.ts); undefined
+  /** this facet's network for every setting, from the plot's run (graph/run/plotRun.ts); undefined
    *  when the run read none for it */
   all: StringAll | undefined
   /** the confidence level drawn */
@@ -234,7 +234,7 @@ export function StringView({
   // background export of the tile's tables (stringModel.ts), and its force layout. The costly
   // part (Markov clustering, the layout), so it's cached on what it's built from alone: a resize
   // (legendBudget), a theme flip or an outline change never re-runs it.
-  // Kept app-wide (ui/plotCache): the tile shown again takes the network it laid out.
+  // Kept app-wide (ui/plot/plotCache): the tile shown again takes the network it laid out.
   const model = usePlotCached('stringModel', [net, genes, annotationMap, maxGenes], () => {
     if (!net) return null
     const m = buildStringModel(net, genes, annotationMap, maxGenes)
@@ -798,7 +798,7 @@ export function StringView({
         boldLegend(-1)
       }
       // React to the SHARED hover (from any view): highlight the node for the hovered gene.
-      let last = ' '
+      let last = '\u0000'
       const applyFocus = (): void => {
         const { hoverId, hoverMembers, pinnedIds } = useSelection.getState()
         const ids = new Set<string>(pinnedIds)

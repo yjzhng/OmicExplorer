@@ -2,19 +2,19 @@ import type { Progress } from '../../engine'
 import { engine } from '../../engine/client'
 import { STEP_RUNS } from '../../nodes/runs'
 import { reportError } from '../../shared/diagnostics'
-import { viewedResult } from '../modelView'
-import { runPlot } from '../plotRun'
+import { viewedResult } from '../results/modelView'
+import { runPlot } from '../run/plotRun'
 import { axisAvailFor, categoryOf, runsIn } from '../registry'
-import { downstreamOf, runPlan } from '../runOrder'
+import { downstreamOf, runPlan } from '../run/runOrder'
 import { type Getter, type GraphState, type StoreSet } from '../store'
 import {
-  isStep,
-  plotResultKey,
   type GraphNode,
+  isStep,
   type NodeData,
   type NodeResult,
   type PlotChild,
   type PlotGroupConfig,
+  plotResultKey,
   type StepNode,
   type StepStatus
 } from '../types'

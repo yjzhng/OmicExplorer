@@ -1,5 +1,5 @@
 /** curveMad: its node contract (see nodes/contract.ts). */
-import type { CurveMadConfig } from '../../graph/types'
+import type { CurveMadConfig } from '../../graph/config/qc'
 import { defineSpec } from '../contract'
 import { CC_ONLY } from '../kit/requirements'
 

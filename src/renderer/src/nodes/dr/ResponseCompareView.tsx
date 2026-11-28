@@ -8,13 +8,13 @@ import {
   type ContrastResultRow,
   type ValueScale
 } from '../../engine'
-import { drLook, type DRLook } from '../../graph/types'
-import { AUTO } from '../../ui/ColorPicker'
-import { tooltip } from '../../ui/condTooltip'
-import { PlotlyChart } from '../../ui/PlotlyChart'
-import { fmtQuantity, plainTicks, rangeOf } from '../../ui/quantityAxis'
-import { axisBase, CATEGORICAL, PALETTES, PLOT_TEXT, plotBase, withAlpha } from '../../ui/theme'
-import { useUiTheme } from '../../ui/useUiTheme'
+import { drLook, type DRLook } from '../../graph/config/dr'
+import { AUTO } from '../../ui/color/ColorPicker'
+import { tooltip } from '../../ui/plot/condTooltip'
+import { PlotlyChart } from '../../ui/plot/PlotlyChart'
+import { fmtQuantity, plainTicks, rangeOf } from '../../ui/plot/quantityAxis'
+import { axisBase, CATEGORICAL, PALETTES, PLOT_TEXT, plotBase, withAlpha } from '../../ui/app/theme'
+import { useUiTheme } from '../../ui/app/useUiTheme'
 
 const DEFAULT_LOOK = drLook({})
 
@@ -39,7 +39,7 @@ export function ResponseCompareView({
   plainScale
 }: {
   rows: ContrastResultRow[]
-  /** abundance sides shown plain on a log axis (ui/quantityAxis): the logged scale they're on */
+  /** abundance sides shown plain on a log axis (ui/plot/quantityAxis): the logged scale they're on */
   plainScale?: ValueScale
   displayMap: Record<string, string>
   axis: ConditionKey

@@ -3,12 +3,12 @@
  *  in pipeline order, tagged with the analysis it belongs to. */
 import type { Edge } from '@xyflow/react'
 
-import { deriveTabs, expandMembers, parsePanelId, tabTitles } from '../graph/groups'
+import { deriveTabs, expandMembers, parsePanelId, tabTitles } from '../graph/results/groups'
 import { plotLabel, stepTitle } from '../graph/registry'
-import { isStep, type GraphNode, type PlotGroupConfig, type StepNode } from '../graph/types'
+import { type GraphNode, isStep, type PlotGroupConfig, type StepNode } from '../graph/types'
 
 export interface ResultPage {
-  /** panel id — a node id, or a plot-group child id (see graph/groups) */
+  /** panel id — a node id, or a plot-group child id (see graph/results/groups) */
   panelId: string
   /** the results tab (its plot group — see deriveTabs), for its condition selection */
   groupId: string

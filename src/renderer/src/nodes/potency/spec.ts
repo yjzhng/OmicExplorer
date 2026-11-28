@@ -1,5 +1,5 @@
 /** potency: its node contract (see nodes/contract.ts). */
-import type { PotencyConfig } from '../../graph/types'
+import type { PotencyConfig } from '../../graph/config/dr'
 import { defineSpec } from '../contract'
 
 export const potencySpec = defineSpec<'potency'>({

@@ -27,21 +27,21 @@ import type { SampleConds } from '../../engine/types'
 import type { CleanupMode, ProteinList, RefCombine, RefMissing } from '../../engine'
 import { loadAbove, wiredKindOf } from '../../graph/registry'
 import { useGraph } from '../../graph/store'
+import type { LoadConfig } from '../../graph/config/load'
 import {
-  type LoadConfig,
-  type StandardizeConfig,
   cleanupModeOfConfig,
   cleanupOn,
   imputeOn,
-  isStep,
-  refProteinsOf
-} from '../../graph/types'
-import { StatusNote } from '../../ui/StatusNote'
-import { UI } from '../../ui/theme'
-import { OnOffSwitch, ToggleSwitch } from '../../ui/ToggleSwitch'
-import { FitOneLine } from '../../ui/FitOneLine'
+  refProteinsOf,
+  type StandardizeConfig
+} from '../../graph/config/standardize'
+import { isStep } from '../../graph/types'
+import { StatusNote } from '../../ui/controls/StatusNote'
+import { UI } from '../../ui/app/theme'
+import { OnOffSwitch, ToggleSwitch } from '../../ui/controls/ToggleSwitch'
+import { FitOneLine } from '../../ui/controls/FitOneLine'
 import { previewStdProteins, proteinListOf } from './proteinPreview'
-import { ValueMultiSelect } from '../../ui/ValueMultiSelect'
+import { ValueMultiSelect } from '../../ui/controls/ValueMultiSelect'
 import { EffectLabelInput, Field, NumberInput, Section, Select } from '../kit/settings/controls'
 import { CONDS } from '../kit/settings/hooks'
 import { styles } from '../kit/settings/styles'

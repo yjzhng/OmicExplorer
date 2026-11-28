@@ -3,9 +3,9 @@ import type { ReactNode } from 'react'
 
 import type { TileContext } from '../tiles'
 import { VALID_CONDITIONS, condLabel } from '../../engine'
-import { rowCount } from '../../engine/lazyRows'
-import { normalizeCompareConfig, type CompareConfig } from '../../graph/types'
-import { PILL_CAP } from '../../ui/ChoiceSwitch'
+import { rowCount } from '../../engine/columns/lazyRows'
+import { type CompareConfig, normalizeCompareConfig } from '../../graph/config/compare'
+import { PILL_CAP } from '../../ui/controls/ChoiceSwitch'
 import { muted, stat } from '../kit/tile'
 
 export function tile(t: TileContext): ReactNode {

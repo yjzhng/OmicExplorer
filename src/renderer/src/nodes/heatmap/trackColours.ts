@@ -1,8 +1,8 @@
 /** The condition tracks' colours, shared by both heatmaps (Clean data's along its samples, the
  *  fold-change one's along its comparison columns). */
 import { isNumericCond, type ConditionKey, type NumericConds } from '../../engine'
-import { paletteSeries, type PaletteRef } from '../../ui/palettes'
-import { CATEGORICAL } from '../../ui/theme'
+import { paletteSeries, type PaletteRef } from '../../ui/color/palettes'
+import { CATEGORICAL } from '../../ui/app/theme'
 
 /** The numeric conditions' track palettes — their levels in order along a palette role: time's
  *  (Greens by default), dose's (Blues) for dose and any declared numeric condition (app settings →

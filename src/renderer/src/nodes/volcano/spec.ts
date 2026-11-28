@@ -1,5 +1,5 @@
 /** volcano: its node contract (see nodes/contract.ts). */
-import type { VolcanoConfig } from '../../graph/types'
+import type { VolcanoConfig } from '../../graph/config/pointPlots'
 import { defineSpec } from '../contract'
 
 export const volcanoSpec = defineSpec<'volcano'>({

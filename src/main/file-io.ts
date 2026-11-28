@@ -112,7 +112,7 @@ function safeSeg(scope?: string): string | null {
 
 /** Where a workflow's generated files live. A string is the older form: a workflow name, nested
  *  under the data folder. An object names the workflow's folder outright (`base`, absolute — see
- *  the renderer's graph/diskNames.ts), with `legacy` the workflow name whose old
+ *  the renderer's graph/project/project/diskNames.ts), with `legacy` the workflow name whose old
  *  `<data folder>/<name>` subfolder is still read from. */
 type Scope = string | { base: string; legacy?: string } | undefined
 
@@ -269,7 +269,7 @@ export function registerFileIo(): void {
     return { path, content: await readProjectText(path) }
   })
 
-  // A template is a project file without its data (renderer graph/template.ts), read the same way.
+  // A template is a project file without its data (renderer graph/project/project/template.ts), read the same way.
   ipcMain.handle('tpl:open', async (): Promise<{ path: string; content: string } | null> => {
     const res = await dialog.showOpenDialog({
       title: 'New project from template',

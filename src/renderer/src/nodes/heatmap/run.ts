@@ -11,8 +11,10 @@
  *  worker lane fails (the result then carries no clustering). */
 import { buildFcHeatmap, hasTermRows, presentScaleOf, type FcHeatmapData } from '../../engine'
 import { engineUi } from '../../engine/client'
-import { holderTable } from '../../engine/lazyRows'
-import { topSplitOf, type HeatmapConfig, type NodeResult } from '../../graph/types'
+import { holderTable } from '../../engine/columns/lazyRows'
+import { topSplitOf } from '../../graph/config/plotStyle'
+import type { HeatmapConfig } from '../../graph/config/heatmap'
+import type { NodeResult } from '../../graph/types'
 import { cmpOfKind } from '../kit/cmpOfKind'
 import type { PlotRunContext } from '../runContext'
 import { fcHeatmapRunKey, fcHeatmapRunOpts } from './runKey'

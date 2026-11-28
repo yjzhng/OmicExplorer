@@ -2,7 +2,7 @@
  *  PanelTile and the User guide, which draws the same buttons. */
 import type { CSSProperties } from 'react'
 
-import { UI } from '../ui/theme'
+import { UI } from '../ui/app/theme'
 
 export const TILE_BUTTON_STYLE: CSSProperties = {
   display: 'inline-flex',

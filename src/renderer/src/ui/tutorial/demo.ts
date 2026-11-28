@@ -13,17 +13,18 @@
  */
 import type { Edge } from '@xyflow/react'
 
-import type { LoadConfig } from '../../graph/types'
+import type { LoadConfig } from '../../graph/config/load'
 import tourDatamatrix from './data/tour_datamatrix.csv?raw'
 import tourMetadata from './data/tour_metadata.csv?raw'
 import tourSamplesheet from './data/tour_samplesheet.csv?raw'
 import { lastViewports, viewportKey } from '../../app/canvasModel'
-import { newFolder } from '../../graph/project'
+import { newFolder } from '../../graph/project/project'
 import { loadSlot, makeNode, syncActiveSlot } from '../../graph/state/shared'
 import { type GraphState, useGraph } from '../../graph/store'
-import type { CompareConfig, GraphNode } from '../../graph/types'
-import { buildWorkflowDoc } from '../../graph/workflowDoc'
-import { useAppView } from '../useAppView'
+import type { CompareConfig } from '../../graph/config/compare'
+import type { GraphNode } from '../../graph/types'
+import { buildWorkflowDoc } from '../../graph/project/workflowDoc'
+import { useAppView } from '../app/useAppView'
 import { canvasNav } from './canvasNav'
 
 /** The tour's tiles, by id (the stops find them on the canvas by these) — its own ids, never a

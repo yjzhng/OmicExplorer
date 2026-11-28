@@ -9,7 +9,8 @@ import {
   dumbbellOrderLabel
 } from '../../engine'
 import { quickOn } from '../../graph/registry'
-import { type DumbbellConfig, geneCapOn, topCountOf } from '../../graph/types'
+import { type DumbbellConfig, geneCapOn } from '../../graph/config/genePlots'
+import { topCountOf } from '../../graph/config/plotStyle'
 import { Empty } from '../kit/views/common'
 import { type ViewContext } from '../kit/views/context'
 import { styles } from '../kit/views/styles'

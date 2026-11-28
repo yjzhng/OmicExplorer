@@ -1,18 +1,14 @@
 /** STRING's run: every confidence level × gene cap × interactor mode, per facet (two scans of
  *  the organism's links file per facet — see readStringAll). */
 import { facetGroupsOf } from '../../engine'
-import {
-  numericOfResult,
-  type NodeResult,
-  type StringAll,
-  type StringConfig
-} from '../../graph/types'
+import { type NodeResult, numericOfResult, type StringAll } from '../../graph/types'
+import type { StringConfig } from '../../graph/config/enrich'
 import {
   readStringAll,
   stringCapOptions,
   stringQueryGenesAt,
   stringSendLimit
-} from '../../ui/stringModel'
+} from '../../ui/plot/stringModel'
 import { resultStringTaxon } from '../kit/requirements'
 import { NO_LOCAL_DATA } from '../kit/runConstants'
 import type { PlotRunContext } from '../runContext'

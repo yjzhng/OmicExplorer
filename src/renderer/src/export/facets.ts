@@ -6,7 +6,7 @@ import type { Edge } from '@xyflow/react'
 
 import { contextOf, facetCompareRows, facetDims, facetPaired } from '../engine'
 import type { ConditionKey, ContextRow } from '../engine'
-import { numericOfResult, type NodeKind, type NodeResult } from '../graph/types'
+import { type NodeKind, type NodeResult, numericOfResult } from '../graph/types'
 import type { ExportSpec } from './specs'
 
 /** Plot kinds wrapped in FacetedPlot (draw per context tuple); others render once. */

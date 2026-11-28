@@ -20,17 +20,13 @@ import {
   Y_LIMITS_LOG2,
   type CompareResultRow
 } from '../../engine'
-import {
-  DEFAULT_EFFECT_LABELS,
-  type PlotOrient,
-  type EffectColors,
-  type EffectLabels,
-  type PointStyle
-} from '../../graph/types'
+import { DEFAULT_EFFECT_LABELS, type EffectLabels } from '../../graph/config/compare'
+import type { PlotOrient } from '../../graph/types'
+import type { EffectColors, PointStyle } from '../../graph/config/plotStyle'
 import { useGraph } from '../../graph/store'
-import { tooltip } from '../../ui/condTooltip'
-import { PlotlyChart } from '../../ui/PlotlyChart'
-import { labelColorOf, legendOn, resolveGroups, resolveHighlight } from '../../ui/pointStyle'
+import { tooltip } from '../../ui/plot/condTooltip'
+import { PlotlyChart } from '../../ui/plot/PlotlyChart'
+import { labelColorOf, legendOn, resolveGroups, resolveHighlight } from '../../ui/plot/pointStyle'
 import {
   axisBase,
   EFFECT_COLOR,
@@ -40,10 +36,10 @@ import {
   PALETTES,
   PLOT_TEXT,
   plotBase
-} from '../../ui/theme'
-import { useSelectedGeneSets } from '../../ui/useSelection'
-import { useUiTheme } from '../../ui/useUiTheme'
-import { usePlotCached } from '../../ui/plotCache'
+} from '../../ui/app/theme'
+import { useSelectedGeneSets } from '../../ui/plot/useSelection'
+import { useUiTheme } from '../../ui/app/useUiTheme'
+import { usePlotCached } from '../../ui/plot/plotCache'
 
 type Eff = 'up' | 'down' | 'none'
 const ORDER: Eff[] = ['none', 'down', 'up']
@@ -130,7 +126,7 @@ export function PotencyView({
       r.rs?.scale === 'linear' ||
       (r.rs?.axis === 'surface' && r.rs.maps?.[curveAxisOf(r)]?.scale === 'linear')
   )
-  // Kept app-wide by the rows (ui/plotCache): the tab shown again, or the tile remounted, takes
+  // Kept app-wide by the rows (ui/plot/plotCache): the tab shown again, or the tile remounted, takes
   // them rather than placing every curve again.
   const { points, offBound } = usePlotCached(
     'potencyPoints',

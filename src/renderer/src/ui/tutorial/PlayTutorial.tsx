@@ -2,7 +2,7 @@
  *  sections. Closes the guide and starts the tour. */
 import type { CSSProperties, ReactNode } from 'react'
 
-import { UI } from '../theme'
+import { UI } from '../app/theme'
 import { useTutorial } from './useTutorial'
 
 export function PlayTutorial({ onStart }: { onStart: () => void }): ReactNode {

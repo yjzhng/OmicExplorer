@@ -1,5 +1,5 @@
 import type { CSSProperties } from 'react'
-import { UI } from '../../../ui/theme'
+import { UI } from '../../../ui/app/theme'
 
 export const styles: Record<string, CSSProperties> = {
   chart: { height: '100%', minHeight: 0, position: 'relative' },

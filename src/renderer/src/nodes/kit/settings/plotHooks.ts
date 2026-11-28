@@ -1,21 +1,19 @@
 import { useGraph } from '../../../graph/store'
+import type { ClusterConfig } from '../../../graph/config/cluster'
 import {
-  type ClusterConfig,
-  effectLabelsOf,
-  isComparisonKind,
-  isStep,
-  plotEffectColors,
   type CompareConfig,
-  type EffectColors,
-  type EffectLabels
-} from '../../../graph/types'
+  type EffectLabels,
+  effectLabelsOf
+} from '../../../graph/config/compare'
+import { isComparisonKind, isStep } from '../../../graph/types'
+import { type EffectColors, plotEffectColors } from '../../../graph/config/plotStyle'
 import {
   CATEGORICAL_SCHEMES,
   paletteAt,
   toCategoricalId,
   type PaletteRef
-} from '../../../ui/palettes'
-import { useAppSettings, useRolePalette } from '../../../ui/useAppSettings'
+} from '../../../ui/color/palettes'
+import { useAppSettings, useRolePalette } from '../../../ui/app/useAppSettings'
 
 /** Whether a cluster tile draws its embedding scatter with minimal axes (scree and loadings keep
  *  their own, so the setting doesn't reach them). */

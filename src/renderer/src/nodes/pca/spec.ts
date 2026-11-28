@@ -1,5 +1,5 @@
 /** pca: its node contract (see nodes/contract.ts). */
-import { type ClusterConfig, clusterRunMatches } from '../../graph/types'
+import { type ClusterConfig, clusterRunMatches } from '../../graph/config/cluster'
 import { defineSpec } from '../contract'
 
 export const pcaSpec = defineSpec<'pca'>({

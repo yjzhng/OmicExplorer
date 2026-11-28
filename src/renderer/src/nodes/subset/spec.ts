@@ -1,5 +1,5 @@
 /** subset: its node contract (see nodes/contract.ts). */
-import type { SubsetConfig } from '../../graph/types'
+import type { SubsetConfig } from '../../graph/config/load'
 import { defineSpec } from '../contract'
 
 export const subsetSpec = defineSpec<'subset'>({

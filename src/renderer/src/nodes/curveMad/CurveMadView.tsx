@@ -11,7 +11,7 @@
  * show. A violin off zero is high or low on most curves (a normalisation, loading or sample
  * problem); a wide one misses them either way.
  */
-import { usePlotCached } from '../../ui/plotCache'
+import { usePlotCached } from '../../ui/plot/plotCache'
 import { useMemo } from 'react'
 
 import {
@@ -37,19 +37,22 @@ import {
   CURVE_QC_DEFAULT_X,
   CURVE_QC_DEFAULT_Y,
   CURVE_QC_METRIC_LABEL,
-  curveQcAxisOptions,
-  DEFAULT_EFFECT_LABELS,
   type CurveQcAxis,
+  curveQcAxisOptions,
   type CurveQcMetric,
-  type EffectColors,
-  type EffectLabels,
-  type PointStyle,
   type ResidualCheck
-} from '../../graph/types'
-import { condLine, tooltip, valueLine } from '../../ui/condTooltip'
-import { useAxisTitlePickers } from '../../ui/useAxisTitlePickers'
-import { PlotlyChart } from '../../ui/PlotlyChart'
-import { legendOn, resolveGroups, resolveHighlight, type ResolvedGroup } from '../../ui/pointStyle'
+} from '../../graph/config/qc'
+import { DEFAULT_EFFECT_LABELS, type EffectLabels } from '../../graph/config/compare'
+import type { EffectColors, PointStyle } from '../../graph/config/plotStyle'
+import { condLine, tooltip, valueLine } from '../../ui/plot/condTooltip'
+import { useAxisTitlePickers } from '../../ui/plot/useAxisTitlePickers'
+import { PlotlyChart } from '../../ui/plot/PlotlyChart'
+import {
+  legendOn,
+  resolveGroups,
+  resolveHighlight,
+  type ResolvedGroup
+} from '../../ui/plot/pointStyle'
 import {
   axisBase,
   CATEGORICAL,
@@ -59,8 +62,8 @@ import {
   PALETTES,
   PLOT_TEXT,
   plotBase
-} from '../../ui/theme'
-import { useUiTheme } from '../../ui/useUiTheme'
+} from '../../ui/app/theme'
+import { useUiTheme } from '../../ui/app/useUiTheme'
 
 /** The share of each dose's residuals marked as outlier dots: the most extreme by |residual|
  *  (at least one per dose). */
@@ -162,7 +165,7 @@ export function CurveMadView({
   const downColor = effectColors?.down
   const noneColor = effectColors?.none
   // Each curve with its points: kept with the fit, else rebuilt from the Clean data.
-  // (kept app-wide by the rows, ui/plotCache: a remount takes them)
+  // (kept app-wide by the rows, ui/plot/plotCache: a remount takes them)
   const curves = usePlotCached('curveMadCurves', [rows, byGene], () =>
     rows.map((r) => {
       const c = r.curve
@@ -364,7 +367,7 @@ export function CurveMadView({
           hoveron: 'violins'
         }
         // Every residual shapes the violin. Past VIOLIN_CAP at a dose, a violin per dose, each drawn
-        // from its residuals' quantiles with the bandwidth for all of them (engine/distShape) — the
+        // from its residuals' quantiles with the bandwidth for all of them (engine/plot/distShape) — the
         // same shapes, without Plotly smoothing every residual at each draw; one legend entry still.
         if (perDose.every((d) => d.y.length <= VIOLIN_CAP)) traces.push({ ...violin, x, y })
         else

@@ -1,15 +1,15 @@
 /** Compare's (and Curve fit's) run: the comparison table — t-tests / limma / SAM, an ANOVA,
  *  or curve fits — over its (up to two, pooled) Clean data inputs. */
+import type { NodeResult } from '../../graph/types'
 import {
-  type NodeResult,
-  normalizeCompareConfig,
+  anovaFactorsOf,
   type CompareConfig,
   describesAll,
-  anovaFactorsOf
-} from '../../graph/types'
-import { hiddenGeneIds, maskSignf } from '../../graph/geneMask'
+  normalizeCompareConfig
+} from '../../graph/config/compare'
+import { hiddenGeneIds, maskSignf } from '../../graph/project/geneMask'
 import { engine } from '../../engine/client'
-import { rowsArg } from '../../engine/lazyRows'
+import { rowsArg } from '../../engine/columns/lazyRows'
 import {
   combineStandardize,
   analysisScaleOf,

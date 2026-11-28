@@ -1,6 +1,6 @@
 /**
  * Every kind's settings panel, by kind (nodes/<kind>/Settings.tsx). The settings window
- * (graph/NodeConfigPanel.tsx) and a Results tile's settings dialog render a kind's entry: a step's
+ * (graph/dialogs/NodeConfigPanel.tsx) and a Results tile's settings dialog render a kind's entry: a step's
  * panel edits its node by id; a plot's panel edits a config through `update` (a standalone plot, or
  * a subcard inside a group tile). null: nothing of its own to set (a group's settings are its
  * subcards'). A kind added to NodeKind without an entry here fails the type check.

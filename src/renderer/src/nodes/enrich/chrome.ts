@@ -5,9 +5,9 @@
  *  dots, ridges, and the dot style's size key — so the styles can't drift apart (architecture.test
  *  checks EnrichView builds none of this itself). */
 import { moduleParts } from '../../engine'
-import { fitText, flowChips, measureText } from '../../ui/legendChips'
-import { AXIS_LINE_WIDTH } from '../../ui/plotAxes'
-import { axisBase, type Palette, PLOT_TEXT, plotBase, plotFontCss } from '../../ui/theme'
+import { fitText, flowChips, measureText } from '../../ui/plot/legendChips'
+import { AXIS_LINE_WIDTH } from '../../ui/plot/plotAxes'
+import { axisBase, type Palette, PLOT_TEXT, plotBase, plotFontCss } from '../../ui/app/theme'
 
 /** Prefix of a clickable legend chip's annotation name (the rest is its group). */
 export const CHIP = 'oe-cat:'

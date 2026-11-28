@@ -3,9 +3,9 @@
 import { describe, expect, it } from 'vitest'
 
 import { sampleLevels, sheetSamples, standardize, subsetStandardize } from '../engine'
-import { deriveGroups } from './groups'
+import { deriveGroups } from './results/groups'
 import { ALL_OPS, canConnect, loadAbove, runsIn, wiredKindOf } from './registry'
-import { pendingInputs } from './runGate'
+import { pendingInputs } from './run/runGate'
 import type { GraphNode, NodeKind } from './types'
 
 const node = (id: string, kind: NodeKind, config: Record<string, unknown> = {}): GraphNode =>

@@ -5,30 +5,29 @@ import {
   applyNodeChanges,
   type Edge
 } from '@xyflow/react'
-import { diskWrite } from '../diskWrites'
-import { dropOrder, groupedOrder } from '../frameOrder'
-import { editMembers, groupInto, ungroupFrom, withoutTiles } from '../frames'
-import { childPanelId } from '../groups'
-import { isLonePlot, wrapPlot } from '../plotGroups'
+import { diskWrite } from '../project/diskWrites'
+import { dropOrder, groupedOrder } from '../canvas/frameOrder'
+import { editMembers, groupInto, ungroupFrom, withoutTiles } from '../canvas/frames'
+import { childPanelId } from '../results/groups'
+import { isLonePlot, wrapPlot } from '../results/plotGroups'
 import { canConnect, categoryOf, maxInputsFor, wiredKindOf } from '../registry'
 import { type Getter, type GraphState, type StoreSet } from '../store'
-import { tidyLayout } from '../tidy'
-import { copyTiles as clipOf, pasteTiles as pastePlan } from '../tileClipboard'
+import { tidyLayout } from '../canvas/tidy'
+import { copyTiles as clipOf, pasteTiles as pastePlan } from '../canvas/tileClipboard'
 import {
   type CanvasFrame,
   type GraphNode,
-  type LoadConfig,
+  isStep,
   type NodeConfig,
   type NodeKind,
   type PanelLayoutItem,
   type PlaceholderNode,
   type PlotChild,
   type PlotGroupConfig,
-  type StepNode,
-  isStep,
   plotResultKey,
-  resolveLoadMode
+  type StepNode
 } from '../types'
+import { type LoadConfig, resolveLoadMode } from '../config/load'
 import { makeNode, startingConfig, locationOf, resultHistory } from './shared'
 
 /** Keep the node list consistent with the wiring: a step never sits before one of its inputs — and

@@ -1,6 +1,6 @@
 import type { CSSProperties } from 'react'
-import { FORM } from '../../../ui/formStyles'
-import { motion, UI } from '../../../ui/theme'
+import { FORM } from '../../../ui/controls/formStyles'
+import { motion, UI } from '../../../ui/app/theme'
 import { PANEL_WIDTH, PREVIEW_H } from './layout'
 
 export const styles: Record<string, CSSProperties> = {

@@ -1,5 +1,5 @@
 /** corr: its node contract (see nodes/contract.ts). */
-import type { CorrConfig } from '../../graph/types'
+import type { CorrConfig } from '../../graph/config/qc'
 import { defineSpec } from '../contract'
 
 export const corrSpec = defineSpec<'corr'>({

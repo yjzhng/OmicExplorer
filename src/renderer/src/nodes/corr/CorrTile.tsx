@@ -11,7 +11,7 @@ import {
   type StandardizeResult
 } from '../../engine'
 import { CorrMatrixView } from './CorrMatrixView'
-import type { PaletteRef } from '../../ui/palettes'
+import type { PaletteRef } from '../../ui/color/palettes'
 
 export function CorrTile({
   all,

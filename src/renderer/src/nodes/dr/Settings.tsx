@@ -1,6 +1,7 @@
 import { type ReactNode } from 'react'
 import { useGraph } from '../../graph/store'
-import { DR_DETAIL_CAP, type DRConfig, drYScale, isComparisonKind, isStep } from '../../graph/types'
+import { DR_DETAIL_CAP, type DRConfig, drYScale } from '../../graph/config/dr'
+import { isComparisonKind, isStep } from '../../graph/types'
 import { CapRow, Field, QuickToggle, Select } from '../kit/settings/controls'
 import {
   CategoricalSelect,

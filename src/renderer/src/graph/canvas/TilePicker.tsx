@@ -1,0 +1,512 @@
+import { useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
+
+import { UI } from '../../ui/app/theme'
+import { useAppSettings } from '../../ui/app/useAppSettings'
+import { inPlotOrder } from '../results/plotOrder'
+import {
+  accentOf,
+  categoryOf,
+  CATEGORIES,
+  entryKey,
+  NODE_SPECS,
+  outputKindOf,
+  PLOT_SECTIONS,
+  type PlotMenuEntry
+} from '../registry'
+import { entriesFor, gatePlotEntries, UNWIRED, type UpstreamFacts } from '../run/requirements'
+import type { NodeCategory, NodeKind } from '../types'
+
+/** What the picker commits: a kind plus any config override (e.g. dr's axis). */
+export type TilePick = { kind: NodeKind; override?: Record<string, unknown> }
+
+const CATS: NodeCategory[] = ['data', 'processing', 'plotting']
+
+/**
+ * Tile-shaped picker for a new step. Shows the primary category first, then the
+ * exact operation — so a placeholder never dumps a dozen options at once. Mirrors
+ * the real node card so a pending placeholder reads as the tile it will become.
+ */
+export function TilePicker({
+  ops,
+  onPick,
+  header = 'New step',
+  upstream,
+  style,
+  onCancel,
+  ticked,
+  onTickedChange,
+  preview = false,
+  onStage
+}: {
+  ops: NodeKind[]
+  /** Chosen picks. One → a single node; two or more plotting picks → a group tile. Each pick may
+   *  carry a config override (e.g. a dr pick seeds its axis) — see TilePick. */
+  onPick: (picks: TilePick[]) => void
+  header?: string
+  /** What the upstream data carries — hides plots whose requirement it can't meet (see
+   *  requirements.ts). Omitted (no upstream) ⇒ show all. */
+  upstream?: UpstreamFacts
+  style?: CSSProperties
+  /** Shows a Cancel at the header's right end. The form workflow passes it (its picker is inline,
+   *  so there is no outside click to dismiss it); the canvas menu doesn't. */
+  onCancel?: () => void
+  /** the plots it opens with ticked (entry keys) — else the user's default plots for a tile made
+   *  from the upstream's kind (Settings › Plot defaults), if any */
+  ticked?: string[]
+  /** each change to the ticked plots (Settings' preview saves them as it goes) */
+  onTickedChange?: (keys: string[]) => void
+  /** Settings' stand-in for the canvas picker: the same list, its footer saying how many plots a
+   *  new tile comes with instead of adding them */
+  preview?: boolean
+  /** each move between its two lists: the categories (null), or one category's steps */
+  onStage?: (cat: NodeCategory | null) => void
+}) {
+  const avail = upstream ?? UNWIRED
+  // The user's default plots for a tile made from this kind of step (Settings › Plot defaults) —
+  // a Merge's or a Subset's being Clean data's, as that's what they hand on.
+  const defaults = useAppSettings((s) =>
+    upstream?.kind ? s.defaultPlots[outputKindOf(upstream.kind)] : undefined
+  )
+  const plotOrder = useAppSettings((s) =>
+    upstream?.kind ? s.plotOrder[outputKindOf(upstream.kind)] : undefined
+  )
+  // `plotGroup` is never user-pickable — checking several plots in the plotting list
+  // is what creates a group, so it must not appear as an option here.
+  const byCat = CATS.map((cat) => ({
+    cat,
+    ops: ops.filter((o) => o !== 'plotGroup' && categoryOf(o) === cat)
+  })).filter((g) => g.ops.length > 0)
+  // What a category's row counts: its steps — for the plots, the entries the list below offers
+  // (gated by the upstream's data, Response plots fanned out per condition), not the kinds.
+  const countOf = (g: (typeof byCat)[number]): number =>
+    g.cat === 'plotting'
+      ? gatePlotEntries(
+          g.ops.flatMap((k) => entriesFor(k, avail)),
+          avail
+        ).length
+      : g.ops.length
+  // If only one category is offered, drop straight to its operations.
+  const [cat, setCatState] = useState<NodeCategory | null>(byCat.length === 1 ? byCat[0].cat : null)
+  const setCat = (next: NodeCategory | null): void => {
+    setCatState(next)
+    onStage?.(next)
+  }
+  const [hovered, setHovered] = useState<string | null>(null)
+  // Multi-select is offered only in the plotting category (to build a group tile). Keyed by
+  // entryKey (not kind), so each Response plot (Dose response, Time response, …) checks on its own.
+  // Starts with the default plots ticked; a default the data can't support isn't offered, so it's
+  // never ticked on screen nor added (`picked` keeps only what's offered).
+  const [chosen, setChosenState] = useState<Set<string>>(
+    () => new Set(ticked ?? (defaults?.on ? defaults.keys : []))
+  )
+  const setChosen = (next: Set<string>): void => {
+    setChosenState(next)
+    onTickedChange?.([...next])
+  }
+  const toggle = (key: string): void => {
+    const next = new Set(chosen)
+    if (next.has(key)) next.delete(key)
+    else next.add(key)
+    setChosen(next)
+  }
+
+  const row = (
+    key: string,
+    accent: string,
+    label: string,
+    tag: string | number,
+    onClick: () => void,
+    subtitle?: string
+  ) => (
+    <button
+      key={key}
+      onMouseEnter={() => setHovered(key)}
+      onMouseLeave={() => setHovered((h) => (h === key ? null : h))}
+      onClick={(e) => {
+        e.stopPropagation()
+        onClick()
+      }}
+      style={{ ...item, background: hovered === key ? UI.panelAlt : 'transparent' }}
+    >
+      <span style={{ ...dot, background: accent }} />
+      <span style={opLabel}>{label}</span>
+      {subtitle && <span style={opSubtitle}>{subtitle}</span>}
+      <span style={{ ...catName, color: accent }}>{tag}</span>
+    </button>
+  )
+
+  // A checkbox row for a plotting entry — toggles into `chosen` instead of committing, so several
+  // plots can be batched into one group. An entry may be a config variant of a kind (dr's axes).
+  const optRow = (entry: PlotMenuEntry, accent: string): ReactNode => {
+    const ek = entryKey(entry)
+    const checked = chosen.has(ek)
+    const key = `opt-${ek}`
+    return (
+      <button
+        key={key}
+        onMouseEnter={() => setHovered(key)}
+        onMouseLeave={() => setHovered((h) => (h === key ? null : h))}
+        onClick={(e) => {
+          e.stopPropagation()
+          toggle(ek)
+        }}
+        style={{ ...item, background: hovered === key || checked ? UI.panelAlt : 'transparent' }}
+      >
+        <span
+          style={{
+            ...checkbox,
+            borderColor: checked ? accent : UI.border,
+            background: checked ? accent : 'transparent'
+          }}
+        >
+          {checked ? '✓' : ''}
+        </span>
+        <span style={opLabel}>{entry.label}</span>
+      </button>
+    )
+  }
+
+  const current = cat ? byCat.find((g) => g.cat === cat) : null
+  const plotting = current?.cat === 'plotting'
+  const canGoBack = cat != null && byCat.length > 1
+
+  // The visualisation list is grouped into the SAME sections as the plot-selector menu (shared
+  // PLOT_SECTIONS), with any uncategorised op falling into a trailing "Other" section. Each kind is
+  // fanned into its menu entries over the upstream's numeric conditions (dr → one Response plot per
+  // condition, tdr → one per pair) via the shared plotEntriesFor.
+  const entriesOf = (k: NodeKind): PlotMenuEntry[] => entriesFor(k, avail)
+  const plotSections = ((): { label: string; entries: PlotMenuEntry[] }[] => {
+    if (!plotting || !current) return []
+    const present = new Set(current.ops)
+    const used = new Set<NodeKind>()
+    const secs = PLOT_SECTIONS.map((s) => {
+      const kinds = s.kinds.filter((k) => present.has(k))
+      kinds.forEach((k) => used.add(k))
+      return { label: s.label, entries: gatePlotEntries(kinds.flatMap(entriesOf), avail) }
+    }).filter((s) => s.entries.length > 0)
+    const rest = current.ops.filter((k) => !used.has(k))
+    if (rest.length)
+      secs.push({ label: 'Other', entries: gatePlotEntries(rest.flatMap(entriesOf), avail) })
+    return secs.filter((s) => s.entries.length > 0)
+  })()
+  // All present plotting entries in declared order (gated) — to resolve the checked keys on commit.
+  const allEntries =
+    plotting && current ? gatePlotEntries(current.ops.flatMap(entriesOf), avail) : []
+  // Every offered plot is checked: Select all turns into Clear.
+  const allChosen = allEntries.length > 0 && allEntries.every((en) => chosen.has(entryKey(en)))
+  // What Add makes: the ticked plots this upstream offers (a ticked default its data can't support
+  // is left out), in the plot order set for the step (Settings › Plot defaults — the order they're
+  // laid out in on the results page), else the declared one.
+  const picked = inPlotOrder(
+    allEntries.filter((en) => chosen.has(entryKey(en))),
+    plotOrder
+  )
+
+  return (
+    <div className="nodrag" style={{ ...card, ...style }}>
+      <div style={headerRow}>
+        {canGoBack && (
+          <button
+            title="Back to categories"
+            onMouseEnter={() => setHovered('__back')}
+            onMouseLeave={() => setHovered((h) => (h === '__back' ? null : h))}
+            onClick={(e) => {
+              e.stopPropagation()
+              setCat(null)
+            }}
+            style={{ ...backBtn, background: hovered === '__back' ? UI.panelAlt : 'transparent' }}
+          >
+            <span style={backArrow}>‹</span>
+            <span style={backText}>Back</span>
+          </button>
+        )}
+        {/* Not on the plot list: its sections and the Add button say what it is, and the header's
+            room goes to Select all. */}
+        {!plotting && (
+          <span style={catTag}>{current ? CATEGORIES[current.cat].label : header}</span>
+        )}
+        {(plotting || onCancel) && (
+          // The right end of the header: Select all (the plot list), then Cancel (form only).
+          <div style={headerEnd}>
+            {plotting && allEntries.length > 0 && (
+              <button
+                onMouseEnter={() => setHovered('__all')}
+                onMouseLeave={() => setHovered((h) => (h === '__all' ? null : h))}
+                onClick={(e) => {
+                  e.stopPropagation()
+                  setChosen(allChosen ? new Set() : new Set(allEntries.map(entryKey)))
+                }}
+                style={{
+                  ...backBtn,
+                  background: hovered === '__all' ? UI.panelAlt : 'transparent'
+                }}
+              >
+                {allChosen ? 'Clear' : 'Select all'}
+              </button>
+            )}
+            {onCancel && (
+              <button
+                onMouseEnter={() => setHovered('__cancel')}
+                onMouseLeave={() => setHovered((h) => (h === '__cancel' ? null : h))}
+                onClick={(e) => {
+                  e.stopPropagation()
+                  onCancel()
+                }}
+                style={{
+                  ...cancelBtn,
+                  background: hovered === '__cancel' ? 'rgba(225, 87, 89, 0.12)' : 'transparent'
+                }}
+              >
+                Cancel
+              </button>
+            )}
+          </div>
+        )}
+      </div>
+      {/* The option list scrolls within the tile once it's long (the plot list, with its sections),
+          keeping the header and the Add button in view (see CrispScroll). */}
+      <CrispScroll maxHeight={LIST_MAX_H}>
+        <div style={body}>
+          {current
+            ? plotting
+              ? plotSections.map((s) => (
+                  <div key={s.label}>
+                    <div style={sectionHead}>{s.label}</div>
+                    {s.entries.map((e) => optRow(e, accentOf(current.cat)))}
+                  </div>
+                ))
+              : current.ops.map((op) =>
+                  row(
+                    op,
+                    accentOf(current.cat),
+                    NODE_SPECS[op].label,
+                    '',
+                    () => onPick([{ kind: op }]),
+                    NODE_SPECS[op].subtitle
+                  )
+                )
+            : byCat.map((g) =>
+                row(g.cat, accentOf(g.cat), CATEGORIES[g.cat].label, countOf(g), () => {
+                  if (g.ops.length === 1) onPick([{ kind: g.ops[0] }])
+                  else setCat(g.cat)
+                })
+              )}
+        </div>
+      </CrispScroll>
+      {plotting && (
+        <div style={footer}>
+          {preview ? (
+            <div style={previewNote}>
+              {picked.length
+                ? `A new plot tile comes with ${picked.length === 1 ? 'this plot' : `these ${picked.length} plots`} ticked`
+                : 'Tick the plots a new plot tile comes with'}
+            </div>
+          ) : (
+            <button
+              disabled={picked.length === 0}
+              onClick={(e) => {
+                e.stopPropagation()
+                onPick(picked)
+              }}
+              style={{ ...addBtn, opacity: picked.length === 0 ? 0.45 : 1 }}
+            >
+              {picked.length > 1
+                ? `Add ${picked.length} visualisations as a group`
+                : picked.length === 1
+                  ? 'Add visualisation'
+                  : 'Select visualisation…'}
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+const card: CSSProperties = {
+  width: 230,
+  background: UI.panelRaised,
+  // a grey dashed outline all round: a step with no type (so no category colour) yet
+  border: `2px dashed ${UI.border}`,
+  borderRadius: 8,
+  color: UI.text,
+  fontSize: 12,
+  boxShadow: '0 8px 30px rgba(0,0,0,0.45)',
+  overflow: 'hidden'
+}
+const headerRow: CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'space-between',
+  gap: 8,
+  padding: '5px 8px 5px 10px',
+  borderBottom: `1px solid ${UI.border}`
+}
+// The header's right-hand controls. The auto margin pins them to the right and leaves Back and the
+// category tag together on the left.
+const headerEnd: CSSProperties = {
+  marginLeft: 'auto',
+  display: 'flex',
+  alignItems: 'center',
+  gap: 6
+}
+// Red like the other destructive controls (delete, remove).
+const cancelBtn: CSSProperties = {
+  fontSize: 9,
+  fontWeight: 700,
+  textTransform: 'uppercase',
+  letterSpacing: 0.6,
+  color: '#e15759',
+  border: '1px solid #e15759',
+  borderRadius: 5,
+  padding: '2px 8px',
+  cursor: 'pointer',
+  whiteSpace: 'nowrap'
+}
+const catTag: CSSProperties = {
+  fontSize: 9,
+  fontWeight: 700,
+  textTransform: 'uppercase',
+  letterSpacing: 0.6,
+  color: UI.textMuted
+}
+const backBtn: CSSProperties = {
+  ...catTag,
+  display: 'inline-flex',
+  alignItems: 'center',
+  gap: 4,
+  color: UI.text,
+  border: `1px solid ${UI.border}`,
+  borderRadius: 5,
+  padding: '2px 8px',
+  cursor: 'pointer',
+  // Header labels stay on one line however narrow the picker.
+  whiteSpace: 'nowrap'
+}
+const backArrow: CSSProperties = { fontSize: 16, lineHeight: 1, fontWeight: 700, display: 'block' }
+const backText: CSSProperties = { lineHeight: 1, display: 'block' }
+const body: CSSProperties = { padding: 4, display: 'flex', flexDirection: 'column', gap: 2 }
+const LIST_MAX_H = 300
+
+/** A height-capped area scrolled by the wheel / trackpad — WITHOUT a native scroller. On the
+ *  canvas the picker sits inside React Flow's zoom transform, and a real scroll container there is
+ *  rasterised as its own layer and then scaled, which blurred the list. This clips the content
+ *  and shifts it (a plain 2-D translate, painted with the tile, so it stays sharp), with a thin
+ *  indicator of where the view is. `nowheel` keeps the canvas from zooming under the wheel. */
+function CrispScroll({ maxHeight, children }: { maxHeight: number; children: ReactNode }) {
+  const inner = useRef<HTMLDivElement>(null)
+  const [contentH, setContentH] = useState(0)
+  const [top, setTop] = useState(0)
+  // Measured whenever the list's size changes (a category opened, a section added).
+  useLayoutEffect(() => {
+    const el = inner.current
+    if (!el) return
+    const ro = new ResizeObserver(() => setContentH(el.offsetHeight))
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [])
+  const range = Math.max(0, contentH - maxHeight)
+  const y = Math.min(top, range)
+  const thumbH = range ? Math.max(24, (maxHeight * maxHeight) / contentH) : 0
+  return (
+    <div
+      className="nowheel"
+      onWheel={(e) => {
+        if (!range) return
+        setTop(Math.max(0, Math.min(range, y + e.deltaY)))
+      }}
+      style={{ position: 'relative', maxHeight, overflow: 'hidden' }}
+    >
+      <div ref={inner} style={{ transform: `translateY(${-y}px)` }}>
+        {children}
+      </div>
+      {range > 0 && (
+        <div
+          style={{
+            position: 'absolute',
+            right: 2,
+            width: 3,
+            borderRadius: 2,
+            background: UI.border,
+            top: (y / range) * (maxHeight - thumbH),
+            height: thumbH,
+            pointerEvents: 'none'
+          }}
+        />
+      )}
+    </div>
+  )
+}
+const sectionHead: CSSProperties = {
+  fontSize: 9,
+  fontWeight: 700,
+  textTransform: 'uppercase',
+  letterSpacing: 0.5,
+  color: UI.textMuted,
+  padding: '6px 8px 2px'
+}
+const item: CSSProperties = {
+  display: 'inline-flex',
+  alignItems: 'center',
+  gap: 8,
+  border: 'none',
+  borderRadius: 5,
+  padding: '7px 8px',
+  fontSize: 12,
+  color: UI.text,
+  cursor: 'pointer',
+  textAlign: 'left',
+  width: '100%'
+}
+const dot: CSSProperties = { width: 8, height: 8, borderRadius: '50%', flex: '0 0 auto' }
+const checkbox: CSSProperties = {
+  width: 13,
+  height: 13,
+  flex: '0 0 auto',
+  borderRadius: 3,
+  border: `1px solid ${UI.border}`,
+  display: 'inline-flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  fontSize: 10,
+  fontWeight: 700,
+  color: UI.accentText,
+  lineHeight: 1
+}
+const footer: CSSProperties = { padding: 6, borderTop: `1px solid ${UI.border}` }
+const previewNote: CSSProperties = {
+  padding: '5px 4px',
+  fontSize: 11,
+  color: UI.textMuted,
+  textAlign: 'center'
+}
+const addBtn: CSSProperties = {
+  width: '100%',
+  background: UI.accent,
+  color: UI.accentText,
+  border: 'none',
+  borderRadius: 5,
+  padding: '6px 8px',
+  fontSize: 11,
+  fontWeight: 700,
+  cursor: 'pointer'
+}
+const opLabel: CSSProperties = { fontWeight: 600 }
+// Optional gloss to the right of the label: one line, cut with an ellipsis rather than spilling
+// out of the fixed-width card.
+const opSubtitle: CSSProperties = {
+  fontSize: 11,
+  fontWeight: 400,
+  color: UI.textMuted,
+  whiteSpace: 'nowrap',
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+  minWidth: 0
+}
+const catName: CSSProperties = {
+  marginLeft: 'auto',
+  fontSize: 9,
+  fontWeight: 700,
+  textTransform: 'uppercase',
+  letterSpacing: 0.5
+}

@@ -1,5 +1,5 @@
 /** qc: its node contract (see nodes/contract.ts). */
-import type { QcConfig } from '../../graph/types'
+import type { QcConfig } from '../../graph/config/qc'
 import { defineSpec } from '../contract'
 
 export const qcSpec = defineSpec<'qc'>({

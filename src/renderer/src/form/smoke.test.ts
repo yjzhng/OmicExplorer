@@ -119,7 +119,7 @@ describe('form layout views render', () => {
   it("reads a Load tile's readiness from its own files, not from an upstream", async () => {
     const html = await render('./FormWorkflow', 'FormWorkflow')
     const { useGraph } = await import('../graph/store')
-    const { unconfiguredLoad } = await import('../graph/types')
+    const { unconfiguredLoad } = await import('../graph/config/load')
     const load = useGraph.getState().nodes.find((n) => n.data?.kind === 'load')
     expect(load).toBeDefined()
     // A Load has nothing upstream, so the "waiting for data" path never applies to it. The seed

@@ -1,5 +1,6 @@
 /** curveFit: its node contract (see nodes/contract.ts). */
-import { type CurveFitConfig, CURVECURATOR_THRESHOLD } from '../../graph/types'
+import type { CurveFitConfig } from '../../graph/types'
+import { CURVECURATOR_THRESHOLD } from '../../graph/config/compare'
 import { DEFAULT_THRESHOLD } from '../../engine'
 import { defineSpec } from '../contract'
 

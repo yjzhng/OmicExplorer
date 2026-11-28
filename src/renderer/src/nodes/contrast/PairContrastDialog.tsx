@@ -7,11 +7,11 @@
 import { useMemo, type CSSProperties, type ReactNode } from 'react'
 
 import { condLabel, previewContrastPair, type ConditionKey, type PairFix } from '../../engine'
-import { StatusNote } from '../../ui/StatusNote'
-import { UI } from '../../ui/theme'
-import { isPairable, toContrastSide } from '../../graph/contrastPair'
-import { PreviewTable, selectorStyles as S } from '../../graph/selectorParts'
-import { SideRows, type SideKey, type SideRow } from '../../graph/SideRows'
+import { StatusNote } from '../../ui/controls/StatusNote'
+import { UI } from '../../ui/app/theme'
+import { isPairable, toContrastSide } from '../../graph/models/contrastPair'
+import { PreviewTable, selectorStyles as S } from '../../graph/dialogs/selectorParts'
+import { SideRows, type SideKey, type SideRow } from '../../graph/dialogs/SideRows'
 import type { NodeResult } from '../../graph/types'
 import { Select } from '../kit/settings/controls'
 

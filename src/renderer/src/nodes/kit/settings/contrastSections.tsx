@@ -8,11 +8,12 @@ import {
   valueCutoffs,
   upperOnly
 } from '../../../engine'
-import { ApplyStageContext } from '../../../graph/applyStage'
-import { tailStep } from '../../../graph/contrastModel'
+import { ApplyStageContext } from '../../../graph/dialogs/applyStage'
+import { tailStep } from '../../../graph/models/contrastModel'
 import { useGraph } from '../../../graph/store'
-import { type ContrastConfig, isStep, resolveContrastSource } from '../../../graph/types'
-import { OnOffSwitch, ToggleSwitch } from '../../../ui/ToggleSwitch'
+import { type ContrastConfig, resolveContrastSource } from '../../../graph/config/contrast'
+import { isStep } from '../../../graph/types'
+import { OnOffSwitch, ToggleSwitch } from '../../../ui/controls/ToggleSwitch'
 import { Field, NumberInput, Section, Select } from './controls'
 import { styles } from './styles'
 import { useFacet } from '../../../dashboard/facet'

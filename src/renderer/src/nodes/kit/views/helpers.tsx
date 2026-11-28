@@ -14,11 +14,11 @@ import {
   type StandardizeResult,
   valuesOf
 } from '../../../engine'
-import type { EffectLabels } from '../../../graph/types'
-import { heatStyle, valueRange } from '../../../ui/colormap'
-import type { HeaderLine } from '../../../ui/DataTableView'
-import { type PaletteRef, ROLE_DEFAULTS } from '../../../ui/palettes'
-import { plotCached } from '../../../ui/plotCache'
+import type { EffectLabels } from '../../../graph/config/compare'
+import { heatStyle, valueRange } from '../../../ui/color/colormap'
+import type { HeaderLine } from '../../../ui/table/DataTableView'
+import { type PaletteRef, ROLE_DEFAULTS } from '../../../ui/color/palettes'
+import { plotCached } from '../../../ui/plot/plotCache'
 
 /** The viridis `value` heat style for a standardize result, scaled globally across every value
  *  (log10 when the values look like raw intensity). Shared by the matrix cells and the long view. */
@@ -29,7 +29,7 @@ export function makeValueHeat(
   // The Clean data table's abundance cells: on the value palette, as the Clean data heatmap.
   return heatStyle(stdValueRange(std), palette)
 }
-/** A Clean data result's value range over every value, kept by the result (ui/plotCache) — a scan
+/** A Clean data result's value range over every value, kept by the result (ui/plot/plotCache) — a scan
  *  of every value, shared by the tables' colours and the gene bar's scale. */
 export function stdValueRange(std: StandardizeResult): ReturnType<typeof valueRange> {
   return plotCached('stdValueRange', [std], () =>
@@ -39,7 +39,7 @@ export function stdValueRange(std: StandardizeResult): ReturnType<typeof valueRa
 /** The genes a one-gene pager steps through: the selected genes when any of them is in the data,
  *  else every gene in it — so the pager starts on all genes and a selection narrows it. */
 export function pagerGenes(selected: string[], present: ReadonlySet<string>): string[] {
-  // every gene as the same array while `present` is the same set (ui/plotCache): the pager's
+  // every gene as the same array while `present` is the same set (ui/plot/plotCache): the pager's
   // list isn't rebuilt on every render
   return selected.some((id) => present.has(id))
     ? selected
@@ -66,7 +66,7 @@ export function facetAlpha(
   facet: CompareResultRow[]
 ): number | undefined {
   if (!alphas) return undefined
-  // kept by the facet's rows (ui/plotCache): not a scan of them on every render
+  // kept by the facet's rows (ui/plot/plotCache): not a scan of them on every render
   return plotCached('facetAlpha', [facet, alphas], () => {
     let a: number | undefined
     for (const k of new Set(facet.map(curveGroupKey)))
@@ -77,7 +77,7 @@ export function facetAlpha(
 /** A curve fit's point counts (control included) common enough to draw CurveCurator's boundary
  *  for — each at least 5% of the curves, most common first. Empty for any other analysis. */
 export function curvePointCounts(rows: CompareResultRow[]): number[] {
-  // kept by the rows (ui/plotCache): the same array render to render, not a scan on each
+  // kept by the rows (ui/plot/plotCache): the same array render to render, not a scan on each
   return plotCached('curvePointCounts', [rows], () => countCurvePoints(rows))
 }
 function countCurvePoints(rows: CompareResultRow[]): number[] {

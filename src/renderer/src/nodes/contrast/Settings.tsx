@@ -6,17 +6,16 @@ import {
   selectSource,
   selectorRowsOf,
   toContrastSide
-} from '../../graph/contrastPair'
-import { useConfigWindowOpen } from '../../graph/dialogDock'
+} from '../../graph/models/contrastPair'
+import { useConfigWindowOpen } from '../../graph/dialogs/dialogDock'
 import { useGraph } from '../../graph/store'
 import {
+  type ContrastConfig,
   isContrastConfigured,
-  isStep,
-  numericOfResult,
-  resolveContrastSource,
-  type ContrastConfig
-} from '../../graph/types'
-import { StatusNote } from '../../ui/StatusNote'
+  resolveContrastSource
+} from '../../graph/config/contrast'
+import { isStep, numericOfResult } from '../../graph/types'
+import { StatusNote } from '../../ui/controls/StatusNote'
 import { ContrastStatPanel } from '../kit/settings/contrastSections'
 import { ConfigureButton, Section } from '../kit/settings/controls'
 import { styles } from '../kit/settings/styles'

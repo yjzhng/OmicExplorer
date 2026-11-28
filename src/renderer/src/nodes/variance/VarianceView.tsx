@@ -1,10 +1,10 @@
 import { useMemo } from 'react'
 
 import { distShape, VIOLIN_CAP, type GeneShares } from '../../engine'
-import { tooltip } from '../../ui/condTooltip'
-import { PlotlyChart } from '../../ui/PlotlyChart'
-import { axisBase, CATEGORICAL, PALETTES, plotBase, withAlpha } from '../../ui/theme'
-import { useUiTheme } from '../../ui/useUiTheme'
+import { tooltip } from '../../ui/plot/condTooltip'
+import { PlotlyChart } from '../../ui/plot/PlotlyChart'
+import { axisBase, CATEGORICAL, PALETTES, plotBase, withAlpha } from '../../ui/app/theme'
+import { useUiTheme } from '../../ui/app/useUiTheme'
 
 /** q as the plots print it: two significant figures, small ones in exponent form. */
 const fmtQ = (q: number): string =>
@@ -78,7 +78,7 @@ export function VarianceView({
 
     if (view === 'overview') {
       // Past VIOLIN_CAP genes, each violin is drawn from its shares' quantiles with the bandwidth
-      // for all of them (engine/distShape): the same shape, without Plotly smoothing every gene's
+      // for all of them (engine/plot/distShape): the same shape, without Plotly smoothing every gene's
       // share at each draw.
       const violinOf = (i: number, name: string): Record<string, unknown> => {
         const all = genes.map((g) => shareOf(g, i))

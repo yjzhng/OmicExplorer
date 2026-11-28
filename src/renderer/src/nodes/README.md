@@ -8,10 +8,10 @@ registries here; it doesn't branch on the kind itself.
 nodes/
   contract.ts     the node contract (NodeSpec) and the data contracts
   specs.ts        SPECS     — every kind's spec.ts            (graph/registry.ts: NODE_SPECS)
-  settings.ts     SETTINGS  — every kind's Settings.tsx       (graph/NodeConfigPanel.tsx)
+  settings.ts     SETTINGS  — every kind's Settings.tsx       (graph/dialogs/NodeConfigPanel.tsx)
   views.ts        VIEWS     — every kind's View.tsx           (dashboard/PanelBody.tsx)
-  tiles.ts        TILES     — the steps' canvas Tile.tsx      (graph/GraphNode.tsx)
-  runs.ts         STEP_RUNS / PLOT_RUNS — run.ts              (graph/store runNode, graph/plotRun.ts)
+  tiles.ts        TILES     — the steps' canvas Tile.tsx      (graph/canvas/GraphNode.tsx)
+  runs.ts         STEP_RUNS / PLOT_RUNS — run.ts              (graph/store runNode, graph/run/plotRun.ts)
   runContext.ts   what a run is handed
   kit/            what several kinds share: settings sections and controls, view and table
                   helpers, requirement helpers, the Response plots' variants
@@ -44,7 +44,8 @@ in the plot pickers (unmet entries are hidden) and in the Results tile.
 
 ## Adding a kind
 
-1. Add it to `NodeKind` and its config type to `NodeConfigMap` (graph/types.ts).
+1. Add it to `NodeKind` and its config type to `NodeConfigMap` (graph/types.ts); the config type
+   itself lives in graph/config/, beside the configs of the plots like it.
 2. Create `nodes/<kind>/spec.ts` with `defineSpec`, and add it to `SPECS` (nodes/specs.ts).
 3. Add its `Settings`, its view, and (for a step) its tile and run to `SETTINGS`, `VIEWS`,
    `TILES`, `STEP_RUNS` — `null` where it has none. Each registry is a `Record<NodeKind, …>`, so
@@ -94,16 +95,16 @@ window's legend switch and Axes and lines section (`plot.legend` / `plot.axes`),
   state), `Checkbox`, `Chevron`, and `ToggleSwitch` / `ChoiceSwitch` / `SwitchBar` for choices; the
   kit re-exports them with the settings-only controls (`Select` at canvas zoom, `CapRow`,
   `QuickToggle`, `SampleOrderField`, …). The architecture test fails on a second copy.
-- **Text.** Plot text comes from `PLOT_TEXT` (ui/theme.ts): 13 heading and axis titles, 11 ticks
+- **Text.** Plot text comes from `PLOT_TEXT` (ui/app/theme.ts): 13 heading and axis titles, 11 ticks
   and legend, 10 annotations and labels, 9 only for dense row / column labels. The layout font
   (`plotBase`) is the tick size, so Plotly's axis titles come out at 13 on their own.
-- **Motion.** Durations and curves come from `MOTION_MS` / `EASE` / `LOOP_MS` (ui/theme.ts; the
+- **Motion.** Durations and curves come from `MOTION_MS` / `EASE` / `LOOP_MS` (ui/app/theme.ts; the
   `--motion-*` variables in CSS): press 90, hover / colour 120, small move or fold 160, open 180 /
   close 120, page 320 ms. Write `motion('transform', 'base')`, never a number; one rule in app.css
-  makes every animation instant under the system's reduced-motion setting. ui/motion.test.ts fails
+  makes every animation instant under the system's reduced-motion setting. ui/app/motion.test.ts fails
   on a hard-coded duration.
 - **Long content.** Any list, table or tree whose length grows with the data (genes, matrix rows,
-  a column's values, pathways, group members, comparisons, files…) renders through ui/VirtualRows:
+  a column's values, pathways, group members, comparisons, files…) renders through ui/table/VirtualRows:
   `VirtualList` for a flat list, `VirtualTbody` for a table body (with `ProbeRow` + `longestText`
   to keep auto-sized columns steady), `useVirtualRows` to drive one yourself (a tree flattened to
   its shown rows). Only the rows in view are drawn; every row is reachable by scrolling, so no

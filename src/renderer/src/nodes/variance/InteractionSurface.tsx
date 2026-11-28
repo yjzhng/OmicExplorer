@@ -9,8 +9,8 @@ import {
   type InteractionGene,
   type NumericConds
 } from '../../engine'
-import type { ResponseLook } from '../../graph/types'
-import type { PaletteRef } from '../../ui/palettes'
+import type { ResponseLook } from '../../graph/config/response'
+import type { PaletteRef } from '../../ui/color/palettes'
 import {
   ResponseSurfaceView,
   type AxisLevels,

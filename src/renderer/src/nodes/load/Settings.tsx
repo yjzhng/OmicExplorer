@@ -1,25 +1,20 @@
 import { type ReactNode, useMemo, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { manualSheetConditions, manualSheetIssues, sheetIssueLines } from '../../engine'
-import { useConfigWindowOpen } from '../../graph/dialogDock'
-import { loadCheckInfo } from '../../graph/loadCheck'
+import { useConfigWindowOpen } from '../../graph/dialogs/dialogDock'
+import { loadCheckInfo } from '../../graph/run/loadCheck'
 import { locationOf } from '../../graph/state/shared'
 import { useGraph } from '../../graph/store'
-import {
-  type LoadConfig,
-  declaredNumeric,
-  DOSE_UNIT_SUGGESTIONS,
-  resolveLoadMode,
-  TIME_UNIT_SUGGESTIONS
-} from '../../graph/types'
-import { UnitInput } from '../../graph/UnitInput'
-import { IconJump } from '../../ui/icons'
-import { HoverTip } from '../../ui/InfoTip'
-import { ProjectFolderViewer } from '../../ui/ProjectFolderViewer'
-import { StatusIcon, StatusNote } from '../../ui/StatusNote'
-import { cssVars, NOTICE_MS, PALETTES } from '../../ui/theme'
-import { ToggleSwitch } from '../../ui/ToggleSwitch'
-import { useUiTheme } from '../../ui/useUiTheme'
+import { declaredNumeric, type LoadConfig, resolveLoadMode } from '../../graph/config/load'
+import { DOSE_UNIT_SUGGESTIONS, TIME_UNIT_SUGGESTIONS } from '../../graph/config/units'
+import { UnitInput } from '../../graph/dialogs/UnitInput'
+import { IconJump } from '../../ui/controls/icons'
+import { HoverTip } from '../../ui/controls/InfoTip'
+import { ProjectFolderViewer } from '../../ui/app/ProjectFolderViewer'
+import { StatusIcon, StatusNote } from '../../ui/controls/StatusNote'
+import { cssVars, NOTICE_MS, PALETTES } from '../../ui/app/theme'
+import { ToggleSwitch } from '../../ui/controls/ToggleSwitch'
+import { useUiTheme } from '../../ui/app/useUiTheme'
 import { ConfigureButton, Field, Section, Select } from '../kit/settings/controls'
 import { useInputText } from '../kit/settings/hooks'
 import { styles } from '../kit/settings/styles'

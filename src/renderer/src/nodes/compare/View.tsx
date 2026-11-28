@@ -1,11 +1,7 @@
 import type { ReactNode } from 'react'
-import {
-  type CompareConfig,
-  curveDoseUnit,
-  effectLabelsOf,
-  numericOfResult,
-  plotResultKey
-} from '../../graph/types'
+import { type CompareConfig, effectLabelsOf } from '../../graph/config/compare'
+import { curveDoseUnit } from '../../graph/config/units'
+import { numericOfResult, plotResultKey } from '../../graph/types'
 import { Empty } from '../kit/views/common'
 import { type ViewContext } from '../kit/views/context'
 import { CompareTable } from '../kit/views/tables'

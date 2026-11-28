@@ -1,5 +1,5 @@
 /** string: its node contract (see nodes/contract.ts). */
-import type { StringConfig } from '../../graph/types'
+import type { StringConfig } from '../../graph/config/enrich'
 import { defineSpec } from '../contract'
 import { resultStringTaxon } from '../kit/requirements'
 

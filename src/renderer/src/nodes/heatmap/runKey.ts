@@ -2,12 +2,8 @@
  *  builds the heatmap under these, stamped with their key, and a change to any of them needs
  *  another run (the spec's staleOn) — as a Compare's statistic does. */
 import { type LeafOrder, type TopSplit } from '../../engine'
-import {
-  heatmapCapOn,
-  topCountOf,
-  type HeatmapConfig,
-  type HeatmapLinkage
-} from '../../graph/types'
+import { heatmapCapOn, type HeatmapConfig, type HeatmapLinkage } from '../../graph/config/heatmap'
+import { topCountOf } from '../../graph/config/plotStyle'
 
 export interface FcHeatmapRunOpts {
   /** the top-N cap (0 = every differential gene) */

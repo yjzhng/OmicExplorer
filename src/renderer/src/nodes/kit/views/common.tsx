@@ -1,10 +1,10 @@
 import { type ReactNode, useId } from 'react'
 import type { StepStatus } from '../../../graph/types'
-import { usePlotCached } from '../../../ui/plotCache'
-import { StatusIcon } from '../../../ui/StatusNote'
+import { usePlotCached } from '../../../ui/plot/plotCache'
+import { StatusIcon } from '../../../ui/controls/StatusNote'
 import { styles } from './styles'
 
-/** A plot-data build inside a FacetedPlot render prop, from the app-wide plot cache (ui/plotCache).
+/** A plot-data build inside a FacetedPlot render prop, from the app-wide plot cache (ui/plot/plotCache).
  *  The render prop runs on every PanelBody render (a pin click, a status tick anywhere), and an
  *  inline `buildX(rows, …)` there hands the view a FRESH data object each time — which is a full
  *  Plotly redraw of the chart, on every tile, hidden tabs included; and a remount (a facet or tab

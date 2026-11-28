@@ -2,19 +2,18 @@
  *  and impute it — or, fed by another Clean data (a Merge, a Subset of one), clean that table again. */
 import { locationOf } from '../../graph/state/shared'
 import { engine } from '../../engine/client'
-import { loadCheckProblem, stampOf } from '../../graph/loadCheck'
-import { patchLoadStamps, putCheck, scalePreviews, statFiles } from '../../graph/loadFiles'
+import { loadCheckProblem, stampOf } from '../../graph/run/loadCheck'
+import { patchLoadStamps, putCheck, scalePreviews, statFiles } from '../../graph/run/loadFiles'
 import { loadAbove, wiredKindOf } from '../../graph/registry'
 import {
   batchSpecOf,
   cleanupRuleOfConfig,
   imputeOn,
   normalizeOptionsOf,
-  isStep,
-  type LoadConfig,
-  resolveLoadMode,
   type StandardizeConfig
-} from '../../graph/types'
+} from '../../graph/config/standardize'
+import { isStep } from '../../graph/types'
+import { type LoadConfig, resolveLoadMode } from '../../graph/config/load'
 import type { StandardizeResult } from '../../engine'
 import type { StepRunContext } from '../runContext'
 import { importOptions } from './importOptions'

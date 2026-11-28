@@ -15,15 +15,16 @@ import Plotly from 'plotly.js-strict-dist-min'
 
 import { PanelBody } from '../dashboard/PanelBody'
 import { useGraph } from '../graph/store'
-import { condUnitsFor, isStep, type NodeResult } from '../graph/types'
+import { condUnitsFor } from '../graph/config/units'
+import { isStep, type NodeResult } from '../graph/types'
 import { plotLabel, stepTitle } from '../graph/registry'
 import type { ConditionKey } from '../engine'
-import { hasGeneTitle, revealGeneTitle } from '../ui/geneTitle'
-import { hasGlTraces, sceneCount, toSvgTraces } from '../ui/glTraces'
-import { PALETTES, plotFontName } from '../ui/theme'
-import { useAppSettings } from '../ui/useAppSettings'
-import { useSelection } from '../ui/useSelection'
-import { useUiTheme } from '../ui/useUiTheme'
+import { hasGeneTitle, revealGeneTitle } from '../ui/plot/geneTitle'
+import { hasGlTraces, sceneCount, toSvgTraces } from '../ui/plot/glTraces'
+import { PALETTES, plotFontName } from '../ui/app/theme'
+import { useAppSettings } from '../ui/app/useAppSettings'
+import { useSelection } from '../ui/plot/useSelection'
+import { useUiTheme } from '../ui/app/useUiTheme'
 import { planPlotJobs } from './facets'
 import {
   insertSceneOverlays,
@@ -32,8 +33,8 @@ import {
   type ScenePlan
 } from './sceneVector'
 import { cleanSvgForEditors } from './svgClean'
-import { deriveTabs, tabTitles } from '../graph/groups'
-import { pathSeg } from '../graph/diskNames'
+import { deriveTabs, tabTitles } from '../graph/results/groups'
+import { pathSeg } from '../graph/project/diskNames'
 import { clipShapesToRanges } from './clipShapes'
 import { extendPaperDown, legendOverflow } from './legendOverflow'
 import { exportPath } from './paths'
@@ -683,7 +684,7 @@ export async function runExport(
   const total = jobs.length + tables.length
 
   // One folder per processing step, named after it — the same output/ subfolders the tiles'
-  // downloads use (graph/diskNames.ts); names are unique within the workflow.
+  // downloads use (graph/project/project/diskNames.ts); names are unique within the workflow.
   const rootIds = [...new Set([...specs.map((s) => s.rootId), ...tables.map((t) => t.key)])]
   const names = useGraph.getState().outputLayoutFor(rootIds)?.names ?? {}
   const folder = new Map(rootIds.map((id) => [id, names[id] ?? id]))

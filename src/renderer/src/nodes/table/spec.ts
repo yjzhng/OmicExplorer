@@ -1,5 +1,5 @@
 /** table: its node contract (see nodes/contract.ts). */
-import type { TableConfig } from '../../graph/types'
+import type { TableConfig } from '../../graph/config/genePlots'
 import { defineSpec } from '../contract'
 
 export const tableSpec = defineSpec<'table'>({

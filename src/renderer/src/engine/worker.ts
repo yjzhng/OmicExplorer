@@ -22,13 +22,13 @@ import {
   buildCluster,
   buildSampleCorrAll
 } from './index'
-import type { ContrastInput, ContrastPairInput } from './contrast'
-import { stackContrasts, type ContrastStackPart } from './contrastStack'
-import { contrastSelect, type ContrastSelectInput } from './contrastSelect'
+import type { ContrastInput, ContrastPairInput } from './compare/contrast'
+import { stackContrasts, type ContrastStackPart } from './compare/contrastStack'
+import { contrastSelect, type ContrastSelectInput } from './compare/contrastSelect'
 import { failure } from './engineError'
-import type { RecleanInput } from './ingest'
-import type { DirectInput } from './direct'
-import type { FactorAnovaInput } from './twoWay'
+import type { RecleanInput } from './data/ingest'
+import type { DirectInput } from './compare/direct'
+import type { FactorAnovaInput } from './compare/twoWay'
 import type {
   CompareInput,
   CompareResultRow,
@@ -39,18 +39,23 @@ import type {
   StandardRow,
   VehNormInput
 } from './types'
-import type { ClusterOptions } from './plotData'
-import type { ValueScale } from './scale'
-import { heatmapGroups } from './heatmapGroups'
-import { tagBatch } from './batch'
-import { curveFitSteps, driveAsync } from './direct'
-import { responseSurfaceSteps, runResponseSurface, type ResponseInput } from './responseSurface'
-import { buildFcHeatmap, enrichmentAllSteps, type FcHeatmapOptions } from './plotData'
-import { measuredSets } from './sets'
-import { configurePool, pool, setUiBusy } from './pool'
-import { clusterRowGroups, clusterRowTree, type ClusterOrderOptions } from './cluster'
-import { progressTracker, type Progress, type ProgressTracker } from './progress'
-import { decodeValue, encodeValue } from './wire'
+import type { ClusterOptions } from './plot/cluster'
+import type { ValueScale } from './data/scale'
+import { heatmapGroups } from './plot/heatmapGroups'
+import { tagBatch } from './data/batch'
+import { curveFitSteps, driveAsync } from './compare/direct'
+import {
+  responseSurfaceSteps,
+  runResponseSurface,
+  type ResponseInput
+} from './curves/responseSurface'
+import { buildFcHeatmap, type FcHeatmapOptions } from './plot/fcHeatmap'
+import { enrichmentAllSteps } from './enrich/terms'
+import { measuredSets } from './stats/sets'
+import { configurePool, pool, setUiBusy } from './runtime/pool'
+import { clusterRowGroups, clusterRowTree, type ClusterOrderOptions } from './stats/cluster'
+import { progressTracker, type Progress, type ProgressTracker } from './runtime/progress'
+import { decodeValue, encodeValue } from './columns/wire'
 
 export type EngineRequest =
   | { id: number; op: 'standardize'; payload: StandardizeInput }

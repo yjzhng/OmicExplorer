@@ -1,8 +1,8 @@
 import { reportError } from '../../shared/diagnostics'
-import { useAppView } from '../../ui/useAppView'
-import { dataFolderName, dataRootOf, outDirName, pathSeg, planRenames } from '../diskNames'
-import { exclusiveDisk } from '../diskWrites'
-import { loadLastView } from '../lastView'
+import { useAppView } from '../../ui/app/useAppView'
+import { dataFolderName, dataRootOf, outDirName, pathSeg, planRenames } from '../project/diskNames'
+import { exclusiveDisk } from '../project/diskWrites'
+import { loadLastView } from '../project/lastView'
 import {
   deserializeProject,
   isNewerVersion,
@@ -21,8 +21,8 @@ import {
   unpackResults,
   upgradesDue,
   withRelPaths
-} from '../project'
-import { loadRecents, pushRecent, removeRecent, saveRecents } from '../recents'
+} from '../project/project'
+import { loadRecents, pushRecent, removeRecent, saveRecents } from '../project/recents'
 import { categoryOf, stepTitle } from '../registry'
 import { type Getter, type GraphState, type Setter, type StoreSet } from '../store'
 import {
@@ -31,8 +31,9 @@ import {
   projectFromTemplate,
   serializeTemplate,
   TEMPLATE_EXT
-} from '../template'
-import type { LoadConfig, NodeResult } from '../types'
+} from '../project/template'
+import type { LoadConfig } from '../config/load'
+import type { NodeResult } from '../types'
 import {
   type CleanupPlan,
   graphOf,
@@ -72,7 +73,7 @@ export async function checkUpgrades(
     }
     try {
       const text = await window.api.readProject(path)
-      upgradeWorker ??= new Worker(new URL('../upgradeCheck.worker.ts', import.meta.url), {
+      upgradeWorker ??= new Worker(new URL('../project/upgradeCheck.worker.ts', import.meta.url), {
         type: 'module'
       })
       const w = upgradeWorker
@@ -211,11 +212,11 @@ export function stepTitlesOf(
   return new Map(graphOf(s, folderId, wf).nodes.map((n) => [n.id, stepTitle(n)]))
 }
 /**
- * Bring the disk in line with the project as it's being saved (see graph/diskNames.ts), per data
+ * Bring the disk in line with the project as it's being saved (see graph/project/project/diskNames.ts), per data
  * folder: first the project data folder itself — moved out of scratch on the first save, copied to
  * the new name on Save as (the original project keeps its own), else renamed after the project —
  * then each renamed workflow's folder, then each renamed step's output/ folder. Runs with file
- * writes held back (graph/diskWrites.ts). Records the names that resulted (a failed move keeps the
+ * writes held back (graph/project/project/diskWrites.ts). Records the names that resulted (a failed move keeps the
  * old one) and returns what couldn't be done, for the save to report.
  */
 export async function applyDiskLayout(

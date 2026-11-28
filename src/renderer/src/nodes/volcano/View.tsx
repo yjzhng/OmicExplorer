@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react'
-import { plotCached } from '../../ui/plotCache'
+import { plotCached } from '../../ui/plot/plotCache'
 import { FacetedPlot } from '../../dashboard/FacetedPlot'
 import {
   type CompareResultRow,
@@ -13,13 +13,12 @@ import {
 import { useGraph } from '../../graph/store'
 import {
   type CompareConfig,
-  type VolcanoConfig,
   effectLabelsOf,
-  labelCapOn,
   modelViewOf,
   normalizeCompareConfig
-} from '../../graph/types'
-import { UI } from '../../ui/theme'
+} from '../../graph/config/compare'
+import { labelCapOn, type VolcanoConfig } from '../../graph/config/pointPlots'
+import { UI } from '../../ui/app/theme'
 import { Built, Empty } from '../kit/views/common'
 import { type ViewContext } from '../kit/views/context'
 import { curvePointCounts, facetAlpha } from '../kit/views/helpers'

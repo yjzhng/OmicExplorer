@@ -16,8 +16,8 @@ import {
   outputKindOf,
   type AxisGraph
 } from './registry'
-import { deriveGroups } from './groups'
-import { restampScales } from './resultScales'
+import { deriveGroups } from './results/groups'
+import { restampScales } from './project/resultScales'
 import type { GraphNode, NodeKind, NodeResult } from './types'
 
 const node = (id: string, kind: NodeKind): GraphNode =>

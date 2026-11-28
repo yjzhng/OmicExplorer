@@ -15,7 +15,7 @@ export function sanitize(s: string): string {
 
 /**
  * Build the path (relative to the export base dir) for one output. `folder` is the output
- * subfolder name (a processing step's — see graph/diskNames.ts). Selected-only variants are filed under a
+ * subfolder name (a processing step's — see graph/project/project/diskNames.ts). Selected-only variants are filed under a
  * `selected` subfolder so they never overwrite the all-genes version of the same plot.
  */
 export function exportPath(

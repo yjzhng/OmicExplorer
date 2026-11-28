@@ -1,6 +1,6 @@
 /** enrichMap: its node contract (see nodes/contract.ts) — the enrichment plot's data and
  *  requirement, drawn as a flow (layout.ts). */
-import type { EnrichMapConfig } from '../../graph/types'
+import type { EnrichMapConfig } from '../../graph/config/enrich'
 import { defineSpec } from '../contract'
 import { enrichSpec } from '../enrich/spec'
 

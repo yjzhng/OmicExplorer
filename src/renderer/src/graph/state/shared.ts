@@ -5,42 +5,42 @@ import {
   classifyCompareRow,
   thresholdLabel
 } from '../../engine'
-import { lazyCopy } from '../../engine/lazyRows'
-import { recallTable } from '../../engine/recall'
-import { useAppSettings } from '../../ui/useAppSettings'
-import { dataRootOf, withDiskNames, workflowDirOf } from '../diskNames'
-import { hiddenGeneIds } from '../geneMask'
-import { HistoryCache } from '../historyCache'
+import { lazyCopy } from '../../engine/columns/lazyRows'
+import { recallTable } from '../../engine/compare/recall'
+import { useAppSettings } from '../../ui/app/useAppSettings'
+import { dataRootOf, withDiskNames, workflowDirOf } from '../project/diskNames'
+import { hiddenGeneIds } from '../project/geneMask'
+import { HistoryCache } from '../results/historyCache'
 import {
   type ProjectWorkflow,
   geneMaskKey,
   packedResultsChunks,
   packedResultsChunksSliced,
   unpackParked
-} from '../project'
+} from '../project/project'
 import { NODE_SPECS } from '../registry'
-import { restampScales } from '../resultScales'
+import { restampScales } from '../project/resultScales'
 import { type Getter, type GraphState, type Setter } from '../store'
 import {
   type CanvasFrame,
-  type CompareConfig,
   type GraphNode,
+  isStep,
   type NodeConfig,
   type NodeKind,
   type NodeResult,
   type PlotChild,
   type PlotGroupConfig,
+  plotResultKey,
   type StepNode,
-  type StepStatus,
-  isStep,
-  plotResultKey
+  type StepStatus
 } from '../types'
+import type { CompareConfig } from '../config/compare'
 import {
   type LoadedWorkflow,
   type WorkflowDoc,
   buildWorkflowDoc,
   parseWorkflowDoc
-} from '../workflowDoc'
+} from '../project/workflowDoc'
 
 /** A Compare result re-called under `threshold`: only thrsh/signf/effect (and a curve fit's FDR)
  *  depend on it — log2FC, pP and pQ are final. `hidden` genes stay uncalled (the geneset mask
@@ -122,7 +122,7 @@ export function docFromLive(s: GraphState): WorkflowDoc {
   })
 }
 /** Where a workflow's files live: its data folder (`dir`, also where your own input files are
- *  read from) and its folder in the project data layout (`scope.base` — see graph/diskNames.ts),
+ *  read from) and its folder in the project data layout (`scope.base` — see graph/project/project/diskNames.ts),
  *  with its name as `scope.legacy` so older projects' `<data folder>/<workflow>` files still read.
  *  The active workflow by default. null without a data folder (or before the scratch folder is
  *  known, for an unsaved project). Exported for writers outside the store (export/autoTables.ts). */
@@ -265,7 +265,7 @@ export function restoredStatuses(
   })
 }
 export function loadSlot(get: Getter, set: Setter, folderId: string, workflowId?: string): void {
-  // Pin on-disk folder names before anything can be written (see graph/diskNames.ts).
+  // Pin on-disk folder names before anything can be written (see graph/project/project/diskNames.ts).
   const pinned = withDiskNames(get().folders, !!get().projectPath, get().projectName)
   if (pinned !== get().folders) set({ folders: pinned })
   const folder = get().folders.find((f) => f.id === folderId)
